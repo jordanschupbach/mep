@@ -758,12 +758,15 @@ ColorSpaceInfo ImageColorSpace(const pdfobj::Object &dict, const pdfobj::Object 
 
 // Top-level image decode: dispatches DCTDecode straight to jpeg::Decode
 // (spec 7.4.8: never combined with another filter), else runs the
-// generic filter chain and unpacks samples. Bakes /SMask alpha into the
-// result (nearest-neighbor-resampled to the base image's own
-// dimensions, since the two can differ). Returns false for a filter
-// DecodeStream itself refuses (CCITTFaxDecode/JBIG2Decode/JPXDecode --
-// Scoping decision 4's scanned-image non-goal): the image is simply
-// skipped, matching RenderPage's "skip bad content" contract.
+// generic filter chain and unpacks samples. CCITTFaxDecode goes through
+// that generic chain like any other byte-producing filter (see
+// pdf_filters.h's own note on why it isn't beside it the way DCTDecode
+// is). Bakes /SMask alpha into the result (nearest-neighbor-resampled
+// to the base image's own dimensions, since the two can differ).
+// Returns false for a filter DecodeStream still refuses
+// (JBIG2Decode/JPXDecode -- Scoping decision 4's remaining
+// scanned-image non-goal): the image is simply skipped, matching
+// RenderPage's "skip bad content" contract.
 bool DecodeImageDict(const pdfobj::Object &dict, const std::string &raw, const pdfobj::Object &resources,
                       const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
                       DecodedImage *out) {
@@ -811,7 +814,7 @@ bool DecodeImageDict(const pdfobj::Object &dict, const std::string &raw, const p
         }
     } else {
         std::string decoded;
-        if (!pdffilter::DecodeStream(raw, &dict, &decoded)) return false;  // CCITT/JBIG2/JPX: skip, Scoping decision 4
+        if (!pdffilter::DecodeStream(raw, &dict, &decoded)) return false;  // JBIG2/JPX: skip, Scoping decision 4
         int bpc = is_mask ? 1
                            : static_cast<int>(FindKey(dict, "BitsPerComponent", "BPC")
                                                    ? FindKey(dict, "BitsPerComponent", "BPC")->AsInt()

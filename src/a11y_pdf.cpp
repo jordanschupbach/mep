@@ -2,6 +2,7 @@
 
 #include "pdf_content.h"
 #include "pdf_struct.h"
+#include "pdf_text.h"
 
 #include <algorithm>
 #include <cctype>
@@ -35,28 +36,12 @@ struct TextBuilder {
     pdfrender::TextGlyph prev;
     std::string last_actual;
 
-    // A ligature glyph (U+FB00..FB04: ff fi fl ffi ffl) as its letters:
-    // what is read is the word.
-    static std::string Letters(const std::string &s) {
-        static const char *kLetters[] = {"ff", "fi", "fl", "ffi", "ffl"};
-        std::string out;
-        for (size_t i = 0; i < s.size(); ++i) {
-            if (i + 2 < s.size() && static_cast<unsigned char>(s[i]) == 0xEF && static_cast<unsigned char>(s[i + 1]) == 0xAC &&
-                static_cast<unsigned char>(s[i + 2]) >= 0x80 && static_cast<unsigned char>(s[i + 2]) <= 0x84) {
-                out += kLetters[static_cast<unsigned char>(s[i + 2]) - 0x80];
-                i += 2;
-            } else {
-                out += s[i];
-            }
-        }
-        return out;
-    }
-    static bool EndsWithLetterHyphen(const std::string &s) {
-        return s.size() >= 2 && s.back() == '-' && std::isalpha(static_cast<unsigned char>(s[s.size() - 2]));
-    }
+    // Ligature expansion and the broken-word test live in pdf_text.h:
+    // a reader copying a passage out of the page (JoinGlyphText) wants
+    // exactly the same two things a screen reader does.
     void Add(const pdfrender::TextGlyph &g) {
         // A sequence with /ActualText reads as that text, once.
-        const std::string piece = Letters(g.actual_text.empty() ? g.utf8_text : g.actual_text);
+        const std::string piece = pdftext::ExpandLigatures(g.actual_text.empty() ? g.utf8_text : g.actual_text);
         const bool repeat = !g.actual_text.empty() && have_prev && g.actual_text == last_actual;
         last_actual = g.actual_text;
         if (have_prev) {
@@ -64,7 +49,8 @@ struct TextBuilder {
             const double centre = (g.top + g.bottom) / 2, prev_centre = (prev.top + prev.bottom) / 2;
             const bool new_line = std::fabs(centre - prev_centre) > 0.5 * std::max(height, prev_height);
             const bool gap = !new_line && g.left - prev.right > 0.25 * std::max(height, prev_height);
-            if (new_line && EndsWithLetterHyphen(text) && !piece.empty() && std::islower(static_cast<unsigned char>(piece[0]))) {
+            if (new_line && pdftext::EndsWithLetterHyphen(text) && !piece.empty() &&
+                std::islower(static_cast<unsigned char>(piece[0]))) {
                 text.pop_back();
             } else if ((new_line || gap) && !text.empty() && text.back() != ' ') {
                 text += ' ';

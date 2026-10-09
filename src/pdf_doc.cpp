@@ -51,6 +51,17 @@ struct PdfDoc::Impl {
     // so the const SelectionQuads can populate it on demand).
     mutable int glyph_cache_page_ = -1;
     mutable std::vector<pdftext::GlyphBox> glyph_cache_;
+    // Fills glyph_cache_ for `page_index` if it holds another page, and
+    // says whether there is a page there at all -- every glyph-space
+    // method below opens with this.
+    bool EnsureGlyphCache(int page_index) const {
+        if (glyph_cache_page_ == page_index) return true;
+        const pdfdoc::Page *page = document_.GetPage(page_index);
+        if (!page) return false;
+        glyph_cache_ = pdftext::PageGlyphBoxes(file_data_.data(), file_data_.size(), document_.Xref(), *page);
+        glyph_cache_page_ = page_index;
+        return true;
+    }
     // The structure tree and the accessibility document made from it, each
     // read the first time it is asked for.
     mutable std::unique_ptr<pdfstruct::Tree> struct_tree_;
@@ -315,13 +326,7 @@ std::vector<pdfannots::Quad> PdfDoc::SelectionQuads(int page_index, float px_per
     double ax, ay, bx, by;
     if (!DevicePxToPoint(page_index, px_per_pt, dax, day, &ax, &ay)) return out;
     if (!DevicePxToPoint(page_index, px_per_pt, dbx, dby, &bx, &by)) return out;
-    if (impl_->glyph_cache_page_ != page_index) {
-        const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
-        if (!page) return out;
-        impl_->glyph_cache_ = pdftext::PageGlyphBoxes(impl_->file_data_.data(), impl_->file_data_.size(),
-                                                      impl_->document_.Xref(), *page);
-        impl_->glyph_cache_page_ = page_index;
-    }
+    if (!impl_->EnsureGlyphCache(page_index)) return out;
     for (const pdftext::PdfTextRectPt &r : pdftext::SelectionRects(impl_->glyph_cache_, ax, ay, bx, by)) {
         pdfannots::Quad q;
         q.x1 = r.left;  q.y1 = r.top;    q.x2 = r.right; q.y2 = r.top;
@@ -334,28 +339,29 @@ std::vector<pdfannots::Quad> PdfDoc::SelectionQuads(int page_index, float px_per
 std::vector<PdfGlyphBox> PdfDoc::PageGlyphs(int page_index) const {
     std::vector<PdfGlyphBox> out;
     if (!impl_) return out;
-    if (impl_->glyph_cache_page_ != page_index) {
-        const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
-        if (!page) return out;
-        impl_->glyph_cache_ = pdftext::PageGlyphBoxes(impl_->file_data_.data(), impl_->file_data_.size(),
-                                                      impl_->document_.Xref(), *page);
-        impl_->glyph_cache_page_ = page_index;
-    }
+    if (!impl_->EnsureGlyphCache(page_index)) return out;
     out.reserve(impl_->glyph_cache_.size());
     for (const pdftext::GlyphBox &g : impl_->glyph_cache_) out.push_back({g.left, g.top, g.right, g.bottom});
+    return out;
+}
+
+std::vector<PdfTextRow> PdfDoc::PageTextRows(int page_index) const {
+    std::vector<PdfTextRow> out;
+    if (!impl_) return out;
+    if (!impl_->EnsureGlyphCache(page_index)) return out;
+    for (pdftext::GlyphRow &r : pdftext::PageGlyphRows(impl_->glyph_cache_)) {
+        PdfTextRow row;
+        row.glyphs = std::move(r.glyphs);
+        row.display_math = r.display_math;
+        out.push_back(std::move(row));
+    }
     return out;
 }
 
 std::vector<pdfannots::Quad> PdfDoc::SelectionQuadsForGlyphs(int page_index, int gi_a, int gi_b) const {
     std::vector<pdfannots::Quad> out;
     if (!impl_) return out;
-    if (impl_->glyph_cache_page_ != page_index) {
-        const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
-        if (!page) return out;
-        impl_->glyph_cache_ = pdftext::PageGlyphBoxes(impl_->file_data_.data(), impl_->file_data_.size(),
-                                                      impl_->document_.Xref(), *page);
-        impl_->glyph_cache_page_ = page_index;
-    }
+    if (!impl_->EnsureGlyphCache(page_index)) return out;
     const auto &g = impl_->glyph_cache_;
     if (g.empty()) return out;
     int lo = std::clamp(std::min(gi_a, gi_b), 0, static_cast<int>(g.size()) - 1);
@@ -372,6 +378,39 @@ std::vector<pdfannots::Quad> PdfDoc::SelectionQuadsForGlyphs(int page_index, int
         out.push_back(q);
     }
     return out;
+}
+
+std::string PdfDoc::TextForGlyphs(int page_index, const std::vector<int> &glyph_indices) const {
+    if (!impl_ || !impl_->EnsureGlyphCache(page_index)) return std::string();
+    return pdftext::JoinGlyphText(impl_->glyph_cache_, glyph_indices);
+}
+
+std::string PdfDoc::SelectionText(int page_index, float px_per_pt, double dax, double day, double dbx,
+                                  double dby) const {
+    if (!impl_) return std::string();
+    double ax, ay, bx, by;
+    if (!DevicePxToPoint(page_index, px_per_pt, dax, day, &ax, &ay)) return std::string();
+    if (!DevicePxToPoint(page_index, px_per_pt, dbx, dby, &bx, &by)) return std::string();
+    if (!impl_->EnsureGlyphCache(page_index)) return std::string();
+    // The same nearest-glyph-to-each-end resolution SelectionQuads does,
+    // so what gets copied is exactly what was drawn as selected.
+    std::vector<int> indices;
+    for (int gi : pdftext::SelectionGlyphRange(impl_->glyph_cache_, ax, ay, bx, by)) indices.push_back(gi);
+    return pdftext::JoinGlyphText(impl_->glyph_cache_, indices);
+}
+
+std::string PdfDoc::PageText(int page_index) const {
+    if (!impl_ || !impl_->EnsureGlyphCache(page_index)) return std::string();
+    // Visual order, not the content stream's: a typeset page routinely
+    // emits its running header and footnotes after the body, and reading
+    // it back in that order gives a reader (or a model being handed the
+    // page as context) the furniture spliced into the middle of a
+    // sentence. PageGlyphRows already sorts this out for the caret.
+    std::vector<int> order;
+    order.reserve(impl_->glyph_cache_.size());
+    for (const pdftext::GlyphRow &r : pdftext::PageGlyphRows(impl_->glyph_cache_))
+        order.insert(order.end(), r.glyphs.begin(), r.glyphs.end());
+    return pdftext::JoinGlyphText(impl_->glyph_cache_, order);
 }
 
 std::vector<PdfAnnotRect> PdfDoc::QuadsToDeviceRects(int page_index, float px_per_pt,

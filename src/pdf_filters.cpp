@@ -1,5 +1,6 @@
 #include "pdf_filters.h"
 
+#include "ccitt_codec.h"
 #include "deflate.h"
 #include "jpeg_codec.h"
 
@@ -317,6 +318,26 @@ bool DCTDecode(const std::string &raw, std::string *out_rgba, int *out_width, in
     return true;
 }
 
+bool CCITTFaxDecode(const std::string &raw, const pdfobj::Object *decode_parms, int rows_fallback,
+                     std::string *out) {
+    ccitt::Params p;
+    p.rows = rows_fallback > 0 ? rows_fallback : 0;
+    if (decode_parms) {
+        if (const pdfobj::Object *k = decode_parms->Find("K")) p.k = static_cast<int>(k->AsInt(0));
+        if (const pdfobj::Object *c = decode_parms->Find("Columns")) p.columns = static_cast<int>(c->AsInt(1728));
+        if (const pdfobj::Object *r = decode_parms->Find("Rows")) {
+            int rows = static_cast<int>(r->AsInt(0));
+            if (rows > 0) p.rows = rows;
+        }
+        if (const pdfobj::Object *b = decode_parms->Find("BlackIs1"))
+            p.black_is_1 = b->type == pdfobj::Type::Bool && b->bool_val;
+        if (const pdfobj::Object *a = decode_parms->Find("EncodedByteAlign"))
+            p.byte_align = a->type == pdfobj::Type::Bool && a->bool_val;
+    }
+    int rows_out = 0;
+    return ccitt::Decode(raw, p, out, &rows_out);
+}
+
 bool DecodeStream(const std::string &raw, const pdfobj::Object *stream_dict, std::string *out) {
     *out = raw;
     if (!stream_dict) return true;
@@ -355,8 +376,14 @@ bool DecodeStream(const std::string &raw, const pdfobj::Object *stream_dict, std
             RunLengthDecode(*out, &stage_out);
         } else if (name == "LZWDecode" || name == "LZW") {
             if (!LZWDecode(*out, dp, &stage_out)) return false;
-        } else if (name == "DCTDecode" || name == "DCT" || name == "CCITTFaxDecode" || name == "CCF" ||
-                   name == "JBIG2Decode" || name == "JPXDecode") {
+        } else if (name == "CCITTFaxDecode" || name == "CCF") {
+            // /Rows is optional; the image's own /Height is the
+            // fallback, and this dict is that image's dict.
+            long long height = 0;
+            if (const pdfobj::Object *h = stream_dict->Find("Height")) height = h->AsInt(0);
+            else if (const pdfobj::Object *h2 = stream_dict->Find("H")) height = h2->AsInt(0);
+            if (!CCITTFaxDecode(*out, dp, static_cast<int>(height), &stage_out)) return false;
+        } else if (name == "DCTDecode" || name == "DCT" || name == "JBIG2Decode" || name == "JPXDecode") {
             return false;  // image-format filters: see this function's own doc comment
         } else {
             stage_out = *out;  // unrecognized filter: tolerate, pass through unchanged

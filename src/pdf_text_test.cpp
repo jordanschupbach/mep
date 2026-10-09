@@ -237,14 +237,21 @@ void CheckRealFixture(const std::string &path) {
 
 }  // namespace
 
+// One glyph. The text defaults to empty for the fixtures that care
+// where a glyph is and not what it says, which is most of them.
+pdftext::GlyphBox Box(double left, double top, double right, double bottom, std::string text = "",
+                       std::string actual_text = "") {
+    return pdftext::GlyphBox{left, top, right, bottom, std::move(text), std::move(actual_text)};
+}
+
 // SelectionRects is a pure function over glyph boxes -- test it directly
 // with a synthetic two-line layout (point space, y-up), no PDF needed.
 void TestSelectionRects() {
     // Line A at y[90,100], glyphs at x = 0,10,20,30 (widths 10). Line B at
     // y[70,80], glyphs at x = 0,10,20.
     std::vector<pdftext::GlyphBox> g = {
-        {0, 100, 10, 90}, {10, 100, 20, 90}, {20, 100, 30, 90}, {30, 100, 40, 90},  // line A: 0..3
-        {0, 80, 10, 70},  {10, 80, 20, 70},  {20, 80, 30, 70},                       // line B: 4..6
+        Box(0, 100, 10, 90), Box(10, 100, 20, 90), Box(20, 100, 30, 90), Box(30, 100, 40, 90),  // line A: 0..3
+        Box(0, 80, 10, 70),  Box(10, 80, 20, 70),  Box(20, 80, 30, 70),                          // line B: 4..6
     };
     // Select within line A only, from glyph 1 to glyph 2 (points inside them).
     auto r1 = pdftext::SelectionRects(g, 12, 95, 25, 95);
@@ -261,6 +268,218 @@ void TestSelectionRects() {
     CHECK(pdftext::SelectionRects({}, 0, 0, 1, 1).empty());
 }
 
+// --- PageGlyphRows: the visual lines a keyboard caret moves between ---
+//
+// Geometry throughout: 10pt text, so glyph boxes are 10 high and the
+// page's own median height is 10; body lines sit 13pt apart (ordinary
+// leading) and run from x=70 to x=430 (the measure).
+
+// Body text in a content stream that emits the running header LAST --
+// the shape that makes a caret following reading order teleport to the
+// top of the page. Rows must come back top to bottom regardless.
+void TestGlyphRowsAreVisualOrderNotReadingOrder() {
+    std::vector<pdftext::GlyphBox> g;
+    // Two body lines, reading order first.
+    for (int i = 0; i < 8; ++i) g.push_back(Box(70.0 + i * 45, 510, 110.0 + i * 45, 500));  // line at y 500
+    for (int i = 0; i < 8; ++i) g.push_back(Box(70.0 + i * 45, 497, 110.0 + i * 45, 487));  // line at y 487
+    // ...then the running header, way up the page.
+    for (int i = 0; i < 8; ++i) g.push_back(Box(70.0 + i * 45, 710, 110.0 + i * 45, 700));  // header at y 700
+    const auto rows = pdftext::PageGlyphRows(g);
+    CHECK(rows.size() == 3);
+    CHECK(rows[0].top == 710);  // header first, because it is topmost
+    CHECK(rows[1].top == 510);
+    CHECK(rows[2].top == 497);
+    CHECK(rows[0].glyphs.front() == 16);  // ...even though it came last in the stream
+    CHECK(rows[1].glyphs.front() == 0);
+    CHECK(rows[2].glyphs.front() == 8);
+    // Every glyph lands in exactly one row.
+    size_t total = 0;
+    for (const auto &r : rows) total += r.glyphs.size();
+    CHECK(total == g.size());
+}
+
+// Two ordinary lines of text do not merge, however close their boxes
+// come: neither is a satellite of the other.
+void TestGlyphRowsKeepAdjacentTextLinesApart() {
+    std::vector<pdftext::GlyphBox> g;
+    for (int i = 0; i < 10; ++i) g.push_back(Box(70.0 + i * 36, 510, 106.0 + i * 36, 500));
+    for (int i = 0; i < 10; ++i) g.push_back(Box(70.0 + i * 36, 497, 106.0 + i * 36, 487));
+    const auto rows = pdftext::PageGlyphRows(g);
+    CHECK(rows.size() == 2);
+    CHECK(rows[0].glyphs.size() == 10 && rows[1].glyphs.size() == 10);
+    CHECK(!rows[0].display_math && !rows[1].display_math);
+}
+
+// A subscript belongs to the line it hangs off, not to a line of its
+// own -- and that line is still ordinary prose, not an equation.
+void TestGlyphRowsFoldSubscriptIntoItsLine() {
+    std::vector<pdftext::GlyphBox> g;
+    for (int i = 0; i < 10; ++i) g.push_back(Box(70.0 + i * 36, 510, 106.0 + i * 36, 500));
+    g.push_back(Box(430, 507, 436, 499));  // a subscript hanging off the end: smaller, baseline 1pt lower
+    for (int i = 0; i < 10; ++i) g.push_back(Box(70.0 + i * 36, 497, 106.0 + i * 36, 487));
+    const auto rows = pdftext::PageGlyphRows(g);
+    CHECK(rows.size() == 2);
+    CHECK(rows[0].glyphs.size() == 11);  // the subscript joined the upper line
+    CHECK(!rows[0].display_math);
+}
+
+// A dedicated equation line: indented, short of the measure, and with
+// glyphs on three baselines (the main one, a summation, and indices
+// under it). That is what gets flagged.
+void TestGlyphRowsFlagDisplayEquation() {
+    std::vector<pdftext::GlyphBox> g;
+    // Body text above and below, establishing the measure and the
+    // page's own text height.
+    for (int line = 0; line < 6; ++line) {
+        const double y = 600.0 - line * 13;
+        for (int i = 0; i < 10; ++i) g.push_back(Box(70.0 + i * 36, y + 10, 106.0 + i * 36, y));
+    }
+    // The equation, indented to x=150 and stopping at x=320.
+    for (int i = 0; i < 8; ++i) g.push_back(Box(150.0 + i * 20, 510, 168.0 + i * 20, 500));   // main baseline
+    g.push_back(Box(200, 512, 212, 498));                                                      // a tall summation
+    g.push_back(Box(202, 499, 210, 491));                                                      // its index, 9pt lower
+    g.push_back(Box(240, 499, 248, 491));                                                      // and another
+    const auto rows = pdftext::PageGlyphRows(g);
+    const pdftext::GlyphRow *eq = nullptr;
+    int flagged = 0;
+    for (const auto &r : rows) {
+        if (!r.display_math) continue;
+        ++flagged;
+        eq = &r;
+    }
+    CHECK(flagged == 1);
+    CHECK(eq != nullptr && eq->glyphs.size() == 11);  // the indices folded in with it
+}
+
+// The same vertical structure, but running margin to margin as prose
+// does: ordinary text with inline maths in it, which the caret must
+// keep. This is the case the measure test exists for.
+void TestGlyphRowsKeepProseWithInlineMath() {
+    std::vector<pdftext::GlyphBox> g;
+    for (int line = 0; line < 6; ++line) {
+        const double y = 600.0 - line * 13;
+        for (int i = 0; i < 10; ++i) g.push_back(Box(70.0 + i * 36, y + 10, 106.0 + i * 36, y));
+    }
+    for (int i = 0; i < 10; ++i) g.push_back(Box(70.0 + i * 36, 510, 106.0 + i * 36, 500));  // full measure
+    g.push_back(Box(200, 512, 212, 498));
+    g.push_back(Box(202, 499, 210, 491));
+    g.push_back(Box(240, 499, 248, 491));
+    const auto rows = pdftext::PageGlyphRows(g);
+    for (const auto &r : rows) CHECK(!r.display_math);
+}
+
+void TestGlyphRowsEmptyInput() { CHECK(pdftext::PageGlyphRows({}).empty()); }
+
+// --- JoinGlyphText: a selection as copyable, quotable text -----------
+//
+// Same 10pt geometry as the row tests above: boxes 10 high, body lines
+// 13pt apart, a word gap anything wider than 2.5pt.
+
+// Builds one line of glyphs left to right, each `w` wide with `gap`
+// between them, so a test says what it means rather than counting
+// coordinates.
+void PushWord(std::vector<pdftext::GlyphBox> &g, const char *text, double x, double y, double w = 5,
+               double gap = 0) {
+    for (const char *c = text; *c; ++c) {
+        // One box per BYTE would split a multi-byte character, so the
+        // caller passes whole pieces instead; this is the ASCII path.
+        g.push_back(Box(x, y + 10, x + w, y, std::string(1, *c), ""));
+        x += w + gap;
+    }
+}
+
+std::vector<int> AllOf(const std::vector<pdftext::GlyphBox> &g) {
+    std::vector<int> idx(g.size());
+    for (size_t i = 0; i < idx.size(); ++i) idx[i] = static_cast<int>(i);
+    return idx;
+}
+
+void TestJoinGlyphTextWordsAndGaps() {
+    std::vector<pdftext::GlyphBox> g;
+    PushWord(g, "one", 0, 500);     // x 0..15
+    PushWord(g, "two", 20, 500);    // 5pt gap -> a word break
+    const std::string out = pdftext::JoinGlyphText(g, AllOf(g));
+    CHECK(out == "one two");
+    // A gap under a quarter of the glyph height is just letter spacing.
+    std::vector<pdftext::GlyphBox> tight;
+    PushWord(tight, "one", 0, 500);
+    PushWord(tight, "two", 17, 500);  // 2pt gap, under 2.5
+    CHECK(pdftext::JoinGlyphText(tight, AllOf(tight)) == "onetwo");
+}
+
+void TestJoinGlyphTextLineBreak() {
+    std::vector<pdftext::GlyphBox> g;
+    PushWord(g, "one", 0, 500);
+    PushWord(g, "two", 0, 487);  // next line down
+    CHECK(pdftext::JoinGlyphText(g, AllOf(g)) == "one\ntwo");
+}
+
+// A word broken over a line end is put back together -- the single
+// biggest difference between a quotable passage and raw extraction.
+void TestJoinGlyphTextRejoinsHyphenatedWord() {
+    std::vector<pdftext::GlyphBox> g;
+    PushWord(g, "dia-", 0, 500);
+    PushWord(g, "gram", 0, 487);
+    CHECK(pdftext::JoinGlyphText(g, AllOf(g)) == "diagram");
+    // A real hyphenated compound keeps its hyphen: the next line starts
+    // upper-case, so it was not a break mid-word.
+    std::vector<pdftext::GlyphBox> compound;
+    PushWord(compound, "Anglo-", 0, 500);
+    PushWord(compound, "Saxon", 0, 487);
+    CHECK(pdftext::JoinGlyphText(compound, AllOf(compound)) == "Anglo-\nSaxon");
+}
+
+void TestJoinGlyphTextExpandsLigatures() {
+    CHECK(pdftext::ExpandLigatures("signi\xEF\xAC\x81" "es") == "signifies");
+    CHECK(pdftext::ExpandLigatures("su\xEF\xAC\x83" "cient") == "sufficient");
+    CHECK(pdftext::ExpandLigatures("plain") == "plain");
+    std::vector<pdftext::GlyphBox> g;
+    g.push_back(Box(0, 510, 5, 500, "\xEF\xAC\x81", ""));  // a single "fi" glyph
+    g.push_back(Box(5, 510, 10, 500, "n", ""));
+    CHECK(pdftext::JoinGlyphText(g, AllOf(g)) == "fin");
+}
+
+// /ActualText replaces the glyphs of its whole sequence, once -- every
+// glyph in the run carries the same string.
+void TestJoinGlyphTextActualTextReadOnce() {
+    std::vector<pdftext::GlyphBox> g;
+    g.push_back(Box(0, 510, 5, 500, "1", "one half"));
+    g.push_back(Box(5, 510, 10, 500, "/", "one half"));
+    g.push_back(Box(10, 510, 15, 500, "2", "one half"));
+    CHECK(pdftext::JoinGlyphText(g, AllOf(g)) == "one half");
+}
+
+// Only the glyphs asked for, in the order asked for: a visual selection
+// hands over row-ordered indices that need not be contiguous.
+void TestJoinGlyphTextHonoursIndices() {
+    std::vector<pdftext::GlyphBox> g;
+    PushWord(g, "abc", 0, 500);
+    CHECK(pdftext::JoinGlyphText(g, {1, 2}) == "bc");
+    CHECK(pdftext::JoinGlyphText(g, {}).empty());
+    // Out-of-range indices are skipped, not read past the end.
+    CHECK(pdftext::JoinGlyphText(g, {-1, 0, 99}) == "a");
+}
+
+void TestEndsWithLetterHyphen() {
+    CHECK(pdftext::EndsWithLetterHyphen("dia-"));
+    CHECK(!pdftext::EndsWithLetterHyphen("dia"));
+    CHECK(!pdftext::EndsWithLetterHyphen("-"));
+    CHECK(!pdftext::EndsWithLetterHyphen(""));
+    CHECK(!pdftext::EndsWithLetterHyphen("2-"));  // a number, not a broken word
+}
+
+// SelectionGlyphRange is what both the drawn quads and the copied text
+// are built from, so they can never disagree about what is selected.
+void TestSelectionGlyphRangeMatchesRects() {
+    std::vector<pdftext::GlyphBox> g;
+    PushWord(g, "abcd", 0, 500, 10);
+    const auto range = pdftext::SelectionGlyphRange(g, 12, 505, 35, 505);
+    CHECK(range.size() == 3);
+    CHECK(range.front() == 1 && range.back() == 3);
+    CHECK(pdftext::JoinGlyphText(g, range) == "bcd");
+    CHECK(pdftext::SelectionGlyphRange({}, 0, 0, 1, 1).empty());
+}
+
 int main(int argc, char **argv) {
     TestSearchFindsWordCaseInsensitively();
     TestSearchMultiWordQuerySpansWordGap();
@@ -270,6 +489,20 @@ int main(int argc, char **argv) {
     TestMatchRectsForPageScalesWithPxPerPt();
     TestExtractPageTextContainsShownWords();
     TestSelectionRects();
+    TestGlyphRowsAreVisualOrderNotReadingOrder();
+    TestGlyphRowsKeepAdjacentTextLinesApart();
+    TestGlyphRowsFoldSubscriptIntoItsLine();
+    TestGlyphRowsFlagDisplayEquation();
+    TestGlyphRowsKeepProseWithInlineMath();
+    TestGlyphRowsEmptyInput();
+    TestJoinGlyphTextWordsAndGaps();
+    TestJoinGlyphTextLineBreak();
+    TestJoinGlyphTextRejoinsHyphenatedWord();
+    TestJoinGlyphTextExpandsLigatures();
+    TestJoinGlyphTextActualTextReadOnce();
+    TestJoinGlyphTextHonoursIndices();
+    TestEndsWithLetterHyphen();
+    TestSelectionGlyphRangeMatchesRects();
     std::printf("pdf_text_test: all checks passed\n");
 
     for (int i = 1; i < argc; ++i) CheckRealFixture(argv[i]);

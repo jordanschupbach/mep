@@ -18,6 +18,7 @@
 
 #include "pdf_filters.h"
 
+#include "deflate.h"
 #include "jpeg_codec.h"
 
 #include <cstdio>
@@ -175,6 +176,83 @@ void TestDCTDecode() {
     CHECK(!pdffilter::DCTDecode("not a jpeg", &rgba, &out_w, &out_h));
 }
 
+// A PDF stream object's own /Length routinely counts the EOL byte that
+// separates the data from `endstream`, so the raw bytes handed to
+// FlateDecode are one or two longer than the zlib stream itself.
+// InflateZlib used to read its Adler-32 from the last four bytes of
+// whatever buffer it was given, which that stray byte shifts out from
+// under it -- the data inflated perfectly and was then thrown away as
+// corrupt. (Real-world: every /FlateDecode figure in the last chapter
+// of the Causality.pdf fixture.)
+void TestFlateDecodeToleratesTrailingBytes() {
+    const std::string payload(5000, 'q');
+    const std::string zlib = deflate::DeflateZlib(
+        reinterpret_cast<const unsigned char *>(payload.data()), payload.size());
+    std::string out;
+    CHECK(pdffilter::FlateDecode(zlib, nullptr, &out));
+    CHECK(out == payload);
+    for (const char *tail : {"\r", "\n", "\r\n", "   "}) {
+        CHECK(pdffilter::FlateDecode(zlib + tail, nullptr, &out));
+        CHECK(out == payload);
+    }
+    // A trailer that is actually wrong is still a failure, not
+    // something to wave through.
+    std::string corrupt = zlib;
+    corrupt[corrupt.size() - 1] = static_cast<char>(corrupt.back() ^ 0xFF);
+    CHECK(!pdffilter::FlateDecode(corrupt, nullptr, &out));
+    // A stream cut off before its trailer keeps what inflated.
+    CHECK(pdffilter::FlateDecode(zlib.substr(0, zlib.size() - 4), nullptr, &out));
+    CHECK(out == payload);
+}
+
+// CCITTFaxDecode decodes in the chain like any other byte-producing
+// filter (ccitt_codec_test.cpp covers the codec itself against
+// libtiff; this is about DecodeStream routing to it at all, and
+// reading its /DecodeParms). "10011" is the white terminating code for
+// a run of 8, so one byte of input is one all-white 8x1 row.
+void TestCCITTFaxDecodeInChain() {
+    pdfobj::Object dict;
+    dict.type = pdfobj::Type::Dict;
+    pdfobj::Object filter;
+    filter.type = pdfobj::Type::Name;
+    filter.str_val = "CCITTFaxDecode";
+    dict.dict_val["Filter"] = filter;
+    dict.dict_val["DecodeParms"] = MakeIntDict({{"K", 0}, {"Columns", 8}, {"Rows", 1}});
+    std::string out;
+    CHECK(pdffilter::DecodeStream(std::string("\x98", 1), &dict, &out));
+    CHECK(out.size() == 1);
+    CHECK(static_cast<unsigned char>(out[0]) == 0xFF);
+
+    // Four white then four black: "1011" + "011".
+    std::string out2;
+    CHECK(pdffilter::DecodeStream(std::string("\xB6", 1), &dict, &out2));
+    CHECK(out2.size() == 1);
+    CHECK(static_cast<unsigned char>(out2[0]) == 0xF0);
+
+    // /Rows absent: the image's own /Height stands in for it.
+    pdfobj::Object dict2;
+    dict2.type = pdfobj::Type::Dict;
+    dict2.dict_val["Filter"] = filter;
+    dict2.dict_val["DecodeParms"] = MakeIntDict({{"K", 0}, {"Columns", 8}});
+    pdfobj::Object height;
+    height.type = pdfobj::Type::Int;
+    height.int_val = 2;
+    dict2.dict_val["Height"] = height;
+    std::string out3;
+    CHECK(pdffilter::DecodeStream(std::string("\x98\x98", 2), &dict2, &out3));
+    CHECK(out3.size() == 2);  // two rows, one byte each
+
+    // JPX is still refused outright rather than passed through.
+    pdfobj::Object jpx;
+    jpx.type = pdfobj::Type::Dict;
+    pdfobj::Object jpxname;
+    jpxname.type = pdfobj::Type::Name;
+    jpxname.str_val = "JPXDecode";
+    jpx.dict_val["Filter"] = jpxname;
+    std::string ignored;
+    CHECK(!pdffilter::DecodeStream("jpeg2000 bytes", &jpx, &ignored));
+}
+
 void TestDecodeStreamChain() {
     // Single filter, Name form (not array).
     {
@@ -250,6 +328,8 @@ int main() {
     TestLZWDecodeNoPredictor();
     TestLZWDecodeWithTiffPredictor();
     TestDCTDecode();
+    TestFlateDecodeToleratesTrailingBytes();
+    TestCCITTFaxDecodeInChain();
     TestDecodeStreamChain();
     std::printf("pdf_filters_test: all checks passed\n");
     return 0;

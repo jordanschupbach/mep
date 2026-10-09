@@ -5826,12 +5826,53 @@ const char *kBuiltinGit =
     "local function mep_git_fail_text(code, out, err)\n"
     "  return err[#err] or out[#out] or ('exit ' .. tostring(code))\n"
     "end\n"
+    // THE "I PULLED AND MY CHANGES VANISHED" FIX, HALF ONE.
+    //
+    // mep watches no files -- there is no inotify/kqueue/FSEvents anywhere
+    // in this codebase (see DiskStamp in editor.h) -- so a git command
+    // finishing is the ONLY moment anything in mep knows the working tree
+    // just changed under its open buffers. Before this, a `git pull` here
+    // refreshed the diff gutter and this sidebar and nothing else: the pane
+    // kept showing pre-pull text ("the changes never appeared"), and the
+    // next save wrote that text back over the pulled file ("they were there,
+    // then they were gone") while `git pull` went on reporting "Already up
+    // to date", because HEAD really had moved and only the working tree was
+    // reverted. That cost real work across two machines before it was
+    // recognised as a bug at all rather than a forgotten push.
+    //
+    // Called after EVERY action, not just the obviously destructive ones:
+    // reload_changed_buffers is one stat per open buffer and reloads only
+    // where a file's mtime/size actually moved, so `git add` reloads
+    // nothing and there is no list of "commands that touch the tree" to
+    // keep correct -- which matters because that list is wider than it
+    // looks (pull, checkout, stash apply/pop, `checkout HEAD -- file`,
+    // reset --hard, and any commit with a formatting hook).
+    "local function mep_git_sync_buffers()\n"
+    "  local reloaded, conflicts = mep.reload_changed_buffers(mep_git_root())\n"
+    // Loud, separate, and a warning rather than part of the success line:
+    // each of these is a buffer whose next save WOULD have been the data
+    // loss above. Nothing has been lost and nothing was touched -- the
+    // buffer keeps its edits, the file keeps the pulled bytes, and only the
+    // user can say which wins, so say so in the terms that resolve it.
+    "  if #conflicts > 0 then\n"
+    "    mep.notify('Changed on disk, but has unsaved edits: ' .. table.concat(conflicts, ', ') ..\n"
+    "      ' -- :e! takes the file, :w! keeps the buffer', 'warn')\n"
+    "  end\n"
+    "  if reloaded > 0 then\n"
+    "    return ', ' .. reloaded .. ' buffer' .. ((reloaded == 1) and '' or 's') .. ' reloaded'\n"
+    "  end\n"
+    "  return ''\n"
+    "end\n"
     "local function mep_git_action(argv, label, after)\n"
     "  mep.notify(label .. '...')\n"
     "  mep_git_run(argv, function(code, out, err)\n"
     "    if code == 0 then\n"
-    "      mep.notify(label .. ': done')\n"
+    "      mep.notify(label .. ': done' .. mep_git_sync_buffers())\n"
     "    else\n"
+    // A failed action can still have moved files (a pull that updated some
+    // paths then hit a conflict, a partially-applied stash), so the sync
+    // runs on both paths -- just without appending to an error message.
+    "      mep_git_sync_buffers()\n"
     "      mep.notify(label .. ' failed: ' .. mep_git_fail_text(code, out, err), 'error')\n"
     "    end\n"
     "    if after then after(code, out, err) end\n"
@@ -28641,7 +28682,7 @@ const char *kBuiltinAi =
     "mep.ai_model = 'gpt-4o-mini'\n"
     "mep.ai_base_url = 'https://api.openai.com/v1'\n"
     "mep.ai_anthropic_base_url = 'https://api.anthropic.com'\n"
-    "mep.ai_anthropic_model = 'claude-3-5-sonnet-latest'\n"
+    "mep.ai_anthropic_model = 'claude-opus-5'\n"
     "mep.ai_api_key = nil\n"
     "mep.ai_max_tokens = 2048\n"
     "local mep_ai_active_job = nil\n"
@@ -28656,11 +28697,32 @@ const char *kBuiltinAi =
     // fallback prompt passes opts.masked so the key is never shown in the
     // clear while being typed (main.cpp's DrawPromptOverlay renders '*'
     // in its place; the real text still reaches `cb` below unmasked).
+    // mep.ai_api_key_cmd = {'pass', 'show', 'anthropic/api'} -- a command
+    // that prints the key on its first line. The point is that the key
+    // then lives wherever you already keep secrets (pass, gopass, age,
+    // sops, a 0600 file) instead of in the environment, where every
+    // terminal pane, language server and job mep spawns inherits it, or
+    // in init.lua, where it is plain text in a directory people sync.
+    // Run once per session and cached in mep.ai_api_key like any other
+    // source. Tried after the environment, so a one-off
+    // `ANTHROPIC_API_KEY=... mep` still wins.
     "local function mep_ai_get_key(cb)\n"
     "  if mep.ai_api_key then cb(mep.ai_api_key) return end\n"
     "  local env_var = mep.ai_provider == 'anthropic' and 'ANTHROPIC_API_KEY' or 'OPENAI_API_KEY'\n"
     "  local v = os.getenv(env_var)\n"
     "  if v and v ~= '' then mep.ai_api_key = v cb(v) return end\n"
+    "  if mep.ai_api_key_cmd then\n"
+    "    local first = nil\n"
+    "    mep.job_start(mep.ai_api_key_cmd, {\n"
+    "      on_stdout = function(line) if first == nil then first = line end end,\n"
+    "      on_exit = function(code)\n"
+    "        local key = (first or ''):gsub('%s+$', '')\n"
+    "        if code == 0 and key ~= '' then mep.ai_api_key = key cb(key)\n"
+    "        else mep.notify('ai_api_key_cmd produced no key (exit ' .. tostring(code) .. ')', 'error') end\n"
+    "      end,\n"
+    "    })\n"
+    "    return\n"
+    "  end\n"
     "  mep.ui_input('API key (' .. env_var .. ' not set):', '', function(key)\n"
     "    if key and key ~= '' then mep.ai_api_key = key cb(key) end\n"
     "  end, {masked = true})\n"
@@ -28697,6 +28759,18 @@ const char *kBuiltinAi =
     // Streams a chat turn. on_delta(text) fires per streamed chunk;
     // on_done(tool_calls) fires once, with an array of {id,name,args}
     // (empty if the model didn't call a tool).
+    // Only the fields the API itself defines go in the body: the
+    // messages array doubles as mep's own conversation store, and a
+    // caller hanging anything else off an entry (mep.ai_agent_messages
+    // carries a `display` for the transcript) would otherwise have it
+    // POSTed and rejected as an unrecognized argument.
+    "local function mep_ai_wire_messages(messages)\n"
+    "  local out = {}\n"
+    "  for i, m in ipairs(messages) do\n"
+    "    out[i] = {role = m.role, content = m.content, tool_calls = m.tool_calls, tool_call_id = m.tool_call_id}\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
     "local function mep_ai_request(messages, tools, on_delta, on_done)\n"
     "  mep_ai_get_key(function(key)\n"
     "    local url, headers, body\n"
@@ -28708,7 +28782,7 @@ const char *kBuiltinAi =
     "    else\n"
     "      url = mep.ai_base_url .. '/chat/completions'\n"
     "      headers = {'-H', 'Authorization: Bearer ' .. key, '-H', 'Content-Type: application/json'}\n"
-    "      body = {model = mep.ai_model, stream = true, messages = messages}\n"
+    "      body = {model = mep.ai_model, stream = true, messages = mep_ai_wire_messages(messages)}\n"
     "      if tools then body.tools = tools end\n"
     "    end\n"
     "    local tmpfile = os.tmpname()\n"
@@ -28728,7 +28802,11 @@ const char *kBuiltinAi =
     "        local obj = mep_ai_json_decode(payload)\n"
     "        if not obj then return end\n"
     "        if mep.ai_provider == 'anthropic' then\n"
-    "          if obj.delta and obj.delta.text then on_delta(obj.delta.text) end\n"
+    // Matched on the delta's own type, not merely on having a `text`
+    // field: a current model streams thinking, citation and signature
+    // deltas through the same content_block_delta frame, and only
+    // text_delta is the answer.
+    "          if obj.delta and obj.delta.type == 'text_delta' and obj.delta.text then on_delta(obj.delta.text) end\n"
     // Anthropic tool-use streams a content_block_start naming the tool
     // (id/name, empty input) at the block's index, then zero or more
     // content_block_delta{delta.type='input_json_delta'} frames whose
@@ -28770,6 +28848,10 @@ const char *kBuiltinAi =
     "    })\n"
     "  end)\n"
     "end\n"
+    // Exported so another builtin chunk can make a request of its own
+    // without reimplementing the SSE/curl plumbing -- kBuiltinPdfAi
+    // streams a short answer into a float_preview box with it.
+    "mep.ai_request = mep_ai_request\n"
     "function mep.ai_cancel()\n"
     "  if mep_ai_active_job then mep.job_kill(mep_ai_active_job) mep_ai_active_job = nil mep.participant_clear('ai-stream') mep.notify('AI stream cancelled') end\n"
     "end\n"
@@ -29336,13 +29418,30 @@ const char *kBuiltinAi =
     // Anthropic branch (mep_ai_to_anthropic_messages) converts the shared
     // tool-call/tool-result history into Anthropic's content-block shape
     // so the recursive turn loop below works unmodified either way.
+    // mep's UI font has no glyph for the typographic punctuation a model
+    // writes by habit -- an em dash, curly quotes, an ellipsis -- and
+    // draws each as a bare '?'. Everything that puts a reply on screen
+    // folds them to their ASCII spellings first, so "not an absolute
+    // law -- graphs tell you" does not reach the reader as "law?graphs".
+    // Display only: what was sent to the model is untouched.
+    "local mep_ai_ascii = {\n"
+    "  ['\\226\\128\\148'] = ' -- ', ['\\226\\128\\147'] = '-',\n"
+    "  ['\\226\\128\\152'] = \"'\", ['\\226\\128\\153'] = \"'\",\n"
+    "  ['\\226\\128\\156'] = '\\\"', ['\\226\\128\\157'] = '\\\"',\n"
+    "  ['\\226\\128\\166'] = '...', ['\\226\\136\\146'] = '-',\n"
+    "  ['\\194\\183'] = '-', ['\\194\\160'] = ' ',\n"
+    "}\n"
+    "function mep.ai_plain_text(text)\n"
+    "  for seq, ascii in pairs(mep_ai_ascii) do text = text:gsub(seq, ascii) end\n"
+    "  return text\n"
+    "end\n"
     "mep.ai_agent_messages = {}\n"
     "local mep_ai_agent_sidebar_id = nil\n"
     "local function mep_ai_agent_render()\n"
     "  local widgets = {}\n"
     "  for _, m in ipairs(mep.ai_agent_messages) do\n"
     "    local prefix = m.role == 'user' and '> ' or (m.role == 'tool' and '[tool] ' or '')\n"
-    "    for line in ((m.content or '') .. '\\n'):gmatch('(.-)\\n') do\n"
+    "    for line in (mep.ai_plain_text(m.display or m.content or '') .. '\\n'):gmatch('(.-)\\n') do\n"
     "      widgets[#widgets + 1] = {id = tostring(#widgets), text = prefix .. line}\n"
     "    end\n"
     "  end\n"
@@ -29350,6 +29449,10 @@ const char *kBuiltinAi =
     "  mep.sidebar_set_sections(mep_ai_agent_sidebar_id, {{id = 'agent', title = '', collapsed = false, widgets = widgets}})\n"
     "  mep.sidebar_open(mep_ai_agent_sidebar_id)\n"
     "end\n"
+    // Exported so another builtin chunk can put the transcript on screen
+    // without starting a turn -- kBuiltinPdfAi promotes a popup answer
+    // into this panel and wants it visible before the follow-up prompt.
+    "mep.ai_agent_render = mep_ai_agent_render\n"
     "local function mep_ai_openai_tools_schema()\n"
     "  local out = {}\n"
     "  for _, t in ipairs(mep.ai_tools) do\n"
@@ -30343,6 +30446,203 @@ const char *kBuiltinPaneZoom =
 // pane pushed to the bottom and turn *that* one into the terminal, which
 // leaves the human's file exactly where it was, on top, and the terminal
 // focused underneath (Mode::Terminal, so typing goes straight to Claude).
+const char *kBuiltinPdfAi =
+    // A passage out of a PDF, put to a model. Two surfaces for two kinds of
+    // question: a popup that answers a "what does this mean" without being
+    // asked anything first and then gets out of the way, and the AI Agent
+    // sidebar for an actual back-and-forth. The popup can hand over to the
+    // sidebar when its short answer was not enough, which is the whole
+    // reason the two are one feature rather than two.
+    //
+    // The model client itself is kBuiltinAi's (mep.ai_request, and
+    // mep.ai_agent_messages/ai_agent_turn for the sidebar); nothing here
+    // speaks HTTP.
+    "mep.pdf_ask_prompt =\n"
+    "  'Keep this short and concise. Explain this concept in simpler terms, or define it. ' ..\n"
+    "  'Answer in at most 6 short lines of plain prose: no preamble, no restating the question, ' ..\n"
+    "  'no headings and no bullet lists.'\n"
+    // A selection shorter than this is quoted with the rest of its page as
+    // background. A lone equation or a bare term otherwise gives the model
+    // almost nothing to go on.
+    "mep.pdf_ask_context_under = 200\n"
+    // The popup box neither wraps nor scrolls, so the answer is wrapped here.
+    "mep.pdf_ask_wrap = 72\n"
+    "local mep_pdf_ai_last = nil\n"
+    "local function mep_pdf_ai_wrap(text, width)\n"
+    "  local out = {}\n"
+    "  for line in (text .. '\\n'):gmatch('(.-)\\n') do\n"
+    "    local cur = ''\n"
+    "    for word in line:gmatch('%S+') do\n"
+    "      if cur == '' then\n"
+    "        cur = word\n"
+    "      elseif #cur + 1 + #word <= width then\n"
+    "        cur = cur .. ' ' .. word\n"
+    "      else\n"
+    "        out[#out + 1] = cur\n"
+    "        cur = word\n"
+    "      end\n"
+    "    end\n"
+    "    out[#out + 1] = cur\n"
+    "  end\n"
+    "  return table.concat(out, '\\n')\n"
+    "end\n"
+    // The passage as the model meets it: quoted, told where it came from,
+    // and for a short one the rest of the page behind it.
+    "local function mep_pdf_ai_passage(passage, where)\n"
+    "  local s = 'From ' .. ((where and where ~= '') and where or 'a PDF') .. ':\\n\"\"\"\\n' .. passage .. '\\n\"\"\"'\n"
+    "  if #passage < (mep.pdf_ask_context_under or 0) then\n"
+    "    local ok, page = pcall(mep.pdf_page_text)\n"
+    "    if ok and page and page ~= '' then\n"
+    "      s = s .. '\\n\\nThe rest of that page, as background only -- explain the passage above, not this:\\n\"\"\"\\n' ..\n"
+    "          page .. '\\n\"\"\"'\n"
+    "    end\n"
+    "  end\n"
+    "  return s\n"
+    "end\n"
+    // What the transcript shows for a passage, as opposed to what the model
+    // is sent: the passage itself and the question, without the page of
+    // background or the wording that only exists to keep a popup short.
+    "local function mep_pdf_ai_shown(passage, where, question)\n"
+    "  local p = passage\n"
+    "  if #p > 600 then p = p:sub(1, 600) .. '...' end\n"
+    "  return 'From ' .. ((where and where ~= '') and where or 'a PDF') .. ':\\n' .. p .. '\\n\\n' .. question\n"
+    "end\n"
+    // Moves the popup exchange into the AI Agent sidebar and leaves the
+    // cursor in a follow-up prompt. Appends rather than replacing: a
+    // :MepAiAgent conversation already in progress is not ours to discard.
+    "function mep_pdf_ai_promote()\n"
+    "  local l = mep_pdf_ai_last\n"
+    "  if not l then return end\n"
+    "  mep.ai_cancel()\n"
+    "  local msgs = mep.ai_agent_messages\n"
+    "  msgs[#msgs + 1] = {role = 'user', content = l.quoted .. '\\n\\n' .. l.question,\n"
+    "                     display = mep_pdf_ai_shown(l.passage, l.where, 'Explain this.')}\n"
+    "  if l.answer ~= '' then msgs[#msgs + 1] = {role = 'assistant', content = l.answer} end\n"
+    "  mep.ai_agent_render()\n"
+    "  mep.ai_agent_prompt()\n"
+    "end\n"
+    "function mep_pdf_ai_popup(passage, where)\n"
+    "  if passage == nil or passage == '' then return end\n"
+    "  local quoted = mep_pdf_ai_passage(passage, where)\n"
+    "  local title = (where and where ~= '') and where or 'PDF'\n"
+    "  local answer = ''\n"
+    "  local opened = false\n"
+    "  mep_pdf_ai_last = {quoted = quoted, question = mep.pdf_ask_prompt, answer = '',\n"
+    "                     passage = passage, where = where}\n"
+    "  mep.notify('Asking about ' .. title .. '...')\n"
+    "  mep.ai_request({{role = 'user', content = mep.pdf_ask_prompt .. '\\n\\n' .. quoted}}, nil,\n"
+    "    function(delta)\n"
+    "      answer = answer .. delta\n"
+    "      mep_pdf_ai_last.answer = answer\n"
+          // The box opens on the first chunk rather than up front, because
+          // mep.ai_request may stop to ask for an API key first and a prompt
+          // overlay opened over a preview box strands it: the editor keeps
+          // one saved-mode slot, so the preview would end up restoring into
+          // itself and never close. By the first chunk any such prompt is
+          // long gone.
+    "      if not opened then\n"
+    "        opened = true\n"
+    "        mep.float_preview(title, '',\n"
+    "          {action_key = 'o', action_hint = 'discuss in the sidebar', on_action = mep_pdf_ai_promote})\n"
+    "      end\n"
+    "      mep.float_preview_set_text(mep_pdf_ai_wrap(mep.ai_plain_text(answer), mep.pdf_ask_wrap or 72))\n"
+    "    end,\n"
+    "    function()\n"
+    "      if answer == '' then mep.notify('No answer from the model', 'warn') end\n"
+    "    end)\n"
+    "end\n"
+    "function mep_pdf_ai_discuss(passage, where)\n"
+    "  if passage == nil or passage == '' then return end\n"
+    "  local quoted = mep_pdf_ai_passage(passage, where)\n"
+    "  mep.ui_input('Ask about this passage:', '', function(text)\n"
+    "    if text == nil then return end\n"
+    "    if text == '' then text = 'Explain this.' end\n"
+    "    local msgs = mep.ai_agent_messages\n"
+    "    msgs[#msgs + 1] = {role = 'user', content = quoted .. '\\n\\n' .. text,\n"
+    "                       display = mep_pdf_ai_shown(passage, where, text)}\n"
+    "    mep.ai_agent_render()\n"
+    "    mep.ai_agent_turn()\n"
+    "  end)\n"
+    "end\n"
+    // The third route, and the only one that needs no API key at all: hand
+    // the passage to Claude Code running in a pane, which authenticates on
+    // its own. The reply is the agent's, in its own TUI, so there is nothing
+    // to stream back here -- this only types the question in.
+    //
+    // A terminal is fed one line: Claude Code's prompt treats a newline as
+    // submit, so a passage pasted with its line breaks would send the first
+    // line and leave the rest behind.
+    "local function mep_pdf_ai_one_line(s)\n"
+    "  return (s:gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', ''))\n"
+    "end\n"
+    // Writes queued for a terminal that is still starting up. One frame hook
+    // drains them, registered once -- mep.on_frame has no unregister, so a
+    // hook per send would pile up dead closures.
+    "local mep_pdf_ai_pending = {}\n"
+    "mep.on_frame(function()\n"
+    "  if #mep_pdf_ai_pending == 0 then return end\n"
+    "  local waiting = {}\n"
+    "  for _, w in ipairs(mep_pdf_ai_pending) do\n"
+    "    if mep.now() >= w.at then mep.terminal_write(w.buf, w.text) else waiting[#waiting + 1] = w end\n"
+    "  end\n"
+    "  mep_pdf_ai_pending = waiting\n"
+    "end)\n"
+    "local function mep_pdf_ai_live_claude_terminal()\n"
+    "  for buf in pairs(mep.ai_terminals or {}) do\n"
+    "    if mep.is_terminal_buffer(buf) then return buf end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "function mep_pdf_ai_claude(passage, where)\n"
+    "  if passage == nil or passage == '' then return end\n"
+    "  local text = mep_pdf_ai_one_line(\n"
+    "    'From ' .. ((where and where ~= '') and where or 'a PDF') .. ': \"' .. passage .. '\"  -- explain this') .. '\\r'\n"
+    "  local buf = mep_pdf_ai_live_claude_terminal()\n"
+    "  if buf then\n"
+    "    mep.terminal_write(buf, text)\n"
+    "    mep.jump_to_buffer(buf)\n"
+    "    return\n"
+    "  end\n"
+    "  mep.ai_terminal_open()\n"
+    "  local opened = mep.current_buffer()\n"
+    "  if mep.is_terminal_buffer(opened) then\n"
+        // Claude Code is not listening the instant its pane exists; give it
+        // a moment rather than typing into a shell that has not started.
+    "    mep_pdf_ai_pending[#mep_pdf_ai_pending + 1] = {buf = opened, text = text, at = mep.now() + 3.0}\n"
+    "    mep.notify('Starting Claude Code; sending the passage when it is ready')\n"
+    "  end\n"
+    "end\n"
+    // Ex-commands for the same three things, so they are reachable by
+    // name and from a plain PDF pane after a mouse drag, without entering
+    // annotate mode first.
+    "local function mep_pdf_ai_selection()\n"
+    "  local ok, sel = pcall(mep.pdf_selection)\n"
+    "  if not ok or not sel then\n"
+    "    mep.notify('Nothing selected (v to select, or drag)', 'warn')\n"
+    "    return nil\n"
+    "  end\n"
+    "  local file = sel.file or ''\n"
+    "  file = file:match('([^/]+)$') or file\n"
+    "  local where = file\n"
+    "  if sel.page and sel.page > 0 then\n"
+    "    where = (where ~= '' and (where .. ', ') or '') .. 'page ' .. tostring(sel.page)\n"
+    "  end\n"
+    "  return sel.text, where\n"
+    "end\n"
+    "mep.command('MepPdfYank', function() mep.pdf_yank() end)\n"
+    "mep.command('MepPdfAsk', function()\n"
+    "  local text, where = mep_pdf_ai_selection()\n"
+    "  if text then mep_pdf_ai_popup(text, where) end\n"
+    "end)\n"
+    "mep.command('MepPdfDiscuss', function()\n"
+    "  local text, where = mep_pdf_ai_selection()\n"
+    "  if text then mep_pdf_ai_discuss(text, where) end\n"
+    "end)\n"
+    "mep.command('MepPdfClaude', function()\n"
+    "  local text, where = mep_pdf_ai_selection()\n"
+    "  if text then mep_pdf_ai_claude(text, where) end\n"
+    "end)\n";
+
 const char *kBuiltinAiTerminal =
     "mep.opt = mep.opt or {}\n"
     "mep.opt.ai_terminal_cmd = mep.opt.ai_terminal_cmd or {'claude'}\n"
@@ -33336,6 +33636,52 @@ const char *kBuiltinPickerSources =
     "      local id = tonumber(item)\n"
     "      local name = names[id] or ''\n"
     "      local function save() if not mep.buffer_save(id) then mep.notify('Could not save ' .. name, 'error') end end\n"
+    // THE "I PULLED AND MY CHANGES VANISHED" FIX, HALF TWO.
+    //
+    // This prompt is where the reported loss actually happened: the file
+    // had been rewritten by a `git pull` while this buffer held pre-pull
+    // text, quitting asked the ordinary "Save main.py?", the answer was
+    // yes, and the pulled version was truncated away. A plain Save is the
+    // wrong thing to offer when the file on disk is no longer the file this
+    // buffer was read from, because the two options are not "save or lose
+    // my edits" any more -- they are "lose my edits" or "lose what arrived
+    // in the file", and only the user can pick. So say that, in those
+    // terms, and make the choice explicit instead of hiding it behind the
+    // word "Save". (The row preview is already a diff against the file on
+    // disk, so what would be overwritten is on screen while this is asked.)
+    //
+    // Without this branch the SaveBuffer guard would simply refuse here and
+    // this picker would re-list the buffer and ask again, forever, with Esc
+    // (cancel the quit) the only way out -- correct about the data, useless
+    // as an interface.
+    "      if mep.buffer_changed_on_disk(id) then\n"
+    "        mep.ui_select({'k  Keep the file (discard the edits in this buffer)',\n"
+    "                       'o  Overwrite the file with this buffer'},\n"
+    "          name .. ' changed on disk since mep read it', function(idx)\n"
+    // The fallback matters: every branch out of this prompt MUST leave the
+    // buffer resolved, or `open()` re-lists it and asks again forever with
+    // Esc (cancel the quit) the only way out. Discarding the buffer is the
+    // same outcome as reloading it for quitting purposes -- the file keeps
+    // what is on disk either way.
+    "          if idx == 1 then\n"
+    "            if not mep.buffer_reload(id, true) then mep.buffer_delete(id, true) end\n"
+    "          elseif idx == 2 then\n"
+    "            if not mep.buffer_save(id, true) then mep.notify('Could not save ' .. name, 'error') end\n"
+    "          end\n"
+    "          open()\n"
+    "        end, {on_key = function(key)\n"
+    "          if key == 'k' or key == 'K' then\n"
+    "            if not mep.buffer_reload(id, true) then mep.buffer_delete(id, true) end\n"
+    "            open() return true\n"
+    "          end\n"
+    "          if key == 'o' or key == 'O' then\n"
+    "            if not mep.buffer_save(id, true) then mep.notify('Could not save ' .. name, 'error') end\n"
+    "            open() return true\n"
+    "          end\n"
+    "          return false\n"
+    "        end})\n"
+    "        return\n"
+    "      end\n"
     "      mep.ui_select({'y  Save', 'n  Discard changes'}, 'Save \"' .. name .. '\"?', function(idx)\n"
     "        if idx == 1 then save() elseif idx == 2 then mep.buffer_delete(id, true) end\n"
     "        open()\n"
@@ -34427,7 +34773,13 @@ void DrawPreviewOverlay() {
         else if (!line.empty() && line[0] == '-') color = ResolveHlGroup("Red");
         gfx::DrawTextEx(g_font, line.c_str(), gfx::Vector2{f.content_x, y}, font_size, 0, color);
     }
-    std::string hint = "Press any key to close";
+    // A box with an action key says so: that key is the whole point of
+    // the box when it has one (a short answer you can reopen as a
+    // discussion), and nothing else would advertise it.
+    std::string hint = g_editor.PreviewActionHint().empty()
+                           ? std::string("Press any key to close")
+                           : std::string(1, static_cast<char>(g_editor.PreviewActionKey())) + "  " +
+                                 g_editor.PreviewActionHint() + "    any other key closes";
     float hint_w = gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x;
     gfx::DrawTextEx(g_font, hint.c_str(),
                gfx::Vector2{static_cast<float>(f.box_x + f.box_w) - hint_w - 14,
@@ -48346,7 +48698,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // chip on the status line says PDF-ANNOT; the key hints and
             // colour only fit here).
             if (g_editor.CurrentMode() == Mode::PdfAnnotate) {
-                label += std::string("  [ANNOTATE h/n/1-5/c ") +
+                label += std::string("  [ANNOTATE y/K/A/C  h/n/1-5/c ") +
                          g_editor.PdfHighlightColorName(pdf_sess->active_color) + "]";
             }
             float text_w = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0).x;
@@ -49312,12 +49664,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     sel->sel_page = over;
                     sel->sel_anchor_dx = ddx;
                     sel->sel_anchor_dy = ddy;
+                    sel->sel_head_dx = ddx;
+                    sel->sel_head_dy = ddy;
                     sel->sel_quads.clear();
                     // In annotate mode a click also places the keyboard caret.
                     if (g_editor.CurrentMode() == Mode::PdfAnnotate)
                         g_editor.PdfCaretPlaceAtDevice(pane.id, over, ddx, ddy);
                 } else if (sel->selecting && gfx::IsMouseButtonDown(gfx::MouseButton::Left) && sel->sel_page == over &&
                            sel->doc) {
+                    sel->sel_head_dx = ddx;
+                    sel->sel_head_dy = ddy;
                     sel->sel_quads = sel->doc->SelectionQuads(over, sel->rendered_scale, sel->sel_anchor_dx,
                                                               sel->sel_anchor_dy, ddx, ddy);
                 }
@@ -59908,6 +60264,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinTabTerminal);
     lua->DoString(kBuiltinRunButton);
     lua->DoString(kBuiltinPaneZoom);
+    lua->DoString(kBuiltinPdfAi);
     lua->DoString(kBuiltinAiTerminal);
     lua->DoString(kBuiltinLeetcode);
     lua->DoString(kBuiltinNotebook);

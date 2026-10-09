@@ -26,12 +26,28 @@ uint32_t Crc32(uint32_t crc, const unsigned char *data, size_t len);
 uint32_t Adler32(uint32_t adler, const unsigned char *data, size_t len);
 
 // Raw DEFLATE (no zlib/gzip wrapper) -- the format ZIP entries use.
-bool InflateRaw(const unsigned char *data, size_t len, std::string &out);
+// `out_consumed`, when given, receives how many input bytes the stream
+// actually occupied (rounded up to a whole byte, since a DEFLATE stream
+// need not end on a byte boundary) -- what a caller needs to find
+// whatever follows it, e.g. InflateZlib's own Adler-32 trailer when the
+// buffer it was handed is longer than the stream itself.
+bool InflateRaw(const unsigned char *data, size_t len, std::string &out, size_t *out_consumed = nullptr);
 std::string DeflateRaw(const unsigned char *data, size_t len);
 
 // zlib-wrapped DEFLATE (RFC 1950: 2-byte header, raw DEFLATE stream,
 // 4-byte big-endian Adler-32 trailer) -- the format PNG's IDAT chunks
 // and M3D's compressed mesh chunks use.
+//
+// `len` may be longer than the stream: the Adler-32 is read from
+// immediately after the DEFLATE data rather than from the end of the
+// buffer. That matters for PDF, where a stream object's own /Length
+// routinely counts the EOL separating the data from `endstream` -- one
+// stray byte used to shift the trailer out from under this check and
+// fail an image that had decoded perfectly (every /FlateDecode figure
+// in the Causality.pdf fixture's last chapter did exactly that). A
+// trailer that is missing entirely (a truncated stream) is accepted
+// with the bytes recovered so far; one that is present but wrong is
+// still a failure.
 bool InflateZlib(const unsigned char *data, size_t len, std::string &out);
 std::string DeflateZlib(const unsigned char *data, size_t len);
 

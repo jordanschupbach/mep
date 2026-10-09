@@ -29,8 +29,66 @@ keys work.</p>
 <h1>Links</h1>
 <p>Internal links jump within the document; external ones open in the browser.</p>
 <h1>Text</h1>
-<p>Text is extracted, not just rasterised, so search finds real words and you
-can copy from the document.</p>
+<p>Text is extracted, not just rasterised, so search finds real words -- and
+what you select is real text, not a picture of it: words and lines are
+reconstructed from the glyphs, ligatures are written out as the letters
+they stand for, and a word broken over a line end is put back together.
+So a quoted passage reads as prose rather than as <i>investiga- tor</i>.</p>
+<h1>Annotating</h1>
+<p><code>a</code> enters annotate mode -- a modal state of its own, like Visual.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>hjkl</code></td><td>move the caret a character or a line</td></tr>
+<tr><td><code>w</code> <code>b</code> <code>e</code></td><td>by word</td></tr>
+<tr><td><code>0</code> <code>$</code></td><td>to the ends of the line</td></tr>
+<tr><td>click</td><td>place the caret</td></tr>
+<tr><td><code>v</code></td><td>start or stop a selection</td></tr>
+<tr><td><code>y</code></td><td>copy the selection</td></tr>
+<tr><td><code>K</code></td><td>ask about the selection</td></tr>
+<tr><td><code>A</code></td><td>discuss the selection</td></tr>
+<tr><td><code>Esc</code></td><td>leave</td></tr>
+</table>
+<p>The caret moves down the page, not through the file: a content stream
+emits a page in whatever order it likes -- body text, then the running
+header, then the footnotes -- and following that order would send the
+caret back to the top of the page mid-paragraph.</p>
+<p>Displayed equations are stepped over. Their glyphs sit on several
+baselines at once -- a summation, its indices, the main line -- so a
+caret walking through one lurches up and down rather than along.
+Mathematics <b>inside</b> a line of prose is ordinary text and stays
+selectable.</p>
+<p><code>&lt;space&gt;</code> is the annotation leader: <code>h</code> highlights the selection, <code>n</code>
+attaches a note, <code>d</code> deletes what is under the caret, <code>c</code> and <code>1</code>-=5=
+pick the highlight colour, <code>q</code> leaves.</p>
+<h1>Asking about a passage</h1>
+<p>Select a passage and put it to a model, without leaving the page.</p>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>K</code></td><td>a short answer in a popup</td></tr>
+<tr><td><code>A</code></td><td>open a discussion in the AI Agent sidebar</td></tr>
+<tr><td><code>C</code></td><td>hand it to Claude Code in a pane</td></tr>
+<tr><td><code>o</code> over a popup</td><td>move that answer into the sidebar</td></tr>
+<tr><td><code>:MepPdfYank</code></td><td>copy the selection</td></tr>
+<tr><td><code>:MepPdfAsk</code></td><td>the popup, by name</td></tr>
+<tr><td><code>:MepPdfDiscuss</code></td><td>the sidebar, by name</td></tr>
+<tr><td><code>:MepPdfClaude</code></td><td>Claude Code, by name</td></tr>
+</table>
+<p><code>K</code> asks nothing first: it sends a fixed prompt -- keep it short, explain
+the concept in simpler terms or define it -- and shows the reply in a box
+over the page. That is the whole interaction. When the selection is short,
+a lone symbol or a bare term, the rest of the page goes along as
+background so the model has something to go on.</p>
+<p>When the short answer is not enough, <code>o</code> over the box moves the passage
+and the reply into the <a href="ai-agents.html">AI Agent</a> sidebar and leaves you in a follow-up
+prompt, carrying on rather than starting over. <code>A</code> goes straight there,
+asking for your question first.</p>
+<p><code>C</code> is the one route that needs no API key. It types the passage into
+<a href="ai-terminal.html">Claude Code</a> running in a pane -- which brings its own credentials --
+opening one first if none is running. The reply is the agent's, in its
+own pane, so nothing streams back into the page.</p>
+<p>All of them read the selection the keyboard made with <code>v</code> or the one a
+mouse drag left behind. The model, the key and everything else come from
+<a href="ai-commands.html">the AI settings</a>; the prompt <code>K</code> sends is <code>mep.pdf_ask_prompt</code>.</p>
 <h1>Accessibility</h1>
 <p>A <i>tagged</i> PDF says what each piece of a page is and carries the words that
 stand for what cannot be read as text. mep reads those tags:</p>

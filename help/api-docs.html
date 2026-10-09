@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (188)</h1>
+<h1>The bindings (191)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -205,7 +205,10 @@ that it does nothing.</p>
 <tr><td><code>mep.pdf_goto_page</code></td><td>jumps buffer_id's own PDF viewer</td></tr>
 <tr><td><code>mep.pdf_note_latex_done</code></td><td>async callback (from kBuiltinPdfAnnot's</td></tr>
 <tr><td><code>mep.pdf_outline</code></td><td>array of {title, page, depth}, or nil if</td></tr>
+<tr><td><code>mep.pdf_page_text</code></td><td>the text of page `n` (1-based; the focused</td></tr>
 <tr><td><code>mep.pdf_reload</code></td><td>re-reads local file `path` and re-decodes it INTO</td></tr>
+<tr><td><code>mep.pdf_selection</code></td><td>{text, page, file} for the focused PDF</td></tr>
+<tr><td><code>mep.pdf_yank</code></td><td>copies the focused PDF pane's selection to the unnamed</td></tr>
 <tr><td><code>mep.roam_graph_close</code></td><td>closes the Roam graph overlay without invoking its on_select callback</td></tr>
 <tr><td><code>mep.roam_graph_open</code></td><td>opens the Roam backlink-graph overlay</td></tr>
 <tr><td><code>mep.sheet_next</code></td><td>/ mep.sheet_prev() -- Lua-reachable equivalent of the</td></tr>

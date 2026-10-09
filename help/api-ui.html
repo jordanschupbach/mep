@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (90)</h1>
+<h1>The bindings (91)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -31,6 +31,7 @@ that it does nothing.</p>
 <tr><td><code>mep.float_preview</code></td><td>shows read-only text in a centered floating box, dismissed by any keypress or click</td></tr>
 <tr><td><code>mep.float_preview_close</code></td><td>dismisses the open float_preview box, if any</td></tr>
 <tr><td><code>mep.float_preview_leader_closed</code></td><td>returns the title of the float_preview box the current leader sequence dismissed on its way in, or nil</td></tr>
+<tr><td><code>mep.float_preview_set_text</code></td><td>replaces the open float_preview box's text; a no-op when none is showing</td></tr>
 <tr><td><code>mep.float_preview_title</code></td><td>returns the open float_preview box's title, or nil when none is showing</td></tr>
 <tr><td><code>mep.focus_top_left_pane</code></td><td>moves focus to the topmost, then leftmost, pane in the active tab's split layout</td></tr>
 <tr><td><code>mep.font_size</code></td><td>returns the current editor pixel font size</td></tr>

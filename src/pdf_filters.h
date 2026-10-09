@@ -73,25 +73,50 @@ bool LZWDecode(const std::string &raw, const pdfobj::Object *decode_parms, std::
 // interpreting as WxH pixels rather than treated as more encoded bytes.
 bool DCTDecode(const std::string &raw, std::string *out_rgba, int *out_width, int *out_height);
 
+// Decodes a CCITTFaxDecode stream (spec 7.4.6) via ccitt_codec.h into
+// packed 1-bit-per-pixel samples with byte-aligned rows -- the sample
+// layout a /BitsPerComponent 1 image expects, so the result feeds
+// pdf_content.cpp's UnpackSamples like any other filter's output.
+// `decode_parms` supplies /K, /Columns, /Rows, /BlackIs1 and
+// /EncodedByteAlign (all defaulted per the spec when absent);
+// `rows_fallback` is the image's own /Height, used when /Rows isn't
+// stated, and may be 0 for "decode until the data runs out".
+//
+// Kept as its own entry point as well as a DecodeStream stage so a
+// test (or an inline image, whose abbreviated keys DecodeStream's own
+// `/Filter` lookup doesn't speak) can reach it directly.
+bool CCITTFaxDecode(const std::string &raw, const pdfobj::Object *decode_parms, int rows_fallback,
+                     std::string *out);
+
 // Applies every filter named in `stream_dict`'s `/Filter` (a single Name
 // or an Array of Names) to `raw`, in order, using the matching
 // `/DecodeParms` entry (a single Dict, an Array of Dicts/nulls parallel
 // to `/Filter`, or absent) for each stage. Handles FlateDecode/
-// ASCIIHexDecode/ASCII85Decode/RunLengthDecode/LZWDecode -- NOT
-// DCTDecode (see DCTDecode's own doc comment for why that's a separate
-// entry point) or the scanned-image formats this plan scopes out
-// entirely (CCITTFaxDecode/JBIG2Decode/JPXDecode, see
-// PDFIUM_REMOVAL_PLAN.md's Scoping decision 4).
+// ASCIIHexDecode/ASCII85Decode/RunLengthDecode/LZWDecode/
+// CCITTFaxDecode -- NOT DCTDecode (see DCTDecode's own doc comment for
+// why that's a separate entry point) or the two scanned-image formats
+// still scoped out (JBIG2Decode/JPXDecode, PDFIUM_REMOVAL_PLAN.md's
+// Scoping decision 4; CCITTFaxDecode came back in, see ccitt_codec.h
+// for why).
+//
+// CCITTFaxDecode is in the chain rather than beside it the way
+// DCTDecode is, because unlike JPEG it produces plain packed samples
+// (1 bit per pixel, rows byte-aligned) rather than pixels that need
+// their own dimensions interpreting -- exactly the bytes-in/bytes-out
+// shape every other filter here has. It needs its stage's own
+// `/DecodeParms` for /Columns and /K, and falls back to the image
+// dict's own /Height (or /H) when /Rows is absent, which is why this
+// takes the whole stream dict rather than just the filter list.
 //
 // Returns false only if a stage that's supposed to produce more bytes
-// fails outright (a corrupt Flate/LZW stream). An absent `/Filter`
-// simply returns `raw` unchanged (true); an unrecognized filter name
-// mid-chain is tolerated by passing that stage's input through
-// unchanged, matching this codebase's "skip bad content" convention,
-// EXCEPT that DCTDecode/CCITTFaxDecode/JBIG2Decode/JPXDecode named here
+// fails outright (a corrupt Flate/LZW/CCITT stream). An absent
+// `/Filter` simply returns `raw` unchanged (true); an unrecognized
+// filter name mid-chain is tolerated by passing that stage's input
+// through unchanged, matching this codebase's "skip bad content"
+// convention, EXCEPT that DCTDecode/JBIG2Decode/JPXDecode named here
 // short-circuit the whole call to false, since silently passing raw
 // image-format bytes through as if they were plain data would corrupt
-// whatever consumes the result -- callers that expect image data should
+// whatever consumes the result -- callers that expect JPEG data should
 // route through DCTDecode (or accept the scoped-out non-goal) instead
 // of calling DecodeStream on an image XObject's stream.
 bool DecodeStream(const std::string &raw, const pdfobj::Object *stream_dict, std::string *out);

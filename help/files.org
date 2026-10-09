@@ -20,6 +20,7 @@ when you =:w=. That is how you create a file, not an error.
 | =:e {file}=   | open a file into a buffer                     |
 | =:e!=         | reload from disk, discarding changes          |
 | =:w=          | write the buffer to its file                  |
+| =:w!=         | write it even if the file changed on disk     |
 | =:w {file}=   | write it somewhere else                       |
 | =:wa=         | write every modified buffer that has a name   |
 | =:q=          | close the pane; quit once it is the last one  |
@@ -31,6 +32,46 @@ when you =:w=. That is how you create a file, not an error.
 =:q= refusing means the buffer has unsaved changes. =:qa= applies that check
 across every buffer in every workspace, so quitting never loses something
 you had forgotten about in another tab.
+
+* When the file changed underneath the buffer
+
+mep does not watch the filesystem. If something rewrites a file while you
+have it open -- a =git pull= or =git checkout=, a rebase, a formatter,
+another editor, =git= in one of mep's own terminal panes -- the buffer goes
+on showing the text it was read with.
+
+So mep remembers each file's size and timestamp as of the moment it read or
+last wrote it, and *refuses a write whose file no longer matches*:
+
+#+begin_example
+E13: "main.py" changed on disk since it was read -- :e! reloads it, :w! overwrites it
+#+end_example
+
+Nothing has been written when you see this, and nothing has been lost. The
+buffer still holds your version and the file still holds the other one; you
+just have to say which wins:
+
+| Command | Keeps                                             |
+|---------+---------------------------------------------------|
+| =:e!=   | the file -- re-reads it, discarding buffer edits  |
+| =:w!=   | the buffer -- overwrites what is on disk          |
+
+=:e!= is undoable: the discarded text goes onto the undo stack, so =u= brings
+it back if you chose wrong.
+
+The git panel handles the common case for you. After any git command it
+re-reads every open buffer whose file changed and which has no unsaved edits,
+and warns about the ones it left alone:
+
+#+begin_example
+Pull: done, 3 buffers reloaded
+Changed on disk, but has unsaved edits: main.py -- :e! takes the file, :w! keeps the buffer
+#+end_example
+
+Without this, pulling a branch with files open would leave stale text on
+screen and write it back over the pulled version at the next save, while
+=git pull= correctly reported "Already up to date" -- only the working tree
+having been reverted.
 
 * Moving between buffers
 

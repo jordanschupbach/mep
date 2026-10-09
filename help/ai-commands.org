@@ -25,14 +25,45 @@ function can carry the code it depends on.
 
 * The API key
 
-mep prompts for an API key when it first needs one and keeps it *in memory
-for the session only*. It is not written to disk and not stored in your
-config, so it never lands in a dotfile backup or a synced directory.
+mep looks in three places, in order, and caches what it finds *in memory
+for the session only* -- it is never written to disk and never stored in
+your config, so it cannot land in a dotfile backup or a synced directory.
 
-Set the usual environment variable before launching mep if you would rather
-not be prompted.
+1. =ANTHROPIC_API_KEY= or =OPENAI_API_KEY=, whichever the provider wants.
+2. =mep.ai_api_key_cmd=, a command that prints the key.
+3. Failing both, a masked prompt.
+
+#+begin_src lua
+mep.ai_api_key_cmd = {'pass', 'show', 'anthropic/api'}
+#+end_src
+
+The command runs once, on the first request of the session, and its first
+line of output is the key. Prefer it to the environment variable: mep's
+=:terminal= exports its whole environment to child shells, so a key
+exported for the editor is also readable by every terminal pane, language
+server and job mep starts -- and by anything else of yours that can read
+=/proc/<pid>/environ=. A command keeps the key wherever you already store
+secrets and out of the environment entirely.
+
+* Which model
+
+#+begin_src lua
+mep.ai_provider = 'anthropic'            -- default 'openai'
+mep.ai_anthropic_model = 'claude-opus-5' -- the default
+mep.ai_model = 'gpt-4o-mini'             -- the OpenAI-side default
+#+end_src
+
+=mep.ai_base_url= points the OpenAI path somewhere else, which is how you
+run this against a local model -- anything speaking the OpenAI chat
+completions API will do, and the key can be any non-empty string:
+
+#+begin_src lua
+mep.ai_base_url = 'http://localhost:11434/v1'  -- ollama
+mep.ai_api_key = 'local'
+#+end_src
 
 * See also
 
+- [[file:pdf.html][PDF]] -- =K= and =A= ask about a passage of a document you are reading.
 - [[file:ai-terminal.html][Claude Code in a pane]] -- a full agent rather than one-shot prompts.
 - [[file:copilot.html][GitHub Copilot]] -- inline completions.

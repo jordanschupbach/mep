@@ -5,7 +5,7 @@
 
 * Every command
 
-All 377 ex commands mep defines: 119 built in and 259 registered from Lua.
+All 385 ex commands mep defines: 123 built in and 263 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -260,6 +260,10 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepOrgTodo= | [[file:org-todo.html][TODO keywords and tags]] |
 | =:MepOrgWiden= | [[file:org-basics.html][Org files in mep]] |
 | =:MepPaneZoom= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
+| =:MepPdfAsk= | [[file:pdf.html][PDF]] |
+| =:MepPdfClaude= | [[file:pdf.html][PDF]] |
+| =:MepPdfDiscuss= | [[file:pdf.html][PDF]] |
+| =:MepPdfYank= | [[file:pdf.html][PDF]] |
 | =:MepPrevSheet= | [[file:sheets.html][Spreadsheets]] |
 | =:MepProjectAdd= | [[file:projects.html][Projects]] |
 | =:MepProjectAddPath= | [[file:projects.html][Projects]] |
@@ -357,6 +361,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:vs= | [[file:command-line.html][The command line]] |
 | =:vsplit= | [[file:command-line.html][The command line]] |
 | =:w= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:w!= | [[file:files.html][Files and buffers]] |
 | =:wa= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:wall= | [[file:cad-fem.html][CAD and finite elements]] |
 | =:WebLadder= | [[file:web-ladder.html][Measuring the engine]] |
@@ -364,9 +369,11 @@ bindings instead. A dash means no page covers that command yet.
 | =:workspace= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:workspaces= | [[file:architecture.html][How mep is put together]] |
 | =:wq= | [[file:command-line.html][The command line]] |
+| =:wq!= | -- |
 | =:wqa= | [[file:command-line.html][The command line]] |
 | =:wqall= | -- |
 | =:write= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:write!= | -- |
 | =:ws= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:wsadopt= | [[file:workspaces.html][Workspaces]] |
 | =:wsclose= | -- |
@@ -385,10 +392,11 @@ bindings instead. A dash means no page covers that command yet.
 | =:wsrestore= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
 | =:wssave= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
 | =:x= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:x!= | -- |
 | =:xa= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:xall= | -- |
 | =:youtube= | [[file:youtube.html][YouTube player]] |
-| =:yt= | [[file:ai-terminal.html][Claude Code in a pane]] |
+| =:yt= | [[file:ai-commands.html][Ask the model]] |
 
 * See also
 

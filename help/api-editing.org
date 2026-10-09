@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (208)
+* The bindings (211)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -20,6 +20,7 @@ that it does nothing.
 |----------+------|
 | =mep.a11y= | the accessibility view of a buffer's document |
 | =mep.buffer_change_epoch= | -- |
+| =mep.buffer_changed_on_disk= | bool: whether `id`'s file was rewritten |
 | =mep.buffer_count= | returns the number of currently open buffers |
 | =mep.buffer_cursor_row= | returns the cursor row of whichever pane in the active tab shows a given buffer |
 | =mep.buffer_deco_add= | adds a decoration to a specific (possibly background) buffer |
@@ -32,7 +33,8 @@ that it does nothing.
 | =mep.buffer_ns_clear= | clears every decoration under a namespace in a specific (possibly background) buffer |
 | =mep.buffer_on_screen= | whether some pane in the active tab shows the buffer |
 | =mep.buffer_open_beside= | shows a buffer in a pane that isn't a navigator, splitting if need be |
-| =mep.buffer_save= | bool: writes buffer `id` to its own filename |
+| =mep.buffer_reload= | bool: re-reads `id`'s file from disk in |
+| =mep.buffer_save= | bool: writes buffer `id` to its own |
 | =mep.buffer_save_epoch= | -- |
 | =mep.buffer_set_drag_resolver= | registers a row->path resolver so a buffer's own rows can be dragged onto a pane to open |
 | =mep.buffer_set_filename= | sets a buffer's raw filename |
@@ -150,6 +152,7 @@ that it does nothing.
 | =mep.pres_theme= | on: theme colours (Ctrl-R) set, or read |
 | =mep.pres_undo= | -- |
 | =mep.read_disk_lines= | array of lines, or nil |
+| =mep.reload_changed_buffers= | reloaded_count, conflicts |
 | =mep.replace_lines= | replaces a 1-indexed, end-exclusive line range with a new set of lines |
 | =mep.reveal_buffer= | brings a buffer to the front of its own pane without moving focus |
 | =mep.set_cursor= | moves the cursor to a 1-indexed position |

@@ -17,13 +17,14 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (208)</h1>
+<h1>The bindings (211)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
 <tr><th>Function</th><th>Does</th></tr>
 <tr><td><code>mep.a11y</code></td><td>the accessibility view of a buffer's document</td></tr>
 <tr><td><code>mep.buffer_change_epoch</code></td><td>--</td></tr>
+<tr><td><code>mep.buffer_changed_on_disk</code></td><td>bool: whether `id`'s file was rewritten</td></tr>
 <tr><td><code>mep.buffer_count</code></td><td>returns the number of currently open buffers</td></tr>
 <tr><td><code>mep.buffer_cursor_row</code></td><td>returns the cursor row of whichever pane in the active tab shows a given buffer</td></tr>
 <tr><td><code>mep.buffer_deco_add</code></td><td>adds a decoration to a specific (possibly background) buffer</td></tr>
@@ -36,7 +37,8 @@ that it does nothing.</p>
 <tr><td><code>mep.buffer_ns_clear</code></td><td>clears every decoration under a namespace in a specific (possibly background) buffer</td></tr>
 <tr><td><code>mep.buffer_on_screen</code></td><td>whether some pane in the active tab shows the buffer</td></tr>
 <tr><td><code>mep.buffer_open_beside</code></td><td>shows a buffer in a pane that isn't a navigator, splitting if need be</td></tr>
-<tr><td><code>mep.buffer_save</code></td><td>bool: writes buffer `id` to its own filename</td></tr>
+<tr><td><code>mep.buffer_reload</code></td><td>bool: re-reads `id`'s file from disk in</td></tr>
+<tr><td><code>mep.buffer_save</code></td><td>bool: writes buffer `id` to its own</td></tr>
 <tr><td><code>mep.buffer_save_epoch</code></td><td>--</td></tr>
 <tr><td><code>mep.buffer_set_drag_resolver</code></td><td>registers a row-&gt;path resolver so a buffer's own rows can be dragged onto a pane to open</td></tr>
 <tr><td><code>mep.buffer_set_filename</code></td><td>sets a buffer's raw filename</td></tr>
@@ -154,6 +156,7 @@ that it does nothing.</p>
 <tr><td><code>mep.pres_theme</code></td><td>on: theme colours (Ctrl-R) set, or read</td></tr>
 <tr><td><code>mep.pres_undo</code></td><td>--</td></tr>
 <tr><td><code>mep.read_disk_lines</code></td><td>array of lines, or nil</td></tr>
+<tr><td><code>mep.reload_changed_buffers</code></td><td>reloaded_count, conflicts</td></tr>
 <tr><td><code>mep.replace_lines</code></td><td>replaces a 1-indexed, end-exclusive line range with a new set of lines</td></tr>
 <tr><td><code>mep.reveal_buffer</code></td><td>brings a buffer to the front of its own pane without moving focus</td></tr>
 <tr><td><code>mep.set_cursor</code></td><td>moves the cursor to a 1-indexed position</td></tr>

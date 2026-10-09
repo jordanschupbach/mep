@@ -942,6 +942,51 @@ struct WhichKeyDisplayEntry {
     std::string icon_hl;
 };
 
+// What a file looked like on disk at the last moment a buffer's text and
+// that file's bytes were known to agree -- stamped when the buffer is read
+// (FindOrCreateBuffer) and re-stamped after every successful write
+// (SaveBuffer). A *different* stamp now means something outside this buffer
+// rewrote the file underneath it.
+//
+// This exists because mep watches nothing. There is no inotify/kqueue/
+// FSEvents anywhere in this codebase, so a `git pull` (or a rebase, a
+// `git checkout`, a formatter, a second editor, `git` run in one of mep's
+// own terminal panes) replaces a file's bytes with no notification of any
+// kind, and until this struct there was nothing recorded anywhere that
+// could even in principle detect it. The observed consequence was silent
+// data loss: pull a branch with an open buffer, save, and the pre-pull text
+// is written back over the pulled file -- while `git pull` keeps reporting
+// "Already up to date", because HEAD really did move and only the working
+// tree was reverted. See SaveBuffer's staleness guard and
+// Editor::ReloadChangedBuffersUnder, the two readers.
+//
+// mtime + size, which is exactly what vim keeps for its own W11/W12 checks
+// (b_mtime / b_orig_size) -- not a content hash: this is compared on every
+// write and on every git action, and re-reading a large file to hash it
+// there would be a real cost for a case two cheap stat fields already
+// catch. A rewrite that preserves both the size and the nanosecond mtime is
+// the accepted miss.
+struct DiskStamp {
+    // False means "never stamped" -- a buffer whose file did not exist when
+    // it was opened, or any non-file buffer. Readers treat it as "no
+    // information", never as "unchanged", so an unstamped buffer behaves
+    // exactly as it did before this struct existed.
+    bool valid = false;
+    long long mtime = 0;  // last_write_time, in the clock's own ticks
+    long long size = -1;
+
+    bool operator==(const DiskStamp &other) const {
+        return valid == other.valid && mtime == other.mtime && size == other.size;
+    }
+    bool operator!=(const DiskStamp &other) const { return !(*this == other); }
+};
+
+// stat()s `path` into a DiskStamp. An unreadable or missing path comes back
+// `valid == false` (not an error): a file deleted under an open buffer is
+// not a staleness conflict -- there is nothing newer to protect -- and a
+// save that recreates it is what the user wants.
+DiskStamp StatDiskStamp(const std::string &path);
+
 // The in-memory content of one file (or scratch buffer). Undo history is
 // per-buffer, not per-pane: two panes split on the same buffer share it,
 // matching Vim.
@@ -1052,6 +1097,12 @@ struct Buffer {
     // the document's real location rather than the newest project's root.
     // Empty when unknown, in which case the workspace root / cwd is used.
     std::string base_dir;
+
+    // The file's identity on disk as of the last read or write of it --
+    // see DiskStamp for why this is kept and what reads it. Not persisted
+    // in the session file: a stamp from a previous run says nothing about
+    // the file now, and restore re-reads from disk anyway (which re-stamps).
+    DiskStamp disk;
 
     // One point in the buffer's edit history: the text, and the folds that
     // were in force over exactly that text.
@@ -2791,18 +2842,41 @@ struct PdfSession {
     bool selecting = false;               // a drag is currently in progress
     int sel_page = -1;                    // page the selection lives on (-1 = none)
     double sel_anchor_dx = 0, sel_anchor_dy = 0;  // drag anchor, device px @ rendered_scale
+    // The drag's other end, kept for the same reason the anchor is: the
+    // quads alone say where the selection was drawn but not which glyphs
+    // it covered, and copying the selection has to resolve it back to
+    // glyphs after the mouse has long since moved on.
+    double sel_head_dx = 0, sel_head_dy = 0;
     std::vector<pdfannots::Quad> sel_quads;       // current selection, point space
 
     // --- vim caret (annotate mode) ---
-    // A keyboard text caret: an index into caret_page's reading-order glyph
-    // list. h/l/j/k/w/b/0/$ move it; `v` starts a visual selection anchored
-    // at visual_anchor_glyph, extended to caret_glyph (mirrored into
-    // sel_quads/sel_page for drawing). -1 = no caret.
+    // A keyboard text caret over the page's text. h/l/j/k/w/b/e/0/$ move
+    // it; `v` starts a visual selection anchored at visual_anchor_row/col,
+    // extended to the caret (mirrored into sel_quads/sel_page for
+    // drawing). -1 = no caret.
+    //
+    // The caret moves over `caret_rows` -- the page's glyphs grouped into
+    // VISUAL lines, top to bottom (PdfDoc::PageTextRows) -- not over the
+    // raw reading order in caret_glyphs, which a typesetter's content
+    // stream orders however it likes and which interleaves a line with
+    // its own subscripts and big operators. caret_row/caret_col is the
+    // real position; caret_glyph is derived from it (the index into
+    // caret_glyphs that pair names) so everything that only needs "which
+    // glyph is the caret on" -- the caret's own drawing in main.cpp,
+    // ResolveAnnotTargetAtCaret -- is unaffected by any of this.
+    //
+    // Rows PageTextRows marked as dedicated equation lines are left out
+    // of caret_rows entirely: their glyphs sit on several baselines at
+    // once, so a caret stepping through them lurches up and down the
+    // page. Inline maths inside a line of prose is untouched -- that is
+    // ordinary text and stays navigable.
     int caret_page = -1;
     int caret_glyph = -1;
-    std::vector<PdfGlyphBox> caret_glyphs;  // point-space glyphs for caret_page (loaded on demand)
+    std::vector<PdfGlyphBox> caret_glyphs;      // point-space glyphs for caret_page (loaded on demand)
+    std::vector<std::vector<int>> caret_rows;   // navigable visual rows, indices into caret_glyphs
+    int caret_row = -1, caret_col = -1;         // position within caret_rows
     bool visual_active = false;
-    int visual_anchor_glyph = -1;
+    int visual_anchor_row = -1, visual_anchor_col = -1;
     // Mode-local leader: in annotate mode, <space> starts this (a which-key
     // style prefix); the next key is an annotation action (h/n/d/c/1-5/q).
     // Keeps annotate self-contained -- the global <space> leader stays for
@@ -6046,6 +6120,23 @@ public:
     // Mutable accessor (used by main.cpp's PDF pane to drive click-drag
     // text selection state, whose geometry is only known at draw time).
     PdfSession *GetPdfMutable(int pane_id);
+    // The pane's current selection (the keyboard `v` one, else a
+    // finished mouse drag) as readable text, and the 0-based page it is
+    // on -- empty/-1 when nothing is selected. Public because
+    // mep.pdf_selection hands both to Lua; see the definition
+    // (editor.cpp) for which of the two selection sources wins.
+    /**
+     * @brief Returns the PDF pane's current selection as readable text, or "" when nothing is selected.
+     */
+    std::string PdfSelectionText(const PdfSession &sess) const;
+    /**
+     * @brief Returns the 0-based page the PDF pane's current selection is on, or -1 when nothing is selected.
+     */
+    int PdfSelectionPage(const PdfSession &sess) const;
+    /**
+     * @brief Copies the focused PDF pane's selection (what `y` does there); false when the pane isn't a PDF.
+     */
+    bool PdfYankCurrentSelection();
     // Lazily creates (or re-creates, if the pane now shows a different PDF)
     // this pane's PdfSession -- aliasing the shared per-buffer PdfDoc +
     // annotation state -- and returns it, or nullptr if buffer_id isn't a
@@ -7792,6 +7883,20 @@ public:
      * @param base The git revision to diff against; empty means the index.
      */
     void GitGutterRefreshBuffer(int buffer_id, const std::string &base);
+    // Whether a buffer's own Buffer::lines actually hold the text of the
+    // file it is named after -- false for every viewer pane, whose lines
+    // are a dummy single empty line (or none at all) while the real
+    // content lives in its own session (see SaveFile's own "an image/PDF
+    // buffer's Buffer::lines is a dummy single empty line" guard, and
+    // OpenHtmlInPlace, which clears them outright).
+    //
+    // Nothing that diffs a buffer against a revision of its file may run
+    // on one of these: the two sides have nothing to do with each other.
+    // The git gutter used to, and on a PDF tracked in git the result was
+    // a ~20-second frame -- `git show HEAD:book.pdf` handed back 15MB of
+    // binary, JobManager split it into 66,000 "lines", and MyersDiffHunks
+    // was asked to diff all of them against one empty line.
+    bool BufferHasFileText(int buffer_id) const;
     // The always-on driver behind mep.git_gutter_auto: called once per
     // frame, it re-diffs the *current* buffer only when something has
     // actually changed since its last diff (a different buffer is
@@ -9331,9 +9436,10 @@ public:
     /**
      * @brief Writes the current buffer's content to a file path.
      * @param path The file path to save to.
+     * @param force Overwrite even when the file changed on disk under the buffer (`:w!`) -- see SaveBuffer.
      * @return True on success; false (with a status message set) if the path is empty or the write failed.
      */
-    bool SaveFile(const std::string &path);
+    bool SaveFile(const std::string &path, bool force = false);
 
     // Directory listing shared by mep.list_dir (Lua, lua_env.cpp -- the
     // file-tree sidebar's data source) and command-line path completion
@@ -9601,6 +9707,38 @@ public:
      * @param text The preview text, split on embedded '\n's for rendering.
      */
     void BeginPreview(const std::string &title, const std::string &text);
+    // Replaces an open preview's text without touching the mode stack --
+    // BeginPreview records the mode it is covering, so calling it again
+    // over its own box would make dismissing restore into Preview and
+    // strand the overlay. A no-op when no box is open, which is what
+    // makes it safe to call from a streaming callback the user may have
+    // already dismissed.
+    /**
+     * @brief Replaces the open preview overlay's text; a no-op when none is showing.
+     * @param text The new preview text, split on embedded '\n's for rendering.
+     */
+    void UpdatePreview(const std::string &text);
+    // One key a preview box answers to instead of being dismissed by:
+    // pressing it closes the box and runs `on_action_ref`. For a box
+    // that has somewhere further to go -- a short answer that can be
+    // reopened as a full discussion -- so the next step is one keystroke
+    // rather than dismiss-then-find-the-command. `hint` names it in the
+    // box's own footer. Cleared when the box closes.
+    /**
+     * @brief Gives the open preview overlay one action key, which closes it and calls a Lua ref.
+     * @param key_cp The character that triggers the action.
+     * @param hint Short label for the box footer, e.g. "discuss".
+     * @param on_action_ref A Lua function ref called after the box closes; unrefed when the box closes either way.
+     */
+    void SetPreviewAction(int key_cp, const std::string &hint, int on_action_ref);
+    /**
+     * @brief Returns the open preview overlay's action-key hint, or "" when it has no action key.
+     */
+    const std::string &PreviewActionHint() const { return preview_action_hint_; }
+    /**
+     * @brief Returns the open preview overlay's action key as a character, or 0 when it has none.
+     */
+    int PreviewActionKey() const { return preview_action_key_; }
 
     // Read access for main.cpp's renderer.
     /**
@@ -12307,7 +12445,48 @@ public:
     // Save buffer `id` to its own filename (mep.buffer_save). Returns false
     // (with an E32/E141 status) on an unnamed buffer or a write error, so
     // the popup can leave it in the list instead of silently dropping it.
-    bool SaveBufferById(int buffer_id);
+    // `force` is SaveBuffer's own staleness override -- the quit popup
+    // passes it only after telling the user the file changed on disk and
+    // being told to overwrite anyway.
+    bool SaveBufferById(int buffer_id, bool force = false);
+
+    // --- Files that changed underneath their buffers ------------------------
+    // The half of the no-filesystem-watcher problem (see DiskStamp) that
+    // SaveBuffer's guard cannot solve on its own: the guard stops mep
+    // *destroying* newer bytes, but a buffer still sits there showing text
+    // the file no longer has, which is the "I pulled and the changes never
+    // appeared" half of the same report. These let the git integration say
+    // "the working tree just moved, re-read what you can" at the one moment
+    // it knows that happened.
+
+    /** @brief Whether `buffer_id`'s file has been rewritten on disk since the buffer last read or wrote it.
+     *  @param buffer_id The buffer to check.
+     *  @return True only for a stamped, file-backed text buffer whose on-disk stamp now differs; false when
+     *          unknown (never stamped, no filename, deleted, or a non-text buffer), so a caller never acts on a guess. */
+    bool BufferChangedOnDisk(int buffer_id) const;
+
+    /** @brief Whether this buffer's `lines` really are its file's bytes, i.e. a plain-text buffer.
+     *  @param buffer_id The buffer to check.
+     *  @return False for every buffer whose `lines` are a rendering of something else (terminal, image, PDF,
+     *          CAD, 3D, presentation, spreadsheet, office, notebook, mepml present view, write-hook), for which
+     *          both re-reading as text and stamping a file are meaningless. */
+    bool BufferTextIsFileBytes(int buffer_id) const;
+
+    /** @brief Re-reads one buffer's file from disk in place, keeping every pane's (clamped) cursor and its folds/marks.
+     *  @param buffer_id The buffer to re-read.
+     *  @param force Re-read even when the buffer has unsaved changes (they go to undo, recoverable with `u`).
+     *  @return True when the file was read and the buffer replaced; false if the buffer is unsuitable
+     *          (no filename, deleted, not plain text), unreadable, or modified without `force`. */
+    bool ReloadBufferFromDisk(int buffer_id, bool force = false);
+
+    /** @brief Re-reads every unmodified buffer under `root` whose file changed on disk -- what to call after a
+     *         command that rewrites the working tree (`git pull`, `checkout`, `stash apply`, a reverted file).
+     *  @param root Directory whose buffers to consider; a buffer outside it is left alone. Empty means every buffer.
+     *  @param conflicts If non-null, receives the display name of each buffer that changed on disk but was NOT
+     *         reloaded because it has unsaved edits -- the set the caller must tell the user about, since those
+     *         are exactly the buffers whose next save would otherwise have been the data-loss case.
+     *  @return How many buffers were reloaded. */
+    int ReloadChangedBuffersUnder(const std::string &root, std::vector<std::string> *conflicts = nullptr);
     // mep.read_disk_lines(path): the on-disk contents of `path`, always read
     // fresh from the file -- unlike ReadLinesForPath/mep.read_lines, which
     // return an already-open buffer's live (unsaved) lines instead. The
@@ -12774,12 +12953,20 @@ private:
     PdfSession::AnnotTarget ActiveAnnotTarget(PdfSession &sess);
     PdfSession::AnnotTarget ResolveAnnotTargetAtCaret(PdfSession &sess);
     // --- vim caret (annotate mode) ---
-    void LoadCaretGlyphs(PdfSession &sess, int page);   // (re)load caret_glyphs for `page`, reset caret to first glyph
+    void LoadCaretGlyphs(PdfSession &sess, int page);   // (re)load caret_glyphs/caret_rows for `page`, reset caret to its first glyph
+    void SyncPdfCaretGlyph(PdfSession &sess);           // re-derive caret_glyph from caret_row/caret_col (clamping the latter)
     void PdfCaretMove(PdfSession &sess, int cp);         // h/l/j/k/w/b/e/0/$ motion (cp is the key char)
     void PdfCaretToggleVisual(PdfSession &sess);         // `v`: start/stop a visual selection at the caret
     void PdfAnnotLeaderAction(PdfSession &sess, int cp); // dispatch an annotate <space>-leader action key
     void PdfCaretUpdateVisual(PdfSession &sess);         // recompute sel_quads from anchor..caret
     void PdfCaretEnsureVisible(PdfSession &sess);        // auto-scroll so the caret stays in view
+    void PdfYankSelection(PdfSession &sess);             // `y`: copy the selection, leaving it selected
+    // `K` / `A` / `C`: ask a model about the selection -- a short answer
+    // in a popup, a discussion in the AI Agent sidebar, or handed to
+    // Claude Code in a pane. `how` is that key. The request itself
+    // belongs to Lua (kBuiltinPdfAi), which is where mep's model client
+    // already lives; this only decides what passage to send.
+    void PdfAskAboutSelection(PdfSession &sess, int how);
     // `:pdfsearch <text>` -- runs a PDF text search and jumps to the first
     // match (a command-line entry point to the same RunPdfSearch the '/'
     // prompt drives).
@@ -13824,7 +14011,20 @@ private:
     // :wa  -- writes every modified buffer that has a filename. Returns
     // true only if all modified buffers were written (used to gate :wqa).
     bool WriteAllModified();
-    bool SaveBuffer(Buffer &buf, const std::string &path);
+    // `force`: write even when StatDiskStamp(path) no longer matches
+    // Buffer::disk, i.e. when the file was rewritten under this buffer
+    // since it was read or last written. Without it such a write is
+    // REFUSED (E13, nothing touched), because performing it is silent data
+    // loss -- it truncates away whatever arrived in the file and leaves
+    // git reporting "Already up to date" over a reverted working tree.
+    // That was the reported bug. `:w!` is the deliberate override.
+    bool SaveBuffer(Buffer &buf, const std::string &path, bool force = false);
+    // SaveBuffer's actual writer, per buffer kind (text, image-editor PNG,
+    // PDF annotations, 3D, deck, spreadsheet, office, notebook). Split out
+    // so the staleness guard and the re-stamp that follows a successful
+    // write each live in exactly one place instead of being repeated down
+    // every one of this function's returns. Call SaveBuffer, not this.
+    bool WriteBufferToPath(Buffer &buf, const std::string &path);
     // `:set pyindent`: re-indents a py/pyi buffer in place, one undo entry, on
     // its way out to disk (called by SaveBuffer before it writes, so the file
     // and the buffer on screen never disagree). A no-op -- false, nothing
@@ -14389,6 +14589,11 @@ private:
     // select_callback_ref_ so a cancelled select leaks neither.
     int select_on_key_ref_ = 0;
     std::string preview_title_, preview_text_;
+    // The one key this preview answers to rather than closing on -- see
+    // SetPreviewAction. 0 when it has none.
+    int preview_action_key_ = 0;
+    std::string preview_action_hint_;
+    int preview_action_ref_ = 0;
 
     // --- Org block settings popup (Mode::OrgBlockSettings) ---
     std::vector<OrgBlockSettingRow> org_settings_rows_;

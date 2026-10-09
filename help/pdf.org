@@ -27,8 +27,77 @@ Internal links jump within the document; external ones open in the browser.
 
 * Text
 
-Text is extracted, not just rasterised, so search finds real words and you
-can copy from the document.
+Text is extracted, not just rasterised, so search finds real words -- and
+what you select is real text, not a picture of it: words and lines are
+reconstructed from the glyphs, ligatures are written out as the letters
+they stand for, and a word broken over a line end is put back together.
+So a quoted passage reads as prose rather than as /investiga- tor/.
+
+* Annotating
+
+=a= enters annotate mode -- a modal state of its own, like Visual.
+
+| Key             | Does                                    |
+|-----------------+-----------------------------------------|
+| =hjkl=          | move the caret a character or a line    |
+| =w= =b= =e=     | by word                                 |
+| =0= =$=         | to the ends of the line                 |
+| click           | place the caret                         |
+| =v=             | start or stop a selection               |
+| =y=             | copy the selection                      |
+| =K=             | ask about the selection                 |
+| =A=             | discuss the selection                   |
+| =Esc=           | leave                                   |
+
+The caret moves down the page, not through the file: a content stream
+emits a page in whatever order it likes -- body text, then the running
+header, then the footnotes -- and following that order would send the
+caret back to the top of the page mid-paragraph.
+
+Displayed equations are stepped over. Their glyphs sit on several
+baselines at once -- a summation, its indices, the main line -- so a
+caret walking through one lurches up and down rather than along.
+Mathematics *inside* a line of prose is ordinary text and stays
+selectable.
+
+=<space>= is the annotation leader: =h= highlights the selection, =n=
+attaches a note, =d= deletes what is under the caret, =c= and =1=-=5=
+pick the highlight colour, =q= leaves.
+
+* Asking about a passage
+
+Select a passage and put it to a model, without leaving the page.
+
+| Key / command    | Does                                          |
+|------------------+-----------------------------------------------|
+| =K=              | a short answer in a popup                     |
+| =A=              | open a discussion in the AI Agent sidebar     |
+| =C=              | hand it to Claude Code in a pane              |
+| =o= over a popup | move that answer into the sidebar             |
+| =:MepPdfYank=    | copy the selection                            |
+| =:MepPdfAsk=     | the popup, by name                            |
+| =:MepPdfDiscuss= | the sidebar, by name                          |
+| =:MepPdfClaude=  | Claude Code, by name                          |
+
+=K= asks nothing first: it sends a fixed prompt -- keep it short, explain
+the concept in simpler terms or define it -- and shows the reply in a box
+over the page. That is the whole interaction. When the selection is short,
+a lone symbol or a bare term, the rest of the page goes along as
+background so the model has something to go on.
+
+When the short answer is not enough, =o= over the box moves the passage
+and the reply into the [[file:ai-agents.html][AI Agent]] sidebar and leaves you in a follow-up
+prompt, carrying on rather than starting over. =A= goes straight there,
+asking for your question first.
+
+=C= is the one route that needs no API key. It types the passage into
+[[file:ai-terminal.html][Claude Code]] running in a pane -- which brings its own credentials --
+opening one first if none is running. The reply is the agent's, in its
+own pane, so nothing streams back into the page.
+
+All of them read the selection the keyboard made with =v= or the one a
+mouse drag left behind. The model, the key and everything else come from
+[[file:ai-commands.html][the AI settings]]; the prompt =K= sends is =mep.pdf_ask_prompt=.
 
 * Accessibility
 

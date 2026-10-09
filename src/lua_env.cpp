@@ -2111,7 +2111,41 @@ int l_float_preview(lua_State *L) {
     const char *title = luaL_optstring(L, 1, "");
     size_t len = 0;
     const char *text = luaL_checklstring(L, 2, &len);
-    GetEditor(L)->BeginPreview(title, std::string(text, len));
+    Editor *ed = GetEditor(L);
+    ed->BeginPreview(title, std::string(text, len));
+    // opts.action_key / opts.action_hint / opts.on_action: one key the
+    // box answers to instead of merely closing on -- see
+    // Editor::SetPreviewAction.
+    if (lua_gettop(L) >= 3 && lua_istable(L, 3)) {
+        lua_getfield(L, 3, "action_key");
+        const char *key = lua_tostring(L, -1);
+        const int key_cp = (key && key[0]) ? static_cast<unsigned char>(key[0]) : 0;
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "action_hint");
+        const std::string hint = lua_tostring(L, -1) ? lua_tostring(L, -1) : "";
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "on_action");
+        int ref = 0;
+        if (lua_isfunction(L, -1)) ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        else lua_pop(L, 1);
+        if (key_cp != 0 && ref != 0) ed->SetPreviewAction(key_cp, hint, ref);
+        else if (ref != 0) ed->Lua()->UnrefFunction(ref);
+    }
+    return 0;
+}
+
+// mep.float_preview_set_text(text): replaces the open box's text. For a
+// box being filled by a streaming response -- reopening it per chunk
+// with mep.float_preview would restack the mode it is covering.
+/**
+ * @brief Implements mep.float_preview_set_text(text): replaces the open float_preview box's text; a no-op when none is showing.
+ * @param L Lua state; arg 1 is the new text.
+ * @return Number of values pushed (0).
+ */
+int l_float_preview_set_text(lua_State *L) {
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 1, &len);
+    GetEditor(L)->UpdatePreview(std::string(text, len));
     return 0;
 }
 
@@ -10744,12 +10778,57 @@ int l_unsaved_buffers(lua_State *L) {
     return 1;
 }
 
-// mep.buffer_save(id) -> bool: writes buffer `id` to its own filename.
-// false (with an E32/E141 status) on an unnamed buffer or a write error.
+// mep.buffer_save(id [, force]) -> bool: writes buffer `id` to its own
+// filename. false (with an E32/E141/E13 status) on an unnamed buffer, a
+// write error, or a file that changed on disk under the buffer. `force`
+// overrides only that last case (SaveBuffer's staleness guard) -- the quit
+// popup passes it after telling the user the file changed and being told to
+// overwrite anyway.
 int l_buffer_save(lua_State *L) {
     int id = static_cast<int>(luaL_checkinteger(L, 1));
-    lua_pushboolean(L, GetEditor(L)->SaveBufferById(id) ? 1 : 0);
+    const bool force = lua_toboolean(L, 2) != 0;
+    lua_pushboolean(L, GetEditor(L)->SaveBufferById(id, force) ? 1 : 0);
     return 1;
+}
+
+// mep.buffer_changed_on_disk(id) -> bool: whether `id`'s file was rewritten
+// under it since it was read or last written (a `git pull`, a rebase,
+// another editor). False whenever that can't be known -- see
+// Editor::BufferChangedOnDisk.
+int l_buffer_changed_on_disk(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, GetEditor(L)->BufferChangedOnDisk(id) ? 1 : 0);
+    return 1;
+}
+
+// mep.buffer_reload(id [, force]) -> bool: re-reads `id`'s file from disk in
+// place, keeping each pane's clamped cursor and the buffer's folds/marks.
+// Without `force` a buffer with unsaved edits is left alone (false); with it
+// the edits go to the undo stack, so `u` brings them back.
+int l_buffer_reload(lua_State *L) {
+    int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const bool force = lua_toboolean(L, 2) != 0;
+    lua_pushboolean(L, GetEditor(L)->ReloadBufferFromDisk(id, force) ? 1 : 0);
+    return 1;
+}
+
+// mep.reload_changed_buffers([root]) -> reloaded_count, conflicts
+// Re-reads every unmodified buffer under `root` whose file changed on disk;
+// `conflicts` is an array of display names of the buffers that changed on
+// disk but hold unsaved edits, so were deliberately left alone. What the git
+// integration calls after any command that rewrites the working tree -- mep
+// watches no files, so that moment is the only notification there is.
+int l_reload_changed_buffers(lua_State *L) {
+    const std::string root = luaL_optstring(L, 1, "");
+    std::vector<std::string> conflicts;
+    const int reloaded = GetEditor(L)->ReloadChangedBuffersUnder(root, &conflicts);
+    lua_pushinteger(L, reloaded);
+    lua_createtable(L, static_cast<int>(conflicts.size()), 0);
+    for (size_t i = 0; i < conflicts.size(); i++) {
+        lua_pushlstring(L, conflicts[i].data(), conflicts[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 2;
 }
 
 // mep.read_disk_lines(path) -> array of lines, or nil. Always reads the file
@@ -11188,6 +11267,52 @@ int l_pdf_current_page(lua_State *L) {
     int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
     const PdfSession *sess = GetEditor(L)->AnyPdfSessionForBuffer(buffer_id);
     lua_pushinteger(L, sess ? sess->page + 1 : 0);
+    return 1;
+}
+
+// mep.pdf_selection() -> {text=, page=, file=} for the focused PDF
+// pane's current selection (the keyboard `v` one, else a finished mouse
+// drag), or nil when nothing is selected. `page` is 1-based, the number
+// the pane's own page box counts by. The same text `y` copies and the
+// same passage K/A quote to a model, so a user script can do its own
+// thing with a selection without re-deriving any of it.
+int l_pdf_selection(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const PdfSession *sess = ed->GetPdf(ed->ActivePaneId());
+    if (!sess) return luaL_error(L, "not a PDF pane");
+    const std::string text = ed->PdfSelectionText(*sess);
+    if (text.empty()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushlstring(L, text.data(), text.size());
+    lua_setfield(L, -2, "text");
+    lua_pushinteger(L, ed->PdfSelectionPage(*sess) + 1);
+    lua_setfield(L, -2, "page");
+    const int bid = sess->buffer_id;
+    lua_pushstring(L, ed->BufferFilenameForLua(bid).c_str());
+    lua_setfield(L, -2, "file");
+    return 1;
+}
+
+// mep.pdf_yank(): copies the focused PDF pane's selection to the unnamed
+// register and the system clipboard -- what `y` does in annotate mode.
+int l_pdf_yank(lua_State *L) {
+    if (!GetEditor(L)->PdfYankCurrentSelection()) return luaL_error(L, "not a PDF pane");
+    return 0;
+}
+
+// mep.pdf_page_text([n]) -> the text of page `n` (1-based; the focused
+// pane's current page when omitted) in visual reading order. What a
+// short quoted passage's surrounding context is taken from.
+int l_pdf_page_text(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    PdfSession *sess = ed->GetPdfMutable(ed->ActivePaneId());
+    if (!sess || !sess->doc) return luaL_error(L, "not a PDF pane");
+    const int page = lua_isnoneornil(L, 1) ? sess->page : static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const std::string text = sess->doc->PageText(page);
+    lua_pushlstring(L, text.data(), text.size());
     return 1;
 }
 
@@ -13787,6 +13912,7 @@ const luaL_Reg kMepFuncs[] = {
     {"float_preview", l_float_preview},
     {"float_preview_title", l_float_preview_title},
     {"float_preview_close", l_float_preview_close},
+    {"float_preview_set_text", l_float_preview_set_text},
     {"float_preview_leader_closed", l_float_preview_leader_closed},
     {"float_open", l_float_open},
     {"float_close", l_float_close},
@@ -14196,6 +14322,9 @@ const luaL_Reg kMepFuncs[] = {
     {"pdf_goto_page", l_pdf_goto_page},
     {"pdf_fit_page", l_pdf_fit_page},
     {"pdf_current_page", l_pdf_current_page},
+    {"pdf_selection", l_pdf_selection},
+    {"pdf_page_text", l_pdf_page_text},
+    {"pdf_yank", l_pdf_yank},
     {"office_reload", l_office_reload},
     {"office_theme", l_office_theme},
     {"doc_export_html_to_latex", l_doc_export_html_to_latex},
@@ -14213,6 +14342,9 @@ const luaL_Reg kMepFuncs[] = {
     {"set_on_quit_unsaved", l_set_on_quit_unsaved},
     {"unsaved_buffers", l_unsaved_buffers},
     {"buffer_save", l_buffer_save},
+    {"buffer_changed_on_disk", l_buffer_changed_on_disk},
+    {"buffer_reload", l_buffer_reload},
+    {"reload_changed_buffers", l_reload_changed_buffers},
     {"read_disk_lines", l_read_disk_lines},
     {"lsp_start", l_lsp_start},
     {"lsp_request", l_lsp_request},

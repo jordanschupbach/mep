@@ -97,6 +97,15 @@ struct PdfAnnotRect {
 struct PdfGlyphBox {
     double left = 0, top = 0, right = 0, bottom = 0;
 };
+// One visual line of a page's text, as a keyboard caret meets it:
+// indices into PageGlyphs' result, left to right, with the rows
+// themselves top to bottom. Not the same thing as the page's reading
+// order, which is whatever the producer emitted -- see pdf_text.h's
+// GlyphRow for how these are formed and what `display_math` means.
+struct PdfTextRow {
+    std::vector<int> glyphs;
+    bool display_math = false;
+};
 struct PdfAnnotDraw {
     int kind = 0;                        // 0 = highlight, 1 = note
     std::vector<PdfAnnotRect> rects;     // highlight: one device-px rect per quad; note: one icon rect
@@ -340,6 +349,40 @@ public:
      * @brief Returns a page's glyph boxes in reading order (point space).
      */
     std::vector<PdfGlyphBox> PageGlyphs(int page_index) const;
+
+    // The same glyphs grouped into visual lines, top to bottom -- the
+    // order a keyboard caret actually moves in, as opposed to reading
+    // order. Indices are into PageGlyphs' result for the same page.
+    /**
+     * @brief Returns a page's glyphs grouped into visual rows, top to bottom.
+     */
+    std::vector<PdfTextRow> PageTextRows(int page_index) const;
+
+    // --- the text behind a selection (copying, quoting) ---
+
+    // What the glyphs at `glyph_indices` (positions in PageGlyphs'/
+    // PageTextRows' own order) read as: words and lines reconstructed
+    // from glyph geometry, ligatures expanded, a word hyphenated over a
+    // line end put back together. See pdf_text.h's JoinGlyphText.
+    /**
+     * @brief Returns the readable text of a set of glyphs on one page.
+     */
+    std::string TextForGlyphs(int page_index, const std::vector<int> &glyph_indices) const;
+
+    // The text a click-drag between two device-pixel points covers --
+    // the exact run SelectionQuads draws around, given the same
+    // arguments, so what is copied is what was highlighted.
+    /**
+     * @brief Returns the text of a device-pixel click-drag selection on one page.
+     */
+    std::string SelectionText(int page_index, float px_per_pt, double dax, double day, double dbx, double dby) const;
+
+    // A whole page as readable text, same reconstruction -- the
+    // surrounding context for a short quoted passage.
+    /**
+     * @brief Returns one page's full text in reading order.
+     */
+    std::string PageText(int page_index) const;
 
     // Point-space selection quads spanning glyphs [min(gi_a,gi_b) ..
     // max(gi_a,gi_b)] on page_index (reusing the same line-grouping as text

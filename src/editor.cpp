@@ -566,6 +566,39 @@ EM_JS(char *, mep_js_clipboard_read, (), {
 });
 #endif
 
+// See DiskStamp in editor.h for why this is kept at all. Deliberately
+// outside the anonymous namespace below: the three readers are spread
+// across this translation unit (FindOrCreateBuffer stamps on read,
+// SaveBuffer guards and re-stamps on write, ReloadChangedBuffersUnder
+// compares), and it is declared in editor.h so the reload regression test
+// can stat a file the same way mep does.
+DiskStamp StatDiskStamp(const std::string &path) {
+    DiskStamp stamp;
+#if defined(__EMSCRIPTEN__)
+    // The wasm build reaches files only through the Deno bridge, which
+    // exposes no stat at all -- so every buffer there stays unstamped and
+    // every guard below it stays inert, exactly as before this existed.
+    (void)path;
+    return stamp;
+#else
+    if (path.empty()) return stamp;
+    std::error_code ec;
+    const std::filesystem::path p(path);
+    // A directory is not a file whose bytes could go stale; refusing to
+    // stamp one keeps the guard from ever firing on an oil-style
+    // directory buffer.
+    if (!std::filesystem::is_regular_file(p, ec) || ec) return stamp;
+    const auto size = std::filesystem::file_size(p, ec);
+    if (ec) return stamp;
+    const auto mtime = std::filesystem::last_write_time(p, ec);
+    if (ec) return stamp;
+    stamp.valid = true;
+    stamp.size = static_cast<long long>(size);
+    stamp.mtime = static_cast<long long>(mtime.time_since_epoch().count());
+    return stamp;
+#endif
+}
+
 namespace {
 
 // Vim's word-class model: a "word" motion (w/b/e) stops at the boundary
@@ -6840,6 +6873,14 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
         return store();
     }
     if (existed) *existed = true;
+    // Stamped BEFORE the read, not after, and from the same `path` spelling
+    // the stream above resolved: if the file were rewritten *during* this
+    // read, a stamp taken afterwards would match the new file while `lines`
+    // held a mix, and the next save would overwrite it believing itself
+    // current. Taken first, that race instead leaves a stamp that no longer
+    // matches -- so the save asks rather than silently writing. Erring
+    // toward one spurious prompt is the whole point of the guard.
+    buf.disk = StatDiskStamp(path);
     std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     buf.lines = SplitIntoLines(content);
 #endif
@@ -12501,12 +12542,16 @@ void Editor::EnterPdfAnnotateMode() {
     mode_ = Mode::PdfAnnotate;
     if (PdfSession *s = GetPdfMutable(CurPane().id)) {
         LoadCaretGlyphs(*s, s->page);
+        // The caret starts fresh, but a selection the mouse already made
+        // does NOT: dragging over a passage and then pressing `a` to do
+        // something with it is the obvious way round, and throwing the
+        // selection away here left both the highlight action and the
+        // yank with nothing to act on.
         s->visual_active = false;
-        s->sel_quads.clear();
-        s->sel_page = -1;
         s->annot_leader = false;
     }
-    status_message_ = "PDF annotate: hjkl/w/b move, click to place, v select; <space> for actions; Esc exit";
+    status_message_ =
+        "PDF annotate: hjkl/w/b move, v select, y yank, K ask, A discuss, C to Claude Code; <space> annotations";
 }
 
 void Editor::PdfNotePrompt() {
@@ -12765,13 +12810,181 @@ void Editor::PdfAddNote(const std::string &text) {
 void Editor::LoadCaretGlyphs(PdfSession &sess, int page) {
     sess.caret_page = page;
     sess.caret_glyphs = sess.doc ? sess.doc->PageGlyphs(page) : std::vector<PdfGlyphBox>{};
-    sess.caret_glyph = sess.caret_glyphs.empty() ? -1 : 0;
+    sess.caret_rows.clear();
+    if (sess.doc) {
+        for (const PdfTextRow &r : sess.doc->PageTextRows(page)) {
+            // A dedicated equation line is skipped outright -- see
+            // PdfSession::caret_rows (editor.h) for why.
+            if (r.display_math || r.glyphs.empty()) continue;
+            sess.caret_rows.push_back(r.glyphs);
+        }
+    }
+    sess.caret_row = sess.caret_rows.empty() ? -1 : 0;
+    sess.caret_col = sess.caret_rows.empty() ? -1 : 0;
+    SyncPdfCaretGlyph(sess);
+}
+
+void Editor::SyncPdfCaretGlyph(PdfSession &sess) {
+    if (sess.caret_row < 0 || sess.caret_row >= static_cast<int>(sess.caret_rows.size())) {
+        sess.caret_glyph = -1;
+        return;
+    }
+    const std::vector<int> &row = sess.caret_rows[static_cast<size_t>(sess.caret_row)];
+    sess.caret_col = std::clamp(sess.caret_col, 0, static_cast<int>(row.size()) - 1);
+    sess.caret_glyph = row[static_cast<size_t>(sess.caret_col)];
 }
 
 void Editor::PdfCaretUpdateVisual(PdfSession &sess) {
-    if (!sess.visual_active || !sess.doc || sess.caret_glyph < 0 || sess.visual_anchor_glyph < 0) return;
+    if (!sess.visual_active || !sess.doc || sess.caret_row < 0 || sess.visual_anchor_row < 0) return;
     sess.sel_page = sess.caret_page;
-    sess.sel_quads = sess.doc->SelectionQuadsForGlyphs(sess.caret_page, sess.visual_anchor_glyph, sess.caret_glyph);
+    sess.sel_quads.clear();
+    // One quad per visual row between anchor and caret, built from
+    // caret_rows directly rather than from a glyph-index range: the
+    // caret moves in visual order, which on a page whose content stream
+    // runs body-text-then-header is not the glyph-index order
+    // PdfDoc::SelectionQuadsForGlyphs would span. Dropped equation rows
+    // fall out of a selection over them for the same reason they fall
+    // out of the caret's path.
+    int r0 = sess.visual_anchor_row, c0 = sess.visual_anchor_col;
+    int r1 = sess.caret_row, c1 = sess.caret_col;
+    if (r1 < r0 || (r1 == r0 && c1 < c0)) {
+        std::swap(r0, r1);
+        std::swap(c0, c1);
+    }
+    for (int r = r0; r <= r1 && r < static_cast<int>(sess.caret_rows.size()); ++r) {
+        const std::vector<int> &row = sess.caret_rows[static_cast<size_t>(r)];
+        if (row.empty()) continue;
+        int from = (r == r0) ? c0 : 0;
+        int to = (r == r1) ? c1 : static_cast<int>(row.size()) - 1;
+        from = std::clamp(from, 0, static_cast<int>(row.size()) - 1);
+        to = std::clamp(to, 0, static_cast<int>(row.size()) - 1);
+        bool have = false;
+        double left = 0, right = 0, top = 0, bottom = 0;
+        for (int i = from; i <= to; ++i) {
+            const PdfGlyphBox &g = sess.caret_glyphs[static_cast<size_t>(row[static_cast<size_t>(i)])];
+            if (!have) {
+                left = g.left; right = g.right; top = g.top; bottom = g.bottom;
+                have = true;
+            } else {
+                left = std::min(left, g.left);
+                right = std::max(right, g.right);
+                top = std::max(top, g.top);
+                bottom = std::min(bottom, g.bottom);
+            }
+        }
+        if (!have) continue;
+        pdfannots::Quad q;
+        q.x1 = left;  q.y1 = top;    q.x2 = right; q.y2 = top;
+        q.x3 = left;  q.y3 = bottom; q.x4 = right; q.y4 = bottom;
+        sess.sel_quads.push_back(q);
+    }
+}
+
+// --- the selection as text (yank, and quoting it to a model) --------
+//
+// Two sources, same answer. The keyboard visual selection already knows
+// which glyphs it covers (caret_rows holds their indices), so it is
+// read straight off. A mouse drag only ever recorded where it started
+// and the quads it drew, so it is resolved back through the same
+// nearest-glyph-to-each-end rule PdfDoc::SelectionQuads used to draw
+// it -- which is why the drag's head is kept (PdfSession::sel_head_dx).
+//
+// visual_active wins when both are live: in annotate mode a click both
+// places the caret and starts a drag, so the two can otherwise disagree
+// about what is selected.
+std::string Editor::PdfSelectionText(const PdfSession &sess) const {
+    if (!sess.doc) return std::string();
+    if (sess.visual_active && sess.caret_row >= 0 && sess.visual_anchor_row >= 0) {
+        int r0 = sess.visual_anchor_row, c0 = sess.visual_anchor_col;
+        int r1 = sess.caret_row, c1 = sess.caret_col;
+        if (r1 < r0 || (r1 == r0 && c1 < c0)) {
+            std::swap(r0, r1);
+            std::swap(c0, c1);
+        }
+        std::vector<int> indices;
+        for (int r = r0; r <= r1 && r < static_cast<int>(sess.caret_rows.size()); ++r) {
+            const std::vector<int> &row = sess.caret_rows[static_cast<size_t>(r)];
+            if (row.empty()) continue;
+            const int last = static_cast<int>(row.size()) - 1;
+            const int from = std::clamp((r == r0) ? c0 : 0, 0, last);
+            const int to = std::clamp((r == r1) ? c1 : last, 0, last);
+            for (int i = from; i <= to; ++i) indices.push_back(row[static_cast<size_t>(i)]);
+        }
+        return sess.doc->TextForGlyphs(sess.caret_page, indices);
+    }
+    if (sess.sel_page >= 0 && !sess.sel_quads.empty()) {
+        return sess.doc->SelectionText(sess.sel_page, sess.rendered_scale, sess.sel_anchor_dx, sess.sel_anchor_dy,
+                                        sess.sel_head_dx, sess.sel_head_dy);
+    }
+    return std::string();
+}
+
+// The 1-based page the current selection is on, or -1 -- what a status
+// line or a quoted passage's citation names it by.
+int Editor::PdfSelectionPage(const PdfSession &sess) const {
+    if (sess.visual_active && sess.caret_row >= 0 && sess.visual_anchor_row >= 0) return sess.caret_page;
+    if (sess.sel_page >= 0 && !sess.sel_quads.empty()) return sess.sel_page;
+    return -1;
+}
+
+// Copies the selection, leaving it in place -- unlike turning it into a
+// highlight (PdfHighlightCurrentMatch), which consumes it. Same two
+// steps every non-Buffer yank in this file takes (see the hover-doc
+// one): write the registers, then push the unnamed one at the system
+// clipboard.
+void Editor::PdfYankSelection(PdfSession &sess) {
+    const std::string text = PdfSelectionText(sess);
+    if (text.empty()) {
+        Notify("Nothing selected (v to select, or drag)", NotifyLevel::Warn);
+        return;
+    }
+    Register &target = RegisterFor(0);
+    target.text = text;
+    target.linewise = false;
+    target.blockwise = false;
+    registers_['0'] = target;
+    SyncUnnamedToSystemClipboard();
+    const int page = PdfSelectionPage(sess);
+    status_message_ = "Yanked " + std::to_string(text.size()) + " chars" +
+                       (page >= 0 ? " from page " + std::to_string(page + 1) : "");
+}
+
+// Hands the selected passage to the Lua side's model client
+// (kBuiltinPdfAi in main.cpp), which owns everything about the request:
+// the prompt, the streaming, and where the answer is shown. All this
+// end knows is the passage and what to call it -- `where` is the
+// citation the prompt quotes it under, and the title the popup wears.
+bool Editor::PdfYankCurrentSelection() {
+    PdfSession *sess = GetPdfMutable(ActivePaneId());
+    if (!sess) return false;
+    PdfYankSelection(*sess);
+    return true;
+}
+
+void Editor::PdfAskAboutSelection(PdfSession &sess, int how) {
+    const std::string text = PdfSelectionText(sess);
+    if (text.empty()) {
+        Notify("Nothing selected (v to select, or drag)", NotifyLevel::Warn);
+        return;
+    }
+    if (!lua_) return;
+    std::string where;
+    const int bid = sess.buffer_id;
+    if (bid >= 0 && bid < static_cast<int>(buffers_.size())) {
+        const std::string &path = buffers_[static_cast<size_t>(bid)].filename;
+        const size_t slash = path.find_last_of('/');
+        where = slash == std::string::npos ? path : path.substr(slash + 1);
+    }
+    const int page = PdfSelectionPage(sess);
+    // The page the viewer counts by, which is the one the reader can
+    // type into the page box -- not the folio printed on the paper,
+    // which a PDF rarely states anywhere a reader could trust.
+    if (page >= 0) {
+        if (!where.empty()) where += ", ";
+        where += "page " + std::to_string(page + 1);
+    }
+    const char *fn = how == 'A' ? "mep_pdf_ai_discuss" : (how == 'C' ? "mep_pdf_ai_claude" : "mep_pdf_ai_popup");
+    lua_->CallGlobal2Strings(fn, text, where);
 }
 
 void Editor::PdfCaretEnsureVisible(PdfSession &sess) {
@@ -12797,71 +13010,131 @@ void Editor::PdfCaretEnsureVisible(PdfSession &sess) {
 
 void Editor::PdfCaretMove(PdfSession &sess, int cp) {
     if (sess.caret_page != sess.page) LoadCaretGlyphs(sess, sess.page);  // page changed under us
-    if (sess.caret_glyphs.empty()) return;
+    if (sess.caret_rows.empty()) return;
     const auto &G = sess.caret_glyphs;
-    int n = static_cast<int>(G.size());
-    int c = std::clamp(sess.caret_glyph, 0, n - 1);
-    auto height = [&](int i) { return std::max(G[static_cast<size_t>(i)].top - G[static_cast<size_t>(i)].bottom, 1e-6); };
-    auto center = [&](int i) { return (G[static_cast<size_t>(i)].top + G[static_cast<size_t>(i)].bottom) / 2.0; };
-    auto sameLine = [&](int a, int b) { return std::fabs(center(a) - center(b)) <= 0.5 * std::max(height(a), height(b)); };
-    auto wordStart = [&](int i) {
-        if (i <= 0) return true;
-        if (!sameLine(i - 1, i)) return true;
-        return (G[static_cast<size_t>(i)].left - G[static_cast<size_t>(i - 1)].right) > 0.05 * std::max(height(i), height(i - 1));
+    const auto &R = sess.caret_rows;
+    const int rows = static_cast<int>(R.size());
+    int r = std::clamp(sess.caret_row, 0, rows - 1);
+    int c = std::clamp(sess.caret_col, 0, static_cast<int>(R[static_cast<size_t>(r)].size()) - 1);
+    auto gbox = [&](int row, int col) -> const PdfGlyphBox & {
+        return G[static_cast<size_t>(R[static_cast<size_t>(row)][static_cast<size_t>(col)])];
     };
-    double cx = (G[static_cast<size_t>(c)].left + G[static_cast<size_t>(c)].right) / 2.0;
-    int page_count = sess.doc ? sess.doc->PageCount() : 1;
+    auto last_col = [&](int row) { return static_cast<int>(R[static_cast<size_t>(row)].size()) - 1; };
+    auto mid_x = [&](int row, int col) {
+        const PdfGlyphBox &g = gbox(row, col);
+        return (g.left + g.right) / 2.0;
+    };
+    // The glyph nearest `x` on `row` -- what j/k aim at, so a vertical
+    // motion keeps its column the way it does in a text buffer.
+    auto nearest_col = [&](int row, double x) {
+        int best = 0;
+        double bd = 1e30;
+        for (int k = 0; k <= last_col(row); ++k) {
+            double d = std::fabs(mid_x(row, k) - x);
+            if (d < bd) { bd = d; best = k; }
+        }
+        return best;
+    };
+    // A word starts after a gap wide enough to read as one. Within a row
+    // only -- the first glyph of a row always starts a word.
+    auto word_start = [&](int row, int col) {
+        if (col <= 0) return true;
+        const PdfGlyphBox &g = gbox(row, col);
+        const PdfGlyphBox &p = gbox(row, col - 1);
+        const double h = std::max({g.top - g.bottom, p.top - p.bottom, 1e-6});
+        return (g.left - p.right) > 0.05 * h;
+    };
+    const double cx = mid_x(r, c);
+    const int page_count = sess.doc ? sess.doc->PageCount() : 1;
     switch (cp) {
-        case 'h': c = std::max(0, c - 1); break;
-        case 'l': c = std::min(n - 1, c + 1); break;
-        case '0': while (c > 0 && sameLine(c - 1, c)) --c; break;
-        case '$': while (c < n - 1 && sameLine(c, c + 1)) ++c; break;
-        case 'w': { int i = c + 1; while (i < n && !wordStart(i)) ++i; c = std::min(i, n - 1); break; }
-        case 'b': { int i = c - 1; while (i > 0 && !wordStart(i)) --i; c = std::max(i, 0); break; }
-        case 'e': { int i = c + 1; while (i < n - 1 && !wordStart(i + 1)) ++i; c = std::min(i, n - 1); break; }
-        case 'j': {
-            int i = c + 1;
-            while (i < n && sameLine(i, c)) ++i;  // first glyph of the next line
-            if (i < n) {
-                int best = i; double bd = 1e30;
-                for (int k = i; k < n && sameLine(k, i); ++k) {
-                    double kx = (G[static_cast<size_t>(k)].left + G[static_cast<size_t>(k)].right) / 2.0;
-                    if (std::fabs(kx - cx) < bd) { bd = std::fabs(kx - cx); best = k; }
+        case 'h':
+            if (c > 0) --c;
+            else if (r > 0) { --r; c = last_col(r); }
+            break;
+        case 'l':
+            if (c < last_col(r)) ++c;
+            else if (r < rows - 1) { ++r; c = 0; }
+            break;
+        case '0': c = 0; break;
+        case '$': c = last_col(r); break;
+        case 'w': {
+            int rr = r, cc = c + 1;
+            for (;;) {
+                if (cc > last_col(rr)) {
+                    if (rr >= rows - 1) { cc = last_col(rr); break; }
+                    ++rr;
+                    cc = 0;
+                    break;  // the start of the next row is itself a word start
                 }
-                c = best;
+                if (word_start(rr, cc)) break;
+                ++cc;
+            }
+            r = rr;
+            c = std::min(cc, last_col(rr));
+            break;
+        }
+        case 'b': {
+            int rr = r, cc = c - 1;
+            for (;;) {
+                if (cc < 0) {
+                    if (rr <= 0) { cc = 0; break; }
+                    --rr;
+                    cc = last_col(rr);
+                }
+                if (word_start(rr, cc)) break;
+                --cc;
+            }
+            r = rr;
+            c = std::max(cc, 0);
+            break;
+        }
+        case 'e': {
+            // The last glyph of the current word: scan forward to the
+            // glyph before the next word start.
+            int rr = r, cc = c + 1;
+            while (cc < last_col(rr) && !word_start(rr, cc + 1)) ++cc;
+            if (cc > last_col(rr)) {
+                if (rr < rows - 1) { ++rr; cc = 0; while (cc < last_col(rr) && !word_start(rr, cc + 1)) ++cc; }
+                else cc = last_col(rr);
+            }
+            r = rr;
+            c = std::min(cc, last_col(rr));
+            break;
+        }
+        case 'j':
+            if (r < rows - 1) {
+                ++r;
+                c = nearest_col(r, cx);
             } else if (!sess.visual_active && sess.page < page_count - 1) {
-                // Past the last line: advance to the next page's first glyph.
+                // Past the last row: on to the next page's first row.
                 sess.page++;
                 sess.scroll_y = 0;
                 LoadCaretGlyphs(sess, sess.page);
                 return;
             }
             break;
-        }
-        case 'k': {
-            int i = c - 1;
-            while (i >= 0 && sameLine(i, c)) --i;  // last glyph of the previous line
-            if (i >= 0) {
-                int start = i; while (start > 0 && sameLine(start - 1, i)) --start;
-                int best = start; double bd = 1e30;
-                for (int k = start; k <= i; ++k) {
-                    double kx = (G[static_cast<size_t>(k)].left + G[static_cast<size_t>(k)].right) / 2.0;
-                    if (std::fabs(kx - cx) < bd) { bd = std::fabs(kx - cx); best = k; }
-                }
-                c = best;
+        case 'k':
+            if (r > 0) {
+                --r;
+                c = nearest_col(r, cx);
             } else if (!sess.visual_active && sess.page > 0) {
                 sess.page--;
                 LoadCaretGlyphs(sess, sess.page);
-                sess.caret_glyph = sess.caret_glyphs.empty() ? -1 : static_cast<int>(sess.caret_glyphs.size()) - 1;
+                if (!sess.caret_rows.empty()) {
+                    sess.caret_row = static_cast<int>(sess.caret_rows.size()) - 1;
+                    sess.caret_col = static_cast<int>(sess.caret_rows.back().size()) - 1;
+                    SyncPdfCaretGlyph(sess);
+                }
                 sess.scroll_y = PdfPageScreenHeightPx(sess, sess.page);  // bottom of the page
                 RebasePdfScroll(sess);
                 return;
             }
             break;
-        }
         default: break;
     }
-    sess.caret_glyph = c;
+    sess.caret_row = r;
+    sess.caret_col = c;
+    SyncPdfCaretGlyph(sess);
     if (sess.visual_active) PdfCaretUpdateVisual(sess);
     PdfCaretEnsureVisible(sess);
 }
@@ -12870,20 +13143,33 @@ void Editor::PdfCaretPlaceAtDevice(int pane_id, int page, double dx, double dy) 
     PdfSession *s = GetPdfMutable(pane_id);
     if (!s || !s->doc) return;
     if (s->caret_page != page) LoadCaretGlyphs(*s, page);
-    if (s->caret_glyphs.empty()) return;
+    if (s->caret_rows.empty()) return;
     double px, py;
     if (!s->doc->DevicePxToPoint(page, s->rendered_scale, dx, dy, &px, &py)) return;
-    int best = -1;
+    // Nearest navigable glyph, searched over caret_rows rather than over
+    // every glyph on the page: a click lands where the caret can
+    // actually go, so clicking into a dropped equation snaps to the
+    // nearest line of text instead of leaving the caret where it was.
+    int best_row = -1, best_col = -1;
     double bestd = 1e30;
-    for (size_t i = 0; i < s->caret_glyphs.size(); ++i) {
-        const PdfGlyphBox &g = s->caret_glyphs[i];
-        double cx = std::clamp(px, g.left, g.right);
-        double cy = std::clamp(py, g.bottom, g.top);
-        double d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
-        if (d < bestd) { bestd = d; best = static_cast<int>(i); }
+    for (size_t r = 0; r < s->caret_rows.size(); ++r) {
+        const std::vector<int> &row = s->caret_rows[r];
+        for (size_t i = 0; i < row.size(); ++i) {
+            const PdfGlyphBox &g = s->caret_glyphs[static_cast<size_t>(row[i])];
+            double cx = std::clamp(px, g.left, g.right);
+            double cy = std::clamp(py, g.bottom, g.top);
+            double d = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+            if (d < bestd) {
+                bestd = d;
+                best_row = static_cast<int>(r);
+                best_col = static_cast<int>(i);
+            }
+        }
     }
-    if (best >= 0) {
-        s->caret_glyph = best;
+    if (best_row >= 0) {
+        s->caret_row = best_row;
+        s->caret_col = best_col;
+        SyncPdfCaretGlyph(*s);
         if (s->visual_active) PdfCaretUpdateVisual(*s);
     }
 }
@@ -12892,7 +13178,8 @@ void Editor::PdfCaretToggleVisual(PdfSession &sess) {
     if (sess.caret_glyph < 0) return;
     sess.visual_active = !sess.visual_active;
     if (sess.visual_active) {
-        sess.visual_anchor_glyph = sess.caret_glyph;
+        sess.visual_anchor_row = sess.caret_row;
+        sess.visual_anchor_col = sess.caret_col;
         PdfCaretUpdateVisual(sess);
     } else {
         sess.sel_quads.clear();
@@ -14586,6 +14873,36 @@ void Editor::HandlePdfInput() {
             pending_g_ = false;
             pending_count_ = 0;
             PdfCaretToggleVisual(*sess);
+        } else if (annotate && cp == 'y') {
+            // Copy the selection. Direct, not under the leader: annotate
+            // mode is a modal state of its own, so `y` means here what it
+            // means in Visual mode rather than needing a prefix.
+            pending_g_ = false;
+            pending_count_ = 0;
+            PdfYankSelection(*sess);
+        } else if (annotate && (cp == 'K' || cp == 'A' || cp == 'C')) {
+            // Ask a model about the selection: K answers in a popup
+            // without asking anything first, A opens a discussion in the
+            // AI Agent sidebar, C hands it to Claude Code in a pane --
+            // the one route that needs no API key, since the agent
+            // brings its own credentials. All three hand off to Lua
+            // (kBuiltinPdfAi), where mep's model client lives. K mirrors
+            // Visual mode, which already binds it to "send selection to
+            // the AI".
+            pending_g_ = false;
+            pending_count_ = 0;
+            if (cp == 'C') {
+                // Handing the passage to Claude Code splits the pane and
+                // moves focus into a terminal. Leave annotate mode and
+                // stop draining first: every other branch that changes
+                // the pane layout returns here too, because the rest of
+                // this loop goes on acting on `sess` and the mode it was
+                // entered with, and would undo the split it just made.
+                mode_ = Mode::Pdf;
+                PdfAskAboutSelection(*sess, cp);
+                return;
+            }
+            PdfAskAboutSelection(*sess, cp);
         } else if (cp == 'N' && !sess->search_matches.empty()) {
             pending_g_ = false;
             pending_count_ = 0;
@@ -17798,7 +18115,15 @@ void Editor::CloseFloatPane(bool force_write) {
         // Buf() is still the float's buffer here (float_node_ is set), so
         // SaveFile writes exactly what was edited.
         const Buffer &b = buffers_[static_cast<size_t>(buffer_id)];
-        if ((b.modified || force_write) && !b.deleted && !b.filename.empty()) wrote = SaveFile(b.filename);
+        // `force_write` is ZZ, the explicit confirm, which this function's
+        // own contract already defines as writing unconditionally -- so it
+        // also overrides SaveBuffer's changed-on-disk guard. It has to:
+        // the commit-message float writes the repo's own COMMIT_EDITMSG,
+        // which git itself rewrites on every commit, and a confirmed commit
+        // message must not be refusable because of that.
+        if ((b.modified || force_write) && !b.deleted && !b.filename.empty()) {
+            wrote = SaveFile(b.filename, force_write);
+        }
     }
     float_node_.reset();
     float_escape_dismiss_ = true;
@@ -24328,6 +24653,13 @@ void Editor::BeginSelect(const std::string &title, std::vector<std::string> item
 }
 
 void Editor::BeginPreview(const std::string &title, const std::string &text) {
+    // A fresh box inherits nothing from the last one: SetPreviewAction
+    // is an opt-in the caller makes right after this, and a stale key
+    // from a previous box would otherwise still fire here.
+    if (preview_action_ref_ != 0 && lua_) lua_->UnrefFunction(preview_action_ref_);
+    preview_action_key_ = 0;
+    preview_action_hint_.clear();
+    preview_action_ref_ = 0;
     overlay_previous_mode_ = mode_;
     preview_title_ = title;
     preview_text_ = text;
@@ -24823,19 +25155,39 @@ void Editor::HandleSelectInput() {
 // nothing to decide: any key (Escape included, but not special-cased)
 // or a click just acknowledges and closes it.
 void Editor::HandlePreviewInput() {
-    bool dismiss = false, leader = false;
+    bool dismiss = false, leader = false, action = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) dismiss = true;
     for (int cp = gfx::GetCharPressed(); cp != 0; cp = gfx::GetCharPressed()) {
         dismiss = true;
+        if (preview_action_key_ != 0 && cp == preview_action_key_) action = true;
         if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) leader = true;
     }
     if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) dismiss = true;
     if (!dismiss) return;
+    // This box's own key: it still closes -- whatever the action opens
+    // wants the screen -- but runs the action on the way out rather than
+    // merely being swallowed as a dismissal.
+    if (action) {
+        const int ref = preview_action_ref_;
+        preview_action_key_ = 0;
+        preview_action_hint_.clear();
+        preview_action_ref_ = 0;
+        RestoreFromOverlay();
+        if (ref != 0) {
+            CallLuaRef(ref);
+            if (lua_) lua_->UnrefFunction(ref);
+        }
+        return;
+    }
     // The leader key doesn't just close the box, it starts the leader
     // sequence it begins -- so <leader>xx typed over a preview runs xx
     // rather than feeding `x` `x` to Normal mode after the box is gone,
     // and a binding that opened the box can see (PreviewClosedByLeader)
     // that it's being asked to toggle off, not on.
+    if (preview_action_ref_ != 0 && lua_) lua_->UnrefFunction(preview_action_ref_);
+    preview_action_key_ = 0;
+    preview_action_hint_.clear();
+    preview_action_ref_ = 0;
     if (leader) {
         preview_closed_by_leader_ = preview_title_;
         RestoreFromOverlay();
@@ -24843,6 +25195,18 @@ void Editor::HandlePreviewInput() {
         return;
     }
     RestoreFromOverlay();
+}
+
+void Editor::UpdatePreview(const std::string &text) {
+    if (mode_ != Mode::Preview) return;
+    preview_text_ = text;
+}
+
+void Editor::SetPreviewAction(int key_cp, const std::string &hint, int on_action_ref) {
+    if (preview_action_ref_ != 0 && lua_) lua_->UnrefFunction(preview_action_ref_);
+    preview_action_key_ = key_cp;
+    preview_action_hint_ = hint;
+    preview_action_ref_ = on_action_ref;
 }
 
 void Editor::ClosePreview() {
@@ -28311,8 +28675,8 @@ namespace {
  */
 const std::vector<std::string> &BuiltinCommandNames() {
     static const std::vector<std::string> kNames = {
-        "w", "write", "wa", "wall", "q", "quit", "q!", "quit!", "qa", "qall", "qa!", "qall!",
-        "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!", "split", "sp", "vsplit", "vs",
+        "w", "write", "w!", "write!", "wa", "wall", "q", "quit", "q!", "quit!", "qa", "qall", "qa!", "qall!",
+        "wq", "x", "wq!", "x!", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!", "split", "sp", "vsplit", "vs",
         "terminal", "term",
         "music", "youtube", "yt", "MepYoutube",
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
@@ -28338,7 +28702,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
  */
 bool CommandTakesFileArg(const std::string &name) {
     static const std::vector<std::string> kFileCommands = {
-        "w", "write", "wq", "x", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!",
+        "w", "write", "w!", "write!", "wq", "x", "wq!", "x!", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!",
         "split", "sp", "vsplit", "vs", "tabnew", "source", "project",
     };
     return std::find(kFileCommands.begin(), kFileCommands.end(), name) != kFileCommands.end();
@@ -30803,8 +31167,12 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
     std::string name = (sp == std::string::npos) ? cmd : cmd.substr(0, sp);
     std::string args = (sp == std::string::npos) ? "" : cmd.substr(sp + 1);
 
-    if (name == "w" || name == "write") {
-        SaveFile(args.empty() ? Buf().filename : args);
+    if (name == "w" || name == "write" || name == "w!" || name == "write!") {
+        // The bang is SaveBuffer's staleness override: "yes, I know the file
+        // changed on disk, mine wins". Nothing else about `:w` reads it --
+        // mep has no readonly flag for it to force past.
+        const bool bang = name.back() == '!';
+        SaveFile(args.empty() ? Buf().filename : args, bang);
     } else if (name == "pdfsearch") {
         PdfSearchCommand(args);
     } else if (name == "pdfcolor") {
@@ -30833,8 +31201,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         QuitAll(false);
     } else if (name == "qa!" || name == "qall!") {
         QuitAll(true);
-    } else if (name == "wq" || name == "x") {
-        if (SaveFile(args.empty() ? Buf().filename : args)) QuitCurrent(true);
+    } else if (name == "wq" || name == "x" || name == "wq!" || name == "x!") {
+        if (SaveFile(args.empty() ? Buf().filename : args, name.back() == '!')) QuitCurrent(true);
     } else if (name == "wqa" || name == "xa" || name == "wqall" || name == "xall") {
         if (WriteAllModified()) QuitAll(true);
     } else if (name == "e" || name == "edit" || name == "e!" || name == "edit!") {
@@ -31467,6 +31835,142 @@ void Editor::RetargetBuffersForRenamedPath(const std::string &from, const std::s
         }
         buf.filename = renamed;
     }
+}
+
+// --- Files that changed underneath their buffers ----------------------------
+// The third sibling of CloseBuffersForRemovedPath / RetargetBuffersForRenamed
+// Path above: the filesystem moved under open buffers and they have to be
+// told. The difference is that those two are driven by mep's own file tree
+// (which knows it did the delete/rename), while this one has to be driven by
+// whoever ran the command that rewrote the tree -- mep watches nothing (see
+// DiskStamp), so `git pull` finishing is the only moment anybody knows the
+// working tree just changed.
+
+bool Editor::BufferTextIsFileBytes(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    // Starts from BufferHasFileText -- the git gutter's own "is this buffer's
+    // text related to its file at all" test -- rather than re-listing every
+    // viewer pane kind here, so a new pane kind only has to be added in one
+    // place. This is the STRICTER question, though: not "does this text
+    // relate to the file" but "are these lines the file's bytes", which is
+    // what a re-read with SplitIntoLines needs to be true.
+    if (!BufferHasFileText(buffer_id)) return false;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    // A notebook passes BufferHasFileText on purpose (its text is editable
+    // and `:w` writes it back, so diffing it is meaningful), but its lines
+    // are the percent-format cell sources while the file is nbformat JSON --
+    // re-reading the file as text would replace the cells with raw JSON.
+    if (IsNotebookBuffer(buffer_id)) return false;
+    // Same shape: a deck's lines are not its .pptx/.odp bytes.
+    if (IsPresBuffer(buffer_id)) return false;
+    // A generated view of a deck's current slide, which `:w` already refuses.
+    if (buf.mepml_present_view) return false;
+    // An oil-style directory view: Lua owns its contents through the write
+    // hook, and there is no file whose bytes these lines are.
+    if (write_hook_refs_.count(buffer_id)) return false;
+    return true;
+}
+
+bool Editor::BufferChangedOnDisk(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.deleted || buf.filename.empty()) return false;
+    // Never stamped (a new file, the wasm build) means no information, which
+    // is reported as "not changed" rather than guessed at: every caller uses
+    // this to decide whether to disturb the user, and a false alarm on every
+    // unsaved new file would make the whole mechanism noise.
+    if (!buf.disk.valid || !BufferTextIsFileBytes(buffer_id)) return false;
+    const DiskStamp now = StatDiskStamp(ResolveBufferPath(buf, buf.filename));
+    // Deleted out from under us is not "changed": there is nothing newer to
+    // show or to protect (SaveBuffer's guard takes the same view).
+    if (!now.valid) return false;
+    return now != buf.disk;
+}
+
+bool Editor::ReloadBufferFromDisk(int buffer_id, bool force) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.deleted || buf.filename.empty()) return false;
+    if (!BufferTextIsFileBytes(buffer_id)) return false;
+    if (buf.modified && !force) return false;
+
+    const std::string io_path = ResolveBufferPath(buf, buf.filename);
+    std::ifstream in(io_path, std::ios::binary);
+    if (!in) return false;
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    // Through the undo stack, so a reload is never the thing that loses
+    // text: `u` in that buffer brings back exactly what was on screen
+    // before, which is what makes the forced (buf.modified) reload safe to
+    // offer at all.
+    PushUndoForBuffer(buffer_id);
+    std::vector<std::string> before = std::move(buf.lines);
+    buf.lines = SplitIntoLines(content);
+    buf.modified = false;
+    buf.disk = StatDiskStamp(io_path);
+    // Same recovery ReloadCurrentBuffer does, and for the same reason: the
+    // file may have grown or shrunk above these folds/marks, and without
+    // this they keep their old row numbers and end up covering lines the
+    // user never chose.
+    ShiftFoldsForTextSwap(buf, before);
+    ShiftMarksForTextSwap(buf, before);
+    NormalizeFoldsIfStale(buf);
+
+    // Every pane showing this buffer, in every workspace of every project --
+    // not just the active tab: the same file is commonly open in a split, and
+    // one left with a cursor past the new end of a file that shrank would
+    // then be drawing from an out-of-range row. ClampCursor (fold-aware) for
+    // the focused pane, ClampPositionInBuffer for the rest, matching how
+    // BufferDeleteById's own cross-pane fixup splits those two.
+    for (Project &project : projects_) {
+        for (Workspace &ws : project.workspaces) {
+            for (Tab &tab : ws.tabs) {
+                std::vector<int> pane_ids;
+                CollectLeaves(tab.root.get(), pane_ids);
+                for (int pane_id : pane_ids) {
+                    SplitNode *node = FindNode(tab.root.get(), pane_id);
+                    if (!node || node->pane.buffer_id != buffer_id) continue;
+                    node->pane.cursor = ClampPositionInBuffer(buffer_id, node->pane.cursor);
+                }
+            }
+        }
+    }
+    if (CurPane().buffer_id == buffer_id) ClampCursor();
+    // The cached git-gutter diff for this buffer was computed against the
+    // old text and the old HEAD; both just moved.
+    auto sign_it = git_signs_.find(buffer_id);
+    if (sign_it != git_signs_.end()) sign_it->second.change_epoch = -1;
+    return true;
+}
+
+int Editor::ReloadChangedBuffersUnder(const std::string &root, std::vector<std::string> *conflicts) {
+    const std::string want_root = root.empty() ? std::string() : NormalizedAbsolutePath(root);
+    int reloaded = 0;
+    for (size_t i = 0; i < buffers_.size(); i++) {
+        const int buffer_id = static_cast<int>(i);
+        const Buffer &buf = buffers_[i];
+        if (buf.deleted || buf.filename.empty()) continue;
+        if (!BufferTextIsFileBytes(buffer_id)) continue;
+        if (!want_root.empty() &&
+            !PathSuffixUnder(NormalizedAbsolutePath(ResolveBufferPath(buf, buf.filename)), want_root)) {
+            continue;
+        }
+        if (!BufferChangedOnDisk(buffer_id)) continue;
+        if (buf.modified) {
+            // NOT reloaded, and deliberately not forced: this buffer holds
+            // edits that exist nowhere else, and throwing them away to take
+            // the file's version would be the same class of silent loss this
+            // whole mechanism exists to stop -- just pointed the other way.
+            // Reported instead, because this is precisely the buffer whose
+            // next save was going to be the data-loss case, and the user is
+            // the only one who can decide which version wins.
+            if (conflicts) conflicts->push_back(DisplayPathForBuffer(buf));
+            continue;
+        }
+        if (ReloadBufferFromDisk(buffer_id)) reloaded++;
+    }
+    return reloaded;
 }
 
 std::vector<Editor::ActivityTodoItem> Editor::ActivityTodoLoad(const std::string &path) const {
@@ -34088,8 +34592,23 @@ bool GitShowSaysPathIsNew(const std::string &stderr_text) {
 // for a deletion off the top of the file, along the top edge of line 1).
 void Editor::GitGutterRefresh(const std::string &base) { GitGutterRefreshBuffer(CurPane().buffer_id, base); }
 
+bool Editor::BufferHasFileText(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    // Every pane kind whose Buffer::lines is a placeholder rather than
+    // the file's own text -- see this function's doc comment (editor.h).
+    // Notebook panes are deliberately NOT here: a .ipynb buffer really
+    // does hold editable text (NotebookSyncFromText), which `:w` writes
+    // back, so diffing it is meaningful even though its text is the
+    // cell-marker form rather than the raw JSON.
+    return !(IsImageBuffer(buffer_id) || IsPdfBuffer(buffer_id) || IsVideoBuffer(buffer_id) ||
+             IsMusicBuffer(buffer_id) || IsYoutubeBuffer(buffer_id) || IsModel3DBuffer(buffer_id) ||
+             IsCadBuffer(buffer_id) || IsCadSketchBuffer(buffer_id) || IsOfficeBuffer(buffer_id) ||
+             IsSheetBuffer(buffer_id) || IsHtmlBuffer(buffer_id) || IsTerminalBuffer(buffer_id));
+}
+
 void Editor::GitGutterRefreshBuffer(int buffer_id, const std::string &base) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    if (!BufferHasFileText(buffer_id)) return;
     const std::string fname = buffers_[static_cast<size_t>(buffer_id)].filename;
     if (fname.empty()) return;
     int ns = CreateNamespace("git");
@@ -34229,6 +34748,11 @@ void Editor::GitGutterTick(const std::string &base, bool line_hl) {
     int buffer_id = CurPane().buffer_id;
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     if (buffers_[static_cast<size_t>(buffer_id)].filename.empty()) return;
+    // Checked here as well as in GitGutterRefreshBuffer so a viewer pane
+    // doesn't even reach the staleness bookkeeping below -- a PDF pane
+    // would otherwise re-enter the retry path every debounce window for
+    // as long as it stayed focused.
+    if (!BufferHasFileText(buffer_id)) return;
     auto it = git_signs_.find(buffer_id);
     if (it != git_signs_.end()) {
         const GitSignState &st = it->second;
@@ -35054,7 +35578,69 @@ bool Editor::RealignPythonIndent(int buffer_id) {
     return true;
 }
 
-bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
+bool Editor::SaveBuffer(Buffer &buf, const std::string &path, bool force) {
+    // THE GUARD THAT STOPS A SAVE FROM UNDOING A PULL.
+    //
+    // mep watches no files (see DiskStamp), so when `git pull` -- or a
+    // rebase, a `git checkout`, a formatter, another editor, `git` typed
+    // into one of mep's own terminal panes -- rewrites a file under an
+    // open buffer, nothing tells the buffer. The write below then truncates
+    // the file and replaces it with text that predates all of it. That is
+    // silent, permanent-looking data loss: the working tree is reverted
+    // while `git pull` keeps saying "Already up to date" (correctly -- HEAD
+    // did move), so it reads as "I must have forgotten to push" rather than
+    // as a bug. Reported after it ate real work across two machines.
+    //
+    // So a write whose target changed since this buffer read or last wrote
+    // it is REFUSED, with nothing touched, and the user is told the two ways
+    // forward (`:w!` to overwrite anyway, `:e!` to take what's on disk).
+    // Vim's W11/W12 do the same job; this is deliberately the stricter
+    // refuse-by-default rather than a warning, because the warning is
+    // exactly what went unnoticed here.
+    //
+    // Scope, on purpose:
+    //   - Only when writing the buffer's OWN file. `:w other.txt` is a
+    //     save-as, where Buffer::disk describes a different file entirely
+    //     and comparing the two would refuse a perfectly ordinary write.
+    //   - Only for a stamped, plain-text buffer. An unstamped buffer (a new
+    //     file, the wasm build, a buffer whose file did not exist at open)
+    //     carries no information to compare, and every non-text buffer's
+    //     `lines` are not its file's bytes anyway -- both behave exactly as
+    //     they did before this guard existed, rather than guessing.
+    //
+    // BufferTextIsFileBytes here is deliberately the SAME predicate
+    // BufferChangedOnDisk uses. A guard that fires where the detector says
+    // nothing changed would strand the quit popup: it would offer a plain
+    // "Save?", the save would be refused, and it would ask again forever.
+    // Costs nothing today either -- the viewer/notebook/deck kinds the wider
+    // BufferHasFileText would also cover are opened through their own
+    // Open*InPlace + CreateEmptyBuffer, never through the read that stamps,
+    // so they have no stamp for either predicate to act on.
+    const int guard_buffer_id = static_cast<int>(&buf - buffers_.data());
+    if (!force && !path.empty() && buf.disk.valid && BufferTextIsFileBytes(guard_buffer_id) &&
+        ResolveBufferPath(buf, path) == ResolveBufferPath(buf, buf.filename)) {
+        const DiskStamp now = StatDiskStamp(ResolveBufferPath(buf, path));
+        // `now.valid == false` means the file is gone, which is not a
+        // conflict: there are no newer bytes to protect and a save that
+        // recreates the file is what the user is asking for.
+        if (now.valid && now != buf.disk) {
+            status_message_ = "E13: \"" + path +
+                              "\" changed on disk since it was read -- :e! reloads it, :w! overwrites it";
+            return false;
+        }
+    }
+
+    if (!WriteBufferToPath(buf, path)) return false;
+
+    // Buffer and file agree again, so this is the new baseline. Taken from
+    // buf.filename rather than `path` because a save-as has just repointed
+    // the buffer at its new file, and that is the file whose changes the
+    // next save has to notice.
+    if (!buf.filename.empty()) buf.disk = StatDiskStamp(ResolveBufferPath(buf, buf.filename));
+    return true;
+}
+
+bool Editor::WriteBufferToPath(Buffer &buf, const std::string &path) {
     // `buf` is always a reference to an element of buffers_ (both callers
     // pass one) -- pointer arithmetic recovers its buffer_id to check
     // images_/pdfs_/the write hook without threading an id through every
@@ -35393,7 +35979,7 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path) {
 #endif
 }
 
-bool Editor::SaveFile(const std::string &path) { return SaveBuffer(Buf(), path); }
+bool Editor::SaveFile(const std::string &path, bool force) { return SaveBuffer(Buf(), path, force); }
 
 std::vector<Editor::DirEntry> Editor::ListDirectory(const std::string &path) const {
     std::vector<DirEntry> entries;
@@ -35566,7 +36152,7 @@ std::vector<std::pair<int, std::string>> Editor::UnsavedBufferList() const {
     return out;
 }
 
-bool Editor::SaveBufferById(int buffer_id) {
+bool Editor::SaveBufferById(int buffer_id, bool force) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
     Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     if (buf.filename.empty()) {
@@ -35575,7 +36161,7 @@ bool Editor::SaveBufferById(int buffer_id) {
         status_message_ = "E32: No file name";
         return false;
     }
-    return SaveBuffer(buf, buf.filename);
+    return SaveBuffer(buf, buf.filename, force);
 }
 
 bool Editor::ReadDiskLines(const std::string &path, std::vector<std::string> *out) const {
@@ -35638,25 +36224,23 @@ void Editor::ReloadCurrentBuffer(bool force) {
         status_message_ = "E37: No write since last change (add ! to override)";
         return;
     }
-    std::ifstream in(Buf().filename, std::ios::binary);
-    if (!in) {
+    const int buffer_id = CurPane().buffer_id;
+    if (!BufferTextIsFileBytes(buffer_id)) {
+        // Previously this read the raw file straight into `lines`, which for
+        // a PDF/image/spreadsheet/office pane means its bytes decoded as
+        // text -- garbage in place of the document, and a `modified` flag
+        // over the top of it.
+        status_message_ = "This buffer isn't plain text; reopen the file instead";
+        return;
+    }
+    // The whole-vector swap, the fold/mark recovery across it, and the
+    // re-clamp of every pane showing this buffer all live in
+    // ReloadBufferFromDisk now -- `:e!` and the post-git-action reload are
+    // the same operation and must not drift apart.
+    if (!ReloadBufferFromDisk(buffer_id, force)) {
         status_message_ = "E484: Can't open file \"" + Buf().filename + "\"";
         return;
     }
-    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    PushUndo();
-    std::vector<std::string> before = std::move(Buf().lines);
-    Buf().lines = SplitIntoLines(content);
-    Buf().modified = false;
-    // Same whole-vector swap undo/redo make, and the same fix: the file on
-    // disk may have grown or shrunk above these folds since they were
-    // made, and without this they keep their old row numbers and end up
-    // covering lines the user never chose. Ahead of ClampCursor, which is
-    // fold-aware.
-    ShiftFoldsForTextSwap(Buf(), before);
-    ShiftMarksForTextSwap(Buf(), before);
-    NormalizeFoldsIfStale(Buf());
-    ClampCursor();
     status_message_ = "\"" + Buf().filename + "\" " + std::to_string(Buf().LineCount()) + "L reloaded";
 }
 

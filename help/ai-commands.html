@@ -29,13 +29,34 @@ rewrite, and the reply takes the selection's place.</p>
 prompt -- other buffers, files, selections -- so a question about one
 function can carry the code it depends on.</p>
 <h1>The API key</h1>
-<p>mep prompts for an API key when it first needs one and keeps it *in memory
-for the session only*. It is not written to disk and not stored in your
-config, so it never lands in a dotfile backup or a synced directory.</p>
-<p>Set the usual environment variable before launching mep if you would rather
-not be prompted.</p>
+<p>mep looks in three places, in order, and caches what it finds *in memory
+for the session only* -- it is never written to disk and never stored in
+your config, so it cannot land in a dotfile backup or a synced directory.</p>
+<ol>
+<li><code>ANTHROPIC_API_KEY</code> or <code>OPENAI_API_KEY</code>, whichever the provider wants.</li>
+<li><code>mep.ai_api_key_cmd</code>, a command that prints the key.</li>
+<li>Failing both, a masked prompt.</li>
+</ol>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.ai_api_key_cmd = {<span class="tok-green">'pass'</span>, <span class="tok-green">'show'</span>, <span class="tok-green">'anthropic/api'</span>}</code></pre></div>
+<p>The command runs once, on the first request of the session, and its first
+line of output is the key. Prefer it to the environment variable: mep's
+<code>:terminal</code> exports its whole environment to child shells, so a key
+exported for the editor is also readable by every terminal pane, language
+server and job mep starts -- and by anything else of yours that can read
+<code>/proc/&lt;pid&gt;/environ</code>. A command keeps the key wherever you already store
+secrets and out of the environment entirely.</p>
+<h1>Which model</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.ai_provider = <span class="tok-green">'anthropic'</span>            <span class="tok-comment">-- default 'openai'</span>
+mep.ai_anthropic_model = <span class="tok-green">'claude-opus-5'</span> <span class="tok-comment">-- the default</span>
+mep.ai_model = <span class="tok-green">'gpt-4o-mini'</span>             <span class="tok-comment">-- the OpenAI-side default</span></code></pre></div>
+<p><code>mep.ai_base_url</code> points the OpenAI path somewhere else, which is how you
+run this against a local model -- anything speaking the OpenAI chat
+completions API will do, and the key can be any non-empty string:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.ai_base_url = <span class="tok-green">'http://localhost:11434/v1'</span>  <span class="tok-comment">-- ollama</span>
+mep.ai_api_key = <span class="tok-green">'local'</span></code></pre></div>
 <h1>See also</h1>
 <ul>
+<li><a href="pdf.html">PDF</a> -- <code>K</code> and <code>A</code> ask about a passage of a document you are reading.</li>
 <li><a href="ai-terminal.html">Claude Code in a pane</a> -- a full agent rather than one-shot prompts.</li>
 <li><a href="copilot.html">GitHub Copilot</a> -- inline completions.</li>
 </ul>

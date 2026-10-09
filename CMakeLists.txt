@@ -735,6 +735,8 @@ add_library(mep_core STATIC
     src/pdf_xref.cpp
     src/pdf_crypt.cpp
     src/pdf_filters.cpp
+    # pdf_filters.cpp's CCITTFaxDecode stage (ccitt_codec.h).
+    src/ccitt_codec.cpp
     src/pdf_document.cpp
     src/pdf_content.cpp
     src/pdf_encodings.cpp
@@ -1948,7 +1950,9 @@ set(MEPML_CONVERT_SOURCES
 # and the marked content of its pages (so the PDF text stack comes along).
 set(MEP_A11Y_SOURCES
     src/a11y_doc.cpp src/a11y_pdf.cpp src/a11y_html.cpp src/a11y_file.cpp src/mepml_a11y.cpp src/pdf_struct.cpp
-    src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp
+    # a11y_pdf.cpp shares pdf_text.h's ligature/broken-word helpers.
+    src/pdf_text.cpp
+    src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp
     src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp)
 # `mep-mepml convert IN OUT`: every mepml conversion from the command line
 # (built by default and installed beside mep, like mep-org-lsp);
@@ -2137,7 +2141,7 @@ add_dependencies(tests mep-pdf-object-test)
 # pulls this in transitively even though this test doesn't exercise it
 # directly). Same windowless, pure-buffer-parsing shape as
 # mep-pdf-object-test above.
-add_executable(mep-pdf-xref-test EXCLUDE_FROM_ALL src/pdf_xref_test.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-xref-test EXCLUDE_FROM_ALL src/pdf_xref_test.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-xref-test PRIVATE src)
 target_compile_options(mep-pdf-xref-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-xref-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2156,13 +2160,34 @@ target_compile_options(mep-pdf-crypt-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANI
 target_link_options(mep-pdf-crypt-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-pdf-crypt-test)
 
+# text_diff.cppm/.cpp's Myers diff -- the git gutter's hunk engine, and
+# the one place in this codebase whose cost is quadratic in its input if
+# left unbounded (see that module's own kMaxEditDistance note). The
+# randomized round-trip in this test is what guards the trimmed
+# backtracking trace that bound made possible.
+add_executable(mep-text-diff-test EXCLUDE_FROM_ALL src/text_diff_test.cpp src/text_diff.cpp)
+target_include_directories(mep-text-diff-test PRIVATE src)
+target_compile_options(mep-text-diff-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-text-diff-test PRIVATE ${MEP_SANITIZE_FLAGS})
+target_sources(mep-text-diff-test PUBLIC FILE_SET CXX_MODULES FILES src/text_diff.cppm)
+add_dependencies(tests mep-text-diff-test)
+
+# ccitt_codec.h/.cpp's Group 3/Group 4 fax decoder, against strips
+# libtiff encoded (see that test's own header). Standalone: the codec
+# deliberately depends on nothing but the standard library.
+add_executable(mep-ccitt-codec-test EXCLUDE_FROM_ALL src/ccitt_codec_test.cpp src/ccitt_codec.cpp)
+target_include_directories(mep-ccitt-codec-test PRIVATE src)
+target_compile_options(mep-ccitt-codec-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-ccitt-codec-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-ccitt-codec-test)
+
 # PDFIUM_REMOVAL_PLAN.md Phase 4: pdf_filters.h/.cpp's remaining stream
-# filters (ASCIIHex/ASCII85/RunLength/LZW/DCT) and the /Filter-array
+# filters (ASCIIHex/ASCII85/RunLength/LZW/DCT/CCITTFax) and the /Filter-array
 # chain dispatcher -- FlateDecode+Predictor already covered by
 # mep-pdf-xref-test in Phase 3. Needs jpeg_codec.cpp (DCTDecode's own
 # dependency, and jpeg::Encode to build this test's synthetic JPEG) and
 # deflate.cpp (FlateDecode, exercised via DecodeStream's chain test).
-add_executable(mep-pdf-filters-test EXCLUDE_FROM_ALL src/pdf_filters_test.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-filters-test EXCLUDE_FROM_ALL src/pdf_filters_test.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-filters-test PRIVATE src)
 target_compile_options(mep-pdf-filters-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-filters-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2173,7 +2198,7 @@ add_dependencies(tests mep-pdf-filters-test)
 # protection). Needs pdf_xref.cpp/pdf_filters.cpp/pdf_object.cpp/
 # deflate.cpp/jpeg_codec.cpp transitively (pdf_document.cpp resolves
 # objects through pdf_xref.h, same as mep-pdf-xref-test above).
-add_executable(mep-pdf-document-test EXCLUDE_FROM_ALL src/pdf_document_test.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-document-test EXCLUDE_FROM_ALL src/pdf_document_test.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-document-test PRIVATE src)
 target_compile_options(mep-pdf-document-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-document-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2184,7 +2209,7 @@ add_dependencies(tests mep-pdf-document-test)
 # PDFIUM_REMOVAL_PLAN.md's own 14 phases. Same dependency set as
 # mep-pdf-document-test above (pdf_outline.cpp only needs pdf_document.h
 # for the page-index lookup, no rendering/font/text-extraction stack).
-add_executable(mep-pdf-outline-test EXCLUDE_FROM_ALL src/pdf_outline_test.cpp src/pdf_outline.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-outline-test EXCLUDE_FROM_ALL src/pdf_outline_test.cpp src/pdf_outline.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-outline-test PRIVATE src)
 target_compile_options(mep-pdf-outline-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-outline-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2196,7 +2221,7 @@ add_dependencies(tests mep-pdf-outline-test)
 # pdf_outline.cpp itself; no rendering/font/text-extraction stack needed
 # (pdf_links.cpp keeps its own tiny page-to-device transform rather than
 # linking pdf_content.cpp for it -- see that file's own comment).
-add_executable(mep-pdf-links-test EXCLUDE_FROM_ALL src/pdf_links_test.cpp src/pdf_links.cpp src/pdf_outline.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-links-test EXCLUDE_FROM_ALL src/pdf_links_test.cpp src/pdf_links.cpp src/pdf_outline.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-links-test PRIVATE src)
 target_compile_options(mep-pdf-links-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-links-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2204,7 +2229,7 @@ add_dependencies(tests mep-pdf-links-test)
 
 # Markup-annotation reader (pdf_annots.cpp): /Highlight + /Text into a
 # point-space model, a fork of pdf_links.cpp -- same minimal dependency set.
-add_executable(mep-pdf-annots-test EXCLUDE_FROM_ALL src/pdf_annots_test.cpp src/pdf_annots.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-annots-test EXCLUDE_FROM_ALL src/pdf_annots_test.cpp src/pdf_annots.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-annots-test PRIVATE src)
 target_compile_options(mep-pdf-annots-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-annots-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2213,7 +2238,7 @@ add_dependencies(tests mep-pdf-annots-test)
 # PDF writer (pdf_writer.cpp): object serializer + incremental-update
 # builder. Needs pdf_annots.cpp for the annotation model plus the parse/
 # xref/filter stack it round-trips against.
-add_executable(mep-pdf-writer-test EXCLUDE_FROM_ALL src/pdf_writer_test.cpp src/pdf_writer.cpp src/pdf_annots.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-writer-test EXCLUDE_FROM_ALL src/pdf_writer_test.cpp src/pdf_writer.cpp src/pdf_annots.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-writer-test PRIVATE src)
 target_compile_options(mep-pdf-writer-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-writer-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2239,7 +2264,7 @@ add_dependencies(tests mep-rasterizer-test)
 # covered by mep-pdf-font-test, doesn't prove it draws in the right
 # place). Needs the full pdf_* + gfx/cff.cpp + gfx/truetype.cpp +
 # gfx/rasterizer.cpp + deflate.cpp/jpeg_codec.cpp stack.
-add_executable(mep-pdf-content-test EXCLUDE_FROM_ALL src/pdf_content_test.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-content-test EXCLUDE_FROM_ALL src/pdf_content_test.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-content-test PRIVATE src)
 target_compile_options(mep-pdf-content-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-content-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2249,7 +2274,7 @@ add_dependencies(tests mep-pdf-content-test)
 # Search/MatchRectsForPage, built on pdf_content.cpp's
 # ExtractContentStreamText -- same "standalone test target only" pattern,
 # not yet wired into mep_core/the live app (Phase 13's job).
-add_executable(mep-pdf-text-test EXCLUDE_FROM_ALL src/pdf_text_test.cpp src/pdf_text.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-text-test EXCLUDE_FROM_ALL src/pdf_text_test.cpp src/pdf_text.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-text-test PRIVATE src)
 target_compile_options(mep-pdf-text-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-text-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2293,7 +2318,7 @@ add_dependencies(tests mep-pdf-encodings-test)
 # jpeg_codec.cpp stack (font-dict resolution walks Resources/Font,
 # decodes embedded FontFile2/3 streams, and falls back to mep's own
 # vendored Liberation fonts via office_font_data*.h).
-add_executable(mep-pdf-font-test EXCLUDE_FROM_ALL src/pdf_font_test.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/pdf_object.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+add_executable(mep-pdf-font-test EXCLUDE_FROM_ALL src/pdf_font_test.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
 target_include_directories(mep-pdf-font-test PRIVATE src)
 target_compile_options(mep-pdf-font-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-pdf-font-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -2355,6 +2380,34 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(mep-editor-fold-test PRIVATE ws2_32)
     endif()
     add_dependencies(tests mep-editor-fold-test)
+endif()
+
+# "I pulled and my changes vanished": the regression test for a save
+# overwriting a file that a `git pull` (or a rebase, a checkout, another
+# editor) had rewritten under an open buffer, and for the buffer never
+# being re-read afterwards. Drives a real Editor against real files and
+# rewrites those files behind its back the way git does, so it links
+# mep_core for the same reason mep-editor-fold-test above does -- the bug
+# lived in the interaction between Buffer, SaveBuffer and the git panel,
+# not in anything that could be re-extracted and tested in isolation.
+if(NOT EMSCRIPTEN)
+    add_executable(mep-editor-reload-test EXCLUDE_FROM_ALL src/editor_reload_test.cpp
+        src/collab_crdt.cpp src/collab_session.cpp ${MEP_COLLAB_WEBSOCKET_SOURCE})
+    target_link_libraries(mep-editor-reload-test PRIVATE mep_core)
+    target_include_directories(mep-editor-reload-test PRIVATE src)
+    target_compile_options(mep-editor-reload-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-editor-reload-test PRIVATE ${MEP_SANITIZE_FLAGS})
+    # Same PCH as `mep` itself, same reason as mep-editor-fold-test.
+    target_precompile_headers(mep-editor-reload-test PRIVATE ${MEP_PCH_HEADERS})
+    if(OpenSSL_FOUND)
+        target_link_libraries(mep-editor-reload-test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(NOT WIN32)
+        target_link_libraries(mep-editor-reload-test PRIVATE Threads::Threads)
+    else()
+        target_link_libraries(mep-editor-reload-test PRIVATE ws2_32)
+    endif()
+    add_dependencies(tests mep-editor-reload-test)
 endif()
 
 # WORKSPACES_PLAN.md Phase 12: pure-helper test (worktree dir derivation,

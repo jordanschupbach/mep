@@ -183,6 +183,11 @@ public:
         bit_pos_ = total % 8;
     }
 
+    // Input bytes consumed so far, rounded up: a DEFLATE stream can end
+    // mid-byte, and whatever follows it (a zlib Adler-32) starts at the
+    // next byte boundary.
+    size_t BytesConsumed() const { return byte_pos_ + (bit_pos_ ? 1 : 0); }
+
     // Raw multi-bit value, LSB-first (RFC 1951 3.1.1: "packed starting
     // with the least-significant bit"). -1 on exhausted input.
     long GetBits(int n) {
@@ -328,9 +333,10 @@ bool InflateDynamicBlock(BitReader &br, std::string &out) {
 
 }  // namespace
 
-bool InflateRaw(const unsigned char *data, size_t len, std::string &out) {
+bool InflateRaw(const unsigned char *data, size_t len, std::string &out, size_t *out_consumed) {
     BitReader br(data, len);
     out.clear();
+    if (out_consumed) *out_consumed = 0;
     for (;;) {
         long bfinal = br.GetBit();
         if (bfinal < 0) return false;
@@ -363,6 +369,7 @@ bool InflateRaw(const unsigned char *data, size_t len, std::string &out) {
 
         if (bfinal) break;
     }
+    if (out_consumed) *out_consumed = br.BytesConsumed();
     return true;
 }
 
@@ -548,10 +555,19 @@ bool InflateZlib(const unsigned char *data, size_t len, std::string &out) {
     // to read (PNG/M3D neither use one) -- reject rather than silently
     // mis-decode if it's ever set.
     if (data[1] & 0x20) return false;
-    if (!InflateRaw(data + 2, len - 6, out)) return false;
-    uint32_t stored_adler =
-        (static_cast<uint32_t>(data[len - 4]) << 24) | (static_cast<uint32_t>(data[len - 3]) << 16) |
-        (static_cast<uint32_t>(data[len - 2]) << 8) | static_cast<uint32_t>(data[len - 1]);
+    size_t consumed = 0;
+    if (!InflateRaw(data + 2, len - 2, out, &consumed)) return false;
+    // The trailer sits right after the DEFLATE data, NOT at the end of
+    // the buffer -- see this function's own doc comment (deflate.h) for
+    // the PDF streams that distinction rescues. A buffer that stops
+    // before the trailer is a truncated stream, not a corrupt one: keep
+    // what inflated rather than throwing the whole thing away.
+    size_t trailer = 2 + consumed;
+    if (trailer + 4 > len) return true;
+    uint32_t stored_adler = (static_cast<uint32_t>(data[trailer]) << 24) |
+                            (static_cast<uint32_t>(data[trailer + 1]) << 16) |
+                            (static_cast<uint32_t>(data[trailer + 2]) << 8) |
+                            static_cast<uint32_t>(data[trailer + 3]);
     uint32_t actual = Adler32(1, reinterpret_cast<const unsigned char *>(out.data()), out.size());
     return actual == stored_adler;
 }

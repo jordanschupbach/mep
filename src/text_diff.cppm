@@ -41,11 +41,26 @@ struct DiffHunk {
 // into contiguous hunks. old_start/new_start are 1-indexed (gitsigns
 // convention: a pure insertion is reported at the line after which it
 // was inserted, 0 if at the very top).
+//
+// The D in O(ND) is the edit distance, and the backtracking trace this
+// keeps costs O(D^2) memory, so an input whose two sides have almost
+// nothing in common is quadratic in the size of the input itself. That
+// is not hypothetical: a 15MB PDF handed to this against an empty
+// buffer wanted ~35GB of trace and took half a minute (see
+// Editor::BufferHasFileText, which is the other half of that fix).
+// kMaxEditDistance bounds it: a diff that needs more edits than that is
+// not something a reader -- or a sign column -- gets anything out of, so
+// it degrades to the one honest answer available cheaply, "all of `a`
+// became all of `b`", as a single whole-file hunk. Real editing never
+// comes near it (a one-line change has D == 2 whatever the file size).
+inline constexpr int kMaxEditDistance = 2000;
+
 /**
  * @brief Computes the Myers O(ND) diff between two line sequences, coalesced into contiguous hunks.
  * @param a The "old" line sequence.
  * @param b The "new" line sequence.
- * @return The edit script as a sequence of DiffHunk ranges.
+ * @return The edit script as a sequence of DiffHunk ranges, or one whole-file hunk if the
+ *         edit distance exceeds kMaxEditDistance.
  */
 std::vector<DiffHunk> MyersDiffHunks(const std::vector<std::string> &a, const std::vector<std::string> &b);
 

@@ -25,6 +25,7 @@ when you <code>:w</code>. That is how you create a file, not an error.</p>
 <tr><td><code>:e {file}</code></td><td>open a file into a buffer</td></tr>
 <tr><td><code>:e!</code></td><td>reload from disk, discarding changes</td></tr>
 <tr><td><code>:w</code></td><td>write the buffer to its file</td></tr>
+<tr><td><code>:w!</code></td><td>write it even if the file changed on disk</td></tr>
 <tr><td><code>:w {file}</code></td><td>write it somewhere else</td></tr>
 <tr><td><code>:wa</code></td><td>write every modified buffer that has a name</td></tr>
 <tr><td><code>:q</code></td><td>close the pane; quit once it is the last one</td></tr>
@@ -36,6 +37,33 @@ when you <code>:w</code>. That is how you create a file, not an error.</p>
 <p><code>:q</code> refusing means the buffer has unsaved changes. <code>:qa</code> applies that check
 across every buffer in every workspace, so quitting never loses something
 you had forgotten about in another tab.</p>
+<h1>When the file changed underneath the buffer</h1>
+<p>mep does not watch the filesystem. If something rewrites a file while you
+have it open -- a <code>git pull</code> or <code>git checkout</code>, a rebase, a formatter,
+another editor, <code>git</code> in one of mep's own terminal panes -- the buffer goes
+on showing the text it was read with.</p>
+<p>So mep remembers each file's size and timestamp as of the moment it read or
+last wrote it, and <b>refuses a write whose file no longer matches</b>:</p>
+<pre>E13: "main.py" changed on disk since it was read -- :e! reloads it, :w! overwrites it</pre>
+<p>Nothing has been written when you see this, and nothing has been lost. The
+buffer still holds your version and the file still holds the other one; you
+just have to say which wins:</p>
+<table>
+<tr><th>Command</th><th>Keeps</th></tr>
+<tr><td><code>:e!</code></td><td>the file -- re-reads it, discarding buffer edits</td></tr>
+<tr><td><code>:w!</code></td><td>the buffer -- overwrites what is on disk</td></tr>
+</table>
+<p><code>:e!</code> is undoable: the discarded text goes onto the undo stack, so <code>u</code> brings
+it back if you chose wrong.</p>
+<p>The git panel handles the common case for you. After any git command it
+re-reads every open buffer whose file changed and which has no unsaved edits,
+and warns about the ones it left alone:</p>
+<pre>Pull: done, 3 buffers reloaded
+Changed on disk, but has unsaved edits: main.py -- :e! takes the file, :w! keeps the buffer</pre>
+<p>Without this, pulling a branch with files open would leave stale text on
+screen and write it back over the pulled version at the next save, while
+<code>git pull</code> correctly reported "Already up to date" -- only the working tree
+having been reverted.</p>
 <h1>Moving between buffers</h1>
 <table>
 <tr><th>Command</th><th>Does</th></tr>

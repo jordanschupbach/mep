@@ -26026,6 +26026,16 @@ const char *kBuiltinMepml =
     "mep.leader_map('kp', 'mepml: present the slides (fill the editor)', function() mep.mepml_present_ui('fill') end)\n"
     "mep.leader_map('kP', 'mepml: present the slides full screen', function() mep.mepml_present_ui('full') end)\n"
     "mep.leader_map('kl', 'mepml: follow link', mep.mepml_link_follow)\n"
+    // Tabs (\tabs): show the next or previous tab of the set the cursor
+    // is in (or the first below it); a click on a title does the same.
+    "function mep.mepml_tab_ui(delta)\n"
+    "  local title = mep.mepml_tab_cycle(delta)\n"
+    "  if title == '' then mep.notify('No tabs (\\\\tabs) here or below', 'warn') end\n"
+    "end\n"
+    "mep.command('MepmlTabNext', function() mep.mepml_tab_ui(1) end)\n"
+    "mep.command('MepmlTabPrev', function() mep.mepml_tab_ui(-1) end)\n"
+    "mep.leader_map('k]', 'mepml: show the next tab', function() mep.mepml_tab_ui(1) end)\n"
+    "mep.leader_map('k[', 'mepml: show the previous tab', function() mep.mepml_tab_ui(-1) end)\n"
     // Raw or rendered (Buffer::mepml_raw; also the pane header's eye
     // button): the scan and the LaTeX scan both run again at once, so the
     // switch shows on this frame rather than on the next edit.
@@ -52259,7 +52269,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // over it and a fold the cursor happened to be inside stopped
         // looking folded at all -- which is exactly when you most need to
         // see it. The caret still marks where the cursor is.
-        if (fold_here && org_card_folded_rows.count(row) == 0) {
+        // A mepml set of tabs' strip and the rule under its shown tab
+        // (Buffer::mepml_tab_rows) are drawn further down, on no band.
+        const Buffer::MepmlTabRow *tab_row = nullptr;
+        if (fold_here && fold_here->provider == "mepml-tabs" && !buf.mepml_raw) {
+            const auto tr = buf.mepml_tab_rows.find(row);
+            if (tr != buf.mepml_tab_rows.end()) tab_row = &tr->second;
+        }
+        if (fold_here && org_card_folded_rows.count(row) == 0 && !tab_row) {
             // Over the row's headroom too (a folded mepml header's large
             // title rises into it), so the band holds the whole summary.
             const int fold_pad = g_editor.RowTopPadSlots(buf, row) * line_height;
@@ -52597,6 +52614,40 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
         }
 
+        if (tab_row) {
+            // The strip: each title on a chip, the shown one in the accent
+            // on a wash of it and underlined, over a rule the width of the
+            // text; a click on a title shows that tab. Under the shown
+            // tab, the rule alone closes the set.
+            const float rule_y = ly + static_cast<float>(line_height) - 1.0f;
+            const float rule_w = std::max(0.0f, x + w - static_cast<float>(kMarginX) - text_x);
+            if (!tab_row->footer) {
+                float cx = text_x;
+                for (size_t k = 0; k < tab_row->titles.size(); ++k) {
+                    const std::string chip = " " + tab_row->titles[k] + " ";
+                    const float cw = static_cast<float>(ByteOffsetToColumn(chip, static_cast<int>(chip.size()))) * g_char_width;
+                    const bool shown = static_cast<int>(k) == tab_row->active;
+                    if (shown) {
+                        gfx::Color wash = ResolveHlGroup("Accent");
+                        wash.a = 48;  // (faint, so the accent title on it reads in any theme)
+                        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ly), static_cast<int>(cw), line_height, wash);
+                        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(rule_y) - 1, static_cast<int>(cw), 2,
+                                           ResolveHlGroup("Accent"));
+                    }
+                    DrawLineFast(chip, cx, ly, g_font_size, ResolveHlGroup(shown ? "Accent" : "MutedFg"));
+                    if (is_active) {
+                        const int set = tab_row->set, tab = static_cast<int>(k);
+                        RegisterClickRegion(gfx::Rectangle{cx, ly, cw, static_cast<float>(line_height)},
+                                            [set, tab] { g_editor.MepmlSelectTab(set, tab); });
+                    }
+                    cx += cw + g_char_width;
+                }
+            }
+            gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(tab_row->footer ? ly + static_cast<float>(line_height) / 2.0f : rule_y),
+                               static_cast<int>(rule_w), 1, ResolveHlGroup("Border"));
+            row = fold_here->end_row;
+            continue;
+        }
         if (fold_here) {
             // Reads as the row's own real first line -- syntax-highlighted
             // the same as it would be unfolded (draw_fold_summary_text,

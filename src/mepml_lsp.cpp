@@ -650,6 +650,8 @@ const std::vector<Vocab> &DirectiveVocab() {
         {"slide", "\\slide( ... )", "A slide: \\slide( on a line of its own, then the slide's content -- headings, lists, code, pictures, any blocks -- and a line holding just ) to end it. Its first heading is its title."},
         {"columns", "\\columns( ... )", "Columns side by side: \\columns( on a line of its own, then one \\column( ... ) per column, and a line holding just ) to end the row. The editor, its presentation view, the PDF and HTML exports (slides and documents) and LaTeX set them beside each other; the other formats write one after another."},
         {"column", "\\column( ... )", "One column of a \\columns( row: \\column( on a line of its own, its content -- lists, pictures, code, any blocks -- and a line holding just ) to end it. Columns share the width equally; \\column(40%, gives one its own."},
+        {"tabs", "\\tabs( ... )", "Tabs: the same content shown one tab at a time (an example in several languages, say). \\tabs( on a line of its own, then one \\tab(Title, ... ) per tab, and a line holding just ) to end the set. The editor and HTML show a strip of tabs; the other formats write each tab under its title, one after another."},
+        {"tab", "\\tab(Title, ... )", "One tab of a \\tabs( set: \\tab(Title, on a line of its own -- the title is what the tab reads -- its content, any blocks, and a line holding just ) to end it."},
 #define MEPML_BOX(name, Label, colour)                                                                                       \
     {name, "\\" name "(Title, ...)",                                                                                         \
      "A " name ", drawn as a titled box (" colour "): \\" name "(Title, on a line of its own, then its content -- prose, "  \
@@ -1899,6 +1901,7 @@ std::vector<std::pair<std::string, std::vector<std::string>>> SheetAttrs(const s
     if (element == "meta") return {{"key", {"title", "subtitle", "author", "date", "option", "import", "style"}}, {"type", {"int", "double", "string"}}};
     if (element == "slide") return {{"number", {}}, {"title", {}}};
     if (element == "column") return {{"width", {}}};
+    if (element == "tab") return {{"title", {}}};
     if (element == "cite") return {{"missing", {}}, {"parenthetical", {}}};
     if (element == "caption") return {{"of", {"figure", "table", "math", "code"}}};
     if (element == "span") return {{"class", {}}};

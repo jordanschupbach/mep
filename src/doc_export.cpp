@@ -624,6 +624,30 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
         out += "\\end{abstract}\n";
         return;
     }
+    // mepml's tabs (\tabs / \tab, mepml::ToHtml): paper shows one tab no
+    // better than all of them, so each tab's content is set in turn under
+    // its title in bold; the radio buttons are the page's alone.
+    if (tag == "div" && node->Class() == "mtabs") {
+        out += "\n";
+        for (auto &c : node->children) {
+            if (c->type != DomNodeType::Element || c->tag == "input") continue;
+            if (c->Class() == "mtab-label") {
+                // (One line of the document, tagged as the box titles are.)
+                std::string head, title, title_end;
+                const size_t line = tg.Begin(head, "P");
+                tg.Text(head);
+                for (auto &k : c->children) WalkLatexNode(k.get(), ctx, title);
+                tg.End(title_end, line);
+                out += "\n\\par\\medskip\\noindent" + head + "\\textbf{" + title + "}" + title_end + "\\par\\nopagebreak\\smallskip\n";
+            } else if (c->Class() == "mtab") {
+                for (auto &k : c->children) WalkLatexNode(k.get(), ctx, out);
+            } else {
+                WalkLatexNode(c.get(), ctx, out);
+            }
+        }
+        out += "\\par\\medskip\n";
+        return;
+    }
     // mepml's columns (\columns / \column, mepml::ToHtml): Beamer's own on a
     // slide, minipages side by side in an article. A column is as wide as
     // it says (data-width, a percentage); the rest share what is left.

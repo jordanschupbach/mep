@@ -1038,6 +1038,31 @@ struct HtmlReader {
                 skip_node = outer;
                 Flush();
                 out.BoxClose();
+            } else if (t == "div" && HasClass(c, "mtabs")) {
+                // mep's own tabs (mepml::ToHtml): each label the title of
+                // the panel after it.
+                Flush();
+                out.Block("\\tabs(");
+                std::string title;
+                for (const auto &k : c->children) {
+                    if (k->type != DomNodeType::Element || k->tag == "input") continue;
+                    if (HasClass(k.get(), "mtab-label")) {
+                        title = Trim(Collapse(TextOf(k.get())));
+                        continue;
+                    }
+                    if (!HasClass(k.get(), "mtab")) {
+                        Blocks(k.get());
+                        Flush();
+                        continue;
+                    }
+                    if (title.empty()) title = Attr(k.get(), "data-title");
+                    out.Block("\\tab(" + title + ",");
+                    title.clear();
+                    Blocks(k.get());
+                    Flush();
+                    out.Block(")");
+                }
+                out.Block(")");
             } else if (t == "div" && HasClass(c, "mcols")) {
                 // mep's own columns (mepml::ToHtml): each column's content,
                 // read as blocks.

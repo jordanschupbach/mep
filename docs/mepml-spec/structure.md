@@ -32,6 +32,8 @@ content or nothing.
 | `box` | `kind`: `definition`, `theorem`, `lemma`, `proposition`, `corollary`, `fact`, `example`, `remark`, `proof`, `note`, `tip`, `warning`, `important`, or a name of the document's own | blocks | `\definition(Title,` ... `)`; `\boxed(kind, Title,` ... `)` |
 | `columns` | | `column` (and any block written between them) | `\columns(` ... `)` |
 | `column` | `width` (`40%`; absent for an equal share) | blocks | `\column(` ... `)`, `\column(40%,` ... `)` |
+| `tabs` | | `tab` (and any comment written between them) | `\tabs(` ... `)` |
+| `tab` | `title` (as written) | blocks | `\tab(Title,` ... `)` |
 | `list` | | `list-item` | `- item`, `1. item` |
 | `list-item` | `ordered`, `checked` = `true` \| `false` (task items only); † `number`, `indent` | inlines | |
 | `table` | | `table-cell` | pipe tables |
@@ -76,11 +78,14 @@ nothing in it is parsed as markup, commands or maths. An `svg` is a
 figure (§4); an `html` block is one when it has a caption, which is then
 `caption[of=figure]`.
 
-`slide`, `box`, `columns` and `column` are the block containers a document
+`slide`, `box`, `columns`, `column`, `tabs` and `tab` are the block containers a document
 author nests: `document > slide > box > paragraph` is a typical path, and
 `slide > columns > column > list` a list in a column. `columns` and
 `column` say what is beside what; a renderer that cannot set text side
-by side shows their content in order. A `caption` and an
+by side shows their content in order. `tabs` and `tab` say what is shown
+instead of what: one tab at a time, picked by its title; a renderer that
+cannot switch between them shows each tab's content under its title, in
+order. A `caption` and an
 `alt-text` are children of the block they are written under.
 
 ## 2. Inline elements

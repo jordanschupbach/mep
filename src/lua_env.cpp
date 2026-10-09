@@ -3572,6 +3572,20 @@ int l_mepml_header_toggle(lua_State *L) {
     return 1;
 }
 
+// mep.mepml_tab_cycle(delta) -> string: shows the next (1) or previous (-1)
+// tab of the \tabs set the cursor is in, or the first set below it; the
+// title now shown, "" when there is no set.
+/**
+ * @brief Implements mep.mepml_tab_cycle(): switches the shown tab of the current mepml buffer's nearest \tabs set.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the title shown, or "").
+ */
+int l_mepml_tab_cycle(lua_State *L) {
+    const int delta = static_cast<int>(luaL_optinteger(L, 1, 1));
+    lua_pushstring(L, GetEditor(L)->MepmlCycleTab(delta).c_str());
+    return 1;
+}
+
 // mep.mepml_raw_toggle() -> bool / mep.mepml_raw() -> bool: the current
 // mepml buffer shown raw (its tree-sitter colours only) or rendered --
 // Buffer::mepml_raw. The toggle returns the new state, true = raw.
@@ -13958,6 +13972,7 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_export_path", l_mepml_export_path},
     {"mepml_post_script", l_mepml_post_script},
     {"mepml_header_toggle", l_mepml_header_toggle},
+    {"mepml_tab_cycle", l_mepml_tab_cycle},
     {"mepml_raw_toggle", l_mepml_raw_toggle},
     {"mepml_raw", l_mepml_raw},
     {"mepml_view_toggle", l_mepml_view_toggle},

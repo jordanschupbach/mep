@@ -804,6 +804,82 @@ int main() {
         }
     }
 
+    // mepml tabs (\tabs, Editor::RecomputeMepmlTabFolds): one tab of a set
+    // shown, the others folded into the strip on the set's opening row and
+    // the rule on the shown tab's closing one; switching moves the folds.
+    std::printf("\n== 24. mepml tabs show one tab at a time\n");
+    {
+        std::filesystem::create_directories(dir);
+        const std::string path = dir + "/t24.mepml";
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << "Intro.\n"       // 0
+                   "\n"             // 1
+                   "\\tabs(\n"      // 2
+                   "\\tab(C++,\n"   // 3
+                   "int a;\n"       // 4
+                   ")\n"            // 5
+                   "\\tab(Python,\n"  // 6
+                   "> Heading\n"    // 7
+                   "a = 1\n"        // 8
+                   ")\n"            // 9
+                   "\\tab(R,\n"     // 10
+                   "a <- 1\n"       // 11
+                   ")\n"            // 12
+                   ")\n"            // 13
+                   "\n"             // 14
+                   "After.\n";      // 15
+        }
+        Editor ed;
+        ed.LoadFile(path);
+        const int ns = ed.CreateNamespace("fold-test-tabs");
+        ed.MepmlScan(ns);
+        auto tab_folds = [&] {
+            std::vector<std::pair<int, int>> v;
+            for (const Fold &f : ed.CurrentBufferFolds())
+                if (f.provider == "mepml-tabs" && f.closed) v.push_back({f.start_row, f.end_row});
+            return v;
+        };
+        auto show = [](const std::vector<std::pair<int, int>> &v) {
+            std::string o;
+            for (const auto &p : v) o += "[" + std::to_string(p.first) + "," + std::to_string(p.second) + "]";
+            return o;
+        };
+        using Ranges = std::vector<std::pair<int, int>>;
+        EXPECT((tab_folds() == Ranges{{2, 3}, {5, 13}}), "the first tab is shown: the strip folds to its opener, the rule to the set's end",
+               show(tab_folds()));
+        const Buffer &buf = ed.CurrentBuffer();
+        const auto strip = buf.mepml_tab_rows.find(2);
+        EXPECT(strip != buf.mepml_tab_rows.end() && !strip->second.footer && strip->second.active == 0 &&
+                   (strip->second.titles == std::vector<std::string>{"C++", "Python", "R"}),
+               "the strip row lists the three titles, the first shown", "no such row");
+        EXPECT(buf.mepml_tab_rows.count(5) == 1 && buf.mepml_tab_rows.at(5).footer, "the shown tab's closing row is the rule",
+               "no rule row at 5");
+        EXPECT(ed.MepmlSelectTab(0, 1), "selecting the second tab", "no set 0");
+        EXPECT((tab_folds() == Ranges{{2, 6}, {9, 13}}), "the second tab is shown", show(tab_folds()));
+        // (The heading inside it folds no further than its tab's end.)
+        bool heading_ok = false;
+        for (const Fold &f : ed.CurrentBufferFolds())
+            if (f.provider == "mepml" && f.start_row == 7) heading_ok = f.end_row <= 8;
+        EXPECT(heading_ok, "a heading in a tab folds within the tab", "it ran past it");
+        EXPECT(ed.MepmlSelectTab(0, 3), "selecting past the end wraps around", "no set 0");
+        EXPECT((tab_folds() == Ranges{{2, 3}, {5, 13}}), "back on the first tab", show(tab_folds()));
+        ed.SetCursorForLua(2, 0);
+        EXPECT(ed.MepmlCycleTab(-1) == "R", "cycling back from the first tab shows the last", "another title");
+        EXPECT((tab_folds() == Ranges{{2, 10}, {12, 13}}), "the last tab is shown", show(tab_folds()));
+        EXPECT(!ed.MepmlSelectTab(1, 0), "there is no second set", "it found one");
+        // The cursor in a tab when the folds are built (a set just
+        // written) shows that tab.
+        Editor ed2;
+        ed2.LoadFile(path);
+        ed2.RunCommand("normal 9gg");
+        ed2.MepmlScan(ed2.CreateNamespace("fold-test-tabs"));
+        Ranges shown2;
+        for (const Fold &f : ed2.CurrentBufferFolds())
+            if (f.provider == "mepml-tabs" && f.closed) shown2.push_back({f.start_row, f.end_row});
+        EXPECT((shown2 == Ranges{{2, 6}, {9, 13}}), "the cursor's tab is the one shown", show(shown2));
+    }
+
     std::printf("\n---- %d checks, %d failures ----\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

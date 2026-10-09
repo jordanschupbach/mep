@@ -2940,6 +2940,14 @@
         {
           "type": "STRING",
           "value": "column"
+        },
+        {
+          "type": "STRING",
+          "value": "tabs"
+        },
+        {
+          "type": "STRING",
+          "value": "tab"
         }
       ]
     },

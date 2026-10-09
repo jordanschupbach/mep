@@ -1327,6 +1327,23 @@ struct Buffer {
         bool keep_under_cursor = false;
     };
     std::unordered_map<int, MepmlFoldSummary> mepml_fold_summaries;
+    // mepml's tabs (`\tabs(` ... `)`, Editor::RecomputeMepmlTabFolds): one
+    // tab of each set is shown, the rest folded away. The set's opening row
+    // folds down to its tab strip, the shown tab's closing row (to the
+    // set's end) to a rule under it; this is what DrawPane draws on each.
+    // `set` is the set's place among the document's sets (0 first), the key
+    // of mepml_tab_active, which holds the tab each set shows.
+    struct MepmlTabRow {
+        std::vector<std::string> titles;
+        int active = 0;
+        int set = 0;
+        bool footer = false;  // the rule under the shown tab, not the strip
+    };
+    std::unordered_map<int, MepmlTabRow> mepml_tab_rows;
+    std::unordered_map<int, int> mepml_tab_active;
+    // The sets' rows and titles when their folds were last built: a scan
+    // that finds them changed builds them again.
+    size_t mepml_tabs_sig = 0;
 
     // Org LaTeX/math-mode rendering (<leader>otl, Editor::OrgLatexVisible()):
     // row -> a rendered fragment's PNG path plus how many line-heights tall
@@ -10418,6 +10435,23 @@ public:
      * @brief Rebuilds provider="mepml" folds (heading sections, code blocks, citations, comment runs), keeping each fold's open/closed state.
      */
     void RecomputeMepmlFolds();
+    /**
+     * @brief Rebuilds provider="mepml-tabs" folds: each \tabs set shows one tab (Buffer::mepml_tab_active), the others folded into its tab strip and the rule under it (Buffer::mepml_tab_rows).
+     */
+    void RecomputeMepmlTabFolds();
+    /**
+     * @brief Shows tab `tab` of the current mepml buffer's \tabs set number `set` (0 the first), folding the others away.
+     * @param set The set's place among the document's sets.
+     * @param tab The tab's place in its set; out of range wraps around.
+     * @return Whether there is such a set.
+     */
+    bool MepmlSelectTab(int set, int tab);
+    /**
+     * @brief Shows the next (`delta` 1) or previous (-1) tab of the \tabs set the cursor is in, or the nearest one below it.
+     * @param delta How many tabs to move by.
+     * @return The title of the tab now shown, or "" when there is no set of tabs to switch.
+     */
+    std::string MepmlCycleTab(int delta);
     /**
      * @brief Parses the current buffer as mepml, resolving \import relative to its file -- cached per buffer
      * (mepml_parse_cache_), so every per-edit consumer shares one parse of the same text.

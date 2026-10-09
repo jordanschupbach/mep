@@ -1068,6 +1068,71 @@ int main() {
         CHECK(Parse({"See \\columns(x) here."}).blocks[0].kind == BlockKind::Paragraph);
     }
 
+    // --- Tabs: \\tabs( holding \\tab(Title, ... ) blocks, markers around
+    // ordinary blocks as columns' are; HTML draws a strip of them.
+    {
+        const Lines src = {
+            "\\tabs(",              // 0
+            "\\tab(C++,",           // 1
+            "```{cpp}",              // 2
+            "int main() {}",         // 3
+            "```",                   // 4
+            ")",                     // 5
+            "\\tab(*R*,  // note",  // 6
+            "x <- 1",                // 7
+            ")",                     // 8
+            ")",                     // 9
+            "After.",                // 10
+        };
+        const Document d = Parse(src);
+        std::vector<BlockKind> kinds;
+        for (const Block &b : d.blocks) kinds.push_back(b.kind);
+        CHECK((kinds == std::vector<BlockKind>{BlockKind::LayoutBegin, BlockKind::LayoutBegin, BlockKind::Code, BlockKind::LayoutEnd,
+                                               BlockKind::LayoutBegin, BlockKind::Paragraph, BlockKind::LayoutEnd, BlockKind::LayoutEnd,
+                                               BlockKind::Paragraph}));
+        CHECK(d.blocks[0].keyword == "tabs" && d.blocks[1].keyword == "tab" && d.blocks[1].level == 2);
+        CHECK(d.blocks[1].caption == "C++" && d.blocks[4].caption == "*R*");
+        CHECK(d.blocks[4].caption_inlines.size() == 1 && d.blocks[4].caption_inlines[0].kind == InlineKind::Bold);
+        CHECK(d.blocks[3].keyword == "tab" && d.blocks[7].keyword == "tabs");
+        for (const Diagnostic &dg : d.diagnostics) CHECK(dg.severity == Diagnostic::Info);
+
+        // The titles stay on screen, bold; `\tab(` and the comma are markup.
+        int titles = 0;
+        for (const Span &sp : Highlight(d))
+            if (!sp.markup && (sp.style & kBold) && sp.line == 1) ++titles;
+        CHECK(titles >= 1);
+
+        // HTML: one radio group, the first tab checked, each label before
+        // its panel, all closed before what follows.
+        const std::string html = ToHtml(d);
+        const size_t strip = html.find("<div class=\"mtabs\">\n<input type=\"radio\" class=\"mtab-radio\" name=\"mtabs-1\" id=\"mtabs-1-1\" checked>"
+                                       "<label class=\"mtab-label\" for=\"mtabs-1-1\">C++</label>\n<div class=\"mtab\" data-title=\"C++\">");
+        const size_t second = html.find("<input type=\"radio\" class=\"mtab-radio\" name=\"mtabs-1\" id=\"mtabs-1-2\">"
+                                        "<label class=\"mtab-label\" for=\"mtabs-1-2\"><strong>R</strong></label>");
+        const size_t after = html.find("</div>\n</div>\n<p>After.</p>");
+        CHECK(strip != std::string::npos && second != std::string::npos && after != std::string::npos && strip < second && second < after);
+        CHECK(html.find(".mtab-radio:checked + .mtab-label + .mtab { display: block; }") != std::string::npos);
+        // A second set is a radio group of its own.
+        const Document two = Parse({"\\tabs(", "\\tab(A,", "a", ")", ")", "", "\\tabs(", "\\tab(B,", "b", ")", ")"});
+        CHECK(ToHtml(two).find("name=\"mtabs-2\" id=\"mtabs-2-1\" checked") != std::string::npos);
+
+        // The element tree: tabs > tab (titled) > code.
+        const std::string tree = ElementTreeJson(d);
+        CHECK(tree.find("{\"name\":\"tabs\",\"lines\":[0,0],\"children\":[{\"name\":\"tab\",\"attrs\":{\"title\":\"C++\"}") != std::string::npos);
+
+        auto warns = [](const Lines &l, const char *what) {
+            for (const Diagnostic &dg : Parse(l).diagnostics)
+                if (dg.message.find(what) != std::string::npos) return true;
+            return false;
+        };
+        CHECK(warns({"\\tab(A,", "x", ")"}, "outside \\tabs"));
+        CHECK(warns({"\\tabs(", "\\tab(", "x", ")", ")"}, "a tab needs a title"));
+        CHECK(warns({"\\tabs(text", ")"}, "\\tabs holds"));
+        CHECK(warns({"\\tabs(", "\\tab(A,", "x", ")"}, "\\tabs is never closed"));
+        CHECK(Parse({"\\define(tab(a), x)"}).commands.empty());
+        CHECK(Parse({"See \\tabs(x) here."}).blocks[0].kind == BlockKind::Paragraph);
+    }
+
     // --- //? Type: presentation, and what its slide exports leave out.
     {
         Document d = Parse({"//? Type: Presentation", "", "Off the slides.", "", "// a comment is fine", "\\slide(", "> T", "On.", ")"});

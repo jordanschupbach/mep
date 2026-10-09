@@ -297,8 +297,8 @@ static bool is_box_kind(const char *name) {
     static const char *const kNames[] = {"definition", "theorem", "lemma",  "proposition", "corollary",
                                          "fact",       "example", "remark", "proof",       "note",
                                          "tip",        "warning", "important", "boxed",
-                                         // (Columns nest and close as boxes do.)
-                                         "columns",    "column"};
+                                         // (Columns and tabs nest and close as boxes do.)
+                                         "columns",    "column",  "tabs",   "tab"};
     for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
         if (strcmp(name, kNames[i]) == 0) return true;
     return false;

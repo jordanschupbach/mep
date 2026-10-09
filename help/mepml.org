@@ -399,6 +399,48 @@ one after another, in order. PowerPoint and Impress set a slide's one
 picture beside its text as they always have. A =\column(= outside
 =\columns(= is flagged, and so is a row or a column left open.
 
+* Tabs
+
+#+begin_example
+\tabs(
+\tab(C++,
+```{cpp}
+std::cout << "hi\\n";
+```
+)
+\tab(Python,
+```{python}
+print("hi")
+```
+)
+)
+#+end_example
+
+=\tabs(= on a line of its own opens a set of tabs, each =\tab(Title,=
+inside it is one tab, and a line holding just =)= closes either -- the
+innermost first, as with columns. The title, before the comma, is what the
+tab reads, and may hold inline markup. A tab holds whatever a column can:
+code blocks and their results, lists, pictures, boxes, columns, another
+=\tabs(=. Use them for the same thing said several ways -- one example in
+each language -- where the reader wants one of them at a time.
+
+The editor shows one tab of a set: the =\tabs(= line reads as a strip of
+the titles, the one shown in the accent colour, and a rule closes the set
+under its content; the other tabs are folded away. A click on a title
+shows that tab, and so do =<leader>k]= and =<leader>k[= (=:MepmlTabNext=,
+=:MepmlTabPrev=), which step through the tabs of the set the cursor is in,
+or of the first one below it. Opening the folds (=zo= on the strip, =zR=)
+shows the set as written; a set just written shows the tab the cursor is
+in. A set holding anything but tabs (and comments) is shown as written.
+
+HTML sets the tabs as a strip over the shown tab -- the first, until a
+title is clicked -- with no script; printed, every tab is shown under its
+title. The other formats (PDF and LaTeX, Markdown, Org, plain text, Word,
+LibreOffice, RTF) cannot switch between tabs: they write each tab's
+content under its title in bold, one after another. HTML imports read the
+tabs back. A =\tab(= outside =\tabs(=, a tab without a title, and a set
+left open are flagged.
+
 * Boxes: definitions, theorems and their kin
 
 #+begin_example

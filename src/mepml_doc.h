@@ -164,6 +164,11 @@ enum class BlockKind {
     // LayoutBegin / LayoutEnd: `keyword` is "columns" or "column", `value`
     // a column's width as written ("40%", "" for an equal share) and
     // `level` the depth among the open boxes and columns.
+    // Tabs: `\tabs(` opens a set of tabs the same way, each `\tab(Title,`
+    // inside it one tab -- the same content shown one tab at a time (the
+    // same example in several languages, say). `keyword` is "tabs" or
+    // "tab", and a tab's `value` / `caption` its title as written,
+    // `caption_inlines` the title parsed.
     LayoutBegin,
     LayoutEnd,
     // Markup written into the document as it is: a line that starts with

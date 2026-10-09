@@ -4271,8 +4271,16 @@
     "named": true
   },
   {
+    "type": "tab",
+    "named": false
+  },
+  {
     "type": "table_delimiter_row",
     "named": true
+  },
+  {
+    "type": "tabs",
+    "named": false
   },
   {
     "type": "task_marker",

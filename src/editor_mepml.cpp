@@ -1087,6 +1087,87 @@ bool Editor::MepmlParseReady() {
     return false;
 }
 
+namespace {
+// A set of tabs (`\tabs(` ... `)`) as the editor shows it: closed, and
+// holding nothing but its `\tab(Title,` ... `)`s (comments aside).
+struct MepmlTabSet {
+    struct Tab {
+        int open_row = 0, close_row = 0;
+        std::string title;
+    };
+    int open_row = 0, close_row = 0;
+    std::vector<Tab> tabs;
+};
+// The document's sets of tabs, in the order they open: a set's place in it
+// is its key in Buffer::mepml_tab_active.
+std::vector<MepmlTabSet> MepmlTabSets(const mepml::Document &doc) {
+    std::vector<MepmlTabSet> out;
+    struct Open {
+        bool tabs = false, tab = false, sound = true;
+        MepmlTabSet set;
+    };
+    std::vector<Open> open;  // the boxes, columns and tabs open, innermost last
+    for (const mepml::Block &b : doc.blocks) {
+        if (!b.origin.empty()) continue;
+        if (b.kind == mepml::BlockKind::SlideBegin || b.kind == mepml::BlockKind::SlideEnd) {
+            open.clear();  // (a set left open ends with its slide: not shown as tabs)
+            continue;
+        }
+        const bool opens = (b.kind == mepml::BlockKind::BoxBegin && !b.box_closed) || b.kind == mepml::BlockKind::LayoutBegin;
+        const bool closes = b.kind == mepml::BlockKind::BoxEnd || b.kind == mepml::BlockKind::LayoutEnd;
+        if (closes) {
+            if (open.empty()) continue;
+            Open done = std::move(open.back());
+            open.pop_back();
+            if (done.tab && !open.empty() && open.back().tabs && !open.back().set.tabs.empty())
+                open.back().set.tabs.back().close_row = b.line_end;
+            if (done.tabs && done.sound && !done.set.tabs.empty()) {
+                done.set.close_row = b.line_end;
+                out.push_back(std::move(done.set));
+            }
+            continue;
+        }
+        // Directly inside a set: a tab, or a comment; anything else and the
+        // set is shown as written.
+        const bool in_set = !open.empty() && open.back().tabs;
+        const bool is_tab = b.kind == mepml::BlockKind::LayoutBegin && b.keyword == "tab";
+        if (in_set) {
+            if (is_tab) {
+                MepmlTabSet::Tab t;
+                t.open_row = t.close_row = b.line_start;
+                t.title = b.caption.empty() ? "Tab " + std::to_string(open.back().set.tabs.size() + 1) : b.caption;
+                open.back().set.tabs.push_back(std::move(t));
+            } else if (b.kind != mepml::BlockKind::Comment && b.kind != mepml::BlockKind::Callout) {
+                open.back().sound = false;
+            }
+        }
+        if (opens) {
+            Open o;
+            o.tabs = b.kind == mepml::BlockKind::LayoutBegin && b.keyword == "tabs";
+            o.tab = is_tab && in_set;
+            o.set.open_row = b.line_start;
+            open.push_back(std::move(o));
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const MepmlTabSet &a, const MepmlTabSet &b) { return a.open_row < b.open_row; });
+    return out;
+}
+size_t MepmlTabsSig(const std::vector<MepmlTabSet> &sets) {
+    size_t h = sets.size();
+    auto mix = [&h](size_t v) { h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2); };
+    for (const MepmlTabSet &set : sets) {
+        mix(static_cast<size_t>(set.open_row));
+        mix(static_cast<size_t>(set.close_row));
+        for (const MepmlTabSet::Tab &t : set.tabs) {
+            mix(static_cast<size_t>(t.open_row));
+            mix(static_cast<size_t>(t.close_row));
+            mix(std::hash<std::string>{}(t.title));
+        }
+    }
+    return h;
+}
+}  // namespace
+
 void Editor::MepmlScan(int ns, bool own_diagnostics) {
     Buffer &buf = Buf();
     // A document just opened: its folds are built now, rather than lazily
@@ -1094,6 +1175,11 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     // out folded (Buffer::mepml_folds_seeded).
     if (!buf.mepml_folds_seeded && !(present_.active && CurrentBufferId() == present_.view_buffer))
         RecomputeMepmlFolds();
+    // Tabs written, removed or retitled since their folds were built: built
+    // again, so a set shows as tabs as soon as it is closed.
+    else if (IsMepmlBuffer() && !(present_.active && CurrentBufferId() == present_.view_buffer) &&
+             MepmlTabsSig(MepmlTabSets(MepmlParseCurrent(false))) != buf.mepml_tabs_sig)
+        RecomputeMepmlTabFolds();
     int cur_row = 0, cur_col = 0;
     GetCursorForLua(&cur_row, &cur_col);
     // View mode (Buffer::mepml_view): no row is the cursor's, so nothing
@@ -2184,6 +2270,87 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
     state.deco_count = buf.decorations.count(ns) ? buf.decorations[ns].size() : 0;
 }
 
+
+void Editor::RecomputeMepmlTabFolds() {
+    Buffer &buf = Buf();
+    std::vector<Fold> old_folds;
+    for (const Fold &f : buf.folds)
+        if (f.provider == "mepml-tabs") old_folds.push_back(f);
+    ClearFoldsFromProvider("mepml-tabs");
+    buf.mepml_tab_rows.clear();
+    buf.mepml_tabs_sig = 0;
+    if (!IsMepmlBuffer()) return;
+    const std::vector<MepmlTabSet> sets = MepmlTabSets(MepmlParseCurrent(false));
+    buf.mepml_tabs_sig = MepmlTabsSig(sets);
+    const int cursor_row = CurPane().buffer_id == CurrentBufferId() ? CurPane().cursor.row : -1;
+    // Closed, unless the user has opened it (zo) since it was built.
+    auto add = [&](int start, int end) {
+        bool closed = buf.fold_enabled;
+        for (const Fold &of : old_folds)
+            if (of.start_row == start && of.end_row == end) closed = of.closed;
+        buf.folds.push_back({start, end, closed, "mepml-tabs"});
+    };
+    for (size_t si = 0; si < sets.size(); ++si) {
+        const MepmlTabSet &set = sets[si];
+        const int n = static_cast<int>(set.tabs.size());
+        int &active = buf.mepml_tab_active[static_cast<int>(si)];
+        // The cursor in one of the tabs (one just written, say) shows that
+        // one: what is being edited is never folded away under it.
+        for (int k = 0; k < n; ++k)
+            if (cursor_row >= set.tabs[static_cast<size_t>(k)].open_row && cursor_row <= set.tabs[static_cast<size_t>(k)].close_row)
+                active = k;
+        active = std::clamp(active, 0, n - 1);
+        const MepmlTabSet::Tab &shown = set.tabs[static_cast<size_t>(active)];
+        // The set's opening line down to the shown tab's own, read as the
+        // strip; its closing line down to the set's, as the rule under it.
+        add(set.open_row, shown.open_row);
+        add(shown.close_row, set.close_row);
+        Buffer::MepmlTabRow row;
+        for (const MepmlTabSet::Tab &t : set.tabs) row.titles.push_back(t.title);
+        row.active = active;
+        row.set = static_cast<int>(si);
+        buf.mepml_tab_rows[set.open_row] = row;
+        row.footer = true;
+        buf.mepml_tab_rows[shown.close_row] = std::move(row);
+    }
+    NormalizeFoldList(buf.folds, buf.LineCount());
+}
+
+bool Editor::MepmlSelectTab(int set, int tab) {
+    if (!IsMepmlBuffer()) return false;
+    const std::vector<MepmlTabSet> sets = MepmlTabSets(MepmlParseCurrent(false));
+    if (set < 0 || set >= static_cast<int>(sets.size())) return false;
+    const MepmlTabSet &s = sets[static_cast<size_t>(set)];
+    const int n = static_cast<int>(s.tabs.size());
+    Buf().mepml_tab_active[set] = ((tab % n) + n) % n;
+    // The cursor in the set goes to its strip: not left in a tab now
+    // folded away, nor pulling the set back to that tab.
+    if (CurPane().buffer_id == CurrentBufferId() && CurPane().cursor.row >= s.open_row && CurPane().cursor.row <= s.close_row)
+        SetCursorForLua(s.open_row, 0);
+    RecomputeMepmlTabFolds();
+    return true;
+}
+
+std::string Editor::MepmlCycleTab(int delta) {
+    if (!IsMepmlBuffer()) return "";
+    const std::vector<MepmlTabSet> sets = MepmlTabSets(MepmlParseCurrent(false));
+    const int row = CurPane().cursor.row;
+    // The innermost set around the cursor, else the first below it.
+    int pick = -1;
+    for (int k = 0; k < static_cast<int>(sets.size()); ++k)
+        if (row >= sets[static_cast<size_t>(k)].open_row && row <= sets[static_cast<size_t>(k)].close_row) pick = k;
+    for (int k = 0; pick < 0 && k < static_cast<int>(sets.size()); ++k)
+        if (sets[static_cast<size_t>(k)].open_row > row) pick = k;
+    if (pick < 0) return "";
+    // (Which tab it shows now: the folds' own record, the cursor's tab
+    // having been made the shown one when they were built.)
+    RecomputeMepmlTabFolds();
+    const int now = Buf().mepml_tab_active[pick];
+    if (!MepmlSelectTab(pick, now + delta)) return "";
+    const MepmlTabSet &s = sets[static_cast<size_t>(pick)];
+    return s.tabs[static_cast<size_t>(Buf().mepml_tab_active[pick])].title;
+}
+
 void Editor::RecomputeMepmlFolds() {
     std::vector<Fold> old_folds;
     for (const Fold &f : Buf().folds)
@@ -2220,6 +2387,7 @@ void Editor::RecomputeMepmlFolds() {
     // shallower depth, trailing blank lines excluded -- and never past the
     // end of the slide the heading is on (its closer is the slide's).
     const std::vector<mepml::Slide> slides = mepml::Slides(doc, n);
+    const std::vector<MepmlTabSet> tab_sets = MepmlTabSets(doc);
     std::vector<const mepml::Block *> heads;
     for (const mepml::Block &b : doc.blocks)
         if (b.kind == mepml::BlockKind::Heading) heads.push_back(&b);
@@ -2235,6 +2403,11 @@ void Editor::RecomputeMepmlFolds() {
             if (heads[k]->line_start <= sl.line_start || heads[k]->line_start > sl.line_end) continue;
             end = std::min(end, sl.closed ? sl.line_end - 1 : sl.line_end);
         }
+        // ... nor past the end of the tab it is in (a fold crossing the
+        // tabs' own would be merged with them).
+        for (const MepmlTabSet &set : tab_sets)
+            for (const MepmlTabSet::Tab &t : set.tabs)
+                if (heads[k]->line_start > t.open_row && heads[k]->line_start < t.close_row) end = std::min(end, t.close_row - 1);
         while (end > heads[k]->line_start && Buf().lines[static_cast<size_t>(end)].find_first_not_of(" \t") == std::string::npos)
             --end;
         add(heads[k]->line_start, end);
@@ -2250,7 +2423,9 @@ void Editor::RecomputeMepmlFolds() {
             if (b.kind == mepml::BlockKind::BoxBegin && b.box_closed) add(b.line_start, b.line_end);
             else if (b.kind == mepml::BlockKind::BoxBegin || b.kind == mepml::BlockKind::LayoutBegin) open.push_back(&b);
             else if ((b.kind == mepml::BlockKind::BoxEnd || b.kind == mepml::BlockKind::LayoutEnd) && !open.empty()) {
-                add(open.back()->line_start, b.line_end);
+                // (Tabs fold their own way: RecomputeMepmlTabFolds.)
+                if (open.back()->kind != mepml::BlockKind::LayoutBegin || (open.back()->keyword != "tabs" && open.back()->keyword != "tab"))
+                    add(open.back()->line_start, b.line_end);
                 open.pop_back();
             }
         }
@@ -2280,6 +2455,7 @@ void Editor::RecomputeMepmlFolds() {
             b.kind == mepml::BlockKind::Abstract || b.kind == mepml::BlockKind::Svg || b.kind == mepml::BlockKind::Html)
             add(b.line_start, b.line_end);
     }
+    RecomputeMepmlTabFolds();
 }
 
 bool Editor::MepmlSpliceResults(int buffer_id, int fence_row, const std::string &code, const std::string &output) {

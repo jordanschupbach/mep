@@ -34,6 +34,22 @@ bool OnlyRaw(const std::vector<Inline> &ins) {
     }
     return any;
 }
+// A tab's title (\tab(Title,), bold: the formats with no tabs write each
+// tab's content one after another, under its title.
+std::vector<Inline> TabTitle(const Block &b) {
+    if (b.caption_inlines.size() == 1 && b.caption_inlines[0].kind == InlineKind::Bold) return b.caption_inlines;
+    Inline bold;
+    bold.kind = InlineKind::Bold;
+    bold.children = b.caption_inlines;
+    if (bold.children.empty()) {
+        Inline t;
+        t.text = b.caption;
+        bold.children.push_back(t);
+    }
+    return {bold};
+}
+bool IsTab(const Block &b) { return b.kind == BlockKind::LayoutBegin && b.keyword == "tab" && !b.caption.empty(); }
+
 std::string LowerStr(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
@@ -606,9 +622,12 @@ struct MdWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: blocks.push_back("<!-- /mepml:box -->"); break;
-                // (Columns are a slide's and a page's layout: here their
-                // content is written one column after another.)
+                // (Columns are a slide's and a page's layout, tabs a page's:
+                // here their content is written one after another, each tab
+                // under its title.)
                 case BlockKind::LayoutBegin:
+                    if (IsTab(b)) blocks.push_back(Inl(TabTitle(b)));
+                    break;
                 case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
@@ -896,9 +915,12 @@ struct OrgWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: blocks.push_back("#+end_" + OrgBoxName(b.keyword)); break;
-                // (Columns are a slide's and a page's layout: here their
-                // content is written one column after another.)
+                // (Columns are a slide's and a page's layout, tabs a page's:
+                // here their content is written one after another, each tab
+                // under its title.)
                 case BlockKind::LayoutBegin:
+                    if (IsTab(b)) blocks.push_back(Inl(TabTitle(b)));
+                    break;
                 case BlockKind::LayoutEnd: break;
                 case BlockKind::Meta:
                 case BlockKind::Import:
@@ -1047,9 +1069,12 @@ struct TextWriter {
                     blocks.push_back(BoxHeading(doc, b) + (b.inlines.empty() ? "" : ". " + Inl(b.inlines)));
                     break;
                 case BlockKind::BoxEnd: break;
-                // (Columns are a slide's and a page's layout: here their
-                // content is written one column after another.)
+                // (Columns are a slide's and a page's layout, tabs a page's:
+                // here their content is written one after another, each tab
+                // under its title.)
                 case BlockKind::LayoutBegin:
+                    if (IsTab(b)) blocks.push_back(Inl(TabTitle(b)));
+                    break;
                 case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
@@ -1452,9 +1477,12 @@ struct RtfWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: break;
-                // (Columns are a slide's and a page's layout: here their
-                // content is written one column after another.)
+                // (Columns are a slide's and a page's layout, tabs a page's:
+                // here their content is written one after another, each tab
+                // under its title.)
                 case BlockKind::LayoutBegin:
+                    if (IsTab(b)) body += Para("\\keepn", Inl(TabTitle(b)));
+                    break;
                 case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
@@ -1895,9 +1923,12 @@ struct DocxWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: break;
-                // (Columns are a slide's and a page's layout: here their
-                // content is written one column after another.)
+                // (Columns are a slide's and a page's layout, tabs a page's:
+                // here their content is written one after another, each tab
+                // under its title.)
                 case BlockKind::LayoutBegin:
+                    if (IsTab(b)) body += P("", Inl(TabTitle(b), none));
+                    break;
                 case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:
@@ -2367,9 +2398,12 @@ struct OdtWriter {
                     break;
                 }
                 case BlockKind::BoxEnd: break;
-                // (Columns are a slide's and a page's layout: here their
-                // content is written one column after another.)
+                // (Columns are a slide's and a page's layout, tabs a page's:
+                // here their content is written one after another, each tab
+                // under its title.)
                 case BlockKind::LayoutBegin:
+                    if (IsTab(b)) body += P("", Inl(TabTitle(b), none));
+                    break;
                 case BlockKind::LayoutEnd: break;
                 case BlockKind::Callout:  // (a comment: the author's own note)
                 case BlockKind::Comment:

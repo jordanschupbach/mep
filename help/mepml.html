@@ -335,6 +335,41 @@ LibreOffice, RTF) have one column of text: they write the columns' content
 one after another, in order. PowerPoint and Impress set a slide's one
 picture beside its text as they always have. A <code>\column(</code> outside
 <code>\columns(</code> is flagged, and so is a row or a column left open.</p>
+<h1>Tabs</h1>
+<pre>\tabs(
+\tab(C++,
+```{cpp}
+std::cout &lt;&lt; "hi\\n";
+```
+)
+\tab(Python,
+```{python}
+print("hi")
+```
+)
+)</pre>
+<p><code>\tabs(</code> on a line of its own opens a set of tabs, each =\tab(Title,=
+inside it is one tab, and a line holding just <code>)</code> closes either -- the
+innermost first, as with columns. The title, before the comma, is what the
+tab reads, and may hold inline markup. A tab holds whatever a column can:
+code blocks and their results, lists, pictures, boxes, columns, another
+<code>\tabs(</code>. Use them for the same thing said several ways -- one example in
+each language -- where the reader wants one of them at a time.</p>
+<p>The editor shows one tab of a set: the <code>\tabs(</code> line reads as a strip of
+the titles, the one shown in the accent colour, and a rule closes the set
+under its content; the other tabs are folded away. A click on a title
+shows that tab, and so do <code>&lt;leader&gt;k]</code> and <code>&lt;leader&gt;k[</code> (<code>:MepmlTabNext</code>,
+<code>:MepmlTabPrev</code>), which step through the tabs of the set the cursor is in,
+or of the first one below it. Opening the folds (<code>zo</code> on the strip, <code>zR</code>)
+shows the set as written; a set just written shows the tab the cursor is
+in. A set holding anything but tabs (and comments) is shown as written.</p>
+<p>HTML sets the tabs as a strip over the shown tab -- the first, until a
+title is clicked -- with no script; printed, every tab is shown under its
+title. The other formats (PDF and LaTeX, Markdown, Org, plain text, Word,
+LibreOffice, RTF) cannot switch between tabs: they write each tab's
+content under its title in bold, one after another. HTML imports read the
+tabs back. A <code>\tab(</code> outside <code>\tabs(</code>, a tab without a title, and a set
+left open are flagged.</p>
 <h1>Boxes: definitions, theorems and their kin</h1>
 <pre>\definition(Orthogonal projection,
 The point of a subspace $S$ closest to $\mathbf{y}$:
@@ -1195,12 +1230,12 @@ Title, Quote, Source Code, Caption ...), so a typical Word or LibreOffice
 document keeps its structure. Word equations and LibreOffice formulas
 become TeX.</p>
 <p>The same converters are a command-line tool:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-mepml</span> convert notes.mepml notes.docx   <span class="tok-comment"># any format to any format,</span>
-<span class="tok-blue">mep-mepml</span> convert report.docx report.mepml <span class="tok-comment"># by way of mepml</span>
-<span class="tok-blue">mep-mepml</span> build notes.mepml                <span class="tok-comment"># what the editor's export does: the</span>
-                                           <span class="tok-comment"># //? Export: format (html by default)</span>
-                                           <span class="tok-comment"># into the build directory, then Post:</span>
-<span class="tok-blue">mep-mepml</span> build notes.mepml org md html    <span class="tok-comment"># several formats, Post: once after all</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh">mep-mepml convert notes.mepml notes.docx   # any format to any format,
+mep-mepml convert report.docx report.mepml # by way of mepml
+mep-mepml build notes.mepml                # what the editor's export does: the
+                                           # //? Export: format (html by default)
+                                           # into the build directory, then Post:
+mep-mepml build notes.mepml org md html    # several formats, Post: once after all</code></pre></div>
 <p><code>convert</code> writes the file it is given (and copies the pictures it names
 beside it, as above) and runs nothing after;
 <code>build</code> is the editor's export with the document's <code>Build:</code> and <code>Post:</code>

@@ -466,7 +466,8 @@ bool IsBuiltinCommandName(const std::string &name) {
                                             "citep",  "alttext", "caption",      "image",      "import",
                                             "citation", "toc",   "bibliography", "printbibliography",
                                             "abstract", "slide", "define",       "raw",
-                                            "boxed",    "class",    "columns",      "column"};
+                                            "boxed",    "class",    "columns",      "column",
+                                            "tabs",     "tab"};
     return k.count(name) > 0 || FindBoxKind(name) != nullptr;
 }
 bool IsUserCommandName(const std::string &name) { return !name.empty() && !IsBuiltinCommandName(name); }
@@ -986,8 +987,8 @@ int BoxOpener(const std::string &line, std::string *kind = nullptr, int *body = 
     if (body) *body = j + 1;
     return j;
 }
-// `\columns(` or `\column(` at the start of a line: the column of its `(`,
-// with *kind the name; -1 for any other line.
+// `\columns(`, `\column(`, `\tabs(` or `\tab(` at the start of a line:
+// the column of its `(`, with *kind the name; -1 for any other line.
 int LayoutOpener(const std::string &line, std::string *kind = nullptr) {
     const int i = Indent(line);
     if (At(line, i) != '\\') return -1;
@@ -995,7 +996,7 @@ int LayoutOpener(const std::string &line, std::string *kind = nullptr) {
     while (IsAlpha(At(line, j))) ++j;
     if (At(line, j) != '(') return -1;
     const std::string name = Sub(line, i + 1, j);
-    if (name != "columns" && name != "column") return -1;
+    if (name != "columns" && name != "column" && name != "tabs" && name != "tab") return -1;
     if (kind) *kind = name;
     return j;
 }
@@ -2178,7 +2179,27 @@ struct Parser {
         if (!rest.empty() && rest.back() == ',') rest = Trim(rest.substr(0, rest.size() - 1));
         const bool in_columns = !open_boxes.empty() && doc.blocks[open_boxes.back()].kind == BlockKind::LayoutBegin &&
                                 doc.blocks[open_boxes.back()].keyword == "columns";
-        if (kind == "column") {
+        const bool in_tabs = !open_boxes.empty() && doc.blocks[open_boxes.back()].kind == BlockKind::LayoutBegin &&
+                             doc.blocks[open_boxes.back()].keyword == "tabs";
+        if (kind == "tab") {
+            // `\tab(Title,`: the title is everything up to the comma (or a
+            // `// comment`), and may hold inline markup.
+            int from = paren + 1, to = Len(s);
+            if (const size_t c = s.find("//", static_cast<size_t>(from)); c != std::string::npos) to = static_cast<int>(c);
+            while (to > from && IsSpace(s[static_cast<size_t>(to - 1)])) --to;
+            if (to > from && s[static_cast<size_t>(to - 1)] == ',') --to;
+            while (from < to && IsSpace(s[static_cast<size_t>(from)])) ++from;
+            while (to > from && IsSpace(s[static_cast<size_t>(to - 1)])) --to;
+            b.value = b.caption = OneSpaced(Sub(s, from, to));
+            if (to > from) b.caption_inlines = Inlines(b, from, to);
+            if (b.caption.empty())
+                Diag(Diagnostic::Warning, i, Indent(s), Len(s), "a tab needs a title (\\tab(Python,); its content goes on the lines after");
+            if (!in_tabs) Diag(Diagnostic::Warning, i, Indent(s), Len(s), "\\tab outside \\tabs: it is not one of a set of tabs");
+        } else if (kind == "tabs") {
+            if (!rest.empty())
+                Diag(Diagnostic::Warning, i, paren + 1, Len(s), "\\tabs holds \\tab(Title, ... ) blocks, on the lines after its opener");
+            if (in_tabs) Diag(Diagnostic::Warning, i, Indent(s), Len(s), "\\tabs directly inside \\tabs: put it in a \\tab");
+        } else if (kind == "column") {
             b.value = rest;
             if (!rest.empty() && ColumnPercent(b) <= 0)
                 Diag(Diagnostic::Warning, i, paren + 1, Len(s),
@@ -3786,6 +3807,24 @@ struct Emitter {
                 const std::string s = LineText(blk.line_start);
                 const int at = Indent(s);
                 int to = at + 1;
+                if (blk.kind == BlockKind::LayoutBegin && blk.keyword == "tab") {
+                    // `\tab(Title,`: the title stays, bold; `\tab(` and the
+                    // comma are markup.
+                    const int paren = static_cast<int>(s.find('(', static_cast<size_t>(at)));
+                    if (paren < 0) break;
+                    Line(blk.line_start, at, paren + 1, mk);
+                    int end = Len(s);
+                    if (const size_t c = s.find("//", static_cast<size_t>(paren)); c != std::string::npos) end = static_cast<int>(c);
+                    while (end > paren + 1 && IsSpace(s[static_cast<size_t>(end - 1)])) --end;
+                    int title_end = end;
+                    if (title_end > paren + 1 && s[static_cast<size_t>(title_end - 1)] == ',') --title_end;
+                    Span t = At_(node);
+                    t.style = kDirective | kBold;
+                    if (title_end > paren + 1) Line(blk.line_start, paren + 1, title_end, t);
+                    if (title_end < end) Line(blk.line_start, title_end, end, mk);
+                    TrailingComment(blk.line_start, end);
+                    break;
+                }
                 if (blk.kind == BlockKind::LayoutBegin) {
                     const size_t c = s.find("//", static_cast<size_t>(at));
                     to = c == std::string::npos ? Len(s) : static_cast<int>(c);
@@ -4011,7 +4050,9 @@ Element ElementForBlock(const Block &b) {
         case BlockKind::BoxBegin:
         case BlockKind::BoxEnd: return Element("box", "kind", b.keyword);
         case BlockKind::LayoutBegin:
-        case BlockKind::LayoutEnd: return b.value.empty() ? Element(b.keyword) : Element(b.keyword, "width", b.value);
+        case BlockKind::LayoutEnd:
+            if (b.value.empty()) return Element(b.keyword);
+            return Element(b.keyword, b.keyword == "tab" ? "title" : "width", b.value);
     }
     return Element("paragraph");
 }
@@ -4229,7 +4270,7 @@ const std::vector<std::string> &ElementNames() {
     static const std::vector<std::string> k = {
         // Blocks.
         "document", "header", "meta", "heading", "paragraph", "comment", "callout", "abstract", "slide", "box", "columns", "column",
-        "list", "list-item", "table", "table-cell", "code", "results", "math-block", "image", "svg", "html", "caption", "alt-text", "rule", "toc",
+        "tabs", "tab", "list", "list-item", "table", "table-cell", "code", "results", "math-block", "image", "svg", "html", "caption", "alt-text", "rule", "toc",
         "bibliography", "import", "citation", "define", "raw", "command",
         // Inlines (comment, raw and command are both).
         "bold", "italic", "underline", "superscript", "subscript", "small", "big", "mono", "highlight", "strike", "insert", "delete",
@@ -4241,7 +4282,7 @@ const std::vector<std::string> &ElementNames() {
 bool IsBlockElement(const std::string &name) {
     static const std::set<std::string> k = {
         "document", "header",   "meta",   "heading",    "paragraph", "comment",  "callout", "abstract",     "slide",  "box",
-        "columns",  "column",
+        "columns",  "column",   "tabs",   "tab",
         "list",     "list-item", "table",  "table-cell", "code",      "results",  "math-block", "image",     "caption", "alt-text",
         "rule",     "toc",      "bibliography", "import", "citation",  "define", "svg", "html",
     };
@@ -5088,6 +5129,10 @@ struct HtmlWriter {
     std::map<std::string, int> cite_numbers;
     bool in_slide = false;  // a <section class="slide"> is open
     int open_boxes = 0;     // <div class="mbox">es open
+    // Sets of tabs (\tabs) open, innermost last: each one's number in the
+    // document (its radio buttons' name) and how many tabs it has had.
+    std::vector<std::pair<int, int>> tab_sets;
+    int tab_set_count = 0;
 
     // What the document's style sheets change for a run of text, for the
     // export that reads this HTML's markup rather than its CSS -- LaTeX
@@ -5118,6 +5163,7 @@ struct HtmlWriter {
     }
     void EndBoxes() {
         for (; open_boxes > 0; --open_boxes) out += "</div>\n";
+        tab_sets.clear();
     }
 
     std::string Inlines(const std::vector<Inline> &ins) {
@@ -5495,7 +5541,21 @@ struct HtmlWriter {
             case BlockKind::LayoutBegin: {
                 // (ExportHtmlToLatex makes these Beamer columns, or
                 // minipages in an article; data-width is a column's own.)
-                if (b.keyword == "columns") {
+                if (b.keyword == "tabs") {
+                    // A tab strip that needs no script: each tab is a radio
+                    // button, its label the tab and the panel after it shown
+                    // while it is checked (BoxCss). The first starts checked.
+                    tab_sets.push_back({++tab_set_count, 0});
+                    out += "<div class=\"mtabs\">\n";
+                } else if (b.keyword == "tab") {
+                    const int set = tab_sets.empty() ? ++tab_set_count : tab_sets.back().first;
+                    const int k = tab_sets.empty() ? 1 : ++tab_sets.back().second;
+                    const std::string id = "mtabs-" + std::to_string(set) + "-" + std::to_string(k);
+                    out += "<input type=\"radio\" class=\"mtab-radio\" name=\"mtabs-" + std::to_string(set) + "\" id=\"" + id + "\"" +
+                           (k == 1 ? " checked" : "") + "><label class=\"mtab-label\" for=\"" + id + "\">" +
+                           Inlines(b.caption_inlines) + "</label>\n";
+                    out += "<div class=\"mtab\" data-title=\"" + Esc(b.caption) + "\">\n";
+                } else if (b.keyword == "columns") {
                     out += "<div class=\"mcols\">\n";
                 } else if (const int pct = ColumnPercent(b)) {
                     out += "<div class=\"mcol\" data-width=\"" + std::to_string(pct) + "\" style=\"flex: 0 0 calc(" +
@@ -5511,6 +5571,7 @@ struct HtmlWriter {
                 if (open_boxes > 0) {
                     out += "</div>\n";
                     --open_boxes;
+                    if (b.kind == BlockKind::LayoutEnd && b.keyword == "tabs" && !tab_sets.empty()) tab_sets.pop_back();
                 }
                 break;
         }
@@ -5544,6 +5605,30 @@ std::string BoxCss() {
            ".mcol > :first-child { margin-top: 0; }\n"
            ".mcol img, .mcol svg { max-width: 100%; height: auto; }\n"
            "@media screen and (max-width: 640px) { body:not(.slides) .mcols { display: block; } }\n";
+    // Tabs (\tabs): a strip of labels over the checked tab's panel. The
+    // labels and panels are siblings in source order (label, panel, label
+    // ...), so the strip is made by ordering: every label first, then the
+    // panels, of which only the one after the checked radio is shown.
+    // Printed, every panel is shown under its own title.
+    css += ".mtabs { position: relative; display: flex; flex-wrap: wrap; margin: 1.2em 0; border: 1px solid var(--rule); border-radius: 6px; "
+           "overflow: hidden; }\n"
+           ".mtab-radio { position: absolute; opacity: 0; pointer-events: none; }\n"
+           ".mtab-label { order: 0; cursor: pointer; padding: .45em 1.1em; font: 600 .85em system-ui, -apple-system, 'Segoe UI', "
+           "Roboto, sans-serif; color: var(--muted); background: var(--pre-bg); border-bottom: 1px solid var(--rule); "
+           "border-right: 1px solid var(--rule); user-select: none; }\n"
+           ".mtab-label:hover { color: var(--fg); }\n"
+           ".mtab-radio:checked + .mtab-label { color: var(--fg); background: var(--bg); border-bottom-color: var(--bg); "
+           "box-shadow: inset 0 2px 0 var(--link); }\n"
+           ".mtab-radio:focus-visible + .mtab-label { outline: 2px solid var(--link); outline-offset: -2px; }\n"
+           ".mtabs::after { content: \"\"; order: 0; flex: 1 1 0; background: var(--pre-bg); border-bottom: 1px solid var(--rule); }\n"
+           ".mtab { order: 1; flex: 0 0 100%; min-width: 0; box-sizing: border-box; padding: .4em 1em .6em; display: none; }\n"
+           ".mtab-radio:checked + .mtab-label + .mtab { display: block; }\n"
+           ".mtab > :first-child { margin-top: .4em; }\n"
+           ".mtab > :last-child { margin-bottom: .2em; }\n"
+           ".mtab img, .mtab svg { max-width: 100%; height: auto; }\n"
+           "@media print { .mtabs { display: block; border: 0; } .mtab-label { display: block; background: none; border: 0; "
+           "box-shadow: none; padding: .6em 0 0; color: var(--fg); } .mtab { display: block !important; padding: 0; } "
+           ".mtabs::after { display: none; } }\n";
     return css;
 }
 

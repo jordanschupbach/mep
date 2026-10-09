@@ -10927,7 +10927,7 @@ const char *kBuiltinCompletion =
     // completion candidates too -- accepting one inserts the trigger word
     // itself, same as any buffer word; expanding it into the full snippet
     // body still needs the separate explicit mep.snippet_trigger() key.
-    "    local ft = mep_lsp_filetype and mep_lsp_filetype(mep.filename())\n"
+    "    local ft = mep_snippet_filetype and mep_snippet_filetype()\n"
     "    local snip_set = ft and mep.snippets and mep.snippets[ft]\n"
     "    if snip_set then\n"
     "      for name, _ in pairs(snip_set) do\n"
@@ -11254,6 +11254,51 @@ const char *kBuiltinSnippets =
     "  ts = mep_snippets_js, tsx = mep_snippets_js,\n"
     "  sh = mep_snippets_sh, bash = mep_snippets_sh, zsh = mep_snippets_sh,\n"
     "}\n"
+    // Which mep.snippets/mep.autosnippets set applies at the cursor: the
+    // buffer's own filetype, except inside a document's code block (org
+    // #+begin_src, mepml/markdown ``` fences, notebook code cells), where
+    // it is the block's language -- so <leader>yy, Tab-expand, the
+    // completion popup's trigger names and autosnippets in a ```python
+    // block behave as they would in a .py file. Block tags ("python",
+    // "c++", "R") go through mep_org_babel_lang_ts_ft (kBuiltinSyntax),
+    // the same tag -> extension bridge highlighting uses. Fence/header
+    // rows themselves still count as the outer document.
+    "local function mep_snippet_md_fence_lang(row)\n"
+    "  local lang\n"
+    "  for i = 1, row - 1 do\n"
+    "    local fence = mep.get_line(i):match('^%s*```+%s*([^%s`]*)')\n"
+    "    if fence then\n"
+    "      if lang then lang = nil else lang = fence end\n"
+    "    end\n"
+    "  end\n"
+    "  if lang and mep.get_line(row):match('^%s*```') then return nil end\n"
+    "  return lang\n"
+    "end\n"
+    "function mep_snippet_filetype()\n"
+    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  local row = mep.cursor()\n"
+    "  local lang\n"
+    "  if ft == 'org' then\n"
+    "    local blk = mep_org_src_block_at(row)\n"
+    "    if blk and row > blk.start_row and row < blk.end_row then lang = blk.lang end\n"
+    // A large mepml buffer whose parse is still running in the background
+    // falls back to the plain fence scan rather than parsing on this
+    // thread -- the autosnippet hook calls this on every typed key.
+    "  elseif ft == 'mepml' and mep.mepml_parse_ready() then\n"
+    "    for _, b in ipairs(mep.mepml_code_blocks()) do\n"
+    "      if row >= b.first and row <= b.last then lang = b.lang break end\n"
+    "    end\n"
+    "  elseif ft == 'md' or ft == 'markdown' or ft == 'mepml' then\n"
+    "    lang = mep_snippet_md_fence_lang(row)\n"
+    "  elseif ft == 'ipynb' then\n"
+    "    local ctx = mep.notebook_lsp_context(row)\n"
+    "    lang = ctx and ctx.language\n"
+    "  end\n"
+    "  if not lang or lang == '' then return ft end\n"
+    "  lang = lang:lower()\n"
+    "  local map = mep_org_babel_lang_ts_ft\n"
+    "  return (map and map[lang]) or lang\n"
+    "end\n"
     // The tabstop parser, splice, and jump-state-machine all moved to
     // C++ -- Editor::SnippetSplice/SnippetJump (editor.cpp), exposed as
     // mep.snippet_splice/mep.snippet_jump (lua_env.cpp); mep.snippet_jump
@@ -11265,7 +11310,7 @@ const char *kBuiltinSnippets =
     "  mep.snippet_splice(row, before, after, body)\n"
     "end\n"
     "function mep.snippet_expand(name)\n"
-    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  local ft = mep_snippet_filetype()\n"
     "  local set = ft and mep.snippets[ft]\n"
     "  local body = set and set[name]\n"
     // A body may be a function returning the line array instead of the
@@ -11313,7 +11358,7 @@ const char *kBuiltinSnippets =
     "  if word then mep.snippet_expand(word) end\n"
     "end\n"
     "function mep.snippets_picker()\n"
-    "  local ft = mep_lsp_filetype(mep.filename())\n"
+    "  local ft = mep_snippet_filetype()\n"
     "  local set = ft and mep.snippets[ft]\n"
     "  if not set then mep.notify('No snippets for this filetype') return end\n"
     "  local items = {}\n"
@@ -24913,7 +24958,7 @@ const char *kBuiltinMathSnippets =
     "      and col > mep_autosnip_prev_col and line ~= mep_autosnip_prev_line\n"
     "  mep_autosnip_prev_row, mep_autosnip_prev_col, mep_autosnip_prev_line = row, col, line\n"
     "  if not typed then return end\n"
-    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  local ft = mep_snippet_filetype()\n"
     "  local specs = ft and mep.autosnippets[ft]\n"
     "  if not specs then return end\n"
     "  local idx = mep_autosnip_index(specs)\n"
@@ -25088,7 +25133,7 @@ const char *kBuiltinOrgSnippets =
     "  local row, col = mep.cursor()\n"
     "  local line = mep.get_line(row)\n"
     "  local word = line and line:sub(1, col - 1):match('[%w_]+$')\n"
-    "  local ft = word and mep_lsp_filetype(mep.filename())\n"
+    "  local ft = word and mep_snippet_filetype()\n"
     "  local set = ft and mep.snippets and mep.snippets[ft]\n"
     "  if set and set[word] then\n"
     "    mep.snippet_expand(word)\n"
@@ -26340,7 +26385,7 @@ const char *kBuiltinSnippetHelp =
     "local t1 = tab('mep')\n"
     "sec(t1, 'Completion / snippets', 'key', {\n"
     "  {'Tab', '', 'jump snippet tabstop / expand trigger word (popup open: accept completion)'},\n"
-    "  {'<leader>yy', '', 'snippet picker for the current filetype'},\n"
+    "  {'<leader>yy', '', 'snippet picker for the current filetype (in a code block: its language)'},\n"
     "  {':MepAutosnippetsToggle', '', 'math autosnippets on/off'},\n"
     "  {'<leader>?', '', 'this cheatsheet'},\n"
     "})\n"
@@ -26700,7 +26745,7 @@ const char *kBuiltinSnippetHelp =
     "  mep_help_close()\n"
     "  mep_help_goto_origin()\n"
     "  local want = trig:match('^%S+') or trig\n"
-    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  local ft = mep_snippet_filetype()\n"
     "  local set = ft and mep.snippets and mep.snippets[ft]\n"
     "  local body = set and set[want]\n"
     "  if type(body) == 'function' then body = body() end\n"

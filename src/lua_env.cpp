@@ -6732,6 +6732,27 @@ int l_fs_exists(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.fs_mtime(path): the last modification time of a file or directory.
+ * @param L Lua state; arg 1 is the path.
+ * @return Number of values pushed (1: the time as an integer in file-clock ticks -- only for
+ * comparing with another fs_mtime of the same path -- or nil when nothing is there or under wasm).
+ */
+int l_fs_mtime(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+#if !defined(__EMSCRIPTEN__)
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(path, ec);
+    if (!ec) {
+        // (libc++'s file clock counts in a 128-bit integer)
+        lua_pushinteger(L, static_cast<lua_Integer>(static_cast<long long>(t.time_since_epoch().count())));
+        return 1;
+    }
+#endif
+    lua_pushnil(L);
+    return 1;
+}
+
+/**
  * @brief Implements mep.fs_chmod(path, mode): sets a file's permission bits (native builds only).
  * @param L Lua state; arg 1 is the file path, arg 2 the mode as an integer (already octal-decoded).
  * @return Number of values pushed (1: true on success, false on error or under wasm).
@@ -14094,6 +14115,7 @@ const luaL_Reg kMepFuncs[] = {
     {"fs_mkdir", l_fs_mkdir},
     {"fs_mkdirp", l_fs_mkdirp},
     {"fs_exists", l_fs_exists},
+    {"fs_mtime", l_fs_mtime},
     {"fs_chmod", l_fs_chmod},
     {"fs_create_file", l_fs_create_file},
     {"fs_rename", l_fs_rename},

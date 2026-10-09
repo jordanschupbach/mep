@@ -6756,6 +6756,39 @@ const char *kBuiltinDirenv =
     "  mep_direnv_root = dir\n"
     "  mep.direnv_set_active(true)\n"
     "end\n"
+    // The files direnv watches for an environment, each with its
+    // modification time now. A flake's .envrc watches flake.nix, flake.lock
+    // and whatever else it names (nix-direnv's watch_file), none of which is
+    // the .envrc's own text -- so comparing that text alone kept serving the
+    // environment of a flake since edited. `direnv status`, run with the
+    // environment in force (its DIRENV_WATCHES), lists them, relative to `dir`.
+    "local function mep_direnv_snapshot_watches(dir, entry)\n"
+    "  local lines = {}\n"
+    "  mep.job_start({'direnv', 'status'}, {\n"
+    "    cwd = dir,\n"
+    "    on_stdout = function(line) lines[#lines + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      if code ~= 0 then return end\n"
+    "      local watches = {}\n"
+    "      for _, line in ipairs(lines) do\n"
+    "        local p = line:match('^Loaded watch: \"(.-)\" %- ')\n"
+    "        if p then\n"
+    "          if p:sub(1, 1) ~= '/' then p = dir .. '/' .. p end\n"
+    "          watches[p] = mep.fs_mtime(p) or false\n"
+    "        end\n"
+    "      end\n"
+    "      entry.watches = watches\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    // The first watched file changed since `entry` was exported, or nil.
+    "local function mep_direnv_changed_watch(entry)\n"
+    "  if not entry or not entry.watches then return nil end\n"
+    "  for p, mtime in pairs(entry.watches) do\n"
+    "    if (mep.fs_mtime(p) or false) ~= mtime then return p end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
     // `direnv export json`'s stdout is one JSON object (pretty-printed
     // over many lines) -- job_start delivers it line-buffered (mep.job_
     // start's own doc comment), so this accumulates every line rather than
@@ -6775,7 +6808,7 @@ const char *kBuiltinDirenv =
     "  end\n"
     "  local envrc = mep_direnv_read(dir .. '/.envrc')\n"
     "  local cached = mep_direnv_cache[dir]\n"
-    "  if cached and not force and cached.envrc == envrc then\n"
+    "  if cached and not force and cached.envrc == envrc and not mep_direnv_changed_watch(cached) then\n"
     "    mep_direnv_gen = mep_direnv_gen + 1\n"
     "    mep_direnv_pending_root = nil\n"
     "    mep_direnv_apply(dir, cached)\n"
@@ -6814,6 +6847,7 @@ const char *kBuiltinDirenv =
     "      end\n"
     "      mep_direnv_cache[dir] = entry\n"
     "      mep_direnv_apply(dir, entry)\n"
+    "      mep_direnv_snapshot_watches(dir, entry)\n"
     "    end,\n"
     "  })\n"
     "end\n"
@@ -6846,7 +6880,22 @@ const char *kBuiltinDirenv =
     "  if not mep_direnv_active then mep_direnv_activate(ws.root) end\n"
     "end\n"
     "mep.on_workspace_changed(mep_direnv_sync)\n"
-    "mep_direnv_sync(mep.workspace_current())\n";
+    "mep_direnv_sync(mep.workspace_current())\n"
+    // A watched file edited while its project is open (the flake gaining a
+    // package, say) reloads the environment, as direnv's own shell hook
+    // does at the next prompt. Checked every couple of seconds: a stat of
+    // each watched file, a few dozen at most.
+    "local mep_direnv_checked = 0\n"
+    "mep.on_frame(function()\n"
+    "  if not mep_direnv_active or mep_direnv_pending_root then return end\n"
+    "  local now = mep.now()\n"
+    "  if now - mep_direnv_checked < 2 then return end\n"
+    "  mep_direnv_checked = now\n"
+    "  local changed = mep_direnv_changed_watch(mep_direnv_cache[mep_direnv_root])\n"
+    "  if not changed then return end\n"
+    "  mep.notify('direnv: ' .. (changed:match('[^/]*$') or changed) .. ' changed; reloading the environment')\n"
+    "  mep.direnv_reload()\n"
+    "end)\n";
 
 // Todoscan (Phase 18): project-wide keyword scan (ripgrep-backed -- no
 // synchronous walk+match fallback for the project-wide scan specifically,
@@ -25498,6 +25547,50 @@ const char *kBuiltinMepml =
     "  end\n"
     "  return false, 'the block did not create ' .. fig\n"
     "end\n"
+    // R's print() of a string -- `print(plot$to_svg())`, or the string
+    // being an R block's last, autoprinted value -- writes it as `[1] "..."`:
+    // quoted, with its newlines and quotes escaped, which mep can't draw.
+    // When that one string is all the block printed and it is an SVG or
+    // HTML document, the document itself is the block's results, as if it
+    // had been cat()'d. Anything else is left as R printed it.
+    "local function mep_mepml_r_printed_document(text)\n"
+    "  local s = text:match('^%s*%[1%] \"(.*)\"%s*$')\n"
+    "  if not s or s:find('\\n', 1, true) then return text end\n"
+    "  local simple = {n = '\\n', t = '\\t', r = '\\r', ['\"'] = '\"', [\"'\"] = \"'\", ['\\\\'] = '\\\\'}\n"
+    "  local out, i, n = {}, 1, #s\n"
+    "  while i <= n do\n"
+    "    local c = s:sub(i, i)\n"
+    "    if c == '\"' then return text end  -- an unescaped quote: more than one string\n"
+    "    if c ~= '\\\\' then\n"
+    "      out[#out + 1] = c\n"
+    "      i = i + 1\n"
+    "    else\n"
+    "      local e = s:sub(i + 1, i + 1)\n"
+    "      if simple[e] then\n"
+    "        out[#out + 1] = simple[e]\n"
+    "        i = i + 2\n"
+    "      elseif e == 'u' or e == 'U' then\n"
+    "        local hex = s:match('^{(%x+)}', i + 2)\n"
+    "        local len = hex and #hex + 2\n"
+    "        if not hex then\n"
+    "          hex = s:match('^%x+', i + 2)\n"
+    "          if not hex then return text end\n"
+    "          hex = hex:sub(1, e == 'u' and 4 or 8)\n"
+    "          len = #hex\n"
+    "        end\n"
+    "        out[#out + 1] = utf8.char(tonumber(hex, 16))\n"
+    "        i = i + 2 + len\n"
+    "      else\n"
+    "        return text\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  local doc = table.concat(out)\n"
+    "  local t = doc:lower():match('^%s*(.-)%s*$')\n"
+    "  local svg = (t:sub(1, 4) == '<svg' or t:sub(1, 5) == '<?xml') and t:sub(-6) == '</svg>'\n"
+    "  local html = (t:sub(1, 9) == '<!doctype' or t:sub(1, 5) == '<html') and t:sub(-7) == '</html>'\n"
+    "  return (svg or html) and doc or text\n"
+    "end\n"
     "local function mep_mepml_run_block(row, on_done)\n"
     "  on_done = on_done or function() end\n"
     "  local blk = mep.mepml_block_at(row)\n"
@@ -25621,6 +25714,7 @@ const char *kBuiltinMepml =
     "      out = kept\n"
     "    end\n"
     "    local text = table.concat(out, '\\n')\n"
+    "    if lang == 'r' and code == 0 then text = mep_mepml_r_printed_document(text) end\n"
     "    if code ~= 0 then\n"
     "      local e = table.concat(err or {}, '\\n')\n"
     "      if e ~= '' then text = text .. (text ~= '' and '\\n' or '') .. e end\n"

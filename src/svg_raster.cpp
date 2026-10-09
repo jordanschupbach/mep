@@ -161,8 +161,18 @@ std::vector<int> Codepoints(const std::string &s) {
     return out;
 }
 
-void DrawText(Canvas &canvas, const gfx::tt::FontInfo &font, const SvgShape &shape) {
-    if (shape.points.size() < 2 || shape.font_size <= 0.0f) return;
+// One glyph of a text shape, rasterized: its coverage and where its top-left
+// lands, relative to the shape's anchor point.
+struct PlacedGlyph {
+    std::vector<unsigned char> coverage;
+    int x = 0, y = 0, w = 0, h = 0;
+};
+
+// Sets `shape`'s text along its baseline (rotated by shape.rotation),
+// glyph by glyph, relative to its anchor point.
+std::vector<PlacedGlyph> LayoutText(const gfx::tt::FontInfo &font, const SvgShape &shape) {
+    std::vector<PlacedGlyph> out;
+    if (shape.font_size <= 0.0f) return out;
     const float scale = shape.font_size / static_cast<float>(std::max(1, font.units_per_em));
     const std::vector<int> cps = Codepoints(shape.text);
     float advance = 0.0f;
@@ -171,23 +181,53 @@ void DrawText(Canvas &canvas, const gfx::tt::FontInfo &font, const SvgShape &sha
         gfx::tt::GetCodepointHMetrics(&font, cp, &aw, &lsb);
         advance += static_cast<float>(aw) * scale;
     }
-    float pen = shape.points[0];
+    float pen = 0.0f;
     if (shape.text_anchor == "middle") pen -= advance * 0.5f;
     else if (shape.text_anchor == "end") pen -= advance;
-    const float baseline = shape.points[1];
+    const float cs = std::cos(shape.rotation), sn = std::sin(shape.rotation);
     for (int cp : cps) {
         int gw = 0, gh = 0, xoff = 0, yoff = 0;
-        unsigned char *bitmap = gfx::tt::GetCodepointBitmap(&font, scale, scale, cp, &gw, &gh, &xoff, &yoff);
+        // Font units (y up) to screen pixels (y down), turned by the rotation.
+        unsigned char *bitmap =
+            shape.rotation == 0.0f
+                ? gfx::tt::GetCodepointBitmap(&font, scale, scale, cp, &gw, &gh, &xoff, &yoff)
+                : gfx::tt::GetGlyphBitmapMatrix(&font, scale * cs, scale * sn, scale * sn, -scale * cs,
+                                                gfx::tt::FindGlyphIndex(&font, cp), &gw, &gh, &xoff, &yoff);
         if (bitmap) {
-            const std::vector<unsigned char> cov(bitmap, bitmap + static_cast<size_t>(gw) * static_cast<size_t>(gh));
-            canvas.Paint(cov, static_cast<int>(std::lround(pen)) + xoff, static_cast<int>(std::lround(baseline)) + yoff, gw,
-                         gh, shape.fill);
+            PlacedGlyph g;
+            g.coverage.assign(bitmap, bitmap + static_cast<size_t>(gw) * static_cast<size_t>(gh));
+            g.x = static_cast<int>(std::lround(pen * cs)) + xoff;
+            g.y = static_cast<int>(std::lround(pen * sn)) + yoff;
+            g.w = gw;
+            g.h = gh;
+            out.push_back(std::move(g));
             gfx::tt::FreeBitmap(bitmap);
         }
         int aw = 0, lsb = 0;
         gfx::tt::GetCodepointHMetrics(&font, cp, &aw, &lsb);
         pen += static_cast<float>(aw) * scale;
     }
+    return out;
+}
+
+void DrawText(Canvas &canvas, const gfx::tt::FontInfo &font, const SvgShape &shape) {
+    if (shape.points.size() < 2) return;
+    const int ax = static_cast<int>(std::lround(shape.points[0])), ay = static_cast<int>(std::lround(shape.points[1]));
+    for (const PlacedGlyph &g : LayoutText(font, shape)) canvas.Paint(g.coverage, ax + g.x, ay + g.y, g.w, g.h, shape.fill);
+}
+
+// The canvas's premultiplied floats as straight-alpha RGBA8.
+std::vector<unsigned char> ToRgba(const Canvas &canvas) {
+    std::vector<unsigned char> rgba(canvas.px.size(), 0);
+    for (size_t i = 0; i < canvas.px.size(); i += 4) {
+        const float a = canvas.px[i + 3];
+        if (a <= 0.0f) continue;
+        for (int c = 0; c < 3; ++c)
+            rgba[i + static_cast<size_t>(c)] =
+                static_cast<unsigned char>(std::clamp(canvas.px[i + static_cast<size_t>(c)] / a * 255.0f + 0.5f, 0.0f, 255.0f));
+        rgba[i + 3] = static_cast<unsigned char>(std::clamp(a * 255.0f + 0.5f, 0.0f, 255.0f));
+    }
+    return rgba;
 }
 
 }  // namespace
@@ -265,17 +305,35 @@ bool Rasterize(const unsigned char *bytes, size_t len, std::vector<unsigned char
         }
     }
 
-    rgba->assign(canvas.px.size(), 0);
-    for (size_t i = 0; i < canvas.px.size(); i += 4) {
-        const float a = canvas.px[i + 3];
-        if (a <= 0.0f) continue;
-        for (int c = 0; c < 3; ++c)
-            (*rgba)[i + static_cast<size_t>(c)] =
-                static_cast<unsigned char>(std::clamp(canvas.px[i + static_cast<size_t>(c)] / a * 255.0f + 0.5f, 0.0f, 255.0f));
-        (*rgba)[i + 3] = static_cast<unsigned char>(std::clamp(a * 255.0f + 0.5f, 0.0f, 255.0f));
-    }
+    *rgba = ToRgba(canvas);
     *width = canvas.w;
     *height = canvas.h;
+    return true;
+}
+
+bool RasterizeText(const SvgShape &shape, const unsigned char *font_ttf, size_t font_len, std::vector<unsigned char> *rgba,
+                   int *width, int *height, int *left, int *top) {
+    gfx::tt::FontInfo font;
+    if (!font_ttf || font_len == 0 || !gfx::tt::InitFont(&font, font_ttf, static_cast<int>(font_len))) return false;
+    const std::vector<PlacedGlyph> glyphs = LayoutText(font, shape);
+    if (glyphs.empty()) return false;
+    int x0 = glyphs[0].x, y0 = glyphs[0].y, x1 = x0, y1 = y0;
+    for (const PlacedGlyph &g : glyphs) {
+        x0 = std::min(x0, g.x);
+        y0 = std::min(y0, g.y);
+        x1 = std::max(x1, g.x + g.w);
+        y1 = std::max(y1, g.y + g.h);
+    }
+    Canvas canvas;
+    canvas.w = std::max(1, x1 - x0);
+    canvas.h = std::max(1, y1 - y0);
+    canvas.px.assign(static_cast<size_t>(canvas.w) * static_cast<size_t>(canvas.h) * 4, 0.0f);
+    for (const PlacedGlyph &g : glyphs) canvas.Paint(g.coverage, g.x - x0, g.y - y0, g.w, g.h, shape.fill);
+    *rgba = ToRgba(canvas);
+    *width = canvas.w;
+    *height = canvas.h;
+    *left = x0;
+    *top = y0;
     return true;
 }
 

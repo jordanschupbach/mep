@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "font_data.h"
+#include "svg_doc.h"
 
 namespace {
 
@@ -130,6 +131,37 @@ void TestText() {
     CHECK(without.ok && DarkPixels(without, 0, 0, 120, 60) == 0);
 }
 
+// A y-axis label (`rotate(-90 x y)`): the display list carries the angle,
+// the page rasterizer sets the text running upward, and RasterizeText gives
+// the same text as a tight, tall image left of and above its anchor.
+void TestRotatedText() {
+    const std::string svg = "<svg width=\"60\" height=\"120\"><text x=\"40\" y=\"60\" font-size=\"30\" "
+                            "text-anchor=\"middle\" transform=\"rotate(-90 40 60)\">MW</text></svg>";
+    const Picture p = Draw(svg, true);
+    CHECK(p.ok);
+    if (!p.ok) return;
+    // Ink above and below y = 60 (the text runs along the column), and none
+    // right of the baseline at x = 40.
+    CHECK(DarkPixels(p, 0, 20, 42, 60) > 40);
+    CHECK(DarkPixels(p, 0, 60, 42, 100) > 40);
+    CHECK(DarkPixels(p, 44, 0, 60, 120) == 0);
+
+    SvgShape shape;
+    shape.kind = SvgShape::Kind::Text;
+    shape.points = {0.0f, 0.0f};
+    shape.text = "MW";
+    shape.font_size = 30.0f;
+    shape.text_anchor = "middle";
+    shape.rotation = -1.5707964f;
+    shape.fill = SvgPaint{true, 0, 0, 0, 255};
+    std::vector<unsigned char> rgba;
+    int w = 0, h = 0, left = 0, top = 0;
+    CHECK(svg_raster::RasterizeText(shape, kJetBrainsMonoRegularTtf, sizeof kJetBrainsMonoRegularTtf, &rgba, &w, &h, &left,
+                                    &top));
+    CHECK(h > w && left < 0 && left + w <= 2 && top < 0 && top + h > 0);
+    CHECK(!svg_raster::RasterizeText(shape, nullptr, 0, &rgba, &w, &h, &left, &top));
+}
+
 void TestMaxSide() {
     const Picture p = Draw("<svg width=\"2000\" height=\"1000\"><rect width=\"100%\" height=\"100%\" fill=\"red\"/></svg>",
                            false, 500);
@@ -149,6 +181,7 @@ int main() {
     TestTransparency();
     TestStyleSheet();
     TestText();
+    TestRotatedText();
     TestMaxSide();
     if (g_failures) {
         std::fprintf(stderr, "svg_raster_test: %d check(s) failed\n", g_failures);

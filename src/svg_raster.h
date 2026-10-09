@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+struct SvgShape;
+
 // An SVG file as a picture: the inline-image path (an org [[file:x.svg]]
 // link, a mepml \image(x.svg), a block's file= figure) decodes PNG/JPEG/
 // GIF/BMP through image_codec, and an SVG through this instead. The SVG
@@ -32,6 +34,15 @@ bool Dimensions(const unsigned char *bytes, size_t len, int *width, int *height)
 bool Rasterize(const unsigned char *bytes, size_t len, std::vector<unsigned char> *rgba, int *width, int *height,
                std::string *error, const unsigned char *font_ttf = nullptr, size_t font_len = 0,
                int max_side = 4096);
+
+// Sets one text shape (svg_doc's SvgShape::Kind::Text, its rotation
+// included) in `font_ttf` into a tight straight-alpha RGBA8 image, the way
+// Rasterize draws it: for a caller that draws the rest of an SVG itself but
+// cannot turn text (the HTML pane, for a rotated axis label). `*left` and
+// `*top` are the image's top-left corner relative to the shape's anchor
+// point. False when there is no font or nothing to draw.
+bool RasterizeText(const SvgShape &shape, const unsigned char *font_ttf, size_t font_len, std::vector<unsigned char> *rgba,
+                   int *width, int *height, int *left, int *top);
 
 }  // namespace svg_raster
 

@@ -11489,6 +11489,16 @@ bool IsHtmlTextField(const DomNode *node) {
     for (const char *text_type : kTextTypes) if (type->second == text_type) return true;
     return false;
 }
+DomNode *FindHtmlElementById(DomNode *node, const std::string &id) {
+    if (!node) return nullptr;
+    if (node->type == DomNodeType::Element) {
+        auto it = node->attrs.find("id");
+        if (it != node->attrs.end() && it->second == id) return node;
+    }
+    for (const auto &child : node->children)
+        if (DomNode *found = FindHtmlElementById(child.get(), id)) return found;
+    return nullptr;
+}
 void ClearHtmlFocus(DomNode *node) {
     if (!node) return;
     node->interaction_focus = false;
@@ -11519,6 +11529,9 @@ bool Editor::ClickHtmlNode(int buffer_id, DomNode *node) {
             return nullptr;
         };
         if (DomNode *control = first_control(cur)) target = control;
+        // <label for="id">: the control is wherever that id is.
+        if (auto for_it = cur->attrs.find("for"); for_it != cur->attrs.end() && !for_it->second.empty())
+            if (DomNode *control = FindHtmlElementById(sess.doc.root.get(), for_it->second)) target = control;
         break;
     }
     if (IsHtmlTextField(target) && !target->attrs.count("disabled") && !target->attrs.count("readonly")) {
@@ -11550,6 +11563,9 @@ bool Editor::ClickHtmlNode(int buffer_id, DomNode *node) {
         // A static page still gets the control's own behaviour.
         auto type = target->attrs.find("type");
         if (target->tag == "input" && type != target->attrs.end() && type->second == "checkbox") target->form_checked = !target->form_checked;
+        if (target->tag == "input" && type != target->attrs.end() && type->second == "radio") CheckHtmlRadio(target);
+        // :checked rules (a CSS-only tab strip) follow the new state.
+        ComputeStyles(sess.doc);
         return true;
     }
     const bool proceed = ScriptsClick(*sess.js, target);

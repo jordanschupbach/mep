@@ -16836,8 +16836,14 @@ const char *kBuiltinOrgBabel =
     // file next to it.
     "  body_filter = function(body_lines)\n"
     "    local doc = mep.filename and mep.filename() or ''\n"
-    "    local dir = doc:match('^(.*)/[^/]*$')\n"
+    "    local dir = doc:match('^(.*)/[^/]*$') or (doc ~= '' and '.' or nil)\n"
     "    if not dir then return body_lines end\n"
+    // mep.filename() is relative to the project root for a file opened
+    // inside it, and a relative directory would land beside the temporary
+    // .cs file instead.
+    "    if dir:sub(1, 1) ~= '/' and mep.getcwd then\n"
+    "      dir = (dir == '.') and mep.getcwd() or (mep.getcwd() .. '/' .. dir:gsub('^%./', ''))\n"
+    "    end\n"
     "    local out = {}\n"
     "    for i, line in ipairs(body_lines) do\n"
     "      local lead, path = line:match('^(%s*#:project%s+)(.-)%s*$')\n"
@@ -41101,7 +41107,22 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
         return;
     }
 
+    // Flex `order`: a row container's children in ascending order, equal
+    // values (and text) keeping document order.
+    std::vector<DomNode *> flow;
+    flow.reserve(rendered_children.size());
+    bool reordered = false;
     for (auto &c : rendered_children) {
+        flow.push_back(c.get());
+        reordered = reordered || (c->type == DomNodeType::Element && c->style.flex_order != 0);
+    }
+    if (reordered && node->style.flex_container && !node->style.flex_column)
+        std::stable_sort(flow.begin(), flow.end(), [](const DomNode *a, const DomNode *b) {
+            const int oa = a->type == DomNodeType::Element ? a->style.flex_order : 0;
+            const int ob = b->type == DomNodeType::Element ? b->style.flex_order : 0;
+            return oa < ob;
+        });
+    for (DomNode *c : flow) {
         // A closed <details> exposes only its <summary>; the state lives on
         // DomNode so Phase 11 can toggle exactly this branch on click.
         if (node->tag == "details" && !node->details_open &&
@@ -41121,12 +41142,12 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
         // ordinary in-flow block (the mepml block renderer path).
         if ((c->style.position == CssPosition::Fixed || c->style.position == CssPosition::Sticky) &&
             box_ctx.viewport_w > 0.0f && !box_ctx.in_fixed_subtree) {
-            LayoutFixedElement(c.get(), box_ctx, out);
+            LayoutFixedElement(c, box_ctx, out);
             continue;
         }
         if (c->style.block) {
             flush_words();
-            HtmlLayoutBlock(c.get(), my_indent, cursor_y, box_ctx, out);
+            HtmlLayoutBlock(c, my_indent, cursor_y, box_ctx, out);
         } else {
             // Flex-row `gap`: the visual separation between flex items (which
             // this renderer lays out as inline runs). Glued on both sides so
@@ -41140,7 +41161,7 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
                 gap_word.glue_prev = true;
                 if (gap_word.fixed_advance > 0.0f) words.push_back(std::move(gap_word));
             }
-            HtmlCollectInlineChild(c.get(), node->style, box_ctx, words);
+            HtmlCollectInlineChild(c, node->style, box_ctx, words);
         }
     }
     if (!node->style.content_after.empty()) {
@@ -46989,6 +47010,51 @@ void DrawMepmlHtmlResult(const Buffer::OrgLatexRender &render, float x, float y,
     const HtmlLayout layout = LayoutHtmlDoc(MepmlHtmlDoc(render.html, render.base_dir), ctx);
     PaintHtmlLayout(layout, ctx, x, kMepmlHtmlPad, y + kMepmlHtmlPad, y, h, false, -1, -1, false);
 }
+// A rotated SVG text shape, set by svg_raster::RasterizeText and uploaded
+// once: `left`/`top` place the texture relative to the shape's anchor.
+struct HtmlSvgTextTexture {
+    gfx::Texture2D tex{};
+    int left = 0, top = 0;
+};
+
+/**
+ * @brief The texture of one rotated inline-SVG text shape, cached by its text, size, angle and colour.
+ * @param shape A Kind::Text shape with a non-zero rotation.
+ * @return The cached texture, or null when it could not be set.
+ */
+const HtmlSvgTextTexture *HtmlRotatedSvgText(const SvgShape &shape) {
+    static std::unordered_map<std::string, std::unique_ptr<HtmlSvgTextTexture>> cache;
+    char key_head[96];
+    std::snprintf(key_head, sizeof(key_head), "%.2f|%.4f|%u,%u,%u,%u|%s|", static_cast<double>(shape.font_size),
+                  static_cast<double>(shape.rotation), shape.fill.r, shape.fill.g, shape.fill.b, shape.fill.a,
+                  shape.text_anchor.c_str());
+    const std::string key = key_head + shape.text;
+    if (auto it = cache.find(key); it != cache.end()) return it->second.get();
+    std::unique_ptr<HtmlSvgTextTexture> &slot = cache[key];
+    if (cache.size() > 512) {
+        // Unbounded growth guard: a page animating its labels' angle.
+        for (auto &[k, v] : cache)
+            if (v) gfx::UnloadTexture(v->tex);
+        cache.clear();
+        return nullptr;
+    }
+    std::vector<unsigned char> rgba;
+    int w = 0, h = 0, left = 0, top = 0;
+    if (!svg_raster::RasterizeText(shape, kLiberationSansRegularTtf, kLiberationSansRegularTtfLen, &rgba, &w, &h, &left, &top))
+        return nullptr;
+    gfx::Image img{};
+    img.data = rgba.data();
+    img.width = w;
+    img.height = h;
+    img.mipmaps = 1;
+    img.format = gfx::kPixelFormatR8G8B8A8;
+    slot = std::make_unique<HtmlSvgTextTexture>();
+    slot->tex = gfx::LoadTextureFromImage(img);
+    slot->left = left;
+    slot->top = top;
+    return slot.get();
+}
+
 
 // Paints a laid-out HTML document: element backgrounds and borders, then
 // canvases, SVG, rules, text, images and maths -- the browser pane's own
@@ -47164,6 +47230,17 @@ void PaintHtmlLayout(const HtmlLayout &layout, const HtmlLayoutCtx &ctx, float x
         for (const SvgShape &shape : list.shapes) {
             if (shape.kind == SvgShape::Kind::Text) {
                 if (shape.points.size() < 2) continue;
+                if (shape.rotation != 0.0f) {
+                    // Turned text (a plot's y-axis label): the text pass
+                    // cannot rotate, so it is set on the CPU and drawn as a
+                    // texture, kept while its look stays the same.
+                    if (const HtmlSvgTextTexture *t = HtmlRotatedSvgText(shape))
+                        gfx::DrawTextureEx(t->tex,
+                                           {std::round(sx + shape.points[0]) + static_cast<float>(t->left),
+                                            std::round(sy + shape.points[1]) + static_cast<float>(t->top)},
+                                           0.0f, 1.0f, gfx::Color{255, 255, 255, 255});
+                    continue;
+                }
                 gfx::Vector2 size = gfx::MeasureTextEx(g_font, shape.text.c_str(), shape.font_size, 0);
                 float anchor_dx = shape.text_anchor == "middle" ? -size.x / 2.0f : (shape.text_anchor == "end" ? -size.x : 0.0f);
                 gfx::DrawTextEx(g_font, shape.text.c_str(), {sx + shape.points[0] + anchor_dx, sy + shape.points[1] - shape.font_size},

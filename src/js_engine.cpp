@@ -6335,10 +6335,25 @@ bool ActivateDomNode(HtmlDoc &doc, DomNode *node, bool &threw, std::string &erro
     // A checkbox flips before its listeners run (they read the new state)
     // and flips back if one of them cancels the click.
     if (checkbox) node->form_checked = !node->form_checked;
-    if (radio) node->form_checked = true;
+    // A radio unchecks the rest of its group; a cancelled click puts them back.
+    std::vector<DomNode *> group_was_checked;
+    if (radio) {
+        std::function<void(DomNode *)> collect = [&](DomNode *n) {
+            if (n->form_checked && n != node) group_was_checked.push_back(n);
+            for (const auto &child : n->children) collect(child.get());
+        };
+        DomNode *top = node;
+        while (top->parent) top = top->parent;
+        collect(top);
+        CheckHtmlRadio(node);
+    }
     const bool proceed = FireDomEvent(doc, node, "click", true, threw, error);
     if (threw) return false;
-    if (!proceed) { if (checkbox || radio) node->form_checked = was_checked; return false; }
+    if (!proceed) {
+        if (checkbox || radio) node->form_checked = was_checked;
+        for (DomNode *n : group_was_checked) n->form_checked = true;
+        return false;
+    }
     if (checkbox || radio) {
         FireDomEvent(doc, node, "input", true, threw, error);
         if (!threw) FireDomEvent(doc, node, "change", true, threw, error);

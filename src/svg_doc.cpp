@@ -802,6 +802,8 @@ struct Builder {
             shape.text = text;
             shape.font_size = style.font_size * m.LengthScale();
             shape.text_anchor = style.text_anchor;
+            shape.rotation = std::atan2(m.b, m.a);
+            if (std::fabs(shape.rotation) < 1e-4f) shape.rotation = 0.0f;
             shape.fill = Modulate(style.fill, style.opacity * style.fill_opacity);
             if (!shape.fill.present) shape.fill = Modulate(style.stroke, style.opacity * style.stroke_opacity);
             if (!shape.fill.present || shape.fill.a == 0) return;

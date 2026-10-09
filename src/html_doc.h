@@ -235,6 +235,15 @@ struct ComputedStyle {
     // looks like flex-direction:column). Non-inherited.
     bool flex_container = false;
     bool flex_column = false;
+    // `flex-wrap: wrap` on a container, and an item whose `flex-basis` (or
+    // the `flex` shorthand's last value) is 100%: in a wrapping row such an
+    // item takes a whole line, so it stays a block rather than flowing
+    // inline (the tab-strip idiom: labels in a row, the panel below them).
+    bool flex_wrap = false;
+    bool flex_full_basis = false;
+    // `order`: a row flex container lays its children out in ascending
+    // order, equal values keeping document order (main.cpp's HtmlLayoutBlock).
+    int flex_order = 0;
     // Flex alignment -- only the `center` value is modelled, and only
     // main.cpp's LayoutFixedElement acts on it (centering an icon button's
     // glyph inside its fixed box). Non-inherited.
@@ -493,6 +502,10 @@ void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document = true,
  * @param doc Document whose tree gets its `style` fields (re)computed in place.
  */
 void ComputeStyles(HtmlDoc &doc);
+
+// Checks a radio input and unchecks the others of its group (same `name`,
+// same <form>, or the document when it has none), as clicking one does.
+void CheckHtmlRadio(DomNode *radio);
 
 // Sets the viewport size and dark-mode preference that `@media` queries are
 // evaluated against by the NEXT ComputeStyles call (min/max-width, min/max-

@@ -1339,6 +1339,34 @@ void ParseCssEdges(const std::string &raw, CssEdges &edges, bool allow_auto) {
  * @param decls Property-name-to-value map, as produced by ParseDeclarations.
  */
 void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, std::string> &decls) {
+    if (auto it = decls.find("font"); it != decls.end()) {
+        // The `font` shorthand: [style] [weight] <size>[/<line-height>]
+        // <family>, read into whichever longhands the same block leaves out
+        // (applied first, so a longhand beside it wins).
+        std::unordered_map<std::string, std::string> longhands;
+        std::istringstream parts(it->second);
+        std::string family;
+        bool sized = false;
+        for (std::string tok; parts >> tok;) {
+            if (sized) {
+                family += (family.empty() ? "" : " ") + tok;
+            } else if (tok == "italic" || tok == "oblique") {
+                longhands["font-style"] = tok;
+            } else if (tok == "bold" || tok == "bolder" || tok == "lighter" ||
+                       (tok.size() == 3 && std::isdigit(static_cast<unsigned char>(tok[0])) && tok.substr(1) == "00")) {
+                longhands["font-weight"] = tok;
+            } else if (!tok.empty() && (std::isdigit(static_cast<unsigned char>(tok[0])) || tok[0] == '.')) {
+                const size_t slash = tok.find('/');
+                longhands["font-size"] = tok.substr(0, slash);
+                if (slash != std::string::npos) longhands["line-height"] = tok.substr(slash + 1);
+                sized = true;
+            }
+        }
+        if (!family.empty()) longhands["font-family"] = family;
+        for (auto lh = longhands.begin(); lh != longhands.end();)
+            lh = decls.count(lh->first) ? longhands.erase(lh) : std::next(lh);
+        if (!longhands.empty()) ApplyDeclarations(s, longhands);
+    }
     unsigned char r, g, b;
     if (auto it = decls.find("color"); it != decls.end() && ParseColor(it->second, &r, &g, &b)) {
         s.has_color = true;
@@ -1528,6 +1556,21 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
     }
     if (auto it = decls.find("flex-direction"); it != decls.end())
         s.flex_column = it->second.find("column") != std::string::npos;
+    auto wraps = [](const std::string &v) { return v.find("wrap") != std::string::npos && v.find("nowrap") == std::string::npos; };
+    if (auto it = decls.find("flex-flow"); it != decls.end()) {
+        s.flex_column = it->second.find("column") != std::string::npos;
+        s.flex_wrap = wraps(it->second);
+    }
+    if (auto it = decls.find("flex-wrap"); it != decls.end()) s.flex_wrap = wraps(it->second);
+    if (auto it = decls.find("flex"); it != decls.end()) {
+        // flex: <grow> [<shrink>] [<basis>] -- only a 100% basis matters here.
+        std::istringstream parts(it->second);
+        std::string last;
+        for (std::string v; parts >> v;) last = v;
+        s.flex_full_basis = last == "100%";
+    }
+    if (auto it = decls.find("flex-basis"); it != decls.end()) s.flex_full_basis = it->second.find("100%") != std::string::npos;
+    if (auto it = decls.find("order"); it != decls.end()) s.flex_order = std::atoi(it->second.c_str());
     if (auto it = decls.find("inset"); it != decls.end()) {
         // inset: <top> [<right> [<bottom> [<left>]]], the margin shorthand's order.
         std::istringstream parts(it->second);
@@ -2215,8 +2258,10 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     // flex is approximated -- no grow/shrink/basis sizing. A container with a
     // SINGLE element child is the centering-wrapper idiom (a modal inside a
     // full-screen backdrop) -- that child must stay a block or its whole card
-    // collapses into inline text.
-    if (parent.flex_container && !parent.flex_column && !s.display_none && n->parent) {
+    // collapses into inline text. An item with a 100% basis in a wrapping
+    // container fills a line of its own, so it stays a block too.
+    if (parent.flex_container && !parent.flex_column && !s.display_none && n->parent &&
+        !(parent.flex_wrap && s.flex_full_basis)) {
         int element_kids = 0;
         for (const auto &sib : n->parent->children)
             if (sib->type == DomNodeType::Element) ++element_kids;
@@ -2256,6 +2301,25 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
 }  // namespace
 
 bool CssEvalMediaQuery(const std::string &query) { return MediaQueryApplies(query); }
+
+void CheckHtmlRadio(DomNode *radio) {
+    if (!radio) return;
+    radio->form_checked = true;
+    auto name_it = radio->attrs.find("name");
+    if (name_it == radio->attrs.end() || name_it->second.empty()) return;
+    DomNode *scope = radio;
+    while (scope->parent && scope->tag != "form") scope = scope->parent;
+    std::function<void(DomNode *)> clear = [&](DomNode *n) {
+        if (n != radio && n->type == DomNodeType::Element && n->tag == "input") {
+            auto type = n->attrs.find("type");
+            auto other = n->attrs.find("name");
+            if (type != n->attrs.end() && type->second == "radio" && other != n->attrs.end() && other->second == name_it->second)
+                n->form_checked = false;
+        }
+        for (const auto &child : n->children) clear(child.get());
+    };
+    clear(scope);
+}
 
 void ComputeStyles(HtmlDoc &doc) {
     if (!doc.root) return;

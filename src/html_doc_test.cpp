@@ -591,6 +591,7 @@ int main() {
     CHECK(list.shapes[2].kind == SvgShape::Kind::Polygon && list.shapes[2].fill.r == 9 && list.shapes[2].fill.b == 7 && list.shapes[2].points.size() == 6 && list.shapes[2].points[1] == 40.0f && list.shapes[2].triangles.size() == 3);
     CHECK(list.shapes[3].kind == SvgShape::Kind::Polyline && !list.shapes[3].closed && list.shapes[3].stroke.g == 128 && list.shapes[3].stroke.a == 127 && list.shapes[3].points.size() > 80);
     CHECK(list.shapes[4].kind == SvgShape::Kind::Text && list.shapes[4].text == "Hi" && list.shapes[4].points[0] == 24.0f && list.shapes[4].points[1] == 40.0f && list.shapes[4].font_size == 8.0f && list.shapes[4].text_anchor == "middle");
+    CHECK(list.shapes[4].rotation == 0.0f);
     CHECK(list.shapes[5].fill.r == 127 && list.shapes[5].fill.g == 127 && list.shapes[5].points.size() == 8);
     HtmlDoc svg_rotated;
     ParseHtml("<svg id=\"r\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\" transform=\"rotate(90 5 5)\" fill=\"#123456\"/><symbol id=\"s\"><circle r=\"1\"/></symbol><use href=\"#s\" x=\"3\" y=\"3\"/></svg>", svg_rotated);
@@ -599,6 +600,12 @@ int main() {
     // The rotated square still covers the same 20x20 box after scaling by 2.
     CHECK(std::fabs(rotated.shapes[0].points[0] - 20.0f) < 0.01f && std::fabs(rotated.shapes[0].points[1]) < 0.01f);
     CHECK(rotated.shapes[1].kind == SvgShape::Kind::Polygon && std::fabs(rotated.shapes[1].points[0] - 8.0f) < 0.01f && std::fabs(rotated.shapes[1].points[1] - 6.0f) < 0.01f);
+    // A rotated label keeps its angle (clockwise on screen) for the drawer.
+    HtmlDoc svg_label;
+    ParseHtml("<svg id=\"y\" width=\"10\" height=\"10\"><text x=\"2\" y=\"5\" transform=\"rotate(-90 2 5)\">y</text></svg>", svg_label);
+    SvgDisplayList label = BuildSvgDisplayList(*FindById(svg_label.root.get(), "y"), 10.0f, 10.0f);
+    CHECK(label.shapes.size() == 1 && std::fabs(label.shapes[0].rotation + 1.5707964f) < 1e-4f);
+    CHECK(std::fabs(label.shapes[0].points[0] - 2.0f) < 0.01f && std::fabs(label.shapes[0].points[1] - 5.0f) < 0.01f);
     // list-style:none suppresses the <li> marker and inherits into nested
     // lists (the common "list styled as a plain nav menu" pattern); a plain
     // sibling list keeps its marker.
@@ -671,6 +678,31 @@ int main() {
         node("fw")->interaction_focus = true;
         ComputeStyles(page);
         CHECK(node("fw")->style.display_none);
+    }
+    // A CSS-only tab strip (mepml's \tabs export): in a wrapping row, the
+    // 100%-basis panel stays a block while the labels flow inline, `order`
+    // is read, and checking another radio of the group moves :checked.
+    {
+        HtmlDoc page;
+        ParseHtml("<style>.t { display: flex; flex-wrap: wrap } .r { position: absolute } .l { order: 0 }"
+                  ".p { order: 1; flex: 0 0 100%; display: none } .r:checked + .l + .p { display: block }</style>"
+                  "<div class='t'><input type='radio' class='r' name='g' id='r1' checked><label class='l' id='l1' for='r1'>A</label>"
+                  "<div class='p' id='p1'></div><input type='radio' class='r' name='g' id='r2'><label class='l' for='r2'>B</label>"
+                  "<div class='p' id='p2'></div></div>",
+                  page);
+        auto node = [&](const char *id) { return FindById(page.root.get(), id); };
+        CHECK(!node("l1")->style.block && node("p1")->style.block && !node("p1")->style.display_none);
+        CHECK(node("p1")->style.flex_order == 1 && node("l1")->style.flex_order == 0 && node("p2")->style.display_none);
+        HtmlDoc fonts;
+        ParseHtml("<style>.f { font: italic 600 .85em/1.2 system-ui, sans-serif } .g { font: 700 1em serif; font-weight: normal }</style>"
+                  "<p class='f' id='f'>a</p><p class='g' id='g'>b</p>", fonts);
+        const DomNode *f = FindById(fonts.root.get(), "f"), *g = FindById(fonts.root.get(), "g");
+        CHECK(f->style.bold && f->style.italic && std::fabs(f->style.font_scale - 0.85f) < 1e-4f && f->style.font_family == HtmlFontFamily::Sans);
+        CHECK(!g->style.bold && g->style.font_family == HtmlFontFamily::Serif);
+        CheckHtmlRadio(node("r2"));
+        ComputeStyles(page);
+        CHECK(!node("r1")->form_checked && node("r2")->form_checked);
+        CHECK(node("p1")->style.display_none && !node("p2")->style.display_none);
     }
     // classList.toggle(name, force), style.setProperty, and a keystroke a
     // listener cancels (the host then skips its own binding for it).

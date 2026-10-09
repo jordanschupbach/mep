@@ -46,6 +46,9 @@ struct SvgShape {
     std::string text;
     float font_size = 16.0f;
     std::string text_anchor = "start";  // start | middle | end
+    // The baseline's angle in radians, clockwise on screen (a y-axis label's
+    // `transform="rotate(-90 ...)"` is -pi/2); 0 for upright text.
+    float rotation = 0.0f;
 };
 
 struct SvgDisplayList {

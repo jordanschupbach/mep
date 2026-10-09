@@ -5617,8 +5617,11 @@ std::string BoxCss() {
            "Roboto, sans-serif; color: var(--muted); background: var(--pre-bg); border-bottom: 1px solid var(--rule); "
            "border-right: 1px solid var(--rule); user-select: none; }\n"
            ".mtab-label:hover { color: var(--fg); }\n"
+           // The checked label is underlined in the link colour rather than
+           // marked by colour alone: a viewer that recolours the page to
+           // its own theme (mep's HTML pane) still shows which tab is open.
            ".mtab-radio:checked + .mtab-label { color: var(--fg); background: var(--bg); border-bottom-color: var(--bg); "
-           "box-shadow: inset 0 2px 0 var(--link); }\n"
+           "text-decoration: underline 2px var(--link); text-underline-offset: .45em; }\n"
            ".mtab-radio:focus-visible + .mtab-label { outline: 2px solid var(--link); outline-offset: -2px; }\n"
            ".mtabs::after { content: \"\"; order: 0; flex: 1 1 0; background: var(--pre-bg); border-bottom: 1px solid var(--rule); }\n"
            ".mtab { order: 1; flex: 0 0 100%; min-width: 0; box-sizing: border-box; padding: .4em 1em .6em; display: none; }\n"
@@ -5627,7 +5630,7 @@ std::string BoxCss() {
            ".mtab > :last-child { margin-bottom: .2em; }\n"
            ".mtab img, .mtab svg { max-width: 100%; height: auto; }\n"
            "@media print { .mtabs { display: block; border: 0; } .mtab-label { display: block; background: none; border: 0; "
-           "box-shadow: none; padding: .6em 0 0; color: var(--fg); } .mtab { display: block !important; padding: 0; } "
+           "text-decoration: none; padding: .6em 0 0; color: var(--fg); } .mtab { display: block !important; padding: 0; } "
            ".mtabs::after { display: none; } }\n";
     return css;
 }

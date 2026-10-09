@@ -3027,7 +3027,14 @@ Document ParseForExport(const std::string &file, const std::vector<std::string> 
 // ---------------------------------------------------------------------------
 // Results
 
-std::string HtmlResultFragment(const std::string &html) {
+std::string HtmlResultFragment(const std::string &raw) {
+    // An XML prolog (`<?xml ...?>`, which an SVG file starts with) is no
+    // part of the page.
+    std::string html = raw;
+    for (size_t at = Lower(html).find("<?xml"); at != std::string::npos; at = Lower(html).find("<?xml", at)) {
+        const size_t end = html.find("?>", at);
+        html.erase(at, end == std::string::npos ? std::string::npos : end + 2 - at);
+    }
     const std::string lower = Lower(html);
     const size_t body = lower.find("<body");
     if (body == std::string::npos) {
@@ -3055,7 +3062,8 @@ std::string ResultFormatFor(const Block &b) {
         const std::string n = Lower(o.name);
         if (n != "results" && n != "output") continue;
         const std::string v = Lower(Trim(o.value.s));
-        if (v.find("html") != std::string::npos) return "html";
+        // SVG is drawn as HTML is: an <svg> element is a page fragment.
+        if (v.find("html") != std::string::npos || v.find("svg") != std::string::npos) return "html";
         // knitr's `results='asis'` and org's `:results raw` mean the same.
         for (const char *w : {"markdown", "md", "asis", "raw"}) {
             const size_t at = v.find(w);
@@ -3065,6 +3073,31 @@ std::string ResultFormatFor(const Block &b) {
         }
     }
     return "";
+}
+
+std::string ResultFormatFor(const Block &b, const std::string &output) {
+    std::string f = ResultFormatFor(b);
+    if (!f.empty()) return f;
+    // Text asked for by name (org's `:results verbatim`) stays text.
+    for (const Option &o : b.options) {
+        const std::string n = Lower(o.name);
+        if (n != "results" && n != "output") continue;
+        const std::string v = Lower(Trim(o.value.s));
+        if (v.find("verbatim") != std::string::npos || v.find("text") != std::string::npos) return "";
+    }
+    // Output that is one SVG image (an optional <?xml?> prolog, then
+    // <svg ...> ... </svg>) is a picture, drawn as one.
+    const std::string t = Lower(Trim(output));
+    size_t at = 0;
+    if (t.compare(0, 5, "<?xml") == 0) {
+        const size_t gt = t.find("?>");
+        if (gt == std::string::npos) return "";
+        at = t.find_first_not_of(" \t\r\n", gt + 2);
+        if (at == std::string::npos) return "";
+    }
+    if (t.compare(at, 4, "<svg") != 0 || t.size() < at + 5 || IsAlpha(t[at + 4])) return "";
+    if (t.size() < 6 || t.compare(t.size() - 6, 6, "</svg>") != 0) return "";
+    return "html";
 }
 
 std::vector<std::string> FormatResults(const std::string &output, const std::string &format) {

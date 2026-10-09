@@ -1763,6 +1763,17 @@ int main() {
         CHECK(whole.find("<style>td{color:red}</style>") != std::string::npos && whole.find("<table></table>") != std::string::npos);
         CHECK(whole.find("<title>") == std::string::npos && whole.find("<body") == std::string::npos);
         CHECK(HtmlResultFragment("<p>just a fragment</p>") == "<p>just a fragment</p>");
+        // SVG output: results=svg asks for it; a block that prints an SVG
+        // image (prolog or not) gets it unasked, unless it asked for text.
+        const std::string svg = "<?xml version=\"1.0\"?>\n<svg width=\"10\" height=\"10\">\n<circle r=\"4\"/>\n</svg>\n";
+        CHECK(ResultFormatFor(Parse({"```{r, results=svg}", "x", "```"}).blocks[0]) == "html");
+        CHECK(ResultFormatFor(Parse({"```cpp", "x", "```"}).blocks[0], svg) == "html");
+        CHECK(ResultFormatFor(Parse({"```{cpp, results=\"output\"}", "x", "```"}).blocks[0], svg) == "html");
+        CHECK(ResultFormatFor(Parse({"```{cpp, results=verbatim}", "x", "```"}).blocks[0], svg).empty());
+        CHECK(ResultFormatFor(Parse({"```cpp", "x", "```"}).blocks[0], "<svgx/>").empty());
+        CHECK(ResultFormatFor(Parse({"```cpp", "x", "```"}).blocks[0], "a\n" + svg).empty());
+        CHECK(HtmlResultFragment(svg).find("<?xml") == std::string::npos);
+        CHECK(HtmlResultFragment(svg).find("<svg width") != std::string::npos);
     }
 
     std::printf("mepml_doc_test: all checks passed\n");

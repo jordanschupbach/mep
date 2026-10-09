@@ -434,7 +434,9 @@ void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document, bool c
             i = (end == std::string::npos) ? n : end + 3;
             continue;
         }
-        if (i + 1 < n && html[i + 1] == '!') {  // <!DOCTYPE ...>
+        // <!DOCTYPE ...>, and <?xml ...?> (a processing instruction, which
+        // HTML reads as a bogus comment) -- neither is content.
+        if (i + 1 < n && (html[i + 1] == '!' || html[i + 1] == '?')) {
             size_t end = html.find('>', i);
             i = (end == std::string::npos) ? n : end + 1;
             continue;

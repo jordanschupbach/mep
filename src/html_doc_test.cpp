@@ -160,6 +160,17 @@ int main() {
     CHECK(QuerySelectorAll(attrops.root.get(), "a[href*=\"age\"]").size() == 1);
     CHECK(QuerySelectorAll(attrops.root.get(), "a[lang|=\"en\"]").size() == 1);
     CHECK(QuerySelectorAll(attrops.root.get(), "a[lang|=\"e\"]").empty());
+    // An XML prolog (an SVG file's first line) is not text.
+    HtmlDoc prolog;
+    ParseHtml("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg width=\"10\" height=\"10\"></svg>", prolog);
+    CHECK(QuerySelectorAll(prolog.root.get(), "svg").size() == 1);
+    std::function<bool(const DomNode *)> mentions_xml = [&](const DomNode *d) {
+        if (d->text.find("xml") != std::string::npos) return true;
+        for (const auto &c : d->children)
+            if (mentions_xml(c.get())) return true;
+        return false;
+    };
+    CHECK(!mentions_xml(prolog.root.get()));
     // The Firefox-look CSS pass: border-radius/box-shadow (rounded shadowed
     // cards), flex centering flags, text-transform, multi-column, and
     // border-collapse all parse into ComputedStyle; array elision parses in

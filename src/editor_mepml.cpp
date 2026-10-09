@@ -2291,8 +2291,9 @@ bool Editor::MepmlSpliceResults(int buffer_id, int fence_row, const std::string 
         if (b.code != code) return false;  // edited while it ran
         int first = 0, last = 0;
         mepml::ResultsReplaceRange(b, &first, &last);
-        // results=html: the output is HTML, kept as such and rendered.
-        std::vector<std::string> lines = mepml::FormatResults(output, mepml::ResultFormatFor(b));
+        // results=html (or svg, or output that is an SVG image): the output
+        // is HTML, kept as such and rendered.
+        std::vector<std::string> lines = mepml::FormatResults(output, mepml::ResultFormatFor(b, output));
         if (first == last && first > static_cast<int>(buf.lines.size())) first = last = static_cast<int>(buf.lines.size());
         ReplaceLinesAt(buffer_id, first, last, lines);
         return true;

@@ -649,6 +649,19 @@ and edit the markup; move out and it is drawn again. A whole document
 (=<html>=, =<head>=, =<body>=) works as well as a fragment; its scripts are
 not run, since the results show what the code produced.
 
+SVG is drawn the same way. =results=svg= asks for it, and a block whose
+whole output is one SVG image -- =<svg ...>= to =</svg>=, after an
+optional =<?xml ...?>= prolog, as a plotting library's =to_svg()= writes
+it -- gets it without asking, unless its options say =results=verbatim=
+(or =text=). Either way the results are marked =html=, and the picture is
+scaled down to the text width when it is wider:
+
+#+begin_example
+```{cpp, flags="..."}
+int main() { std::cout << make_plot().to_svg(); }
+```
+#+end_example
+
 The exports keep it as HTML where the format can: the HTML export embeds
 it (a whole document's body, with its =<style>=), Markdown carries it as
 raw HTML, and Org as the =#+begin_export html= block org-babel itself

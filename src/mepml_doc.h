@@ -815,9 +815,13 @@ std::vector<std::pair<int, int>> TableCells(const std::string &line);
 // document's own.
 std::vector<std::string> FormatResults(const std::string &output, const std::string &format = "");
 // The results kind a code block's options ask for: "html" for results=html
-// (or output=html); "markdown" for results=markdown, md, asis (knitr's
+// or results=svg (or output=html/svg); "markdown" for results=markdown, md, asis (knitr's
 // name) or raw (org's); "" otherwise.
 std::string ResultFormatFor(const Block &b);
+// The same, given what the block printed: "html" too when the options name
+// no kind (and not verbatim/text) and the output is a single SVG image --
+// `<svg ...> ... </svg>`, after an optional `<?xml ...?>` prolog.
+std::string ResultFormatFor(const Block &b, const std::string &output);
 // An html result as something that can sit inside a page: a whole
 // document's <body> content, preceded by its <head>'s <style> elements; a
 // fragment unchanged.

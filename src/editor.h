@@ -10283,11 +10283,19 @@ public:
      * @brief Returns the empty slots drawn above a row whose text is taller than a line (mepml's scaled runs), so it can share a baseline with the rest of the row.
      * @param buf The buffer.
      * @param row 0-based row.
+     * @param text_cols The pane's text width in columns (Pane::text_cols): a mepml tab strip too long for it wraps onto lines of headroom; 0 when unknown (never drawn).
      * @return Slots of headroom above the row's text; 0 for ordinary rows and closed-fold summaries. A row of mepml columns moves its rows by slots here too (Buffer::mepml_col_pad), which may be negative: back up to the row's top for the next column.
      */
-    int RowTopPadSlots(const Buffer &buf, int row) const;
+    int RowTopPadSlots(const Buffer &buf, int row, int text_cols) const;
     // (The headroom alone, without a row of columns' moves: Buffer::mepml_col_pad.)
-    int RowHeadroomSlots(const Buffer &buf, int row) const;
+    int RowHeadroomSlots(const Buffer &buf, int row, int text_cols) const;
+    /**
+     * @brief Lays a mepml tab strip's chips (` title `, one column apart) out in lines no wider than `cols`, a chip starting a new line where it would not fit on the last.
+     * @param row The strip (Buffer::mepml_tab_rows).
+     * @param cols The width available, in columns; 0 or less keeps them all on one line.
+     * @return The line (0 first) each title's chip is drawn on; the strip is back() + 1 lines tall.
+     */
+    static std::vector<int> MepmlTabStripLines(const Buffer::MepmlTabRow &row, int cols);
     /**
      * @brief Lays out the buffer's rows of columns (mepml's \columns) for a pane: which are set side by side, where each of their rows is drawn and by how many slots (Buffer::mepml_col_place, mepml_col_pad).
      * @param pane The pane about to be measured or drawn.

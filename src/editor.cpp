@@ -5055,7 +5055,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // or wrapped table -- so nothing below applies to it.
     // (A folded mepml header's large title claims its headroom too.)
     for (const Fold &f : buf.folds) {
-        if (f.closed && f.start_row == row) return 1 + RowTopPadSlots(buf, row);
+        if (f.closed && f.start_row == row) return 1 + RowTopPadSlots(buf, row, pane.text_cols);
     }
     // A notebook code cell's output block hangs under its last
     // row (Editor::NotebookTrailingSlots, rebuilt each frame by
@@ -5106,7 +5106,7 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
         if (const Buffer::OrgTableWrapRow *tw = TableWrapRowFor(buf, row)) {
             // (Plus the headroom of a mepml row's pictures, and its place
             // in a row of columns.)
-            return static_cast<int>(tw->lines.size()) + trailing + RowTopPadSlots(buf, row);
+            return static_cast<int>(tw->lines.size()) + trailing + RowTopPadSlots(buf, row, pane.text_cols);
         }
     }
     // Soft-wrap (:set wrap, wrap_cols>0): a row's *raw* text length
@@ -5115,9 +5115,9 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     if (wrap_cols > 0) {
         int len = WrapLenForRow(buf, row, pane.cursor.row);
         const int sublines = std::max(1, (len + wrap_cols - 1) / wrap_cols);
-        return sublines + trailing + heading_extra + RowTopPadSlots(buf, row) + RowMathExtraSlots(buf, row, sublines, wrap_cols, pane.cursor.row);
+        return sublines + trailing + heading_extra + RowTopPadSlots(buf, row, pane.text_cols) + RowMathExtraSlots(buf, row, sublines, wrap_cols, pane.cursor.row);
     }
-    return 1 + trailing + heading_extra + RowTopPadSlots(buf, row) + RowMathExtraSlots(buf, row, 1, wrap_cols, pane.cursor.row);
+    return 1 + trailing + heading_extra + RowTopPadSlots(buf, row, pane.text_cols) + RowMathExtraSlots(buf, row, 1, wrap_cols, pane.cursor.row);
 }
 
 int Editor::PaneFigureSlots(const Pane &pane, const Buffer &buf, int row) const {

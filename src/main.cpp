@@ -16830,6 +16830,22 @@ const char *kBuiltinOrgBabel =
     "  run_cmd = function(exe, source_path) return { exe, 'run', source_path } end,\n"
     "  var_stmt = function(n, l) return string.format('var %s = %s;', n, l) end,\n"
     "  print_stmt = function(e) return string.format('Console.WriteLine(%s);', e) end,\n"
+    // A file-based app's `#:project <path>` is relative to the .cs file;
+    // the block runs from a temporary one, so a relative path is resolved
+    // against the document's directory instead -- as if the block were a
+    // file next to it.
+    "  body_filter = function(body_lines)\n"
+    "    local doc = mep.filename and mep.filename() or ''\n"
+    "    local dir = doc:match('^(.*)/[^/]*$')\n"
+    "    if not dir then return body_lines end\n"
+    "    local out = {}\n"
+    "    for i, line in ipairs(body_lines) do\n"
+    "      local lead, path = line:match('^(%s*#:project%s+)(.-)%s*$')\n"
+    "      if path and path ~= '' and path:sub(1, 1) ~= '/' then line = lead .. dir .. '/' .. path end\n"
+    "      out[i] = line\n"
+    "    end\n"
+    "    return out\n"
+    "  end,\n"
     "}\n"
     "L.scala = {\n"
     "  executable = 'scala', extension = '.scala',\n"
@@ -16872,9 +16888,11 @@ const char *kBuiltinOrgBabel =
     "  run_cmd = function(exe, source_path)\n"
     "    -- nim derives its own \"module name\" from the basename and rejects one\n"
     "    -- that isn't a valid identifier (a tempname can land on a purely\n"
-    "    -- numeric one) -- copy to a letter-prefixed sibling path first.\n"
+    "    -- numeric one, or hold dots: macOS's tmp.5.ab12Cd) -- copy to a\n"
+    "    -- letter-prefixed, dot-free sibling path first.\n"
     "    local dir, base = source_path:match('^(.*/)([^/]*)$')\n"
-    "    local valid_path = (dir or '') .. 'm' .. base\n"
+    "    local stem, ext = base:match('^(.*)(%.[^.]*)$')\n"
+    "    local valid_path = (dir or '') .. 'm' .. (stem:gsub('[^%w_]', '_')) .. ext\n"
     "    local src = io.open(source_path, 'r')\n"
     "    local data = src:read('a')\n"
     "    src:close()\n"
@@ -16924,7 +16942,14 @@ const char *kBuiltinOrgBabel =
     "    dst:close()\n"
     "    return { exe, '-d', binary_path, named_path }\n"
     "  end,\n"
-    "  run_compiled_cmd = function(binary_path, class_name) return { 'java', '-cp', binary_path, class_name } end,\n"
+    // `-cp` replaces $CLASSPATH rather than adding to it, so a CLASSPATH
+    // from the environment (a project's jars, set by its dev shell) is
+    // appended here; javac already reads it on its own.
+    "  run_compiled_cmd = function(binary_path, class_name)\n"
+    "    local cp = os.getenv('CLASSPATH')\n"
+    "    if cp and cp ~= '' then cp = binary_path .. ':' .. cp else cp = binary_path end\n"
+    "    return { 'java', '-cp', cp, class_name }\n"
+    "  end,\n"
     "  var_stmt = function(n, l) return string.format('var %s = %s;', n, l) end,\n"
     "  print_stmt = function(e) return string.format('System.out.println(%s);', e) end,\n"
     "  wrap_main = function(includes, body)\n"
@@ -16971,14 +16996,17 @@ const char *kBuiltinOrgBabel =
     "}\n"
     "L.d = {\n"
     "  -- A real two-step compile-then-run (dmd), unlike zig/nim/crystal/kotlin.\n"
-    "  executable = 'dmd', extension = '.d', compiled = true,\n"
+    // ldc2 (LLVM-based, takes the same -of= flag) where there is no dmd --
+    // dmd has no Apple Silicon build.
+    "  executable = 'dmd', fallback_executable = 'ldc2', extension = '.d', compiled = true,\n"
     "  -- dmd's output flag is one joined token (-of=<path>), not gcc/g++/rustc's\n"
     "  -- shared two-token `-o <path>` shape. Same module-name fix as nim's\n"
     "  -- run_cmd: dmd derives a module name from the basename and rejects a\n"
-    "  -- purely numeric one.\n"
+    "  -- purely numeric or dotted one.\n"
     "  compile_cmd = function(exe, source_path, binary_path)\n"
     "    local dir, base = source_path:match('^(.*/)([^/]*)$')\n"
-    "    local valid_path = (dir or '') .. 'm' .. base\n"
+    "    local stem, ext = base:match('^(.*)(%.[^.]*)$')\n"
+    "    local valid_path = (dir or '') .. 'm' .. (stem:gsub('[^%w_]', '_')) .. ext\n"
     "    local src = io.open(source_path, 'r')\n"
     "    local data = src:read('a')\n"
     "    src:close()\n"
@@ -16998,7 +17026,29 @@ const char *kBuiltinOrgBabel =
     "    return lines\n"
     "  end,\n"
     "}\n"
+    "L.tcl = {\n"
+    "  executable = 'tclsh', extension = '.tcl',\n"
+    "  var_stmt = function(n, l) return string.format('set %s %s', n, l) end,\n"
+    "  print_stmt = function(e) return string.format('puts %s', e) end,\n"
+    "}\n"
+    "L.scheme = {\n"
+    // Guile, run as a script; no auto-compile, whose cache notes would
+    // otherwise land in every block's results.
+    "  executable = 'guile', extension = '.scm',\n"
+    "  run_cmd = function(exe, source_path) return { exe, '--no-auto-compile', '-s', source_path } end,\n"
+    "  var_stmt = function(n, l) return string.format('(define %s %s)', n, l) end,\n"
+    "  print_stmt = function(e) return string.format('(display %s) (newline)', e) end,\n"
+    "}\n"
+    "L.octave = {\n"
+    // octave-cli (no GUI/Qt startup) tried before the full `octave`.
+    "  executable = 'octave-cli', fallback_executable = 'octave', extension = '.m',\n"
+    "  run_cmd = function(exe, source_path) return { exe, '--quiet', '--no-window-system', source_path } end,\n"
+    "  var_stmt = function(n, l) return string.format('%s = %s;', n, l) end,\n"
+    "  print_stmt = function(e) return string.format('disp(%s)', e) end,\n"
+    "}\n"
     "L.bash = L.sh\n"
+    "L.guile = L.scheme\n"
+    "L.matlab = L.octave\n"
     "L.js = L.javascript\n"
     "L['c++'] = L.cpp\n"
     "L.ts = L.typescript\n"
@@ -51579,7 +51629,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 int next = r + 1;
                 if (f) {
                     next = f->end_row + 1;
-                    slots += g_editor.RowTopPadSlots(buf, r);  // a folded mepml header's large title
+                    slots += g_editor.RowTopPadSlots(buf, r, pane.text_cols);  // a folded mepml header's large title
                 } else if (show_org_images && img_it != buf.org_image_rows.end()) {
                     slots = g_editor.OrgImageLayoutForRow(img_it->second, row_cols).slots;
                 } else if (latex != nullptr) {
@@ -51591,7 +51641,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 } else if (tw != nullptr) {
                     // An over-wide table's row draws as its wrapped
                     // layout's lines -- see Buffer::org_table_wrap_rows.
-                    slots = static_cast<int>(tw->lines.size()) + g_editor.RowTopPadSlots(buf, r);
+                    slots = static_cast<int>(tw->lines.size()) + g_editor.RowTopPadSlots(buf, r, pane.text_cols);
                 } else {
                     if (row_wrap > 0) {
                         int len = g_editor.WrapLenForRow(buf, r, pane.cursor.row);
@@ -51604,7 +51654,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     if (show_org_head_scale) {
                         slots += Editor::HeadingExtraSlotsForRow(buf, r);
                     }
-                    slots += g_editor.RowTopPadSlots(buf, r);
+                    slots += g_editor.RowTopPadSlots(buf, r, pane.text_cols);
                 }
                 slot_count[r] = slots;
                 vslot += slots;
@@ -52340,7 +52390,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // come first, so the row's text -- and every run on it, large or
         // not -- sits on the bottom one and shares one baseline. One of
         // the walkers that must agree (RowSlot, PaneRowSlots).
-        visual_slot += g_editor.RowTopPadSlots(buf, row);
+        visual_slot += g_editor.RowTopPadSlots(buf, row, pane.text_cols);
         float ly = content_y + static_cast<float>(visual_slot * line_height);
         visual_slot++;
 
@@ -52635,7 +52685,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (fold_here && org_card_folded_rows.count(row) == 0 && !tab_row) {
             // Over the row's headroom too (a folded mepml header's large
             // title rises into it), so the band holds the whole summary.
-            const int fold_pad = g_editor.RowTopPadSlots(buf, row) * line_height;
+            const int fold_pad = g_editor.RowTopPadSlots(buf, row, pane.text_cols) * line_height;
             gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(ly) - fold_pad, static_cast<int>(w),
                                line_height + fold_pad, ResolveHlGroup("Folded"));
             // An accent rule down the row's left edge. The band alone is
@@ -52978,19 +53028,27 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const float rule_y = ly + static_cast<float>(line_height) - 1.0f;
             const float rule_w = std::max(0.0f, x + w - static_cast<float>(kMarginX) - text_x);
             if (!tab_row->footer) {
+                // Too many titles for one line wrap onto more, the first
+                // ones in the headroom Editor::RowHeadroomSlots reserved
+                // above the row, so the last line sits on the rule.
+                const std::vector<int> line_of =
+                    Editor::MepmlTabStripLines(*tab_row, g_editor.MepmlRowCols(buf, row, pane.text_cols));
+                const float strip_top = ly - static_cast<float>(line_of.back() * line_height);
                 float cx = text_x;
                 for (size_t k = 0; k < tab_row->titles.size(); ++k) {
+                    if (k > 0 && line_of[k] != line_of[k - 1]) cx = text_x;
+                    const float cy = strip_top + static_cast<float>(line_of[k] * line_height);
                     const std::string chip = " " + tab_row->titles[k] + " ";
                     const float cw = static_cast<float>(ByteOffsetToColumn(chip, static_cast<int>(chip.size()))) * g_char_width;
                     const bool shown = static_cast<int>(k) == tab_row->active;
                     if (shown) {
                         gfx::Color wash = ResolveHlGroup("Accent");
                         wash.a = 48;  // (faint, so the accent title on it reads in any theme)
-                        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ly), static_cast<int>(cw), line_height, wash);
-                        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(rule_y) - 1, static_cast<int>(cw), 2,
+                        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cw), line_height, wash);
+                        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(cy) + line_height - 2, static_cast<int>(cw), 2,
                                            ResolveHlGroup("Accent"));
                     }
-                    DrawLineFast(chip, cx, ly, g_font_size, ResolveHlGroup(shown ? "Accent" : "MutedFg"));
+                    DrawLineFast(chip, cx, cy, g_font_size, ResolveHlGroup(shown ? "Accent" : "MutedFg"));
                     if (is_active) {
                         const int set = tab_row->set, tab = static_cast<int>(k);
                         // On top: DrawPane registered its pane-wide focus
@@ -52998,7 +53056,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         // region under a click wins -- appended, the title
                         // was never reached and the click only focused the
                         // pane.
-                        RegisterClickRegionOnTop(gfx::Rectangle{cx, ly, cw, static_cast<float>(line_height)},
+                        RegisterClickRegionOnTop(gfx::Rectangle{cx, cy, cw, static_cast<float>(line_height)},
                                                  [set, tab] { g_editor.MepmlSelectTab(set, tab); });
                     }
                     cx += cw + g_char_width;
@@ -53551,7 +53609,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // headroom above its text: the band and the column rules
                 // start at the top of it.
                 // So does one whose inline maths makes room above it.
-                const float tbl_pad = static_cast<float>(g_editor.RowTopPadSlots(buf, row) * line_height);
+                const float tbl_pad = static_cast<float>(g_editor.RowTopPadSlots(buf, row, pane.text_cols) * line_height);
                 const float band_y = ly - tbl_pad;
                 const float tbl_h = static_cast<float>(row_body_h);
                 const float band_h = tbl_h + tbl_pad;
@@ -54875,7 +54933,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const int nb_trailing = nb_sess ? g_editor.NotebookTrailingSlots(pane.buffer_id, r) : 0;
             if (f) {
                 // A folded mepml header's large title claims its headroom.
-                slot += 1 + g_editor.RowTopPadSlots(buf, r);
+                slot += 1 + g_editor.RowTopPadSlots(buf, r, pane.text_cols);
                 r = f->end_row + 1;
             } else if (show_org_images && img_it != buf.org_image_rows.end()) {
                 r += 1;
@@ -54891,7 +54949,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // An over-wide org table's row draws as its wrapped
                 // layout's lines (Buffer::org_table_wrap_rows) -- the
                 // fourth of the four walkers that has to agree on it.
-                slot += static_cast<int>(tw->lines.size()) + nb_trailing + g_editor.RowTopPadSlots(buf, r);
+                slot += static_cast<int>(tw->lines.size()) + nb_trailing + g_editor.RowTopPadSlots(buf, r, pane.text_cols);
                 r += 1;
             } else {
                 const int sublines =
@@ -54903,13 +54961,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (is_heading_buffer && show_org_head_scale) {
                     slot += Editor::HeadingExtraSlotsForRow(buf, r);
                 }
-                slot += g_editor.RowTopPadSlots(buf, r);
+                slot += g_editor.RowTopPadSlots(buf, r, pane.text_cols);
                 r += 1;
             }
         }
         // The target's own headroom sits above its text (the draw loop's
         // RowTopPadSlots), so the caret lands on the text line.
-        return slot + g_editor.RowTopPadSlots(buf, target_row);
+        return slot + g_editor.RowTopPadSlots(buf, target_row, pane.text_cols);
     };
 
     if (is_active && !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row &&
@@ -56015,10 +56073,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // The fragment's own top and bottom edges on screen (its first
             // row may have scrolled off the top; RowSlot counts from it).
             const float top_y = first_row >= pane.scroll_row
-                                    ? content_y + static_cast<float>((RowSlot(first_row) - g_editor.RowTopPadSlots(buf, first_row)) * line_height)
+                                    ? content_y + static_cast<float>((RowSlot(first_row) - g_editor.RowTopPadSlots(buf, first_row, pane.text_cols)) * line_height)
                                     : content_y;
             const float bottom_y =
-                content_y + static_cast<float>((RowSlot(last_row + 1) - g_editor.RowTopPadSlots(buf, last_row + 1)) * line_height);
+                content_y + static_cast<float>((RowSlot(last_row + 1) - g_editor.RowTopPadSlots(buf, last_row + 1, pane.text_cols)) * line_height);
             float box_y = top_y - box_h - 2.0f;
             if (box_y < content_y) box_y = bottom_y + 2.0f;
             if (box_y + box_h > content_bottom) box_y = std::max(content_y, top_y - box_h - 2.0f);
@@ -56062,9 +56120,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (a.last < draw_first_row || a.first >= row) continue;
                 const int first = std::max(a.first, draw_first_row), last = std::min(a.last, buf.LineCount() - 1);
                 const float top_y =
-                    content_y + static_cast<float>((RowSlot(first) - g_editor.RowTopPadSlots(buf, first)) * line_height);
+                    content_y + static_cast<float>((RowSlot(first) - g_editor.RowTopPadSlots(buf, first, pane.text_cols)) * line_height);
                 const float bottom_y =
-                    content_y + static_cast<float>((RowSlot(last + 1) - g_editor.RowTopPadSlots(buf, last + 1)) * line_height);
+                    content_y + static_cast<float>((RowSlot(last + 1) - g_editor.RowTopPadSlots(buf, last + 1, pane.text_cols)) * line_height);
                 float left = x, right = x + w;
                 if (const auto pl = buf.mepml_col_place.find(a.first); pl != buf.mepml_col_place.end()) {
                     left = text_x + static_cast<float>(pl->second.x_cols) * g_char_width;
@@ -56091,7 +56149,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const float content_bottom = content_y + content_h;
             const int last = std::min(note->last, buf.LineCount() - 1);
             const float bottom_y =
-                content_y + static_cast<float>((RowSlot(last + 1) - g_editor.RowTopPadSlots(buf, last + 1)) * line_height);
+                content_y + static_cast<float>((RowSlot(last + 1) - g_editor.RowTopPadSlots(buf, last + 1, pane.text_cols)) * line_height);
             float box_y = bottom_y + 2.0f;
             if (box_y + box_h > content_bottom) box_y = std::max(content_y, content_bottom - box_h - 2.0f);
             // (Under an inline formula where it starts, when it is on one row.)

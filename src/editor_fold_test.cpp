@@ -868,6 +868,24 @@ int main() {
         EXPECT(ed.MepmlCycleTab(-1) == "R", "cycling back from the first tab shows the last", "another title");
         EXPECT((tab_folds() == Ranges{{2, 10}, {12, 13}}), "the last tab is shown", show(tab_folds()));
         EXPECT(!ed.MepmlSelectTab(1, 0), "there is no second set", "it found one");
+        // A strip too long for the pane wraps (" C++ " " Python " " R ":
+        // 5, 8 and 3 columns, one apart), its first lines in headroom
+        // above the row.
+        {
+            const Buffer::MepmlTabRow &tr = ed.CurrentBuffer().mepml_tab_rows.at(2);
+            auto lines = [&](int cols) {
+                std::string o;
+                for (const int l : Editor::MepmlTabStripLines(tr, cols)) o += std::to_string(l);
+                return o;
+            };
+            EXPECT(lines(80) == "000" && lines(0) == "000", "a wide (or unmeasured) pane keeps the strip on one line", lines(80));
+            EXPECT(lines(18) == "000" && lines(14) == "001" && lines(12) == "011" && lines(10) == "012",
+                   "a narrower one starts a title that does not fit on a new line",
+                   lines(18) + " " + lines(14) + " " + lines(12) + " " + lines(10));
+            EXPECT(ed.RowTopPadSlots(ed.CurrentBuffer(), 2, 80) == 0 && ed.RowTopPadSlots(ed.CurrentBuffer(), 2, 10) == 2,
+                   "the strip's extra lines are headroom above its row", std::to_string(ed.RowTopPadSlots(ed.CurrentBuffer(), 2, 10)));
+            EXPECT(ed.RowTopPadSlots(ed.CurrentBuffer(), 12, 3) == 0, "the rule under the shown tab never wraps", "it did");
+        }
         // The cursor in a tab when the folds are built (a set just
         // written) shows that tab.
         Editor ed2;

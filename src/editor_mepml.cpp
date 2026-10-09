@@ -444,17 +444,47 @@ void Editor::MepmlColumnsPlace(const Pane &pane, const Buffer &buf, int wrap_col
     }
 }
 
-int Editor::RowTopPadSlots(const Buffer &buf, int row) const {
-    if (buf.mepml_col_pad.empty()) return RowHeadroomSlots(buf, row);
+int Editor::RowTopPadSlots(const Buffer &buf, int row, int text_cols) const {
+    if (buf.mepml_col_pad.empty()) return RowHeadroomSlots(buf, row, text_cols);
     const auto pad = buf.mepml_col_pad.find(row);
-    return RowHeadroomSlots(buf, row) + (pad == buf.mepml_col_pad.end() ? 0 : pad->second);
+    return RowHeadroomSlots(buf, row, text_cols) + (pad == buf.mepml_col_pad.end() ? 0 : pad->second);
 }
 
-int Editor::RowHeadroomSlots(const Buffer &buf, int row) const {
+std::vector<int> Editor::MepmlTabStripLines(const Buffer::MepmlTabRow &row, int cols) {
+    std::vector<int> line_of;
+    int line = 0, used = 0;
+    for (const std::string &title : row.titles) {
+        // One column per codepoint, as the strip is drawn (ByteOffsetToColumn).
+        int cw = 2;
+        for (const char ch : title)
+            if ((static_cast<unsigned char>(ch) & 0xC0) != 0x80) ++cw;
+        if (used > 0 && cols > 0 && used + 1 + cw > cols) {
+            ++line;
+            used = 0;
+        }
+        used += (used > 0 ? 1 : 0) + cw;
+        line_of.push_back(line);
+    }
+    return line_of;
+}
+
+int Editor::RowHeadroomSlots(const Buffer &buf, int row, int text_cols) const {
     if (row < 0 || row >= buf.LineCount()) return 0;
-    bool folded = false;
+    bool folded = false, tab_fold = false;
     for (const Fold &f : buf.folds)
-        if (f.closed && f.start_row == row) folded = true;
+        if (f.closed && f.start_row == row) {
+            folded = true;
+            tab_fold = tab_fold || f.provider == "mepml-tabs";
+        }
+    // A set of tabs' strip too long for the pane wraps: its first lines
+    // are drawn in headroom above the row, its last on the row itself
+    // (DrawPane), so every walker counts them the way it counts a large
+    // title's.
+    if (tab_fold && !buf.mepml_raw) {
+        const auto tr = buf.mepml_tab_rows.find(row);
+        if (tr != buf.mepml_tab_rows.end() && !tr->second.footer && !tr->second.titles.empty())
+            return MepmlTabStripLines(tr->second, MepmlRowCols(buf, row, text_cols)).back();
+    }
     // A closed fold draws its summary line, not the row's maths.
     const int math = folded ? 0 : InlineMathPadFor(buf, row).top;
     if (!org_conceal_visible_) return math;  // scaled runs are only drawn while concealing

@@ -4057,6 +4057,15 @@ public:
      */
     int VirtualLineStep(bool down);
     /**
+     * @brief Steps the cursor from one tab of a mepml \tabs set into the next (or previous) one: j on
+     * the last line of the shown tab shows the next tab, cursor on its first line; k on the first line
+     * shows the previous tab, cursor on its last. Off in view mode (Buffer::mepml_view), where a click
+     * on a title switches tabs and scrolling passes over the set, and on a set whose folds are open.
+     * @param down True for a downward step (j, the wheel down), false for upward.
+     * @return True if the step switched tabs (the key is consumed); false to move the cursor normally.
+     */
+    bool MepmlTabStep(bool down);
+    /**
      * @brief The line of the rendered \toc/\bibliography block on a pane's cursor row the cursor is on.
      * @param pane The pane.
      * @param lines The block's line count.

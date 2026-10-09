@@ -52993,8 +52993,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     DrawLineFast(chip, cx, ly, g_font_size, ResolveHlGroup(shown ? "Accent" : "MutedFg"));
                     if (is_active) {
                         const int set = tab_row->set, tab = static_cast<int>(k);
-                        RegisterClickRegion(gfx::Rectangle{cx, ly, cw, static_cast<float>(line_height)},
-                                            [set, tab] { g_editor.MepmlSelectTab(set, tab); });
+                        // On top: DrawPane registered its pane-wide focus
+                        // region before reaching this row, and the first
+                        // region under a click wins -- appended, the title
+                        // was never reached and the click only focused the
+                        // pane.
+                        RegisterClickRegionOnTop(gfx::Rectangle{cx, ly, cw, static_cast<float>(line_height)},
+                                                 [set, tab] { g_editor.MepmlSelectTab(set, tab); });
                     }
                     cx += cw + g_char_width;
                 }

@@ -2,6 +2,9 @@
 #define MEP_JOB_H
 
 #include <sys/types.h>
+#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
+#include <pthread.h>
+#endif
 
 #if defined(_WIN32)
 // MSVC's <sys/types.h> declares dev_t/ino_t/off_t but not pid_t (verified
@@ -85,6 +88,21 @@ public:
      */
     Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_stdout = false, bool use_pty = false,
         std::vector<std::pair<std::string, std::string>> extra_env = {}, bool die_with_parent = false);
+
+    // An in-process job: `task` runs on the background thread in place of
+    // a child process, handing each stdout line to `emit` and returning
+    // the exit code a process would have. It should poll `cancelled` and
+    // return early once it turns true (Kill/RequestStop/~Job). Everything
+    // downstream -- DrainLines, Finished, on_exit, JobManager's ids --
+    // behaves exactly as for a process, so a Lua caller cannot tell the
+    // difference (the builtin ripgrep, project_search.h, is the one user).
+    using EmitLine = std::function<void(const std::string &)>;
+    using Task = std::function<int(const EmitLine &emit, const std::atomic<bool> &cancelled)>;
+    /**
+     * @brief Runs `task` on a background thread as an in-process job (see Task above).
+     * @param task The work to run; its return value becomes ExitCode().
+     */
+    explicit Job(Task task);
     /**
      * @brief Kills the child if still running and joins the reader thread, blocking until it exits.
      */
@@ -231,6 +249,28 @@ public:
 
 private:
     pid_t pid_ = -1;
+    // Set only for an in-process job (the Task constructor); pid_ stays -1.
+    bool is_task_ = false;
+    // Kill/RequestStop on an in-process job: the task polls this.
+    std::atomic<bool> task_cancelled_{false};
+    // Backpressure for an in-process job: a task can produce lines far
+    // faster than the main thread hands them to Lua (an in-process grep
+    // for "e" over a large tree), so emitting blocks while this many are
+    // still queued rather than letting pending_ grow without bound.
+    static constexpr size_t kMaxPendingTaskLines = 200000;
+    size_t pending_lines_since_wake_ = 0;  // task thread only
+#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
+    // POSIX runs a task on a pthread with a large stack (see Job(Task)).
+    static constexpr size_t kTaskStackBytes = 64 * 1024 * 1024;
+    pthread_t task_thread_{};
+    bool task_thread_started_ = false;
+    Task pending_task_;  // handed from the constructor to the new thread
+#endif
+    /**
+     * @brief Background-thread body for an in-process job: runs the task and records its exit code.
+     * @param task The task to run.
+     */
+    void RunTask(Task task);
     int stdout_fd_ = -1, stderr_fd_ = -1, stdin_fd_ = -1;
     bool raw_stdout_ = false;
     bool use_pty_ = false;
@@ -369,6 +409,15 @@ public:
     int Spawn(const std::vector<std::string> &argv, const std::string &cwd, Callbacks callbacks,
               bool use_pty = false, std::vector<std::pair<std::string, std::string>> extra_env = {},
               bool die_with_parent = false);
+    /**
+     * @brief Registers an in-process job (see Job::Task); same id space, callbacks and
+     * Kill/IsRunning semantics as a spawned process. Raw stdout is not supported.
+     * @param task The work to run on a background thread.
+     * @param callbacks Handlers invoked from PollAll() (on_stdout/on_exit).
+     * @param debug_name Label for MEP_PDF_PROF diagnostics.
+     * @return The new job's id.
+     */
+    int SpawnTask(Job::Task task, Callbacks callbacks, const std::string &debug_name);
 
     // Raw write/close access for interactive jobs (REPLs, `git apply`).
     /**

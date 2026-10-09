@@ -514,8 +514,8 @@ public:
      * @param ignore_case Whether matching should fold ASCII letter case.
      * @param group_count The number of capture groups to allocate slots for (plus the implicit whole-match group 0).
      */
-    Matcher(const std::string &text, bool ignore_case, int group_count)
-        : text_(text), ignore_case_(ignore_case) {
+    Matcher(const std::string &text, bool ignore_case, int group_count, size_t *steps_left = nullptr)
+        : text_(text), ignore_case_(ignore_case), steps_left_(steps_left) {
         groups_.assign(static_cast<size_t>(group_count) + 1, {-1, -1});
     }
 
@@ -548,6 +548,10 @@ public:
 private:
     const std::string &text_;
     bool ignore_case_;
+    // Regex::SearchBounded's budget: one step per Match() call, shared
+    // across every start position. Once it hits zero every Match() fails,
+    // which unwinds the whole backtrack as "no match". Null: unbounded.
+    size_t *steps_left_;
     std::vector<std::pair<int, int>> groups_;
 
     using Cont = std::function<bool(int)>;
@@ -601,6 +605,10 @@ private:
      * @return True if `n` (and everything `k` requires afterward) matched successfully.
      */
     bool Match(const Node *n, int pos, const Cont &k) {
+        if (steps_left_) {
+            if (*steps_left_ == 0) return false;
+            --*steps_left_;
+        }
         switch (n->kind) {
             case Kind::Literal: {
                 if (static_cast<size_t>(pos) >= text_.size()) return false;
@@ -780,11 +788,21 @@ Regex::~Regex() = default;
 Regex::Regex(Regex &&) noexcept = default;
 Regex &Regex::operator=(Regex &&) noexcept = default;
 
-Match Regex::Search(const std::string &text, int from) const {
+Match Regex::Search(const std::string &text, int from) const { return SearchImpl(text, from, nullptr); }
+
+Match Regex::SearchBounded(const std::string &text, size_t max_steps, bool *exhausted) const {
+    size_t steps_left = max_steps;
+    Match m = SearchImpl(text, 0, &steps_left);
+    if (exhausted) *exhausted = steps_left == 0;
+    return m;
+}
+
+Match Regex::SearchImpl(const std::string &text, int from, size_t *steps_left) const {
     Match result;
     if (!ok_ || !root_) return result;
     for (int start = std::max(0, from); start <= static_cast<int>(text.size()); start++) {
-        Matcher m(text, ignore_case_, group_count_);
+        if (steps_left && *steps_left == 0) break;
+        Matcher m(text, ignore_case_, group_count_, steps_left);
         int end = m.MatchAt(root_.get(), start);
         if (end >= 0) {
             result.start = start;

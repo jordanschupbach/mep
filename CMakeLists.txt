@@ -759,6 +759,7 @@ add_library(mep_core STATIC
     src/formula.cpp
     src/html_doc.cpp
     src/job.cpp
+    src/project_search.cpp
     src/tcp_client.cpp
     src/org_doc.cpp
     src/mepml_doc.cpp
@@ -2423,6 +2424,15 @@ if(NOT EMSCRIPTEN)
     target_link_options(mep-job-test PRIVATE ${MEP_SANITIZE_FLAGS})
     target_link_libraries(mep-job-test PRIVATE Threads::Threads)
     add_dependencies(tests mep-job-test)
+
+    # The builtin ripgrep (project_search.h) and the in-process Job it runs as.
+    add_executable(mep-project-search-test EXCLUDE_FROM_ALL src/project_search_test.cpp src/project_search.cpp
+                   src/regex.cpp src/job.cpp)
+    target_include_directories(mep-project-search-test PRIVATE src)
+    target_compile_options(mep-project-search-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-project-search-test PRIVATE ${MEP_SANITIZE_FLAGS})
+    target_link_libraries(mep-project-search-test PRIVATE Threads::Threads)
+    add_dependencies(tests mep-project-search-test)
 
     add_executable(mep-workspace-test EXCLUDE_FROM_ALL src/workspace_test.cpp src/workspace_git.cpp)
     target_include_directories(mep-workspace-test PRIVATE src)

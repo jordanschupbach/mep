@@ -11,6 +11,7 @@
 #include "editor.h"
 #include "job.h"
 #include "org_doc.h"
+#include "project_search.h"
 #include "maxima_format.h"
 #include "r_format.h"
 #include "tcp_client.h"
@@ -1841,6 +1842,21 @@ int l_job_start(lua_State *L) {
         if (on_stderr_ref != LUA_NOREF) env->UnrefFunction(on_stderr_ref);
         if (on_exit_ref != LUA_NOREF) env->UnrefFunction(on_exit_ref);
     };
+
+    // No ripgrep installed: run the builtin one (project_search.h) for any
+    // rg argv it understands, so every project search written against rg
+    // -- mep's own live grep/find files/todo scan, and a user's -- still
+    // works. Real rg is always preferred when it is on PATH.
+    if (!argv.empty() && argv[0] == "rg" && !mep::compat::ProgramOnPath("rg")) {
+        if (std::optional<mep_search::Options> opts = mep_search::ParseRgArgs(argv)) {
+            Job::Task task = [opts = std::move(*opts), cwd](const Job::EmitLine &emit,
+                                                            const std::atomic<bool> &cancelled) {
+                return mep_search::Run(opts, cwd, emit, cancelled);
+            };
+            lua_pushinteger(L, JobManager::Instance().SpawnTask(std::move(task), std::move(cb), "rg (builtin)"));
+            return 1;
+        }
+    }
 
     int id = JobManager::Instance().Spawn(argv, cwd, std::move(cb), /*use_pty=*/false, std::move(extra_env));
     lua_pushinteger(L, id);

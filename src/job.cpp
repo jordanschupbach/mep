@@ -10,6 +10,7 @@
 #define MEP_JOB_POSIX 1
 #include <fcntl.h>  // O_CLOEXEC, for RequestStop's self-pipe
 #include <poll.h>
+#include <pthread.h>
 #if defined(__APPLE__)
 #include <util.h>  // forkpty lives here on macOS (BSD), not in <pty.h>
 #else
@@ -191,7 +192,78 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
 #endif
 }
 
+Job::Job(Task task) : is_task_(true) {
+#if defined(__EMSCRIPTEN__)
+    // No threads to lean on here: run it to completion right now. The
+    // lines still only reach callbacks via PollAll, as for any job.
+    RunTask(std::move(task));
+#elif MEP_JOB_POSIX
+    // Its own pthread rather than std::thread, for the stack: a task may
+    // run mep's recursive-backtracking regex (regex.h) over long lines,
+    // and a secondary thread's default stack (512KB on macOS) overflows on
+    // a few hundred characters of `(a|b)*` -- measured. 64MB is address
+    // space, not memory: pages are only committed as they are touched.
+    pending_task_ = std::move(task);
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, kTaskStackBytes);
+    /**
+     * @brief pthread entry point: runs the job's pending task.
+     * @param self The Job.
+     * @return Always null.
+     */
+    auto entry = [](void *self) -> void * {
+        Job *job = static_cast<Job *>(self);
+        job->RunTask(std::move(job->pending_task_));
+        return nullptr;
+    };
+    if (pthread_create(&task_thread_, &attr, entry, this) == 0) {
+        task_thread_started_ = true;
+    } else {
+        spawn_failed_ = true;
+        finished_ = true;
+    }
+    pthread_attr_destroy(&attr);
+#else
+    reader_thread_ = std::thread(&Job::RunTask, this, std::move(task));
+#endif
+}
+
+void Job::RunTask(Task task) {
+    /**
+     * @brief Queues one line of the task's output, blocking while the queue is over its cap.
+     * @param line The line to queue.
+     */
+    EmitLine emit = [this](const std::string &line) {
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (pending_.size() < kMaxPendingTaskLines || task_cancelled_.load()) {
+                    pending_.push_back({false, line});
+                    break;
+                }
+            }
+            mep::WakeMainLoop();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        // Coalesced: one wake per batch is enough for the main loop to
+        // come and drain, so don't pay for it on every line.
+        if (pending_lines_since_wake_++ % 256 == 0) mep::WakeMainLoop();
+    };
+    exit_code_ = task ? task(emit, task_cancelled_) : -1;
+    finished_ = true;
+    mep::WakeMainLoop();
+}
+
 Job::~Job() {
+    if (is_task_) {
+        task_cancelled_ = true;
+        if (reader_thread_.joinable()) reader_thread_.join();
+#if MEP_JOB_POSIX
+        if (task_thread_started_) pthread_join(task_thread_, nullptr);
+#endif
+        return;
+    }
 #if MEP_JOB_POSIX
     if (!finished_.load()) Kill();
     // Before the join: nothing can consume this job's output any more, so
@@ -209,6 +281,13 @@ Job::~Job() {
 }
 
 void Job::Kill() {
+    if (is_task_) {
+        if (!finished_.load()) {
+            killed_ = true;
+            task_cancelled_ = true;
+        }
+        return;
+    }
 #if MEP_JOB_POSIX
     if (pid_ > 0 && !finished_.load()) {
         killed_ = true;
@@ -236,6 +315,10 @@ void Job::Interrupt() {
 }
 
 void Job::KillHard() {
+    if (is_task_) {
+        Kill();
+        return;
+    }
 #if MEP_JOB_POSIX
     if (pid_ > 0 && !finished_.load()) {
         killed_ = true;
@@ -256,6 +339,7 @@ void Job::SignalChild(int sig) {
 
 void Job::RequestStop() {
     stopping_ = true;
+    task_cancelled_ = true;
 #if MEP_JOB_POSIX
     // Unblocks a reader parked in poll() right now; the flag above is what
     // it then acts on, so a failed/short write costs only the wait for
@@ -501,6 +585,17 @@ int JobManager::Spawn(const std::vector<std::string> &argv, const std::string &c
                                       die_with_parent);
     entry.callbacks = std::move(callbacks);
     entry.spawn_failed = entry.job->SpawnFailed();
+    jobs_.push_back(std::move(entry));
+    return jobs_.back().id;
+}
+
+int JobManager::SpawnTask(Job::Task task, Callbacks callbacks, const std::string &debug_name) {
+    Entry entry;
+    entry.id = next_id_++;
+    entry.debug_cmd = debug_name;
+    entry.job = std::make_shared<Job>(std::move(task));
+    callbacks.on_stdout_raw = nullptr;  // a task only ever emits lines
+    entry.callbacks = std::move(callbacks);
     jobs_.push_back(std::move(entry));
     return jobs_.back().id;
 }

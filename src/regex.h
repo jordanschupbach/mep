@@ -132,6 +132,21 @@ public:
      */
     bool PartialMatch(const std::string &text) const { return Search(text).ok(); }
 
+    // Search() from offset 0 with a cap on backtracking work, for a caller
+    // matching untrusted patterns against arbitrary text off the main
+    // thread (the builtin ripgrep, project_search.cpp) that cannot afford
+    // a pathological pattern -- `(a+)+b` against a long run of a's --
+    // spinning for minutes. Past `max_steps` node visits it gives up and
+    // reports no match, setting *exhausted.
+    /**
+     * @brief Finds the first match from offset 0, giving up after `max_steps` matcher steps.
+     * @param text The subject string to search.
+     * @param max_steps Maximum AST node visits across all start positions.
+     * @param exhausted Set to true if the budget ran out (the result is then "no match"); may be null.
+     * @return The first match found, or a non-ok Match.
+     */
+    Match SearchBounded(const std::string &text, size_t max_steps, bool *exhausted = nullptr) const;
+
     // `repl` may reference capture groups as \1-\9 (Perl-style) or Vim's
     // own \0/& for the whole match -- both accepted, since mep's own :s
     // command has historically been documented against Vim's \0 convention
@@ -175,6 +190,15 @@ public:
     struct Node;
 
 private:
+    /**
+     * @brief Search's body, optionally drawing on a step budget (see SearchBounded).
+     * @param text The subject string.
+     * @param from Byte offset to start at.
+     * @param steps_left Remaining budget, decremented in place; null for unbounded.
+     * @return The first match found, or a non-ok Match.
+     */
+    Match SearchImpl(const std::string &text, int from, size_t *steps_left) const;
+
     std::unique_ptr<Node> root_;
     int group_count_ = 0;
     bool ignore_case_ = false;

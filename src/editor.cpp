@@ -5755,6 +5755,9 @@ void Editor::WheelScrollTextBuffer(float dx, float dy) {
                 // step sees where the one before it left the cursor,
                 // which is what ScrollFigureStep tests.
                 if (ScrollFigureStep(dir > 0)) continue;
+                // Scrolling through a set of tabs shows them one after
+                // another, as j/k does (Editor::MepmlTabStep).
+                if (MepmlTabStep(dir > 0)) continue;
                 p.cursor.row = StepVisibleRow(p.cursor.row, dir);
             }
             ClampCursor();
@@ -22847,6 +22850,7 @@ bool Editor::DispatchNormalKey(int cp) {
         const int step = VirtualLineStep(c == 'j');
         if (step == 1) return true;
         if (step < 0 && ScrollFigureStep(c == 'j')) return true;
+        if (step < 0 && MepmlTabStep(c == 'j')) return true;
     }
     // Single-key motions shared with operator-pending dispatch above and
     // with Visual mode's own motion handling; peek (don't consume) the

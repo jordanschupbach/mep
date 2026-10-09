@@ -426,10 +426,15 @@ each language -- where the reader wants one of them at a time.
 
 The editor shows one tab of a set: the =\tabs(= line reads as a strip of
 the titles, the one shown in the accent colour, and a rule closes the set
-under its content; the other tabs are folded away. A click on a title
-shows that tab, and so do =<leader>k]= and =<leader>k[= (=:MepmlTabNext=,
-=:MepmlTabPrev=), which step through the tabs of the set the cursor is in,
-or of the first one below it. Opening the folds (=zo= on the strip, =zR=)
+under its content; the other tabs are folded away. Moving down through
+the set -- =j= or the mouse wheel -- shows its tabs one after another: from
+the last line of a tab the next step goes to the first line of the next
+tab, and =k= walks back the same way, so scrolling past a set reads every
+tab in turn. In view mode (=<leader>kv=) scrolling passes over the set and
+leaves its tab alone; a click on a title shows that tab, in either mode.
+=<leader>k]= and =<leader>k[= (=:MepmlTabNext=, =:MepmlTabPrev=) step
+through the tabs of the set the cursor is in, or of the first one below
+it. Opening the folds (=zo= on the strip, =zR=)
 shows the set as written; a set just written shows the tab the cursor is
 in. A set holding anything but tabs (and comments) is shown as written.
 

@@ -38,6 +38,7 @@ MODULES = [
     ]),
     dict(name="html_doc", header="html_doc.h", cpps=["html_doc.cpp"], renames=[]),
     dict(name="job", header="job.h", cpps=["job.cpp"], renames=[]),
+    dict(name="project_search", header="project_search.h", cpps=["project_search.cpp"], renames=[]),
     dict(name="org_doc", header="org_doc.h", cpps=["org_doc.cpp"], renames=[
         ("EqualsIgnoreCase", "EqualsIgnoreCase_org_doc"),
     ]),

@@ -289,11 +289,19 @@ install-app prefix=(env("HOME") / ".local") dest=(env("HOME") / "Applications"):
     set -euo pipefail
     app="{{dest}}/mep.app"
     rm -rf "$app"
-    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+    # LaunchServices never starts a second copy of a running bundle -- it
+    # just activates it. So the bundle Spotlight finds is a windowless
+    # launcher (LSUIElement) that `open -n`s a nested bundle and exits:
+    # every launch gets a fresh mep instance, each with its own Dock tile.
+    inner="$app/Contents/Resources/mep.app"
+    mkdir -p "$app/Contents/MacOS" "$inner/Contents/MacOS" "$inner/Contents/Resources"
+    printf '%s\n' '#!/bin/sh' \
+        'exec /usr/bin/open -n "$(dirname "$0")/../Resources/mep.app" --args "$@"' \
+        > "$app/Contents/MacOS/mep"
     printf '%s\n' '#!/bin/sh' \
         'exec "${SHELL:-/bin/zsh}" -lc '"'"'exec "$0" "$@"'"'"' "{{prefix}}/bin/mep" "$@"' \
-        > "$app/Contents/MacOS/mep"
-    chmod +x "$app/Contents/MacOS/mep"
+        > "$inner/Contents/MacOS/mep"
+    chmod +x "$app/Contents/MacOS/mep" "$inner/Contents/MacOS/mep"
     tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
     iconset="$tmp/mep.iconset"; mkdir "$iconset"
     sips -s format png --padToHeightWidth 800 800 assets/mep-light.png --out "$tmp/square.png" >/dev/null
@@ -302,7 +310,10 @@ install-app prefix=(env("HOME") / ".local") dest=(env("HOME") / "Applications"):
         sips -z $((sz*2)) $((sz*2)) "$tmp/square.png" --out "$iconset/icon_${sz}x${sz}@2x.png" >/dev/null
     done
     iconutil -c icns "$iconset" -o "$app/Contents/Resources/mep.icns"
-    cat > "$app/Contents/Info.plist" <<'PLIST'
+    cp "$app/Contents/Resources/mep.icns" "$inner/Contents/Resources/mep.icns"
+    # write_plist DIR BUNDLE_ID EXTRA_KEYS
+    write_plist() {
+        cat > "$1/Contents/Info.plist" <<PLIST
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
     <plist version="1.0">
@@ -310,16 +321,20 @@ install-app prefix=(env("HOME") / ".local") dest=(env("HOME") / "Applications"):
       <key>CFBundleName</key><string>mep</string>
       <key>CFBundleDisplayName</key><string>mep</string>
       <key>CFBundleExecutable</key><string>mep</string>
-      <key>CFBundleIdentifier</key><string>com.mep.editor</string>
+      <key>CFBundleIdentifier</key><string>$2</string>
       <key>CFBundleIconFile</key><string>mep</string>
       <key>CFBundlePackageType</key><string>APPL</string>
       <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
       <key>CFBundleShortVersionString</key><string>0.1.0</string>
       <key>CFBundleVersion</key><string>0.1.0</string>
-      <key>NSHighResolutionCapable</key><true/>
+      <key>NSHighResolutionCapable</key><true/>$3
     </dict>
     </plist>
     PLIST
+    }
+    write_plist "$app" com.mep.launcher '
+      <key>LSUIElement</key><true/>'
+    write_plist "$inner" com.mep.editor ''
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" || true
     mdimport "$app" 2>/dev/null || true
     echo "Installed $app"
@@ -363,7 +378,7 @@ test: build-native
     # otherwise mean this check never ran at all.
     echo "== check_help"
     python3 scripts/check_help.py {{native_build_dir}}/mep --strict
-    targets=(mep-job-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-office-rtf-test mep-workspace-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-office-rtf-test mep-workspace-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then

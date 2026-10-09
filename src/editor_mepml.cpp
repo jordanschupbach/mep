@@ -2351,6 +2351,56 @@ std::string Editor::MepmlCycleTab(int delta) {
     return s.tabs[static_cast<size_t>(Buf().mepml_tab_active[pick])].title;
 }
 
+bool Editor::MepmlTabStep(bool down) {
+    Buffer &buf = Buf();
+    if (buf.mepml_tab_rows.empty() || buf.mepml_view || !IsMepmlBuffer()) return false;
+    if (CurPane().buffer_id != CurrentBufferId()) return false;
+    const std::vector<MepmlTabSet> sets = MepmlTabSets(MepmlParseCurrent(false));
+    const int row = CurPane().cursor.row;
+    // Shown as tabs, not opened out with zo/zR: both of the set's folds closed.
+    auto folded = [&buf](int start) {
+        for (const Fold &f : buf.folds)
+            if (f.provider == "mepml-tabs" && f.start_row == start) return f.closed;
+        return false;
+    };
+    // Innermost first (a later-opening set is nested in, or after, an
+    // earlier one): the cursor on the last line of a set nested at the end
+    // of a tab is past that inner set's tabs, so the outer one steps.
+    for (int si = static_cast<int>(sets.size()) - 1; si >= 0; --si) {
+        const MepmlTabSet &set = sets[static_cast<size_t>(si)];
+        const int n = static_cast<int>(set.tabs.size());
+        const auto act = buf.mepml_tab_active.find(si);
+        if (act == buf.mepml_tab_active.end()) continue;
+        const int k = act->second;
+        if (k < 0 || k >= n) continue;
+        const MepmlTabSet::Tab &shown = set.tabs[static_cast<size_t>(k)];
+        if (row <= shown.open_row || row >= shown.close_row) continue;
+        if (!folded(set.open_row) || !folded(shown.close_row)) continue;
+        if (down) {
+            // Not the shown tab's last line, or no tab after it: an ordinary step.
+            if (StepVisibleRow(row, 1) < shown.close_row || k + 1 >= n) return false;
+            const MepmlTabSet::Tab &next = set.tabs[static_cast<size_t>(k + 1)];
+            buf.mepml_tab_active[si] = k + 1;
+            // Its first line (an empty tab: the rule under it). Set before
+            // the folds are built, which show the tab the cursor is in.
+            CurPane().cursor.row = next.open_row + 1 < next.close_row ? next.open_row + 1 : next.close_row;
+            RecomputeMepmlTabFolds();
+        } else {
+            if (StepVisibleRow(row, -1) > shown.open_row || k == 0) return false;
+            const MepmlTabSet::Tab &prev = set.tabs[static_cast<size_t>(k - 1)];
+            buf.mepml_tab_active[si] = k - 1;
+            CurPane().cursor.row = prev.close_row;  // (inside the tab, so the folds show it)
+            RecomputeMepmlTabFolds();
+            // Its last visible line: up from the rule that now closes it
+            // (an empty tab: the strip).
+            CurPane().cursor.row = StepVisibleRow(prev.close_row, -1);
+        }
+        ClampCursor();
+        return true;
+    }
+    return false;
+}
+
 void Editor::RecomputeMepmlFolds() {
     std::vector<Fold> old_folds;
     for (const Fold &f : Buf().folds)

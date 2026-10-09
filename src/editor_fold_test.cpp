@@ -880,6 +880,64 @@ int main() {
         EXPECT((shown2 == Ranges{{2, 6}, {9, 13}}), "the cursor's tab is the one shown", show(shown2));
     }
 
+    // Stepping through a set (Editor::MepmlTabStep): j off the last line of
+    // a tab shows the next one, k off the first line the previous one; in
+    // view mode the set is passed over, its tabs left as they are.
+    std::printf("\n== 25. mepml tabs are stepped through one at a time\n");
+    {
+        const std::string path = dir + "/t25.mepml";
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << "Intro.\n"       // 0
+                   "\\tabs(\n"      // 1
+                   "\\tab(A,\n"     // 2
+                   "a1\n"           // 3
+                   "a2\n"           // 4
+                   ")\n"            // 5
+                   "\\tab(B,\n"     // 6
+                   "b1\n"           // 7
+                   ")\n"            // 8
+                   "\\tab(C,\n"     // 9
+                   "c1\n"           // 10
+                   "c2\n"           // 11
+                   ")\n"            // 12
+                   ")\n"            // 13
+                   "After.\n";      // 14
+        }
+        Editor ed;
+        ed.LoadFile(path);
+        ed.MepmlScan(ed.CreateNamespace("fold-test-tab-steps"));
+        auto at = [&] {
+            int r = 0, c = 0;
+            ed.GetCursorForLua(&r, &c);
+            const auto strip = ed.CurrentBuffer().mepml_tab_rows.find(1);
+            const int active = strip == ed.CurrentBuffer().mepml_tab_rows.end() ? -1 : strip->second.active;
+            return std::to_string(r) + "/" + std::to_string(active);
+        };
+        // row/shown tab after each j from the top: the strip, A's two lines,
+        // B's line, C's two lines, the rule under C, then past the set.
+        const std::vector<std::string> down = {"1/0", "3/0", "4/0", "7/1", "10/2", "11/2", "12/2", "14/2"};
+        ed.SetCursorForLua(0, 0);
+        for (const std::string &want : down) {
+            ed.RunCommand("normal j");
+            EXPECT(at() == want, "j steps to " + want, at());
+        }
+        // And back up: into C from below, then B's last line, A's last, the strip.
+        const std::vector<std::string> up = {"12/2", "11/2", "10/2", "7/1", "4/0", "3/0", "1/0", "0/0"};
+        for (const std::string &want : up) {
+            ed.RunCommand("normal k");
+            EXPECT(at() == want, "k steps to " + want, at());
+        }
+        // View mode: no stepping between tabs (a click on a title does it).
+        ed.MepmlToggleView();
+        ed.SetCursorForLua(3, 0);
+        ed.RunCommand("normal j");
+        ed.RunCommand("normal j");
+        EXPECT(at() == "5/0", "in view mode j goes from A's end to its rule", at());
+        ed.RunCommand("normal j");
+        EXPECT(at() == "14/0", "and then past the set, A still shown", at());
+    }
+
     std::printf("\n---- %d checks, %d failures ----\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

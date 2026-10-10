@@ -30857,6 +30857,8 @@ const char *kBuiltinRunButton =
     // Visual-mode "gr" stays unbound rather than silently doing the
     // whole-file thing while text is highlighted.
     "mep.map_g('r', mep.run_button_run)\n"
+    // mod1+r: the same run from any mode, without leaving Insert first.
+    "mep.map_mod1('r', mep.run_button_run)\n"
     // The Setup popup main.cpp's Run-button right-click menu opens
     // ("Setup..."): asks for the interpreter/compiler, then the one
     // free-form flags string, pre-filled with whatever's already in

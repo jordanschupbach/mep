@@ -22,6 +22,7 @@ mep.set_mod1('super')   -- 'alt' (default), 'ctrl', 'shift', 'super'/'cmd'/'meta
 | =mod1+h j k l=  | focus the pane left / down / up / right     |
 | =mod1+d=        | close the pane's active buffer tab          |
 | =mod1+Enter=    | run the cell under the cursor and insert a new one (notebooks) |
+| =mod1+r=        | run/compile the current file (=<leader>rr=, the Run button) |
 
 Focus movement is spatial, using the same overlap-then-distance heuristic as
 =Ctrl-W hjkl=. It is a no-op when there is no pane that way.

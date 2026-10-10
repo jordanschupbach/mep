@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (218)
+* The bindings (221)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -135,6 +135,9 @@ that it does nothing.
 | =mep.mepml_view= | whether the current buffer is in mepml view mode |
 | =mep.mepml_view_toggle= | flips the current mepml buffer's view mode |
 | =mep.mod1_name= | returns the display name of whichever modifier is currently mod1 |
+| =mep.panebar_set_visible= | shows or hides the header strip above every pane outright |
+| =mep.panebar_toggle= | shows/hides the header strip above every pane |
+| =mep.panebar_visible= | returns whether the per-pane header strips are shown |
 | =mep.pres_add_shape= | selected |
 | =mep.pres_add_slide= | -- |
 | =mep.pres_align= | -- |

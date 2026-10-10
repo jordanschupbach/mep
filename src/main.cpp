@@ -12560,7 +12560,11 @@ const char *kBuiltinMenubarBindings =
     "mep.leader_map('us', 'Toggle the status bar', mep.statusbar_toggle)\n"
     // All three at once, Normal mode only (mod1 maps are otherwise global).
     "mep.command('MepBorder', mep.border_toggle)\n"
-    "mep.map_mod1('b', mep.border_toggle, false, 'n')\n";
+    "mep.map_mod1('b', mep.border_toggle, false, 'n')\n"
+    // The header strip above every pane, all panes at once.
+    "mep.command('MepPaneBar', mep.panebar_toggle)\n"
+    "mep.leader_map('up', 'Toggle the pane header bars', mep.panebar_toggle)\n"
+    "mep.map_mod1('t', mep.panebar_toggle)\n";
 
 // DAP client (Phase 26, extended for full debugging support -- see
 // TODO.org's "Add DAP debugging capabilities"): reuses Phase 20's
@@ -48773,7 +48777,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         if (!g_editor.MepmlPresentCaret()) is_active = false;
     }
     int line_height = LineHeight();
-    int header_h = presenting ? 0 : PaneHeaderHeight();
+    // header_h is the header strip actually drawn (0 while presenting or
+    // with the pane bars hidden, mod1+t); bar_unit is the same height kept
+    // as the size unit the in-content toolbars below are scaled from, so
+    // hiding the header doesn't shrink them.
+    const int bar_unit = PaneHeaderHeight();
+    int header_h = (presenting || !g_editor.IsPaneBarVisible()) ? 0 : bar_unit;
     float font_size = MenuFontSize();
     // Captured inside the is_active cursor block below, consumed after
     // EndScissorMode() -- see the hover-tooltip comment down there.
@@ -49093,8 +49102,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             },
             nullptr, control_font_size, control_label_y);
     };
-    if (presenting) {
-        // No header (header_h is 0).
+    if (header_h == 0) {
+        // No header (presenting, or the pane bars are hidden).
     } else if (pane.buffer_tabs.size() > 1) {
         // Per-pane buffer-tab strip: more than one buffer open in this pane
         // splits the header evenly, one filename chip per tab, highlighting
@@ -49406,7 +49415,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // first-match-wins hazard the office branch documents). Skipped on a
     // pane too short to spare the room.
     if (g_editor.IsNotebookBuffer(pane.buffer_id)) {
-        const float nb_toolbar_h = static_cast<float>(header_h) + 4.0f;
+        const float nb_toolbar_h = static_cast<float>(bar_unit) + 4.0f;
         if (content_h > nb_toolbar_h + static_cast<float>(line_height)) {
             DrawNotebookToolbar(pane, x, content_y, w, nb_toolbar_h);
             content_y += nb_toolbar_h;
@@ -49462,7 +49471,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     if (!office_dropdown_open && !kanban_or_gantt_active && !imgedit_popup_open && !model3d_popup_open) {
         float focus_click_x = x, focus_click_y = content_y, focus_click_w = w, focus_click_h = content_h;
         if (office_sess && !office_sess->doc.paragraphs.empty()) {
-            float office_toolbar_h = static_cast<float>(header_h) * 2.0f;
+            float office_toolbar_h = static_cast<float>(bar_unit) * 2.0f;
             focus_click_y += office_toolbar_h;
             focus_click_h = std::max(0.0f, focus_click_h - office_toolbar_h);
             // Also exclude the footer bar (bottom) and the rail/Outline/
@@ -50421,7 +50430,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         float ocx = x, ocw = w;
         DrawOfficeSidePanels(x, w, content_y, content_h, pane.buffer_id, office_sess, ocx, ocw);
 
-        float row_h = std::clamp(static_cast<float>(header_h) * 0.78f, 30.0f, 38.0f);
+        float row_h = std::clamp(static_cast<float>(bar_unit) * 0.78f, 30.0f, 38.0f);
         float toolbar_h = row_h * 2.0f;
         gfx::DrawRectangle(static_cast<int>(ocx), static_cast<int>(content_y), static_cast<int>(ocw),
                       static_cast<int>(toolbar_h), ResolveHlGroup("MenuBar"));
@@ -51607,7 +51616,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // edit buffer while SheetInsert is active) -- doubles as both a
         // real-spreadsheet-familiar "what's actually in this cell"
         // readout and the Insert-mode live-typing display.
-        float bar_h = static_cast<float>(header_h);
+        float bar_h = static_cast<float>(bar_unit);
         gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(bar_h),
                       ResolveHlGroup("MenuBar"));
         std::string bar_text;

@@ -11849,6 +11849,34 @@ int l_statusbar_visible(lua_State *L) {
     return 1;
 }
 /**
+ * @brief Implements mep.panebar_toggle(): shows/hides the header strip above every pane.
+ * @param L Lua state.
+ * @return Number of values pushed (0).
+ */
+int l_panebar_toggle(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->SetPaneBarVisible(!ed->IsPaneBarVisible());
+    return 0;
+}
+/**
+ * @brief Implements mep.panebar_set_visible(on): shows or hides the header strip above every pane outright.
+ * @param L Lua state; arg 1 is whether the headers are shown.
+ * @return Number of values pushed (0).
+ */
+int l_panebar_set_visible(lua_State *L) {
+    GetEditor(L)->SetPaneBarVisible(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+/**
+ * @brief Implements mep.panebar_visible(): returns whether the per-pane header strips are shown.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the visibility flag).
+ */
+int l_panebar_visible(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->IsPaneBarVisible());
+    return 1;
+}
+/**
  * @brief Implements mep.menubar_set_visible(on): shows or hides the top menu bar outright.
  * @param L Lua state; arg 1 is whether the bar is shown.
  * @return Number of values pushed (0).
@@ -14495,6 +14523,9 @@ const luaL_Reg kMepFuncs[] = {
     {"statusbar_toggle", l_statusbar_toggle},
     {"statusbar_set_visible", l_statusbar_set_visible},
     {"statusbar_visible", l_statusbar_visible},
+    {"panebar_toggle", l_panebar_toggle},
+    {"panebar_set_visible", l_panebar_set_visible},
+    {"panebar_visible", l_panebar_visible},
     {"menubar_set_visible", l_menubar_set_visible},
     {"menubar_visible", l_menubar_visible},
     {"menubar_tap_toggle_set", l_menubar_tap_toggle_set},

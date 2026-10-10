@@ -365,6 +365,19 @@ void HandleMouseMove(NativeContext *ctx, NSEvent *event) {
     gfx::HandleKeyChange(ctx, gfx::KeyFromKeyCode([event keyCode]), true, [event isARepeat]);
     gfx::HandleTypedCharacters(ctx, event);
 }
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    // Ctrl-Tab / Ctrl-Shift-Tab never reach keyDown: -- AppKit treats
+    // them as key equivalents and spends them on key-view-loop focus
+    // cycling (Ctrl-Tab is the "tab out of a text view" chord). mep has
+    // no other key views, and binds them to next / previous tab, so
+    // claim them here and feed them through the ordinary keyDown path.
+    if ([event type] == NSEventTypeKeyDown && [event keyCode] == 0x30 &&
+        ([event modifierFlags] & NSEventModifierFlagControl) != 0) {
+        [self keyDown:event];
+        return YES;
+    }
+    return [super performKeyEquivalent:event];
+}
 - (void)keyUp:(NSEvent *)event {
     gfx::HandleKeyChange(ctx, gfx::KeyFromKeyCode([event keyCode]), false, false);
 }

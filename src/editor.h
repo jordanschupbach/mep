@@ -12170,6 +12170,12 @@ public:
     void SetTabBarVisible(bool visible) { tab_bar_visible_ = visible; }
     bool IsStatusBarVisible() const { return status_bar_visible_; }
     void SetStatusBarVisible(bool visible) { status_bar_visible_ = visible; }
+    // The per-pane header strip above every pane's buffer (filename /
+    // breadcrumb / buffer tabs / split+close buttons, main.cpp's DrawPane),
+    // shown by default; mod1+t / :MepPaneBar / mep.panebar_toggle() hide it
+    // for all panes at once and each pane's content grows into the space.
+    bool IsPaneBarVisible() const { return pane_bar_visible_; }
+    void SetPaneBarVisible(bool visible) { pane_bar_visible_ = visible; }
     void ToggleMenuBar() { SetMenuBarVisible(!menu_bar_visible_); }
     // The whole "border" at once -- menu bar, tab bar and status line
     // (mod1+b in Normal mode, mep.border_toggle()). Hides all three if any
@@ -14864,6 +14870,7 @@ private:
     bool menu_bar_visible_ = false;
     bool tab_bar_visible_ = true;
     bool status_bar_visible_ = true;
+    bool pane_bar_visible_ = true;
     // See MenuBarTapToggleEnabled. Off by default so a bare Alt tap no
     // longer flips the menu bar; the explicit <leader>m / :Menu binding
     // replaces it.

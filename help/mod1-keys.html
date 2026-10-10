@@ -34,6 +34,13 @@ together, leaving only the panes; pressing it again brings all three back.
 Unlike the rest of this layer it only works in Normal mode -- elsewhere the
 key is left alone. <code>&lt;leader&gt;um</code>, <code>&lt;leader&gt;ub</code> and <code>&lt;leader&gt;us</code> toggle the
 three one at a time.</p>
+<h1>Hiding the pane bars</h1>
+<p><code>mod1+t</code> (<code>:MepPaneBar</code>, <code>&lt;leader&gt;up</code>) hides the header strip above every
+pane -- the filename/breadcrumb, the buffer tabs and the split and close
+buttons -- so each pane's buffer runs right up to its top edge; pressing it
+again brings them all back. It applies to every pane at once, works in any
+mode, and is reachable from Lua as <code>mep.panebar_toggle()</code>,
+<code>mep.panebar_set_visible(on)</code> and <code>mep.panebar_visible()</code>.</p>
 <h1>Resizing</h1>
 <p><code>mod1+Shift+h j k l</code> moves the split boundary between the current pane and
 its neighbour.</p>

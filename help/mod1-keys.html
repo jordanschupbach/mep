@@ -28,6 +28,12 @@ move between panes without leaving Insert mode first.</p>
 </table>
 <p>Focus movement is spatial, using the same overlap-then-distance heuristic as
 <code>Ctrl-W hjkl</code>. It is a no-op when there is no pane that way.</p>
+<h1>Hiding the border</h1>
+<p><code>mod1+b</code> (<code>:MepBorder</code>) hides the menu bar, the tab bar and the status line
+together, leaving only the panes; pressing it again brings all three back.
+Unlike the rest of this layer it only works in Normal mode -- elsewhere the
+key is left alone. <code>&lt;leader&gt;um</code>, <code>&lt;leader&gt;ub</code> and <code>&lt;leader&gt;us</code> toggle the
+three one at a time.</p>
 <h1>Resizing</h1>
 <p><code>mod1+Shift+h j k l</code> moves the split boundary between the current pane and
 its neighbour.</p>

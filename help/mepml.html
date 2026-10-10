@@ -1236,12 +1236,12 @@ Title, Quote, Source Code, Caption ...), so a typical Word or LibreOffice
 document keeps its structure. Word equations and LibreOffice formulas
 become TeX.</p>
 <p>The same converters are a command-line tool:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh">mep-mepml convert notes.mepml notes.docx   # any format to any format,
-mep-mepml convert report.docx report.mepml # by way of mepml
-mep-mepml build notes.mepml                # what the editor's export does: the
-                                           # //? Export: format (html by default)
-                                           # into the build directory, then Post:
-mep-mepml build notes.mepml org md html    # several formats, Post: once after all</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-mepml</span> convert notes.mepml notes.docx   <span class="tok-comment"># any format to any format,</span>
+<span class="tok-blue">mep-mepml</span> convert report.docx report.mepml <span class="tok-comment"># by way of mepml</span>
+<span class="tok-blue">mep-mepml</span> build notes.mepml                <span class="tok-comment"># what the editor's export does: the</span>
+                                           <span class="tok-comment"># //? Export: format (html by default)</span>
+                                           <span class="tok-comment"># into the build directory, then Post:</span>
+<span class="tok-blue">mep-mepml</span> build notes.mepml org md html    <span class="tok-comment"># several formats, Post: once after all</span></code></pre></div>
 <p><code>convert</code> writes the file it is given (and copies the pictures it names
 beside it, as above) and runs nothing after;
 <code>build</code> is the editor's export with the document's <code>Build:</code> and <code>Post:</code>

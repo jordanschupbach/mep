@@ -26,6 +26,14 @@ mep.set_mod1('super')   -- 'alt' (default), 'ctrl', 'shift', 'super'/'cmd'/'meta
 Focus movement is spatial, using the same overlap-then-distance heuristic as
 =Ctrl-W hjkl=. It is a no-op when there is no pane that way.
 
+* Hiding the border
+
+=mod1+b= (=:MepBorder=) hides the menu bar, the tab bar and the status line
+together, leaving only the panes; pressing it again brings all three back.
+Unlike the rest of this layer it only works in Normal mode -- elsewhere the
+key is left alone. =<leader>um=, =<leader>ub= and =<leader>us= toggle the
+three one at a time.
+
 * Resizing
 
 =mod1+Shift+h j k l= moves the split boundary between the current pane and

@@ -13,7 +13,7 @@
 <body>
 <h1>Key index</h1>
 <h1>Leader bindings</h1>
-<p>All 158 <code>&lt;leader&gt;</code> sequences registered at startup. Press
+<p>All 164 <code>&lt;leader&gt;</code> sequences registered at startup. Press
 <code>&lt;Space&gt;</code> for the same list as a popup, or <code>&lt;leader&gt;hk</code> for every
 binding including your own.</p>
 <p>Motions, operators and the other Normal-mode keys are on the pages in
@@ -26,9 +26,12 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;&lt;Space&gt;</code></td><td>Command runner (just &gt; make &gt; ninja &gt; cmake)</td><td><a href="runners.html">The command runner</a></td></tr>
 <tr><td><code>&lt;leader&gt;?</code></td><td>Cheatsheet: snippets &amp; symbols</td><td><a href="org-notes.html">Note-taking: snippets and highlights</a></td></tr>
 <tr><td><code>&lt;leader&gt;a&lt;CR&gt;</code></td><td>AI: Claude Code terminal below</td><td><a href="ai-terminal.html">Claude Code in a pane</a></td></tr>
+<tr><td><code>&lt;leader&gt;a?</code></td><td>AI: what can I do with a highlight?</td><td><a href="ai-commands.html">Ask the model</a></td></tr>
 <tr><td><code>&lt;leader&gt;aa</code></td><td>Toggle AI agents pane</td><td><a href="ai-agents.html">The AI Agents sidebar</a></td></tr>
 <tr><td><code>&lt;leader&gt;ai</code></td><td>AI: context picker</td><td><a href="ai-commands.html">Ask the model</a></td></tr>
+<tr><td><code>&lt;leader&gt;ak</code></td><td>AI: API key command</td><td><a href="ai-commands.html">Ask the model</a></td></tr>
 <tr><td><code>&lt;leader&gt;al</code></td><td>Toggle AI agents pane</td><td><a href="ai-agents.html">The AI Agents sidebar</a></td></tr>
+<tr><td><code>&lt;leader&gt;ax</code></td><td>AI: toggle API use on/off</td><td><a href="ai-commands.html">Ask the model</a></td></tr>
 <tr><td><code>&lt;leader&gt;bB</code></td><td>Toggle buffers sidebar</td><td><a href="sidebars.html">Sidebars</a></td></tr>
 <tr><td><code>&lt;leader&gt;bO</code></td><td>Browse (external window)</td><td><a href="browser.html">The browser pane</a></td></tr>
 <tr><td><code>&lt;leader&gt;bb</code></td><td>Buffers</td><td><a href="files.html">Files and buffers</a></td></tr>
@@ -67,6 +70,7 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;gt</code></td><td>Git status (paneable, stacks with the file tree)</td><td><a href="git-panel.html">The git panel</a></td></tr>
 <tr><td><code>&lt;leader&gt;gv</code></td><td>Git preview hunk at cursor</td><td><a href="git-hunks.html">Working with hunks</a></td></tr>
 <tr><td><code>&lt;leader&gt;gw</code></td><td>Git workspaces</td><td><a href="git-workspaces.html">Branch-per-workspace</a></td></tr>
+<tr><td><code>&lt;leader&gt;hS</code></td><td>Settings</td><td><a href="config.html">Configuration</a></td></tr>
 <tr><td><code>&lt;leader&gt;hf</code></td><td>Help: search the manual</td><td><a href="intro.html">mep Help</a></td></tr>
 <tr><td><code>&lt;leader&gt;hh</code></td><td>Open help</td><td><a href="intro.html">mep Help</a></td></tr>
 <tr><td><code>&lt;leader&gt;hk</code></td><td>Help: keymaps</td><td><a href="command-line.html">The command line</a></td></tr>
@@ -75,6 +79,8 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;jw</code></td><td>Runner: workspaces</td><td><a href="runners.html">The command runner</a></td></tr>
 <tr><td><code>&lt;leader&gt;kA</code></td><td>mepml: toggle alt text popup on hover</td><td><a href="mepml.html">mepml</a></td></tr>
 <tr><td><code>&lt;leader&gt;kP</code></td><td>mepml: present the slides full screen</td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>&lt;leader&gt;k[</code></td><td>mepml: show the previous tab</td><td><a href="mepml.html">mepml</a></td></tr>
+<tr><td><code>&lt;leader&gt;k]</code></td><td>mepml: show the next tab</td><td><a href="mepml.html">mepml</a></td></tr>
 <tr><td><code>&lt;leader&gt;ka</code></td><td>mepml: run all code blocks</td><td><a href="mepml.html">mepml</a></td></tr>
 <tr><td><code>&lt;leader&gt;kc</code></td><td>mepml: list problems</td><td><a href="mepml.html">mepml</a></td></tr>
 <tr><td><code>&lt;leader&gt;ke</code></td><td>mepml: export as...</td><td><a href="mepml.html">mepml</a></td></tr>
@@ -156,9 +162,9 @@ the features live.</p>
 <tr><td><code>&lt;leader&gt;ss</code></td><td>Open structure pane (treesitter)</td><td><a href="sidebars.html">Sidebars</a></td></tr>
 <tr><td><code>&lt;leader&gt;tT</code></td><td>Toggle tests pane</td><td><a href="sidebars.html">Sidebars</a></td></tr>
 <tr><td><code>&lt;leader&gt;tt</code></td><td>Toggle todo pane</td><td><a href="org-clock.html">Clocking and the Todo panel</a></td></tr>
-<tr><td><code>&lt;leader&gt;ub</code></td><td>Toggle the tab bar</td><td>--</td></tr>
-<tr><td><code>&lt;leader&gt;um</code></td><td>Toggle the top menu bar</td><td>--</td></tr>
-<tr><td><code>&lt;leader&gt;us</code></td><td>Toggle the status bar</td><td>--</td></tr>
+<tr><td><code>&lt;leader&gt;ub</code></td><td>Toggle the tab bar</td><td><a href="mod1-keys.html">The mod1 layer</a></td></tr>
+<tr><td><code>&lt;leader&gt;um</code></td><td>Toggle the top menu bar</td><td><a href="mod1-keys.html">The mod1 layer</a></td></tr>
+<tr><td><code>&lt;leader&gt;us</code></td><td>Toggle the status bar</td><td><a href="mod1-keys.html">The mod1 layer</a></td></tr>
 <tr><td><code>&lt;leader&gt;ut</code></td><td>Theme picker</td><td><a href="pickers.html">Pickers</a></td></tr>
 <tr><td><code>&lt;leader&gt;uu</code></td><td>Language UI mode (toggle)</td><td><a href="language-ui.html">Language UI modes</a></td></tr>
 <tr><td><code>&lt;leader&gt;vv</code></td><td>Speech-to-text: toggle live transcription</td><td>--</td></tr>

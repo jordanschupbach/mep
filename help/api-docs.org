@@ -203,7 +203,7 @@ that it does nothing.
 | =mep.pdf_outline= | array of {title, page, depth}, or nil if |
 | =mep.pdf_page_text= | the text of page `n` (1-based; the focused |
 | =mep.pdf_reload= | re-reads local file `path` and re-decodes it INTO |
-| =mep.pdf_selection= | {text, page, file} for the focused PDF |
+| =mep.pdf_selection= | {text, page, file, source} for the focused PDF |
 | =mep.pdf_yank= | copies the focused PDF pane's selection to the unnamed |
 | =mep.roam_graph_close= | closes the Roam graph overlay without invoking its on_select callback |
 | =mep.roam_graph_open= | opens the Roam backlink-graph overlay |

@@ -21423,8 +21423,8 @@ void Editor::SetMod1(const std::string &name) {
     }
 }
 
-void Editor::RegisterMod1Mapping(const std::string &key, int lua_ref, bool repeat) {
-    mod1_mappings_[key] = Mod1Mapping{lua_ref, repeat};
+void Editor::RegisterMod1Mapping(const std::string &key, int lua_ref, bool repeat, bool normal_only) {
+    mod1_mappings_[key] = Mod1Mapping{lua_ref, repeat, normal_only};
 }
 
 void Editor::RegisterGMapping(const std::string &key, int lua_ref) { g_mappings_[key] = lua_ref; }
@@ -21511,6 +21511,7 @@ bool Editor::HandleMod1Shortcuts() {
         auto it = mod1_mappings_.find(k);
         if (it == mod1_mappings_.end() || !lua_) continue;
         if (repeated && !it->second.repeat) continue;
+        if (it->second.normal_only && mode_ != Mode::Normal) continue;
         lua_->CallRef(it->second.lua_ref);
         // The same physical combo may also have queued a char event (e.g.
         // Alt-as-compose on some layouts); drop it so it doesn't get typed
@@ -21524,7 +21525,7 @@ bool Editor::HandleMod1Shortcuts() {
     if (gfx::IsKeyPressed(gfx::Key::Tab)) {
         std::string k = mod1_key_name("Tab");
         auto it = mod1_mappings_.find(k);
-        if (it != mod1_mappings_.end() && lua_) {
+        if (it != mod1_mappings_.end() && lua_ && (!it->second.normal_only || mode_ == Mode::Normal)) {
             lua_->CallRef(it->second.lua_ref);
             while (gfx::GetCharPressed() > 0) {
             }
@@ -21553,7 +21554,7 @@ bool Editor::HandleMod1Shortcuts() {
         // (the terminal-send default) would be a regression, not a fix.
         std::string k = extra_shift ? "S-CR" : "CR";
         auto it = mod1_mappings_.find(k);
-        if (it != mod1_mappings_.end() && lua_) {
+        if (it != mod1_mappings_.end() && lua_ && (!it->second.normal_only || mode_ == Mode::Normal)) {
             lua_->CallRef(it->second.lua_ref);
             while (gfx::GetCharPressed() > 0) {
             }

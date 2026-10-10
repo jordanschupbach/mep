@@ -17,12 +17,13 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (211)</h1>
+<h1>The bindings (218)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
 <tr><th>Function</th><th>Does</th></tr>
 <tr><td><code>mep.a11y</code></td><td>the accessibility view of a buffer's document</td></tr>
+<tr><td><code>mep.border_toggle</code></td><td>hides the menu bar, tab bar and status line together if any is showing, otherwise shows all three</td></tr>
 <tr><td><code>mep.buffer_change_epoch</code></td><td>--</td></tr>
 <tr><td><code>mep.buffer_changed_on_disk</code></td><td>bool: whether `id`'s file was rewritten</td></tr>
 <tr><td><code>mep.buffer_count</code></td><td>returns the number of currently open buffers</td></tr>
@@ -129,6 +130,7 @@ that it does nothing.</p>
 <tr><td><code>mep.mepml_raw_toggle</code></td><td>flips the current mepml buffer between raw and rendered</td></tr>
 <tr><td><code>mep.mepml_scan</code></td><td>re-parses the current mepml buffer and emits its decorations into `ns`</td></tr>
 <tr><td><code>mep.mepml_splice_results</code></td><td>--</td></tr>
+<tr><td><code>mep.mepml_tab_cycle</code></td><td>switches the shown tab of the current mepml buffer's nearest \tabs set</td></tr>
 <tr><td><code>mep.mepml_tables_stale</code></td><td>whether a table's inline maths rendered at another width than it was laid out for</td></tr>
 <tr><td><code>mep.mepml_terminal_focus</code></td><td>sends the keyboard to the terminal of the block under the cursor</td></tr>
 <tr><td><code>mep.mepml_terminal_start</code></td><td>runs a block's program in a terminal inside its results</td></tr>
@@ -162,6 +164,11 @@ that it does nothing.</p>
 <tr><td><code>mep.set_cursor</code></td><td>moves the cursor to a 1-indexed position</td></tr>
 <tr><td><code>mep.set_line</code></td><td>replaces the content of a 1-indexed line</td></tr>
 <tr><td><code>mep.set_on_quit_unsaved</code></td><td>fn(scope) where scope is "all" (:qa/:wqa) or</td></tr>
+<tr><td><code>mep.set_option</code></td><td>reads a `:set` option's current value as a string</td></tr>
+<tr><td><code>mep.settings_load</code></td><td>reads the Settings panel's persisted values</td></tr>
+<tr><td><code>mep.settings_open</code></td><td>opens the typed-settings popup on</td></tr>
+<tr><td><code>mep.settings_path</code></td><td>--</td></tr>
+<tr><td><code>mep.settings_save</code></td><td>persists the Settings panel's values (a no-op under wasm)</td></tr>
 <tr><td><code>mep.sketch_add_arc</code></td><td>entity_id</td></tr>
 <tr><td><code>mep.sketch_add_circle</code></td><td>entity_id</td></tr>
 <tr><td><code>mep.sketch_add_ellipse</code></td><td>entity_id</td></tr>

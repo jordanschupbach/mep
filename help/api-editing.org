@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (211)
+* The bindings (218)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -19,6 +19,7 @@ that it does nothing.
 | Function | Does |
 |----------+------|
 | =mep.a11y= | the accessibility view of a buffer's document |
+| =mep.border_toggle= | hides the menu bar, tab bar and status line together if any is showing, otherwise shows all three |
 | =mep.buffer_change_epoch= | -- |
 | =mep.buffer_changed_on_disk= | bool: whether `id`'s file was rewritten |
 | =mep.buffer_count= | returns the number of currently open buffers |
@@ -125,6 +126,7 @@ that it does nothing.
 | =mep.mepml_raw_toggle= | flips the current mepml buffer between raw and rendered |
 | =mep.mepml_scan= | re-parses the current mepml buffer and emits its decorations into `ns` |
 | =mep.mepml_splice_results= | -- |
+| =mep.mepml_tab_cycle= | switches the shown tab of the current mepml buffer's nearest \tabs set |
 | =mep.mepml_tables_stale= | whether a table's inline maths rendered at another width than it was laid out for |
 | =mep.mepml_terminal_focus= | sends the keyboard to the terminal of the block under the cursor |
 | =mep.mepml_terminal_start= | runs a block's program in a terminal inside its results |
@@ -158,6 +160,11 @@ that it does nothing.
 | =mep.set_cursor= | moves the cursor to a 1-indexed position |
 | =mep.set_line= | replaces the content of a 1-indexed line |
 | =mep.set_on_quit_unsaved= | fn(scope) where scope is "all" (:qa/:wqa) or |
+| =mep.set_option= | reads a `:set` option's current value as a string |
+| =mep.settings_load= | reads the Settings panel's persisted values |
+| =mep.settings_open= | opens the typed-settings popup on |
+| =mep.settings_path= | -- |
+| =mep.settings_save= | persists the Settings panel's values (a no-op under wasm) |
 | =mep.sketch_add_arc= | entity_id |
 | =mep.sketch_add_circle= | entity_id |
 | =mep.sketch_add_ellipse= | entity_id |

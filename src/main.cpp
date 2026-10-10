@@ -12557,7 +12557,10 @@ const char *kBuiltinMenubarBindings =
     "mep.leader_map('um', 'Toggle the top menu bar', mep.menubar_toggle)\n"
     // The tab bar and the status line, each on by default.
     "mep.leader_map('ub', 'Toggle the tab bar', mep.tabbar_toggle)\n"
-    "mep.leader_map('us', 'Toggle the status bar', mep.statusbar_toggle)\n";
+    "mep.leader_map('us', 'Toggle the status bar', mep.statusbar_toggle)\n"
+    // All three at once, Normal mode only (mod1 maps are otherwise global).
+    "mep.command('MepBorder', mep.border_toggle)\n"
+    "mep.map_mod1('b', mep.border_toggle, false, 'n')\n";
 
 // DAP client (Phase 26, extended for full debugging support -- see
 // TODO.org's "Add DAP debugging capabilities"): reuses Phase 20's

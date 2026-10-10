@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 158 =<leader>= sequences registered at startup. Press
+All 164 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -20,9 +20,12 @@ the features live.
 | =<leader><Space>= | Command runner (just > make > ninja > cmake) | [[file:runners.html][The command runner]] |
 | =<leader>?= | Cheatsheet: snippets & symbols | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =<leader>a<CR>= | AI: Claude Code terminal below | [[file:ai-terminal.html][Claude Code in a pane]] |
+| =<leader>a?= | AI: what can I do with a highlight? | [[file:ai-commands.html][Ask the model]] |
 | =<leader>aa= | Toggle AI agents pane | [[file:ai-agents.html][The AI Agents sidebar]] |
 | =<leader>ai= | AI: context picker | [[file:ai-commands.html][Ask the model]] |
+| =<leader>ak= | AI: API key command | [[file:ai-commands.html][Ask the model]] |
 | =<leader>al= | Toggle AI agents pane | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =<leader>ax= | AI: toggle API use on/off | [[file:ai-commands.html][Ask the model]] |
 | =<leader>bB= | Toggle buffers sidebar | [[file:sidebars.html][Sidebars]] |
 | =<leader>bO= | Browse (external window) | [[file:browser.html][The browser pane]] |
 | =<leader>bb= | Buffers | [[file:files.html][Files and buffers]] |
@@ -61,6 +64,7 @@ the features live.
 | =<leader>gt= | Git status (paneable, stacks with the file tree) | [[file:git-panel.html][The git panel]] |
 | =<leader>gv= | Git preview hunk at cursor | [[file:git-hunks.html][Working with hunks]] |
 | =<leader>gw= | Git workspaces | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =<leader>hS= | Settings | [[file:config.html][Configuration]] |
 | =<leader>hf= | Help: search the manual | [[file:intro.html][mep Help]] |
 | =<leader>hh= | Open help | [[file:intro.html][mep Help]] |
 | =<leader>hk= | Help: keymaps | [[file:command-line.html][The command line]] |
@@ -69,6 +73,8 @@ the features live.
 | =<leader>jw= | Runner: workspaces | [[file:runners.html][The command runner]] |
 | =<leader>kA= | mepml: toggle alt text popup on hover | [[file:mepml.html][mepml]] |
 | =<leader>kP= | mepml: present the slides full screen | [[file:mepml.html][mepml]] |
+| =<leader>k[= | mepml: show the previous tab | [[file:mepml.html][mepml]] |
+| =<leader>k]= | mepml: show the next tab | [[file:mepml.html][mepml]] |
 | =<leader>ka= | mepml: run all code blocks | [[file:mepml.html][mepml]] |
 | =<leader>kc= | mepml: list problems | [[file:mepml.html][mepml]] |
 | =<leader>ke= | mepml: export as... | [[file:mepml.html][mepml]] |
@@ -150,9 +156,9 @@ the features live.
 | =<leader>ss= | Open structure pane (treesitter) | [[file:sidebars.html][Sidebars]] |
 | =<leader>tT= | Toggle tests pane | [[file:sidebars.html][Sidebars]] |
 | =<leader>tt= | Toggle todo pane | [[file:org-clock.html][Clocking and the Todo panel]] |
-| =<leader>ub= | Toggle the tab bar | -- |
-| =<leader>um= | Toggle the top menu bar | -- |
-| =<leader>us= | Toggle the status bar | -- |
+| =<leader>ub= | Toggle the tab bar | [[file:mod1-keys.html][The mod1 layer]] |
+| =<leader>um= | Toggle the top menu bar | [[file:mod1-keys.html][The mod1 layer]] |
+| =<leader>us= | Toggle the status bar | [[file:mod1-keys.html][The mod1 layer]] |
 | =<leader>ut= | Theme picker | [[file:pickers.html][Pickers]] |
 | =<leader>uu= | Language UI mode (toggle) | [[file:language-ui.html][Language UI modes]] |
 | =<leader>vv= | Speech-to-text: toggle live transcription | -- |

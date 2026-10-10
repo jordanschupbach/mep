@@ -9117,8 +9117,10 @@ public:
      * @param repeat Whether holding the key should keep re-firing it at the OS key-repeat rate (see HandleMod1Shortcuts) -- off by
      * default since most mod1 actions (split, close buffer, popout toggle, ...) aren't safe to repeat; resize_pane's S-h/j/k/l
      * bindings are the one default case that opts in.
+     * @param normal_only When true the mapping only fires in Normal mode; in any other mode the key is left unconsumed, as if
+     * unbound (mod1+b's border toggle is the default case that uses it).
      */
-    void RegisterMod1Mapping(const std::string &key, int lua_ref, bool repeat = false);
+    void RegisterMod1Mapping(const std::string &key, int lua_ref, bool repeat = false, bool normal_only = false);
     // mep.map_g(key, fn): binds a single letter key after a leading "g"
     // in Normal mode (e.g. "d" for "gd") to a Lua callback -- for
     // g-prefixed actions mep's own built-in motions don't already claim
@@ -12169,6 +12171,15 @@ public:
     bool IsStatusBarVisible() const { return status_bar_visible_; }
     void SetStatusBarVisible(bool visible) { status_bar_visible_ = visible; }
     void ToggleMenuBar() { SetMenuBarVisible(!menu_bar_visible_); }
+    // The whole "border" at once -- menu bar, tab bar and status line
+    // (mod1+b in Normal mode, mep.border_toggle()). Hides all three if any
+    // is showing, otherwise shows all three.
+    void ToggleBorder() {
+        bool show = !menu_bar_visible_ && !tab_bar_visible_ && !status_bar_visible_;
+        SetMenuBarVisible(show);
+        SetTabBarVisible(show);
+        SetStatusBarVisible(show);
+    }
     void SetMenuBarVisible(bool visible);
     // Whether a *bare* mod1 tap (ConsumeMod1Tap) toggles the menu bar. Off
     // by default: a stray Alt press flipping the bar is more annoying than
@@ -15580,10 +15591,12 @@ private:
     std::unordered_map<std::string, int> visual_mappings_;      // key -> lua ref
     // repeat: see RegisterMod1Mapping's own doc -- whether HandleMod1Shortcuts
     // should keep re-firing this one while the key is held, at the OS
-    // key-repeat rate, instead of only on the initial press.
+    // key-repeat rate, instead of only on the initial press. normal_only:
+    // skipped (left unconsumed) outside Mode::Normal.
     struct Mod1Mapping {
         int lua_ref = 0;
         bool repeat = false;
+        bool normal_only = false;
     };
     std::unordered_map<std::string, Mod1Mapping> mod1_mappings_;  // key -> mapping
     std::unordered_map<std::string, int> g_mappings_;            // g-prefixed key -> lua ref

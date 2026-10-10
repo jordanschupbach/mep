@@ -47,7 +47,7 @@ that it does nothing.</p>
 <tr><td><code>mep.map_bracket_prev</code></td><td>binds a Lua callback to a key following a leading "[" in Normal mode</td></tr>
 <tr><td><code>mep.map_g</code></td><td>binds a Lua callback to a key following a leading "g" in Normal mode</td></tr>
 <tr><td><code>mep.map_g_visual</code></td><td>binds a Lua callback to a key following a leading "g" in Visual mode</td></tr>
-<tr><td><code>mep.map_mod1</code></td><td>binds a single letter key (or "Tab"/"S-Tab"/"CR"/"S-CR") under the mod1 modifier, globally across all modes</td></tr>
+<tr><td><code>mep.map_mod1</code></td><td>binds a single letter key (or "Tab"/"S-Tab"/"CR"/"S-CR") under the mod1 modifier, globally across all modes unless mode is "n"</td></tr>
 <tr><td><code>mep.mapping_descriptions</code></td><td>lists every mep.map() binding that was given an opts.desc</td></tr>
 <tr><td><code>mep.on_frame</code></td><td>fn runs once per frame -- the polling-based building</td></tr>
 <tr><td><code>mep.set_leader</code></td><td>single-char string, the whichkey trigger (Phase 11)</td></tr>

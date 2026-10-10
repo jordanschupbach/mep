@@ -32,7 +32,8 @@ Focus movement is spatial, using the same overlap-then-distance heuristic as
 together, leaving only the panes; pressing it again brings all three back.
 Unlike the rest of this layer it only works in Normal mode -- elsewhere the
 key is left alone. =<leader>um=, =<leader>ub= and =<leader>us= toggle the
-three one at a time.
+three one at a time; the menu bar alone is also on =mod1+Shift+m= (=:Menu=),
+which works in any mode.
 
 * Hiding the pane bars
 

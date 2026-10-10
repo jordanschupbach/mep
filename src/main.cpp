@@ -12555,6 +12555,7 @@ const char *kBuiltinDocs =
 const char *kBuiltinMenubarBindings =
     "mep.command('Menu', mep.menubar_toggle)\n"
     "mep.leader_map('um', 'Toggle the top menu bar', mep.menubar_toggle)\n"
+    "mep.map_mod1('S-m', mep.menubar_toggle)\n"
     // The tab bar and the status line, each on by default.
     "mep.leader_map('ub', 'Toggle the tab bar', mep.tabbar_toggle)\n"
     "mep.leader_map('us', 'Toggle the status bar', mep.statusbar_toggle)\n"

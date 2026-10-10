@@ -30830,6 +30830,44 @@ const char *kBuiltinPdfAi =
     // Key has no case for it; it falls through to TryLuaMapping).
     "mep.map('v', 'C', mep.claude_send_selection, {desc = 'Claude Code: send selection'})\n"
 
+    // A cheatsheet for the whole highlight-then-ask surface, because none
+    // of it is reachable from the leader: the gestures are `C`/`K` in
+    // Visual mode and in a PDF, so which-key never lists them and there is
+    // nothing to stumble across. <leader>a? puts them all on screen, and
+    // shows up under the `a` (AI) group where someone pressing <space> to
+    // look around will meet it.
+    "function mep.ai_highlight_cheatsheet()\n"
+    "  mep.float_preview('Highlight something, then ask', table.concat({\n"
+    "    'In any text buffer -- select in Visual mode (v, V), then:',\n"
+    "    '    C         send the selection to Claude Code (no API key)',\n"
+    "    '    K         send it to the model over the API',\n"
+    "    '    gl        send it, and replace it with the reply',\n"
+    "    '',\n"
+    "    'In a PDF -- drag with the mouse, or press a for annotate mode:',\n"
+    "    '    v         start/stop a keyboard selection',\n"
+    "    '    y         copy it',\n"
+    "    '    <space>h  turn it into a highlight',\n"
+    "    '    K         short answer in a popup over the page',\n"
+    "    '    C         send it to Claude Code',\n"
+    "    '    Esc       clear the selection; again to leave annotate mode',\n"
+    "    '',\n"
+    "    'With no selection, K and C fall back to the highlight you are on,',\n"
+    "    'then to the newest highlight on the page.',\n"
+    "    '',\n"
+    "    'Over an answer popup:',\n"
+    "    '    o         carry that passage on to Claude Code',\n"
+    "    '',\n"
+    "    'Elsewhere:',\n"
+    "    '    gl              send the whole buffer (Normal mode)',\n"
+    "    '    <leader>a<CR>   open Claude Code in a pane',\n"
+    "    '    <leader>ai      pick extra context to send',\n"
+    "    '    <leader>ak      change the API key command',\n"
+    "    '    <leader>ax      turn API use on or off',\n"
+    "  }, '\\n'))\n"
+    "end\n"
+    "mep.command('MepAiHighlightHelp', mep.ai_highlight_cheatsheet)\n"
+    "mep.leader_map('a?', 'AI: what can I do with a highlight?', mep.ai_highlight_cheatsheet)\n"
+
     // Ex-commands for the PDF routes, so they are reachable by name and
     // from a plain PDF pane after a mouse drag, without entering annotate
     // mode first.

@@ -14886,11 +14886,29 @@ void Editor::HandlePdfInput() {
         else if (ctrl && key == gfx::Key::B) full_up = true;
         else if (ctrl && key == gfx::Key::R) toggle_theme = true;
         else if ((nav || annotate) && key == gfx::Key::Escape) {
-            // Back to plain Mode::Pdf. In normal PDF mode Escape stays a
-            // silently-consumed no-op (no case here matches it), so nav/
-            // annotate claiming it takes nothing away.
-            mode_ = Mode::Pdf;
-            pending_count_ = 0;
+            // Escape unwinds one layer at a time, the way it does in
+            // Visual mode: with a passage selected it drops the SELECTION
+            // and stays in annotate mode, and only an Escape with nothing
+            // selected leaves for plain Mode::Pdf. Leaving outright would
+            // throw away the mode as well as the selection on a keystroke
+            // people press constantly to mean "never mind this bit".
+            //
+            // Both kinds of selection count: the keyboard one `v` makes
+            // (visual_active) and the quads a mouse drag leaves behind,
+            // which can be present without visual_active.
+            const bool has_selection = annotate && (sess->visual_active || !sess->sel_quads.empty());
+            if (has_selection) {
+                sess->visual_active = false;
+                sess->sel_quads.clear();
+                sess->sel_page = -1;
+                pending_count_ = 0;
+            } else {
+                // Back to plain Mode::Pdf. In normal PDF mode Escape stays
+                // a silently-consumed no-op (no case here matches it), so
+                // nav/annotate claiming it takes nothing away.
+                mode_ = Mode::Pdf;
+                pending_count_ = 0;
+            }
         }
     }
     if (full_down) { sess->scroll_y += static_cast<float>(sess->viewport_h); rebase_scroll(); }

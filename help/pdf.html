@@ -45,7 +45,7 @@ So a quoted passage reads as prose rather than as <i>investiga- tor</i>.</p>
 <tr><td><code>v</code></td><td>start or stop a selection</td></tr>
 <tr><td><code>y</code></td><td>copy the selection</td></tr>
 <tr><td><code>K</code></td><td>ask about the selection</td></tr>
-<tr><td><code>Esc</code></td><td>leave</td></tr>
+<tr><td><code>Esc</code></td><td>clear the selection; again to leave</td></tr>
 </table>
 <p>The caret moves down the page, not through the file: a content stream
 emits a page in whatever order it likes -- body text, then the running
@@ -56,6 +56,10 @@ baselines at once -- a summation, its indices, the main line -- so a
 caret walking through one lurches up and down rather than along.
 Mathematics <b>inside</b> a line of prose is ordinary text and stays
 selectable.</p>
+<p><code>Esc</code> unwinds one layer at a time, as it does in Visual mode: with a
+passage selected it drops the selection and keeps you in annotate mode, and
+only an <code>Esc</code> with nothing selected leaves. A key you press constantly to
+mean "never mind this bit" should not also throw away the mode.</p>
 <p><code>&lt;space&gt;</code> is the annotation leader: <code>h</code> highlights the selection, <code>n</code>
 attaches a note, <code>d</code> deletes what is under the caret, <code>c</code> and <code>1</code>-=5=
 pick the highlight colour, <code>q</code> leaves.</p>

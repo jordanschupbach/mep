@@ -23,6 +23,13 @@ rewrite, and the reply takes the selection's place.
 prompt -- other buffers, files, selections -- so a question about one
 function can carry the code it depends on.
 
+* Finding all of this
+
+The highlight-then-ask keys live in Visual mode and in the PDF pane, so
+which-key never lists them. =<leader>a?= (=:MepAiHighlightHelp=) puts the
+whole set on screen -- and shows up under =<leader>a= for anyone pressing
+=<Space>= to look around.
+
 * Turning the API off
 
 | Key / command   | Does                                        |

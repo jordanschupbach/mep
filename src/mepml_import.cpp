@@ -292,6 +292,9 @@ void Coalesce(std::vector<Seg> &segs) {
 // How the office readers hand on "this picture is marked as decoration"
 // in place of its (then empty) alternative text.
 const char *const kDecorativeAlt = "\x01" "decorative";
+// ... and "this picture is one a code block printed" (the writers' result
+// marks), as a prefix on the alternative text.
+const char *const kResultAlt = "\x02" "result:";
 
 struct Out {
     std::vector<std::string> meta;
@@ -367,6 +370,26 @@ struct Out {
         for (const std::string &l : lines) r += "\n" + (l.empty() ? std::string("//") : "// " + l);
         r += "\n// result_end";
         Attach(r);
+    }
+    // Pictures a code block printed, which the HTML and office writers
+    // set in one figure after its text output: they join the block's
+    // results (after any text already there). False, with nothing written,
+    // when there is no code block just before to give them to.
+    bool ResultImages(const std::vector<std::string> &paths) {
+        if (last != kCode || paths.empty()) return false;
+        std::vector<std::string> lines;
+        for (const std::string &p : paths) lines.push_back("\\image(" + ParenEsc(p) + ")");
+        static const std::string kEnd = "\n// result_end";
+        std::string &b = blocks.back();
+        if (b.size() >= kEnd.size() && b.compare(b.size() - kEnd.size(), kEnd.size(), kEnd) == 0 &&
+            b.find("// result_begin:\n") != std::string::npos) {
+            std::string more;
+            for (const std::string &l : lines) more += "\n// " + l;
+            b.insert(b.size() - kEnd.size(), more);
+        } else {
+            Results(lines);
+        }
+        return true;
     }
     void Caption(const std::vector<Seg> &segs) {
         std::vector<Seg> s = segs;
@@ -916,6 +939,28 @@ struct HtmlReader {
             out.Code(lang, html_results ? std::vector<std::pair<std::string, std::string>>{{"results", "html"}} : std::vector<std::pair<std::string, std::string>>{}, code);
             if (has_results) out.Results(results, html_results ? "html" : "");
             return;
+        }
+        // The plots a code block printed (see the HTML writer): every
+        // picture in the figure joins that block's results.
+        if (HasClass(n, "result-images") && out.last == Out::kCode) {
+            std::vector<std::string> srcs;
+            std::vector<Seg> cap;
+            std::function<void(const DomNode *)> walk = [&](const DomNode *t) {
+                for (const auto &c : t->children) {
+                    if (c->type != DomNodeType::Element) continue;
+                    if (c->tag == "img") srcs.push_back(Attr(c.get(), "src"));
+                    else if (c->tag == "figcaption") cap = InlOf(c.get());
+                    else walk(c.get());
+                }
+            };
+            walk(n);
+            if (out.ResultImages(srcs)) {
+                if (!cap.empty()) {
+                    StripLabel(cap);
+                    out.Caption(cap);
+                }
+                return;
+            }
         }
         const DomNode *img = nullptr, *markup = nullptr;
         std::vector<Seg> caption;
@@ -1946,6 +1991,27 @@ struct MdReader {
                     out.Results(raw, "html");
                     continue;
                 }
+                // Output with pictures among it (see MdWriter): ```output
+                // runs are its text, each ![alt](path) a picture, in order.
+                if (text == "mepml:results") {
+                    std::vector<std::string> res;
+                    bool fenced = false;
+                    size_t n = i + 1;
+                    for (; n < lines.size() && Trim(lines[n]) != "<!-- /mepml:results -->"; ++n) {
+                        const std::string lt = Trim(lines[n]);
+                        if (fenced) {
+                            if (lt == "```") fenced = false;
+                            else res.push_back(lines[n]);
+                        } else if (lt == "```output") {
+                            fenced = true;
+                        } else if (StartsWith(lt, "![") && lt.back() == ')' && lt.find("](") != std::string::npos) {
+                            res.push_back("\\image(" + ParenEsc(lt.substr(lt.rfind("](") + 2, lt.size() - lt.rfind("](") - 3)) + ")");
+                        }
+                    }
+                    i = n;
+                    out.Results(res);
+                    continue;
+                }
                 // A box (see MdWriter): the title rides in the marker; the
                 // bold heading line under it is skipped.
                 if (StartsWith(text, "mepml:box ")) {
@@ -2464,7 +2530,7 @@ struct OrgReader {
                 flush();
                 std::vector<std::string> res;
                 size_t k = i + 1;
-                std::string image, format;
+                std::string format;
                 for (; k < lines.size(); ++k) {
                     const std::string tk = Trim(lines[k]);
                     // `:results html`: the HTML itself, in an export block.
@@ -2478,16 +2544,16 @@ struct OrgReader {
                         res.push_back(tk.size() > 2 ? tk.substr(2) : "");
                     } else if (StartsWith(Lower(tk), "#+begin_example")) {
                         for (++k; k < lines.size() && !StartsWith(Lower(Trim(lines[k])), "#+end_example"); ++k) res.push_back(lines[k]);
-                    } else if (StartsWith(tk, "[[") && res.empty() && image.empty()) {
+                    } else if (StartsWith(tk, "[[")) {
+                        // A picture among the output, kept where it was printed.
                         std::string target = tk.substr(2, tk.find(']') - 2);
                         if (StartsWith(target, "file:")) target = target.substr(5);
-                        image = target;
+                        res.push_back("\\image(" + ParenEsc(target) + ")");
                     } else {
                         break;
                     }
                 }
                 i = k - 1;
-                if (!image.empty()) res.push_back("\\image(" + ParenEsc(image) + ")");
                 out.Results(res, format);
                 TakeCaption();
                 continue;
@@ -3229,8 +3295,12 @@ struct Assembler {
             hold = false;
         }
     }
-    void Image(const std::string &path, const std::string &alt) {
+    void Image(const std::string &path, std::string alt) {
         Flush();
+        if (StartsWith(alt, kResultAlt)) {
+            alt = alt.substr(std::strlen(kResultAlt));
+            if (out.ResultImages({path})) return;
+        }
         out.Image(path, alt == kDecorativeAlt ? "" : alt, alt == kDecorativeAlt);
         if (hold) {
             out.Caption(held_caption);
@@ -3482,17 +3552,21 @@ struct DocxReader {
     bool hr = false;
     std::pair<std::string, std::string> Image(const xml::xml_node &drawing) {
         std::string rid, alt;
-        bool decorative = false;
+        bool decorative = false, result = false;
         std::function<void(const xml::xml_node &)> walk = [&](const xml::xml_node &n) {
             const std::string nm = n.name();
             if (nm == "a:blip") rid = Attr(n, "r:embed").empty() ? Attr(n, "r:link") : Attr(n, "r:embed");
             if (nm == "v:imagedata") rid = Attr(n, "r:id");
-            if (nm == "wp:docPr") alt = Attr(n, "descr");
+            if (nm == "wp:docPr") {
+                alt = Attr(n, "descr");
+                result = StartsWith(Attr(n, "name"), "Result ");
+            }
             if (nm == "adec:decorative" && Attr(n, "val") == "1") decorative = true;
             for (const xml::xml_node &k : n.children()) walk(k);
         };
         walk(drawing);
         if (decorative && alt.empty()) alt = kDecorativeAlt;
+        if (result) alt = kResultAlt + alt;
         auto it = rels.find(rid);
         if (it == rels.end()) return {"", ""};
         if (external.count(rid)) {
@@ -3955,6 +4029,7 @@ struct OdtReader {
                     std::string alt = c.child("svg:desc").text().get();
                     if (alt.empty()) alt = c.child("svg:title").text().get();
                     if (alt.empty() && Attr(c, "loext:decorative") == "true") alt = kDecorativeAlt;
+                    if (StartsWith(Attr(c, "draw:name"), "result")) alt = kResultAlt + alt;
                     pending_images.push_back({path, alt});
                 }
             } else if (nm == "text:soft-page-break" || nm == "text:bookmark-end") {
@@ -4203,6 +4278,12 @@ struct RtfReader {
 
     // Destination text.
     std::string dest_text, color_cur, pict_hex, pict_ext, pict_alt, sn, prop_name;
+    bool next_result = false;  // a {\\*\\mepmlresult} came before this picture
+    std::string ResultMark(const std::string &alt) {
+        const bool r = next_result;
+        next_result = false;
+        return r ? kResultAlt + alt : alt;
+    }
     int font_cur = 0, style_cur = 0;
 
     Fmt Current() const {
@@ -4390,7 +4471,7 @@ struct RtfReader {
                 hi = -1;
             }
         }
-        if (!pict_ext.empty() && !bytes.empty() && !media.dir.empty()) images.push_back({media.Save(bytes, pict_ext), pict_alt});
+        if (!pict_ext.empty() && !bytes.empty() && !media.dir.empty()) images.push_back({media.Save(bytes, pict_ext), ResultMark(pict_alt)});
         pict_hex.clear();
         pict_ext.clear();
         pict_alt.clear();
@@ -4404,7 +4485,7 @@ struct RtfReader {
             const size_t q2 = q1 == std::string::npos ? q1 : fldinst.find('"', q1 + 1);
             if (q2 != std::string::npos) {
                 pict_alt.clear();
-                images.push_back({fldinst.substr(q1 + 1, q2 - q1 - 1), ""});
+                images.push_back({fldinst.substr(q1 + 1, q2 - q1 - 1), ResultMark("")});
                 include_alt = true;  // the result text is the picture's description
                 st.dest = Title;
                 dest_text.clear();
@@ -4568,6 +4649,8 @@ struct RtfReader {
         } else if (w == "pict") {
             st.dest = Pict;
             pict_hex.clear();
+        } else if (w == "mepmlresult") {
+            next_result = true;  // the next picture is one a code block printed
         } else if (w == "bkmkstart") {
             st.dest = Bookmark;
             dest_text.clear();
@@ -4617,7 +4700,7 @@ struct RtfReader {
                 break;
             case Title:
                 if (include_alt && parent.dest != Title) {
-                    if (!images.empty()) images.back().second = name;
+                    if (!images.empty()) images.back().second = (StartsWith(images.back().second, kResultAlt) ? kResultAlt : "") + name;
                     include_alt = false;
                 } else {
                     info_title = name;
@@ -4702,7 +4785,7 @@ struct RtfReader {
                         size_t k = j + 1;
                         while (k < n && std::isalpha(static_cast<unsigned char>(rtf[k]))) w += rtf[k++];
                     }
-                    static const char *kKnown[] = {"footnote", "fldinst", "bkmkstart", "userprops", "picprop", "shppict"};
+                    static const char *kKnown[] = {"footnote", "fldinst", "bkmkstart", "userprops", "picprop", "shppict", "mepmlresult"};
                     bool known = false;
                     for (const char *k : kKnown) known = known || w == k;
                     if (w == "cs" && st.dest == StyleSheet) known = true;

@@ -933,7 +933,13 @@ if(NOT EMSCRIPTEN AND NOT WIN32)
 # survive contraction anyway (verified), but that argument has to be re-made
 # after any edit to them, and a silent loss of exactness is close to
 # undebuggable from its symptoms.
-set(MEP_FP_EXACT_SOURCES src/cad_predicates.cpp)
+#
+# The rest of the CAD kernel gets the same treatment. Its tolerances and
+# tie-breaks were all settled on x86-64, where a baseline build never emits
+# FMA; arm64 clang contracts by default, and the shifted rounding alone was
+# enough to leave a tilted-prism fillet unwatertight and to miscount a hidden
+# edge in mep-cad-feature-test / mep-cad-exchange-test on Apple Silicon.
+file(GLOB MEP_FP_EXACT_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cad_*.cpp)
 set_source_files_properties(${MEP_FP_EXACT_SOURCES} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 
 find_package(Threads REQUIRED)

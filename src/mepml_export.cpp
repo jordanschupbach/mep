@@ -492,6 +492,31 @@ struct MdWriter {
                     auto para = [&out](const std::string &more) { out += (out.empty() ? "" : "\n\n") + more; };
                     if (b.result_line_start >= 0 && !text.empty() && b.result_format == "html")
                         para("<!-- mepml:results html -->\n" + Join(text, "\n") + "\n<!-- /mepml:results -->");
+                    else if (b.result_line_start >= 0 && show_results && b.result_format.empty() && !b.result_images.empty()) {
+                        // Pictures among the output: the lot between markers,
+                        // in the order it was printed, so the importer can put
+                        // the pictures back inside the results rather than
+                        // reading them as figures of their own.
+                        std::string region = "<!-- mepml:results -->", run;
+                        auto flush_run = [&] {
+                            if (!run.empty()) region += "\n\n```output\n" + run + "\n```";
+                            run.clear();
+                        };
+                        for (const std::string &l : b.result_lines) {
+                            std::string img;
+                            if (ResultImagePath(l, &img)) {
+                                flush_run();
+                                region += "\n\n![" + b.alt + "](" + img + ")";
+                            } else {
+                                run += (run.empty() ? "" : "\n") + l;
+                            }
+                        }
+                        flush_run();
+                        para(region + "\n\n<!-- /mepml:results -->");
+                        if (!caption.empty()) para("*" + (labels[bi].empty() ? "" : labels[bi] + ": ") + caption + "*");
+                        if (!out.empty()) blocks.push_back(out);
+                        break;
+                    }
                     else if (b.result_line_start >= 0 && !text.empty())
                         para("```output\n" + Join(text, "\n") + "\n```");
                     std::string figs;
@@ -1306,15 +1331,18 @@ struct RtfWriter {
     std::vector<bool> lists{};  // \lsN (N = index + 1) -> numbered?
     static std::string Bookmark(const std::string &name) { return "{\\*\\bkmkstart " + name + "}{\\*\\bkmkend " + name + "}"; }
 
-    std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false) {
+    // `result`: a picture a code block printed (see the importer's
+    // Assembler::Image), marked by an optional destination readers skip.
+    std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false, bool result = false) {
         (void)decorative;  // (RTF has no way to say so)
+        const std::string mark = result ? "{\\*\\mepmlresult}" : "";
         std::string bytes, ext;
         int w = 0, h = 0;
         if (!ReadBinary(ResolveRel(base_dir, path), &bytes) || !ImageSize(bytes, &w, &h, &ext) || w <= 0 || h <= 0) {
             // Not readable: linked, the way Word links a picture.
             std::string p;
             for (char c : path) p += c == '\\' ? std::string("\\\\\\\\") : std::string(1, c);
-            return Para("\\qc", "{\\field{\\*\\fldinst{INCLUDEPICTURE \"" + Esc(p) + "\" \\\\d}}{\\fldrslt{" + Esc(alt) + "}}}");
+            return Para("\\qc", mark + "{\\field{\\*\\fldinst{INCLUDEPICTURE \"" + Esc(p) + "\" \\\\d}}{\\fldrslt{" + Esc(alt) + "}}}");
         }
         // At most 6 inches wide (8640 twips); 15 twips per pixel at 96 dpi.
         double scale = std::min(1.0, 8640.0 / (w * 15.0));
@@ -1327,7 +1355,7 @@ struct RtfWriter {
             if (i % 64 == 63) hex += '\n';
         }
         const std::string prop = alt.empty() ? "" : "{\\*\\picprop{\\sp{\\sn wzDescription}{\\sv " + Esc(alt) + "}}}";
-        return Para("\\qc", "{\\pict" + prop + "\\" + std::string(ext == "png" ? "pngblip" : "jpegblip") + "\\picw" + std::to_string(w) +
+        return Para("\\qc", mark + "{\\pict" + prop + "\\" + std::string(ext == "png" ? "pngblip" : "jpegblip") + "\\picw" + std::to_string(w) +
                                  "\\pich" + std::to_string(h) + "\\picwgoal" + std::to_string(static_cast<int>(w * 15 * scale)) +
                                  "\\pichgoal" + std::to_string(static_cast<int>(h * 15 * scale)) + "\n" + hex + "}");
     }
@@ -1381,7 +1409,7 @@ struct RtfWriter {
                             std::string img;
                             if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += Para(style + gray, Esc(rl));
                         }
-                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b));
+                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b), true);
                     }
                     if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
@@ -1726,7 +1754,9 @@ struct DocxWriter {
     }
     static std::string Style(const std::string &s) { return "<w:pStyle w:val=\"" + s + "\"/>"; }
 
-    std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false) {
+    // `result`: a picture a code block printed, named "Result N" rather
+    // than "Picture N" so the importer gives it back to the block.
+    std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false, bool result = false) {
         std::string bytes, ext;
         int w = 0, h = 0;
         // A picture that cannot be read is linked, not embedded: the
@@ -1754,7 +1784,7 @@ struct DocxWriter {
         const std::string pid = std::to_string(n);
         return P("<w:jc w:val=\"center\"/>",
                  "<w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent " + ext_xml +
-                     "/><wp:docPr id=\"" + pid + "\" name=\"Picture " + pid + "\" descr=\"" + XmlEsc(alt) + "\"" +
+                     "/><wp:docPr id=\"" + pid + "\" name=\"" + (result ? "Result " : "Picture ") + pid + "\" descr=\"" + XmlEsc(alt) + "\"" +
                      // (Word's "mark as decorative": a picture a screen reader passes over.)
                      (decorative ? "><a:extLst xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">"
                                    "<a:ext uri=\"{C183D7F6-B498-43B3-948B-1728B52AA6E4}\">"
@@ -1821,7 +1851,7 @@ struct DocxWriter {
                             std::string img;
                             if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P(Style("SourceCode"), rl.empty() ? std::string() : Run(rl, out));
                         }
-                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b));
+                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b), true);
                     }
                     if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
@@ -2208,7 +2238,9 @@ struct OdtWriter {
         return "<text:p" + (style.empty() ? std::string() : " text:style-name=\"" + style + "\"") + ">" + body + "</text:p>";
     }
 
-    std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false) {
+    // `result`: a picture a code block printed, named "resultN" rather
+    // than "imageN" so the importer gives it back to the block.
+    std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false, bool result = false) {
         std::string bytes, ext;
         int w = 0, h = 0;
         // A picture that cannot be read is linked (ODF paths are relative
@@ -2231,7 +2263,7 @@ struct OdtWriter {
         }
         char size[96];
         std::snprintf(size, sizeof size, "svg:width=\"%.2fcm\" svg:height=\"%.2fcm\"", wcm, hcm);
-        return P("Figure", "<draw:frame draw:name=\"image" + std::to_string(pic_n) + "\" text:anchor-type=\"as-char\" " + size +
+        return P("Figure", "<draw:frame draw:name=\"" + std::string(result ? "result" : "image") + std::to_string(pic_n) + "\" text:anchor-type=\"as-char\" " + size +
                                (decorative ? " loext:decorative=\"true\"" : "") + "><draw:image xlink:href=\"" + XmlEsc(name) +
                                "\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/>" +
                                (alt.empty() ? "" : "<svg:desc>" + XmlEsc(alt) + "</svg:desc>") + "</draw:frame>");
@@ -2288,7 +2320,7 @@ struct OdtWriter {
                             std::string img;
                             if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P("Preformatted_20_Text", Run(rl, out));
                         }
-                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b));
+                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b), true);
                     }
                     if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;

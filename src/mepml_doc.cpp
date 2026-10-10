@@ -5373,7 +5373,8 @@ struct HtmlWriter {
                 if (!fig.empty()) out += "<figure class=\"code\">" + fig + "</figure>\n";
                 if (!b.result_images.empty() && show_results) {
                     // One figure for all of the block's plots, under one caption.
-                    out += "<figure>";
+                    // (The class tells mep's importer they are the block's results.)
+                    out += "<figure class=\"result-images\">";
                     for (const auto &img : b.result_images) out += "<img src=\"" + Esc(Src(img.second)) + "\"" + ImgAlt(b) + ">";
                     if (!b.caption_inlines.empty())
                         out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";

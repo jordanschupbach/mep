@@ -67,6 +67,10 @@ struct Keeps {
     bool code_captions = false; // a caption on a code block that has not been run
     bool list_kinds = true;     // bullets vs numbers per item
     bool boxes = true;          // \definition(...) boxes (else a heading paragraph)
+    // A result's pictures in their place among its text. HTML and the
+    // office formats set a block's plots in one figure after the text, so
+    // there the two are compared as separate lists, each still in order.
+    bool result_order = true;
 };
 
 // One line per block that matters, in order.
@@ -91,8 +95,15 @@ Lines Signature(const Document &doc, const Keeps &k) {
                 s += "\n" + code;
                 // Markdown results are the blocks after this one, compared
                 // as themselves; the exports keep them as those blocks.
-                if (b.result_format != "markdown")
-                    for (const std::string &r : b.result_lines) s += "\n> " + r;
+                if (b.result_format != "markdown") {
+                    std::string pictures;
+                    for (const std::string &r : b.result_lines) {
+                        std::string img;
+                        if (!k.result_order && b.result_format.empty() && ResultImagePath(r, &img)) pictures += "\n> " + r;
+                        else s += "\n> " + r;
+                    }
+                    s += pictures;
+                }
                 if (k.code_captions) s += "\ncaption " + Plain(b.caption_inlines);
                 break;
             }
@@ -286,9 +297,12 @@ void TestReference() {
     office.code_options = true;
     office.code_captions = true;
     office.boxes = false;
+    office.result_order = false;
+    Keeps html;
+    html.result_order = false;
     Keeps md;
     md.code_captions = true;
-    const Case cases[] = {{"md", md}, {"org", Keeps()}, {"html", Keeps()}, {"rtf", office}, {"docx", office}, {"odt", office}};
+    const Case cases[] = {{"md", md}, {"org", Keeps()}, {"html", html}, {"rtf", office}, {"docx", office}, {"odt", office}};
     for (const Case &c : cases) {
         const Document doc = as_exported(c.ext);
         std::string text;

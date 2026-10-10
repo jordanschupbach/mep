@@ -725,7 +725,7 @@ int main() {
                                     "@caption{Two}"});
         CHECK(two.blocks[0].result_images.size() == 2);
         const std::string html2 = ToHtml(two);
-        CHECK(html2.find("<figure><img src=\"a.png\"><img src=\"b.png\"><figcaption>") != std::string::npos);
+        CHECK(html2.find("<figure class=\"result-images\"><img src=\"a.png\"><img src=\"b.png\"><figcaption>") != std::string::npos);
         size_t opened = 0, closed = 0;
         for (size_t at = 0; (at = html2.find("<figure", at)) != std::string::npos; ++at) ++opened;
         for (size_t at = 0; (at = html2.find("</figure>", at)) != std::string::npos; ++at) ++closed;

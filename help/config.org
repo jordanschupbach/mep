@@ -35,6 +35,16 @@ The wasm build has no host filesystem, so it loads no =init.lua=.
 shows its result at the bottom of the window -- a perfectly good way to
 poke at the API before committing anything to a file.
 
+* The Settings panel
+
+Most of what follows can be set from a panel instead: =<leader>hS= or
+=:MepSettings= shows the preferences people most often change, with their
+current values. It writes its own file and never touches =init.lua= --
+see [[file:settings.html][Settings]] for the two stores and which one wins.
+
+Everything on this page still works, and anything the panel does not cover
+is configured here.
+
 * Options
 
 Two families, which is a common source of confusion:
@@ -55,12 +65,14 @@ mep.opt.tab_terminal_share = 0.4     -- a mep.opt option
 | Path                                       | Holds                    |
 |--------------------------------------------+--------------------------|
 | =~/.config/mep/init.lua=                   | your configuration       |
+| =$XDG_DATA_HOME/mep/settings.json=         | what the Settings panel last saved |
 | =$XDG_DATA_HOME/mep/workspaces/=           | per-project session state |
 | =~/.config/github-copilot/=                | Copilot credentials, shared with other editors |
 | =~/.local/share/mep/agent-sockets/=        | one socket per running mep |
 
 * See also
 
+- [[file:settings.html][Settings]] -- the panel, and how it relates to this file.
 - [[file:options.html][Options]] -- every option, with defaults.
 - [[file:keymaps.html][Remapping keys]] -- changing the bindings.
 - [[file:recipes.html][Configuration recipes]] -- worked examples.

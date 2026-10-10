@@ -38,6 +38,30 @@ Alternatively, point mep at it and it will be passed inline with
 mep.opt.ai_terminal_mcp_server = '/path/to/mep-mcp'
 #+end_src
 
+* Highlight something, press C
+
+Anything you highlight can become the agent's prompt without copying,
+pasting or retyping it:
+
+| Where                 | Gesture                                  |
+|-----------------------+------------------------------------------|
+| any text buffer       | select in Visual mode, then =C=          |
+| a PDF                 | select or highlight a passage, then =C=  |
+| over a =K= answer box | =o=, to carry that passage on            |
+
+The passage arrives quoted with where it came from -- =notes.py:12-20=, or
+=paper.pdf, page 3= -- so the agent can go and read around it rather than
+seeing a bare fragment. If no agent is running, one is started and the
+passage is sent as soon as it is ready.
+
+This is the only conversational route, on purpose. It needs no API key,
+and Claude Code keeps its own history, so a conversation survives closing
+mep. (There used to be an =A= that discussed a PDF passage over the API in
+a sidebar; it billed like =K=, kept no history, and has been removed.)
+
+A passage is sent as one line, because the agent's prompt treats a newline
+as submit.
+
 * Options
 
 #+begin_src lua

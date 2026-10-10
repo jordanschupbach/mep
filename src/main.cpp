@@ -28741,6 +28741,41 @@ const char *kBuiltinAi =
     "mep.ai_anthropic_model = 'claude-opus-5'\n"
     "mep.ai_api_key = nil\n"
     "mep.ai_max_tokens = 2048\n"
+    // The master switch for everything that talks to a paid API over
+    // HTTP: the K popup, the AI Agent sidebar, the :MepAiSend* family and
+    // speech-to-text. On by default, so nothing changes for anyone who
+    // never touches it; off makes every one of those refuse up front with
+    // a message naming the switch, rather than prompting for a key or
+    // appearing to do nothing. Claude Code in a pane is deliberately NOT
+    // affected -- it brings its own credentials and bills nothing here,
+    // which is the point of leaving a route open while this is off.
+    "mep.ai_http_enabled = true\n"
+    // One place to ask, so a future HTTP caller cannot quietly forget it.
+    // When the API is off, most routes have somewhere better to go than a
+    // refusal: Claude Code takes the same passage, needs no key, and bills
+    // nothing. Says so rather than rerouting silently -- text going
+    // somewhere other than where you aimed it should never be a surprise.
+    //
+    // Returns true when it has handled the call (the caller must stop).
+    // Routes whose reply has to land back IN the buffer cannot use this --
+    // an agent answering in a terminal cannot be spliced into your text --
+    // so they keep using mep.ai_http_blocked and simply refuse.
+    "function mep.ai_http_redirect(passage, where, what)\n"
+    "  if mep.ai_http_enabled then return false end\n"
+    "  if passage == nil or passage == '' then\n"
+    "    return mep.ai_http_blocked(what)\n"
+    "  end\n"
+    "  mep.notify('The API is off, so this went to Claude Code instead"
+    " (<leader>ax turns the API back on).')\n"
+    "  mep.claude_send(passage, where)\n"
+    "  return true\n"
+    "end\n"
+    "function mep.ai_http_blocked(what)\n"
+    "  if mep.ai_http_enabled then return false end\n"
+    "  mep.notify((what or 'That') .. ' needs the API, which is off (Settings: AI over HTTP).'\n"
+    "    .. ' C sends a selection to Claude Code instead.', 'warn')\n"
+    "  return true\n"
+    "end\n"
     "local mep_ai_active_job = nil\n"
     // mep_ai_json_encode/mep_ai_utf8_encode/mep_ai_json_decode ported to
     // reuse this file's own Json engine (json.h/lua_env.cpp -- now with
@@ -28828,6 +28863,12 @@ const char *kBuiltinAi =
     "  return out\n"
     "end\n"
     "local function mep_ai_request(messages, tools, on_delta, on_done)\n"
+    // Checked before the key is resolved, so a switched-off mep never runs
+    // the user's key command and never prompts for a key.
+    "  if mep.ai_http_blocked('The model') then\n"
+    "    if on_done then on_done() end\n"
+    "    return\n"
+    "  end\n"
     "  mep_ai_get_key(function(key)\n"
     "    local url, headers, body\n"
     "    if mep.ai_provider == 'anthropic' then\n"
@@ -28912,6 +28953,34 @@ const char *kBuiltinAi =
     "  if mep_ai_active_job then mep.job_kill(mep_ai_active_job) mep_ai_active_job = nil mep.participant_clear('ai-stream') mep.notify('AI stream cancelled') end\n"
     "end\n"
     "mep.command('MepAiCancel', mep.ai_cancel)\n"
+    // Change where the key comes from, without hunting through Settings or
+    // restarting. Prefilled with the current command so a path edit is a
+    // few keystrokes, and persisted through the Settings store so it
+    // survives a restart like any other setting.
+    //
+    // Clearing mep.ai_api_key is the part that matters and is easy to
+    // miss: the resolved key is cached for the session on first use
+    // (mep_ai_get_key), so without this the OLD key would keep being used
+    // after pointing at a new file, and the change would look like it had
+    // silently failed.
+    "function mep.ai_key_command_prompt()\n"
+    "  local current = ''\n"
+    "  if type(mep.ai_api_key_cmd) == 'table' then current = table.concat(mep.ai_api_key_cmd, ' ') end\n"
+    "  mep.ui_input('Command that prints the API key:', current, function(text)\n"
+    "    if text == nil then return end\n"
+    "    local argv = nil\n"
+    "    if text ~= '' then\n"
+    "      argv = {}\n"
+    "      for word in text:gmatch('%S+') do argv[#argv + 1] = word end\n"
+    "      if #argv == 0 then argv = nil end\n"
+    "    end\n"
+    "    mep.ai_api_key_cmd = argv\n"
+    "    mep.ai_api_key = nil\n"
+    "    if mep.settings_set then mep.settings_set('ai_api_key_cmd', text) end\n"
+    "    mep.notify(argv and ('API key command set to: ' .. text) or 'API key command cleared')\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepAiKey', mep.ai_key_command_prompt)\n"
     // Send-buffer / send-range: streams the response in right where the
     // cursor already is (never relocates it first -- e.g. sending the
     // whole buffer as context via 'gl' still answers in place, at point,
@@ -28930,6 +28999,13 @@ const char *kBuiltinAi =
     // mep.ai_replace_selection uses it to drop back to Normal mode, the
     // way a human typing the same replacement by hand would on <Esc>.
     "function mep.ai_send_text(prompt, on_complete)\n"
+    "  local where = ''\n"
+    "  local name = mep.filename() or ''\n"
+    "  if name ~= '' then where = name:match('([^/]+)$') or name end\n"
+    "  if mep.ai_http_redirect(prompt, where, 'Asking the model') then\n"
+    "    if on_complete then on_complete() end\n"
+    "    return\n"
+    "  end\n"
     "  local buf = mep.current_buffer()\n"
     "  local row, col = mep.cursor()\n"
     "  mep.participant_set('ai-stream', 'AI', buf, row, col, 'writing')\n"
@@ -28979,6 +29055,17 @@ const char *kBuiltinAi =
     "function mep.ai_replace_selection()\n"
     "  local sel = mep.visual_selection()\n"
     "  if sel == '' then mep.notify('No Visual selection', 'warn') return end\n"
+    // Checked BEFORE visual_change, which deletes the selection. This is
+    // the one AI route that cannot fall back to Claude Code -- its whole
+    // job is to put the reply where the selection was, and an agent
+    // answering in a terminal cannot do that -- so it refuses. Doing that
+    // after the delete (which is what happened when the switch was first
+    // added) left the text gone and nothing put back.
+    "  if not mep.ai_http_enabled then\n"
+    "    mep.notify('Replacing a selection needs the API, which is off: the reply has to come'\n"
+    "      .. ' back into the buffer, which Claude Code cannot do. <leader>ax turns it on.', 'warn')\n"
+    "    return\n"
+    "  end\n"
     "  mep.visual_change()\n"
     "  mep.ai_send_text(sel, mep.enter_normal)\n"
     "end\n"
@@ -29159,6 +29246,15 @@ const char *kBuiltinAi =
     "end\n"
     "mep.command('MepAiContextPicker', mep.ai_context_picker)\n"
     "mep.leader_map('ai', 'AI: context picker', mep.ai_context_picker)\n"
+    // `ak` -- free under the `a` group (ai/aa/al/a<CR> are the others).
+    "mep.leader_map('ak', 'AI: API key command', mep.ai_key_command_prompt)\n"
+    "mep.leader_map('ax', 'AI: toggle API use on/off', function()\n"
+    "  mep.ai_http_enabled = not mep.ai_http_enabled\n"
+    "  if mep.settings_set then\n"
+    "    mep.settings_set('ai_http_enabled', mep.ai_http_enabled and 'on' or 'off')\n"
+    "  end\n"
+    "  mep.notify('AI over HTTP ' .. (mep.ai_http_enabled and 'on' or 'off -- C still sends to Claude Code'))\n"
+    "end)\n"
     // Speech-to-text (<leader>vv toggles): press once to start recording,
     // press again to stop -- while it's running, the transcript streams in
     // at the cursor a few seconds behind your voice, entering Insert mode
@@ -29272,6 +29368,9 @@ const char *kBuiltinAi =
     // see a filename with no recognizable audio extension and could
     // reject or misdetect the format.
     "local function mep_stt_transcribe_chunk(index, path)\n"
+    // Not covered by mep_ai_request's gate: this POSTs to OpenAI with its
+    // own curl invocation and never goes through that path.
+    "  if mep.ai_http_blocked('Speech-to-text') then return end\n"
     "  mep_stt_inflight = mep_stt_inflight + 1\n"
     "  mep_stt_save_debug_copy(path)\n"
     "  mep_stt_get_key(function(key)\n"
@@ -29564,6 +29663,9 @@ const char *kBuiltinAi =
     "function mep.ai_agent_prompt()\n"
     "  mep.ui_input('Ask AI agent:', '', function(text)\n"
     "    if not text or text == '' then return end\n"
+    // Conversational, so Claude Code is a straight substitute when the
+    // API is off -- and a better one, since it keeps its own history.
+    "    if mep.ai_http_redirect(text, '', 'The AI agent') then return end\n"
     "    mep.ai_agent_messages[#mep.ai_agent_messages + 1] = {role = 'user', content = text}\n"
     "    mep_ai_agent_render()\n"
     "    mep.ai_agent_turn()\n"
@@ -30520,7 +30622,18 @@ const char *kBuiltinPdfAi =
     // A selection shorter than this is quoted with the rest of its page as
     // background. A lone equation or a bare term otherwise gives the model
     // almost nothing to go on.
-    "mep.pdf_ask_context_under = 200\n"
+    //
+    // 40, not the 200 this started at. 200 characters is two or three
+    // sentences -- so nearly every ordinary highlight tripped it, shipped
+    // the entire page, and got back a summary of the page instead of an
+    // answer about the passage. The background block says "explain the
+    // passage above, not this", but a one-line quote cannot hold its own
+    // against a few thousand characters of page following it. 40 keeps the
+    // behaviour for what it was actually meant for -- "a lone symbol or a
+    // bare term", as help/pdf.org puts it -- and leaves a quoted sentence
+    // to stand alone. Set it to 0 to never attach the page at all (the
+    // comparison is `#passage < (… or 0)`, so 0 can never be true).
+    "mep.pdf_ask_context_under = 40\n"
     // The popup box neither wraps nor scrolls, so the answer is wrapped here.
     "mep.pdf_ask_wrap = 72\n"
     "local mep_pdf_ai_last = nil\n"
@@ -30544,10 +30657,14 @@ const char *kBuiltinPdfAi =
     "end\n"
     // The passage as the model meets it: quoted, told where it came from,
     // and for a short one the rest of the page behind it.
-    "local function mep_pdf_ai_passage(passage, where)\n"
+    "local function mep_pdf_ai_passage(passage, where, page_no)\n"
     "  local s = 'From ' .. ((where and where ~= '') and where or 'a PDF') .. ':\\n\"\"\"\\n' .. passage .. '\\n\"\"\"'\n"
     "  if #passage < (mep.pdf_ask_context_under or 0) then\n"
-    "    local ok, page = pcall(mep.pdf_page_text)\n"
+    // The passage's OWN page, not whatever the viewer is showing. With no
+    // page number (an older caller) mep.pdf_page_text falls back to the
+    // current page, which is what this always used to do.
+    "    local n = tonumber(page_no)\n"
+    "    local ok, page = pcall(mep.pdf_page_text, n)\n"
     "    if ok and page and page ~= '' then\n"
     "      s = s .. '\\n\\nThe rest of that page, as background only -- explain the passage above, not this:\\n\"\"\"\\n' ..\n"
     "          page .. '\\n\"\"\"'\n"
@@ -30563,23 +30680,26 @@ const char *kBuiltinPdfAi =
     "  if #p > 600 then p = p:sub(1, 600) .. '...' end\n"
     "  return 'From ' .. ((where and where ~= '') and where or 'a PDF') .. ':\\n' .. p .. '\\n\\n' .. question\n"
     "end\n"
-    // Moves the popup exchange into the AI Agent sidebar and leaves the
-    // cursor in a follow-up prompt. Appends rather than replacing: a
-    // :MepAiAgent conversation already in progress is not ours to discard.
+    // The popup's `o`: carry the same passage over to Claude Code, which
+    // keeps its own history and needs no API key. This used to promote the
+    // exchange into the API-backed AI Agent sidebar; that route is gone
+    // (see PdfAskAboutSelection's own note on the removed `A`), but the
+    // affordance it offered -- "that short answer wasn't enough, let's
+    // actually talk about it" -- is worth keeping, pointed somewhere
+    // better.
     "function mep_pdf_ai_promote()\n"
     "  local l = mep_pdf_ai_last\n"
     "  if not l then return end\n"
     "  mep.ai_cancel()\n"
-    "  local msgs = mep.ai_agent_messages\n"
-    "  msgs[#msgs + 1] = {role = 'user', content = l.quoted .. '\\n\\n' .. l.question,\n"
-    "                     display = mep_pdf_ai_shown(l.passage, l.where, 'Explain this.')}\n"
-    "  if l.answer ~= '' then msgs[#msgs + 1] = {role = 'assistant', content = l.answer} end\n"
-    "  mep.ai_agent_render()\n"
-    "  mep.ai_agent_prompt()\n"
+    "  mep.claude_send(l.passage, l.where)\n"
     "end\n"
-    "function mep_pdf_ai_popup(passage, where)\n"
+    "function mep_pdf_ai_popup(passage, where, page_no)\n"
     "  if passage == nil or passage == '' then return end\n"
-    "  local quoted = mep_pdf_ai_passage(passage, where)\n"
+    // With the API off, K sends the passage to Claude Code rather than
+    // refusing: it is the same passage and the same question, just
+    // answered in a pane instead of a box over the page.
+    "  if mep.ai_http_redirect(passage, where, 'Asking about a passage') then return end\n"
+    "  local quoted = mep_pdf_ai_passage(passage, where, page_no)\n"
     "  local title = (where and where ~= '') and where or 'PDF'\n"
     "  local answer = ''\n"
     "  local opened = false\n"
@@ -30607,23 +30727,20 @@ const char *kBuiltinPdfAi =
     "      if answer == '' then mep.notify('No answer from the model', 'warn') end\n"
     "    end)\n"
     "end\n"
-    "function mep_pdf_ai_discuss(passage, where)\n"
-    "  if passage == nil or passage == '' then return end\n"
-    "  local quoted = mep_pdf_ai_passage(passage, where)\n"
-    "  mep.ui_input('Ask about this passage:', '', function(text)\n"
-    "    if text == nil then return end\n"
-    "    if text == '' then text = 'Explain this.' end\n"
-    "    local msgs = mep.ai_agent_messages\n"
-    "    msgs[#msgs + 1] = {role = 'user', content = quoted .. '\\n\\n' .. text,\n"
-    "                       display = mep_pdf_ai_shown(passage, where, text)}\n"
-    "    mep.ai_agent_render()\n"
-    "    mep.ai_agent_turn()\n"
-    "  end)\n"
-    "end\n"
-    // The third route, and the only one that needs no API key at all: hand
-    // the passage to Claude Code running in a pane, which authenticates on
-    // its own. The reply is the agent's, in its own TUI, so there is nothing
-    // to stream back here -- this only types the question in.
+    // --- Hand a highlighted passage to Claude Code ------------------------
+    //
+    // The route that needs no API key at all: the agent authenticates on its
+    // own and keeps its own history across restarts, which is why it is now
+    // the only conversational route (the API-backed `A`/:MepPdfDiscuss was
+    // removed -- same billing as K, but no history and a cramped sidebar).
+    // The reply is the agent's, in its own TUI, so there is nothing to
+    // stream back here -- this only types the question in.
+    //
+    // Deliberately NOT PDF-specific any more, despite living in this chunk:
+    // mep.claude_send takes any passage with any provenance string, so a
+    // Visual-mode selection in an ordinary text buffer becomes a prompt by
+    // exactly the same path a highlighted PDF passage does. That symmetry is
+    // the point -- one key, `C`, whatever the pane is showing.
     //
     // A terminal is fed one line: Claude Code's prompt treats a newline as
     // submit, so a passage pasted with its line breaks would send the first
@@ -30649,7 +30766,10 @@ const char *kBuiltinPdfAi =
     "  end\n"
     "  return nil\n"
     "end\n"
-    "function mep_pdf_ai_claude(passage, where)\n"
+    // mep.claude_send(passage, where): the general entry point. `where` is
+    // whatever provenance string the caller wants quoted ("paper.pdf, page
+    // 3", "editor.cpp:40-58"); empty is fine.
+    "function mep.claude_send(passage, where)\n"
     "  if passage == nil or passage == '' then return end\n"
     "  local text = mep_pdf_ai_one_line(\n"
     "    'From ' .. ((where and where ~= '') and where or 'a PDF') .. ': \"' .. passage .. '\"  -- explain this') .. '\\r'\n"
@@ -30668,9 +30788,51 @@ const char *kBuiltinPdfAi =
     "    mep.notify('Starting Claude Code; sending the passage when it is ready')\n"
     "  end\n"
     "end\n"
-    // Ex-commands for the same three things, so they are reachable by
-    // name and from a plain PDF pane after a mouse drag, without entering
-    // annotate mode first.
+    // What the PDF pane's `C` key calls: Editor::PdfAskAboutSelection hands
+    // off by this global's name, so it stays, forwarding to the general one.
+    "function mep_pdf_ai_claude(passage, where) mep.claude_send(passage, where) end\n"
+
+    // The same thing for ordinary text: highlight a run in Visual mode and
+    // it becomes the agent's prompt, with no copying, pasting or retyping.
+    // Quoted with its file and line range so the agent can go and look at
+    // the rest, which a bare paste would not let it do.
+    // Deliberately a KEY, with no ex-command twin. An ex-command cannot see
+    // a Visual selection here: typing ':' leaves Visual mode and the
+    // selection is gone before the command runs. vim's usual answer is
+    // `gv`, and mep does track a last-visual (Editor::has_last_visual_),
+    // but `normal gv` does not restore it through this path -- measured,
+    // not assumed. A command that can never find a selection is worse than
+    // no command, so there isn't one; bind this function yourself if you
+    // want it on a different key.
+    "function mep.claude_send_selection()\n"
+    "  local sel = mep.visual_selection()\n"
+    "  if sel == nil or sel == '' then\n"
+    "    mep.notify('Nothing highlighted -- select in Visual mode, then C', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local where = ''\n"
+    "  local name = mep.filename() or ''\n"
+    "  if name ~= '' then where = name:match('([^/]+)$') or name end\n"
+    "  local r = mep.visual_range()\n"
+    "  if r then\n"
+    "    local lines = (r.start_row == r.end_row) and (':' .. r.start_row)\n"
+    "      or (':' .. r.start_row .. '-' .. r.end_row)\n"
+    "    where = (where ~= '') and (where .. lines) or ('lines ' .. r.start_row .. '-' .. r.end_row)\n"
+    "  end\n"
+    // Leave Visual mode first: the pane is about to lose focus to the
+    // terminal, and a selection left live there would still be highlighted
+    // when you came back.
+    "  mep.enter_normal()\n"
+    "  mep.claude_send(sel, where)\n"
+    "end\n"
+    // `C` in Visual mode, the same key the PDF pane uses, so the gesture is
+    // one thing to learn rather than two. Free in Visual mode (DispatchVisual
+    // Key has no case for it; it falls through to TryLuaMapping).
+    "mep.map('v', 'C', mep.claude_send_selection, {desc = 'Claude Code: send selection'})\n"
+
+    // Ex-commands for the PDF routes, so they are reachable by name and
+    // from a plain PDF pane after a mouse drag, without entering annotate
+    // mode first.
     "local function mep_pdf_ai_selection()\n"
     "  local ok, sel = pcall(mep.pdf_selection)\n"
     "  if not ok or not sel then\n"
@@ -30683,16 +30845,15 @@ const char *kBuiltinPdfAi =
     "  if sel.page and sel.page > 0 then\n"
     "    where = (where ~= '' and (where .. ', ') or '') .. 'page ' .. tostring(sel.page)\n"
     "  end\n"
-    "  return sel.text, where\n"
+    // The page comes back too, so these commands quote background from the
+    // passage's own page just as the K/A/C keys do -- not from whichever
+    // page the viewer has scrolled to.
+    "  return sel.text, where, sel.page\n"
     "end\n"
     "mep.command('MepPdfYank', function() mep.pdf_yank() end)\n"
     "mep.command('MepPdfAsk', function()\n"
-    "  local text, where = mep_pdf_ai_selection()\n"
-    "  if text then mep_pdf_ai_popup(text, where) end\n"
-    "end)\n"
-    "mep.command('MepPdfDiscuss', function()\n"
-    "  local text, where = mep_pdf_ai_selection()\n"
-    "  if text then mep_pdf_ai_discuss(text, where) end\n"
+    "  local text, where, page = mep_pdf_ai_selection()\n"
+    "  if text then mep_pdf_ai_popup(text, where, page) end\n"
     "end)\n"
     "mep.command('MepPdfClaude', function()\n"
     "  local text, where = mep_pdf_ai_selection()\n"
@@ -33892,14 +34053,49 @@ const char *kBuiltinPickerSources =
     // (worktree_dir, restore_workspaces, restore_layouts, workspace_git_dirty). Assignments
     // are forwarded to the C++ side immediately so init.lua's
     // `mep.opt.worktree_dir = '...'` takes effect for the very next :wsnew.
+    //
+    // THE VALUES LIVE IN A SHADOW TABLE, NOT IN mep.opt ITSELF, and that is
+    // the whole point. The first version of this did `rawset(t, k, v)` inside
+    // __newindex -- which made the key *present* on mep.opt, and Lua only
+    // calls __newindex for an ABSENT key. So the forward to C++ fired exactly
+    // once per key, on the first assignment ever, and every later assignment
+    // silently updated the Lua table while the C++ side kept its old value.
+    // init.lua assigns each option once, so this never showed; the Settings
+    // panel toggling restore_layouts twice in one session is what finds it.
+    // Keeping mep.opt permanently empty and answering reads from `store`
+    // through __index means the hook keeps firing for every write, forever.
+    //
+    // Carrying the pre-existing contents over matters: the kBuiltin* chunks
+    // that run before this one have already written their own defaults into
+    // mep.opt (the `mep.opt.X = mep.opt.X or default` idiom, 12 sites), and
+    // those must survive and stay readable.
+    "local mep_opt_store = {}\n"
     "mep.opt = mep.opt or {}\n"
-    "setmetatable(mep.opt, {__newindex = function(t, k, v)\n"
-    "  rawset(t, k, v)\n"
+    "for k, v in pairs(mep.opt) do mep_opt_store[k] = v end\n"
+    "for k in pairs(mep_opt_store) do mep.opt[k] = nil end\n"
+    "local function mep_opt_forward(k, v)\n"
     "  if k == 'worktree_dir' then mep.workspace_set_worktree_dir(v or '')\n"
     "  elseif k == 'restore_workspaces' then mep.workspace_set_restore(v ~= false)\n"
     "  elseif k == 'restore_layouts' then mep.workspace_set_restore_layouts(v and true or false)\n"
     "  end\n"
-    "end})\n"
+    "end\n"
+    "setmetatable(mep.opt, {\n"
+    "  __index = function(_, k) return mep_opt_store[k] end,\n"
+    "  __newindex = function(_, k, v)\n"
+    "    mep_opt_store[k] = v\n"
+    "    mep_opt_forward(k, v)\n"
+    "  end,\n"
+    // pairs()/next() over mep.opt must still see every option -- the run
+    // button iterates run_button_defaults, the runners iterate runner_order,
+    // and a settings panel wants to enumerate what is set. With the real
+    // values in the shadow table, an unaided next() would report nothing.
+    "  __pairs = function() return next, mep_opt_store, nil end,\n"
+    "})\n"
+    // Re-forward whatever the earlier chunks had already set, since those
+    // writes happened before this metatable existed and so never reached C++.
+    "for _, k in ipairs({'worktree_dir', 'restore_workspaces', 'restore_layouts'}) do\n"
+    "  if mep_opt_store[k] ~= nil then mep_opt_forward(k, mep_opt_store[k]) end\n"
+    "end\n"
     "mep.command('MepWorkspaces', mep.workspaces)\n"
     "mep.leader_map('ww', 'Workspaces', mep.workspaces)\n"
     "mep.leader_map('wn', 'New workspace', mep.workspace_new_prompt)\n"
@@ -33961,6 +34157,245 @@ void ShowOverlay(const std::string &text) {
  * @brief (Re)builds the top-level menu bar structure (g_menus) with its File/Edit/Window/Help
  * menus and their item actions.
  */
+const char *kBuiltinSettings =
+    "-- mep's Settings panel: a typed, browsable view of the preferences most\n"
+    "-- people actually want to change, which persists what you pick.\n"
+    "--\n"
+    "-- Two stores, on purpose. init.lua is imperative Lua -- it can stat files\n"
+    "-- and set options conditionally -- so a GUI must never rewrite it. The\n"
+    "-- panel writes a separate machine-owned settings.json (mep.settings_save)\n"
+    "-- that is re-applied on the next launch AFTER init.lua, so a value you\n"
+    "-- just picked here always wins. Where init.lua also sets an option, the\n"
+    "-- row says so rather than shadowing it silently.\n"
+    "--\n"
+    "-- The widget itself is the one org blocks use for their header arguments\n"
+    "-- (mep.settings_open -> Editor::BeginSettingsPanel): typed rows, inline\n"
+    "-- dropdowns, stepped numbers, text fields, a hint line per row.\n"
+    "\n"
+    "-- \"Always send the page\" is expressed as a threshold far above any real\n"
+    "-- passage length, because that option is a \"shorter than N\" comparison.\n"
+    "local MEP_PDF_CTX_ALWAYS = 1000000\n"
+    "local MEP_PDF_CTX_AUTO = 40\n"
+    "\n"
+    "local MEP_ON_OFF = {'on', 'off'}\n"
+    "\n"
+    "-- argv-valued options (a command plus its flags) are shown and typed as\n"
+    "-- one space-separated string; mep itself wants a list.\n"
+    "local function mep_settings_argv_get(t)\n"
+    "  if type(t) ~= 'table' then return '' end\n"
+    "  return table.concat(t, ' ')\n"
+    "end\n"
+    "local function mep_settings_argv_set(s)\n"
+    "  if s == nil or s == '' then return nil end\n"
+    "  local out = {}\n"
+    "  for word in s:gmatch('%S+') do out[#out + 1] = word end\n"
+    "  if #out == 0 then return nil end\n"
+    "  return out\n"
+    "end\n"
+    "\n"
+    "local function mep_settings_bool_get(v)\n"
+    "  if v == nil then return '' end\n"
+    "  return v and 'on' or 'off'\n"
+    "end\n"
+    "\n"
+    "-- One entry per row. `get` returns the live value as the string the popup\n"
+    "-- shows ('' = not set, drawn as \"--\"); `set` applies a committed string.\n"
+    "mep.settings_schema = {\n"
+    "  -- --- AI ---------------------------------------------------------------\n"
+    "  -- First, because it governs every row under it: off means nothing here\n"
+    "  -- can bill you, and the rows below become inert rather than wrong.\n"
+    "  {section = 'AI', key = 'ai_http_enabled', label = 'Use the API at all', kind = 'choice',\n"
+    "   choices = MEP_ON_OFF,\n"
+    "   hint = 'Off: no paid calls. C still sends to Claude Code.',\n"
+    "   get = function() return (mep.ai_http_enabled == false) and 'off' or 'on' end,\n"
+    "   set = function(v) if v ~= '' then mep.ai_http_enabled = (v == 'on') end end},\n"
+    "\n"
+    "  {section = '', key = 'ai_provider', label = 'API provider', kind = 'choice',\n"
+    "   choices = {'anthropic', 'openai'},\n"
+    "   hint = 'Which API K and :MepAiSend call.',\n"
+    "   get = function() return mep.ai_provider or '' end,\n"
+    "   set = function(v) mep.ai_provider = (v ~= '' and v) or nil end},\n"
+    "\n"
+    "  {section = '', key = 'ai_anthropic_model', label = 'Anthropic model', kind = 'text',\n"
+    "   choices = {'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'},\n"
+    "   hint = 'Used when the provider is anthropic.',\n"
+    "   get = function() return mep.ai_anthropic_model or '' end,\n"
+    "   set = function(v) mep.ai_anthropic_model = (v ~= '' and v) or nil end},\n"
+    "\n"
+    "  {section = '', key = 'ai_model', label = 'OpenAI model', kind = 'text',\n"
+    "   hint = 'Used when the provider is openai.',\n"
+    "   get = function() return mep.ai_model or '' end,\n"
+    "   set = function(v) mep.ai_model = (v ~= '' and v) or nil end},\n"
+    "\n"
+    "  {section = '', key = 'ai_base_url', label = 'OpenAI base URL', kind = 'text',\n"
+    "   hint = 'Point at a local server for your own model.',\n"
+    "   get = function() return mep.ai_base_url or '' end,\n"
+    "   set = function(v) mep.ai_base_url = (v ~= '' and v) or nil end},\n"
+    "\n"
+    "  {section = '', key = 'ai_api_key_cmd', label = 'API key command', kind = 'text',\n"
+    "   hint = 'Prints your key. <leader>ak changes it quickly.',\n"
+    "   get = function() return mep_settings_argv_get(mep.ai_api_key_cmd) end,\n"
+    "   set = function(v) mep.ai_api_key_cmd = mep_settings_argv_set(v) end},\n"
+    "\n"
+    "  {section = '', key = 'ai_terminal_cmd', label = 'Agent in a pane', kind = 'text',\n"
+    "   choices = {'claude', 'codex'},\n"
+    "   hint = 'The CLI agent :aiterminal runs. Codex has no API.',\n"
+    "   get = function() return mep_settings_argv_get(mep.opt.ai_terminal_cmd) end,\n"
+    "   set = function(v) mep.opt.ai_terminal_cmd = mep_settings_argv_set(v) end},\n"
+    "\n"
+    "  -- --- PDF lookup -------------------------------------------------------\n"
+    "  {section = 'PDF lookup', key = 'pdf_ask_context', label = 'Context sent with a passage', kind = 'choice',\n"
+    "   choices = {'highlight only', 'add page for short selections', 'always add the page'},\n"
+    "   hint = 'The page can crowd out a short passage.',\n"
+    "   get = function()\n"
+    "     local n = mep.pdf_ask_context_under or 0\n"
+    "     if n <= 0 then return 'highlight only' end\n"
+    "     if n >= MEP_PDF_CTX_ALWAYS then return 'always add the page' end\n"
+    "     return 'add page for short selections'\n"
+    "   end,\n"
+    "   set = function(v)\n"
+    "     if v == 'highlight only' then mep.pdf_ask_context_under = 0\n"
+    "     elseif v == 'always add the page' then mep.pdf_ask_context_under = MEP_PDF_CTX_ALWAYS\n"
+    "     elseif v ~= '' then mep.pdf_ask_context_under = MEP_PDF_CTX_AUTO end\n"
+    "   end},\n"
+    "\n"
+    "  -- --- Project layout ---------------------------------------------------\n"
+    "  {section = 'Project layout', key = 'restore_layouts', label = 'Reopen a project with its saved layout',\n"
+    "   kind = 'choice', choices = MEP_ON_OFF,\n"
+    "   hint = 'Off opens tree + readme + terminal. Needs --project.',\n"
+    "   get = function() return mep_settings_bool_get(mep.opt.restore_layouts) end,\n"
+    "   set = function(v) if v ~= '' then mep.opt.restore_layouts = (v == 'on') end end},\n"
+    "\n"
+    "  {section = '', key = 'restore_workspaces', label = 'Reopen a project\\'s workspaces',\n"
+    "   kind = 'choice', choices = MEP_ON_OFF,\n"
+    "   hint = 'The layout row above only applies when this is on.',\n"
+    "   get = function() return mep_settings_bool_get(mep.opt.restore_workspaces) end,\n"
+    "   set = function(v) if v ~= '' then mep.opt.restore_workspaces = (v == 'on') end end},\n"
+    "\n"
+    "  {section = '', key = 'worktree_dir', label = 'Worktree directory', kind = 'text',\n"
+    "   hint = 'Where :wsnew puts worktrees. Empty = beside the repo.',\n"
+    "   get = function() return mep.opt.worktree_dir or '' end,\n"
+    "   set = function(v) mep.opt.worktree_dir = v end},\n"
+    "\n"
+    "  -- --- Appearance -------------------------------------------------------\n"
+    "  {section = 'Appearance', key = 'colorscheme', label = 'Colour scheme', kind = 'choice',\n"
+    "   choices = mep.theme_names and mep.theme_names() or {},\n"
+    "   hint = 'Set here it is remembered across restarts.',\n"
+    "   get = function() return (mep.current_theme and mep.current_theme()) or '' end,\n"
+    "   set = function(v) if v ~= '' then mep.colorscheme(v) end end},\n"
+    "\n"
+    "  {section = '', key = 'set_number', label = 'Line numbers', kind = 'choice', choices = MEP_ON_OFF,\n"
+    "   hint = ':set number',\n"
+    "   get = function() return mep.set_option('number') or '' end,\n"
+    "   set = function(v) if v ~= '' then mep.cmd(v == 'on' and 'set number' or 'set nonumber') end end},\n"
+    "\n"
+    "  {section = '', key = 'set_relativenumber', label = 'Relative line numbers', kind = 'choice',\n"
+    "   choices = MEP_ON_OFF, hint = ':set relativenumber',\n"
+    "   get = function() return mep.set_option('relativenumber') or '' end,\n"
+    "   set = function(v) if v ~= '' then mep.cmd(v == 'on' and 'set relativenumber' or 'set norelativenumber') end end},\n"
+    "\n"
+    "  {section = '', key = 'set_cursorline', label = 'Highlight the cursor line', kind = 'choice',\n"
+    "   choices = MEP_ON_OFF, hint = ':set cursorline',\n"
+    "   get = function() return mep.set_option('cursorline') or '' end,\n"
+    "   set = function(v) if v ~= '' then mep.cmd(v == 'on' and 'set cursorline' or 'set nocursorline') end end},\n"
+    "\n"
+    "  {section = '', key = 'set_wrap', label = 'Soft-wrap long lines', kind = 'choice', choices = MEP_ON_OFF,\n"
+    "   hint = ':set wrap',\n"
+    "   get = function() return mep.set_option('wrap') or '' end,\n"
+    "   set = function(v) if v ~= '' then mep.cmd(v == 'on' and 'set wrap' or 'set nowrap') end end},\n"
+    "\n"
+    "  {section = '', key = 'set_textwidth', label = 'Text width', kind = 'number',\n"
+    "   min = 0, max = 500, step = 1, default = 80,\n"
+    "   hint = ':set textwidth -- where prose and tables wrap.',\n"
+    "   get = function() return mep.set_option('textwidth') or '' end,\n"
+    "   set = function(v) if v ~= '' then mep.cmd('set textwidth=' .. v) end end},\n"
+    "\n"
+    "  -- --- Git --------------------------------------------------------------\n"
+    "  {section = 'Git', key = 'git_gutter_auto', label = 'Git change marks in the gutter', kind = 'choice',\n"
+    "   choices = MEP_ON_OFF, hint = 'Change marks beside the line numbers.',\n"
+    "   get = function() return mep_settings_bool_get(mep.git_gutter_auto) end,\n"
+    "   set = function(v) if v ~= '' then mep.git_gutter_enable(v == 'on', true) end end},\n"
+    "}\n"
+    "\n"
+    "local function mep_settings_by_key(key)\n"
+    "  for _, s in ipairs(mep.settings_schema) do\n"
+    "    if s.key == key then return s end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "\n"
+    "-- Which options init.lua set for itself. Captured by comparing a snapshot\n"
+    "-- taken before the config ran with the values after it: anything that\n"
+    "-- moved was the config's doing. Those rows are marked, because the panel's\n"
+    "-- value wins at startup and silently overriding someone's hand-written\n"
+    "-- config would be the wrong kind of surprise.\n"
+    "local mep_settings_pre_config = nil\n"
+    "mep.settings_config_owned = {}\n"
+    "\n"
+    "function mep.settings_before_config()\n"
+    "  mep_settings_pre_config = {}\n"
+    "  for _, s in ipairs(mep.settings_schema) do\n"
+    "    local ok, v = pcall(s.get)\n"
+    "    mep_settings_pre_config[s.key] = ok and v or nil\n"
+    "  end\n"
+    "end\n"
+    "\n"
+    "function mep.settings_after_config()\n"
+    "  if mep_settings_pre_config then\n"
+    "    for _, s in ipairs(mep.settings_schema) do\n"
+    "      local ok, v = pcall(s.get)\n"
+    "      if ok and v ~= mep_settings_pre_config[s.key] then\n"
+    "        mep.settings_config_owned[s.key] = true\n"
+    "      end\n"
+    "    end\n"
+    "    mep_settings_pre_config = nil\n"
+    "  end\n"
+    "  -- Then the panel's own saved values, which take precedence by design.\n"
+    "  local store = mep.settings_load()\n"
+    "  for _, s in ipairs(mep.settings_schema) do\n"
+    "    local v = store[s.key]\n"
+    "    if v ~= nil then pcall(s.set, tostring(v)) end\n"
+    "  end\n"
+    "end\n"
+    "\n"
+    "-- Apply and persist one setting by key -- the same thing committing a row\n"
+    "-- in the panel does, exposed so shortcuts outside it (<leader>ak for the\n"
+    "-- key command, <leader>ax for the master switch) stay in step with the\n"
+    "-- panel and with settings.json instead of each writing their own.\n"
+    "function mep.settings_set(key, value)\n"
+    "  local s = mep_settings_by_key(key)\n"
+    "  if not s then return false end\n"
+    "  local ok = pcall(s.set, value)\n"
+    "  if not ok then return false end\n"
+    "  local store = mep.settings_load()\n"
+    "  store[key] = (value ~= '') and value or nil\n"
+    "  return mep.settings_save(store)\n"
+    "end\n"
+    "\n"
+    "function mep.settings_panel()\n"
+    "  local store = mep.settings_load()\n"
+    "  local specs = {}\n"
+    "  for _, s in ipairs(mep.settings_schema) do\n"
+    "    local ok, value = pcall(s.get)\n"
+    "    local hint = s.hint or ''\n"
+    "    if mep.settings_config_owned[s.key] then\n"
+    "      hint = hint .. '  [also set in init.lua; this wins]'\n"
+    "    end\n"
+    "    specs[#specs + 1] = {\n"
+    "      key = s.key, section = s.section, label = s.label, kind = s.kind,\n"
+    "      choices = s.choices, min = s.min, max = s.max, step = s.step, default = s.default,\n"
+    "      hint = hint, value = (ok and value) or '',\n"
+    "    }\n"
+    "  end\n"
+    "  mep.settings_open(specs, function(key, value)\n"
+    "    if not mep.settings_set(key, value) then\n"
+    "      mep.notify('Could not apply or save ' .. key .. ' (' .. mep.settings_path() .. ')', 'error')\n"
+    "    end\n"
+    "  end, 'Settings')\n"
+    "end\n"
+    "\n"
+    "mep.command('MepSettings', mep.settings_panel)\n"
+    "mep.leader_map('hS', 'Settings', mep.settings_panel, 0xf013)\n";
 void BuildMenus() {
     g_menus = {
         {"File",
@@ -33993,6 +34428,13 @@ void BuildMenus() {
              {"Close Workspace", [] { g_editor.RunCommand("wsdelete"); }},   // runs ":wsdelete"
              {"Next Workspace", [] { g_editor.RunCommand("wsnext"); }},      // runs ":wsnext"
              {"Previous Workspace", [] { g_editor.RunCommand("wsprevious"); }},  // runs ":wsprevious"
+         }},
+        {"Settings",
+         {
+             // The typed preferences popup (:MepSettings / <leader>hS).
+             // Also reachable from the gear in the tab bar's panel strip,
+             // which matters because this menu bar is hidden by default.
+             {"Settings...", [] { g_editor.RunCommand("MepSettings"); }},
          }},
         {"Help",
          {
@@ -57343,7 +57785,8 @@ void DrawEditor() {
             // editor.cpp) in place of the old plain "-- NORMAL --" text, same
             // filled-chip idiom as the active-todo/collab-peer chips just
             // below and above.
-            std::string mode_name = ModeName(g_editor.CurrentMode(), g_editor.IsReplaceMode());
+            std::string mode_name =
+                ModeName(g_editor.CurrentMode(), g_editor.IsReplaceMode(), g_editor.InSettingsPanel());
             std::string mode_group;
             if (mode_name == "NORMAL") mode_group = "ModeNormal";
             else if (mode_name == "INSERT" || mode_name == "REPLACE") mode_group = mode_name == "REPLACE" ? "ModeReplace" : "ModeInsert";
@@ -60413,6 +60856,7 @@ int main(int argc, char **argv) {
     // Loaded last because Help overrides '/' only for an active help page;
     // every other buffer still routes it to the normal buffer search.
     lua->DoString(kBuiltinHelp);
+    lua->DoString(kBuiltinSettings);
     lua->DoString(kBuiltinWhichKeyGroups);
     // Deliberately separate from kBuiltinHelp: a failure in optional Help
     // UI setup must not make its documented leader binding disappear.
@@ -60470,9 +60914,20 @@ int main(int argc, char **argv) {
         if (f) {
             std::fclose(f);
             // NOLINTEND(cppcoreguidelines-owning-memory)
+            // Snapshot every option the Settings panel manages, so that
+            // comparing afterwards says exactly which ones init.lua set
+            // for itself. Those rows get flagged in the panel rather than
+            // being silently overridden by it.
+            lua->DoString("if mep.settings_before_config then mep.settings_before_config() end");
             lua->DoFile(config_path);
         }
     }
+    // The Settings panel's saved values, applied AFTER init.lua on purpose:
+    // a value just picked in the panel has to win over a stale assignment in
+    // the config, or clicking it would appear to do nothing. This also
+    // records which options init.lua owns (see the snapshot above). Runs
+    // whether or not a config file existed.
+    lua->DoString("if mep.settings_after_config then mep.settings_after_config() end");
     // WORKSPACES_PLAN.md Phase 6/10: after init.lua so mep.opt.worktree_dir
     // and mep.opt.restore_workspaces are already known. Saved state is
     // applied first (synchronously, so the bar is right from the first

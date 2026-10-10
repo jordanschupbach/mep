@@ -46,7 +46,6 @@ So a quoted passage reads as prose rather than as /investiga- tor/.
 | =v=             | start or stop a selection               |
 | =y=             | copy the selection                      |
 | =K=             | ask about the selection                 |
-| =A=             | discuss the selection                   |
 | =Esc=           | leave                                   |
 
 The caret moves down the page, not through the file: a content stream
@@ -71,33 +70,74 @@ Select a passage and put it to a model, without leaving the page.
 | Key / command    | Does                                          |
 |------------------+-----------------------------------------------|
 | =K=              | a short answer in a popup                     |
-| =A=              | open a discussion in the AI Agent sidebar     |
 | =C=              | hand it to Claude Code in a pane              |
 | =o= over a popup | move that answer into the sidebar             |
 | =:MepPdfYank=    | copy the selection                            |
 | =:MepPdfAsk=     | the popup, by name                            |
-| =:MepPdfDiscuss= | the sidebar, by name                          |
 | =:MepPdfClaude=  | Claude Code, by name                          |
 
 =K= asks nothing first: it sends a fixed prompt -- keep it short, explain
 the concept in simpler terms or define it -- and shows the reply in a box
-over the page. That is the whole interaction. When the selection is short,
-a lone symbol or a bare term, the rest of the page goes along as
-background so the model has something to go on.
+over the page. That is the whole interaction.
 
-When the short answer is not enough, =o= over the box moves the passage
-and the reply into the [[file:ai-agents.html][AI Agent]] sidebar and leaves you in a follow-up
-prompt, carrying on rather than starting over. =A= goes straight there,
-asking for your question first.
+When the selection is *very* short -- under =mep.pdf_ask_context_under=
+characters, 40 by default, so a lone symbol or a bare term -- the rest of
+the page goes along as background so the model has something to go on.
+Above that a quoted passage stands on its own. Raise the threshold if you
+want more context, or set it to =0= to never send the page:
 
-=C= is the one route that needs no API key. It types the passage into
-[[file:ai-terminal.html][Claude Code]] running in a pane -- which brings its own credentials --
-opening one first if none is running. The reply is the agent's, in its
-own pane, so nothing streams back into the page.
+#+begin_src lua
+mep.pdf_ask_context_under = 0
+#+end_src
+
+A word of warning about raising it: the page is quoted as background only,
+and the prompt says so, but a one-line passage followed by a few thousand
+characters of page does not reliably hold the model's attention -- you get
+a summary of the page instead of an answer about the passage. That is why
+the default is as low as it is.
+
+When the short answer is not enough, =o= over the box hands the same
+passage to [[file:ai-terminal.html][Claude Code]], carrying on there rather than starting over.
+
+=C= goes straight there, and is the route that needs no API key: it types
+the passage into Claude Code running in a pane -- which brings its own
+credentials and keeps its own history across restarts -- opening one
+first if none is running. The reply is the agent's, in its own pane, so
+nothing streams back into the page.
+
+=C= is the same key, and the same gesture, as highlighting a run of
+ordinary text and pressing =C= in Visual mode. See [[file:ai-terminal.html][Claude Code in a pane]].
 
 All of them read the selection the keyboard made with =v= or the one a
-mouse drag left behind. The model, the key and everything else come from
-[[file:ai-commands.html][the AI settings]]; the prompt =K= sends is =mep.pdf_ask_prompt=.
+mouse drag left behind -- in any PDF pane, not only in annotate mode.
+
+With nothing selected they fall back to a highlight, so the obvious reading
+order works: highlight a passage as you read, then ask about it. That
+fallback matters because highlighting a selection consumes it -- =<space>h=
+turns the selection into an annotation and clears it -- so by the time you
+press =K= there is no selection left, only the highlight.
+
+Three sources are tried, in order of how specifically you pointed at the
+passage:
+
+| Order | Passage used                                        |
+|-------+-----------------------------------------------------|
+|     1 | the selection, if there is one                      |
+|     2 | the highlight under the mouse, else under the caret |
+|     3 | the newest highlight on the page you are looking at |
+
+The third exists because the first two both need a position: a plain PDF
+pane has no caret, and the mouse is usually nowhere near the text. It only
+ever considers the page on screen, so it cannot quote something you cannot
+see. When it is not your selection that was used, mep says which it took.
+
+With none of the three, they say so rather than doing nothing.
+
+How much context goes along with the passage is a setting --
+=<leader>hS=, under *PDF lookup*. See [[file:settings.html][Settings]].
+
+The model, the key and everything else come from [[file:ai-commands.html][the AI settings]]; the
+prompt =K= sends is =mep.pdf_ask_prompt=.
 
 * Accessibility
 

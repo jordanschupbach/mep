@@ -1,0 +1,136 @@
+#+TITLE: Settings
+#+HTML_HEAD: <meta name="help-section" content="Configuration">
+#+HTML_HEAD: <meta name="help-order" content="5">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* A panel for the settings worth changing
+
+Most of mep is configured by writing Lua in =init.lua=. The Settings panel is
+for the preferences you are most likely to want to change, shown with their
+current values so you can see what they are without reading source --
+and remembered, so you set them once.
+
+| Open it with    | Where                                  |
+|-----------------+----------------------------------------|
+| =<leader>hS=    | the keyboard                           |
+| =:MepSettings=  | the command line                       |
+| the gear        | the panel strip, right of the tabs     |
+| *Settings* menu | the menu bar (=<leader>um= shows it)   |
+
+Inside, rows are typed. A dropdown cycles with =Ctrl-N= / =Ctrl-P=, a number
+steps with =j= / =k= once you are in it, and a text field just takes typing:
+
+| Key               | Does                                |
+|-------------------+-------------------------------------|
+| =j= =k=           | move between rows                   |
+| =Enter= =i=       | edit the focused row                |
+| =Ctrl-N= =Ctrl-P= | change the focused row's value      |
+| =d=               | clear it, back to mep's own default |
+| =Enter= =Esc=     | done editing, keeping what is there |
+| =q=               | close                               |
+
+The line under the list explains whatever row you are on. A value shown as
+=--= is one you have not set, so mep's own default applies.
+
+* What it does not do
+
+*It never writes =init.lua=.* Your config is a Lua program -- it can check
+whether a file exists and set an option only then -- so a panel that rewrote
+it would sooner or later mangle something that mattered. Instead the panel
+writes its own file:
+
+| Path                                | Holds                            |
+|-------------------------------------+----------------------------------|
+| =~/.config/mep/init.lua=            | your configuration, hand-written |
+| =$XDG_DATA_HOME/mep/settings.json=  | what you last picked in the panel |
+
+So the two can disagree about the same option, and the rule is: *the panel
+wins.* Its values are applied after =init.lua= has run, because a setting
+you just clicked has to take effect. Where =init.lua= also sets an option,
+that row says so:
+
+#+begin_example
+[also set in init.lua; this wins]
+#+end_example
+
+That is a note, not a problem -- but if you want =init.lua= to be the
+authority for an option, clear the row with =d= and the stored value goes
+away.
+
+Secrets are deliberately not stored. The panel offers *API key command* -- a
+command that prints your key -- rather than the key itself, which mep keeps
+in memory for the session and never writes down.
+
+To change where the key comes from in a hurry, =<leader>ak= (=:MepAiKey=)
+prompts for that command prefilled with the current one, so editing a path
+is a few keystrokes. It also clears the key mep cached for this session --
+without that, the old key would keep being used and the change would look
+like it had silently failed.
+
+* The settings
+
+** AI
+
+*Use the API at all* is the master switch, and it is the first row because
+it governs every other AI row. Turn it off and nothing in mep makes a paid
+call, or even runs your key command.
+
+Rather than simply refusing, most routes then *fall back to Claude Code* --
+the =K= popup, the =:MepAiSend= family, the AI Agent prompt -- sending the
+same passage to a pane instead, and saying so each time. Claude Code needs
+no key and keeps its own history, which is why one route stays open.
+
+Two exceptions refuse instead: =:MepAiReplaceSelection=, whose reply has to
+land back in the buffer (it checks *before* deleting your selection), and
+speech-to-text, which transcribes rather than chats.
+
+=<leader>ax= toggles it without opening this panel.
+
+Two more things are easy to confuse, so they are two separate rows.
+
+*API provider* is what =K= and =:MepAiSend= call over HTTP: =anthropic= or
+=openai=. An OpenAI-compatible server (a local model, say) is =openai= plus
+its own base URL.
+
+*Agent in a pane* is the command =:aiterminal= runs -- =claude= or =codex=.
+This is the only way to use Codex: it has no HTTP API in mep, only a
+terminal agent.
+
+See [[file:ai-commands.html][Ask the model]] and [[file:ai-terminal.html][Claude Code in a pane]].
+
+** PDF lookup
+
+*Context sent with a passage* is what goes to the model alongside the
+passage when you press =K= on a PDF:
+
+| Mode                            | Sends                                      |
+|---------------------------------+--------------------------------------------|
+| highlight only                  | just your passage                          |
+| add page for short selections   | the page too, but only for a bare term     |
+| always add the page             | the page every time                        |
+
+The middle one is the default. Sending the page is useful for a lone symbol
+and counterproductive for a sentence: with a short quote and a whole page
+behind it, the model tends to summarise the page instead of answering about
+the quote. See [[file:pdf.html][PDF]].
+
+** Project layout
+
+*Reopen a project with its saved layout* decides what you get when you open a
+project with =--project=: its saved panes and splits, or the default file
+tree + readme + terminal layout. Off is the default. The layout is saved
+either way -- this only controls whether it is applied -- and it has no
+effect on a bare =mep=, which never restores a layout at all. See
+[[file:sessions.html][Sessions]].
+
+** Appearance
+
+The colour scheme, line numbers, cursor line, soft wrap and text width. The
+colour scheme is worth noting: =:colorscheme= alone lasts the session, but
+set here it is remembered.
+
+* See also
+
+- [[file:config.html][Configuring mep]] -- the Lua config, and the two option families.
+- [[file:options.html][Options]] -- every option there is, with defaults.
+- [[file:sessions.html][Sessions]] -- what is restored when you reopen a project.

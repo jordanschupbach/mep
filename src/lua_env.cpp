@@ -10140,6 +10140,235 @@ int l_run_config_save(lua_State *L) {
     return 0;
 }
 
+// --- The Settings panel's store -------------------------------------------
+//
+// Everything the Settings panel changes lands here, in one JSON file of
+// {option name: value}, and is re-applied on the next launch *after*
+// init.lua has run (see main.cpp's startup sequence) so a value the user
+// just clicked always wins over a stale assignment in their config.
+//
+// The panel deliberately does NOT write init.lua. A mep config is
+// imperative Lua -- it can stat files and set options conditionally -- so
+// a GUI that rewrote it would have to edit assignments inside arbitrary
+// control flow, and would sooner or later mangle a working config. Two
+// stores with a documented precedence is the honest arrangement: init.lua
+// owns logic, this file owns "what the user last picked in the panel".
+//
+// Same opaque-table round trip as the Run button config above (LuaToJson /
+// PushJson), so the panel's schema can grow a row without any C++ change.
+#if !defined(__EMSCRIPTEN__)
+namespace {
+/**
+ * @brief Returns the on-disk path of the Settings panel's persisted values.
+ * @return Path to settings.json under the mep data directory.
+ */
+std::string SettingsStorePath() { return MepDataDir() + "/settings.json"; }
+}  // namespace
+#endif
+
+/**
+ * @brief Implements mep.settings_load(): reads the Settings panel's persisted values.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the {option: value} table, empty when nothing is persisted or the
+ *         file is unreadable/corrupt -- a bad file degrades to defaults rather than failing startup).
+ */
+int l_settings_load(lua_State *L) {
+#if !defined(__EMSCRIPTEN__)
+    Json doc;
+    if (ReadJsonFile(SettingsStorePath(), &doc) && doc.is_object()) {
+        const Json &values = doc.get("values");
+        if (values.is_object()) {
+            PushJson(L, values);
+            return 1;
+        }
+    }
+#endif
+    lua_newtable(L);
+    return 1;
+}
+
+/**
+ * @brief Implements mep.settings_save(values): persists the Settings panel's values (a no-op under wasm).
+ * @param L Lua state; arg 1 is the {option: value} table.
+ * @return Number of values pushed (1: true on success, false when the write failed).
+ *
+ * Atomic (WriteJsonFileAtomic): this one file holds every preference the user has set, so a crash
+ * part-way through rewriting it must not be able to empty it. Writes even under `--no-session`,
+ * which suppresses *session* state (window geometry, layouts) -- an explicit click in a Settings
+ * panel is not session state, and silently discarding it would be the wrong surprise.
+ */
+int l_settings_save(lua_State *L) {
+#if !defined(__EMSCRIPTEN__)
+    luaL_checktype(L, 1, LUA_TTABLE);
+    Json doc = Json::Object();
+    doc["values"] = LuaToJson(L, 1);
+    lua_pushboolean(L, WriteJsonFileAtomic(SettingsStorePath(), doc) ? 1 : 0);
+#else
+    lua_pushboolean(L, 0);
+#endif
+    return 1;
+}
+
+// mep.set_option(name) -> string: the CURRENT value of a vim-style `:set`
+// option, as the string the Settings popup shows and sends back.
+//
+// `:set` options are a separate family from mep.opt (they are plain C++
+// fields on Editor, written only by the `:set` ex-command), and until now
+// nothing could read one back from Lua -- so a settings panel could offer
+// them but not show what they were. One lookup covers the family rather
+// than a binding per option; applying a value is still just
+// mep.cmd('set ...'), which already takes effect immediately.
+/**
+ * @brief Implements mep.set_option(name): reads a `:set` option's current value as a string.
+ * @param L Lua state; arg 1 is the option name ("number", "wrap", "textwidth", ...).
+ * @return Number of values pushed (1: "on"/"off" for a boolean, the number as a string for a numeric
+ *         one, or nil for an unknown name).
+ */
+int l_set_option(lua_State *L) {
+    const std::string name = luaL_checkstring(L, 1);
+    Editor *ed = GetEditor(L);
+    /** @brief Pushes a boolean `:set` value in the popup's own on/off spelling. */
+    auto push_bool = [L](bool v) { lua_pushstring(L, v ? "on" : "off"); };
+    if (name == "number" || name == "nu") {
+        push_bool(ed->ShowLineNumbers());
+    } else if (name == "relativenumber" || name == "rnu") {
+        push_bool(ed->ShowRelativeNumbers());
+    } else if (name == "cursorline" || name == "cul") {
+        push_bool(ed->ShowCursorLine());
+    } else if (name == "wrap") {
+        push_bool(ed->Wrap());
+    } else if (name == "textwidth" || name == "tw") {
+        lua_pushstring(L, std::to_string(ed->TextWidth()).c_str());
+    } else {
+        lua_pushnil(L);
+    }
+    return 1;
+}
+
+// mep.settings_open(specs, on_change): opens the typed-settings popup on
+// mep's own preferences. `specs` is an array of row tables:
+//   {key=, label=, kind='choice'|'number'|'text'|'switch', value=,
+//    section=, hint=, choices={...}, min=, max=, step=, default=}
+// `value` is the option's CURRENT value as a string, "" meaning unset (the
+// popup draws that as "--"). on_change(key, value) fires once per
+// committed row -- the Lua side applies and persists it, so nothing about
+// which options exist or how they are stored lives in C++.
+//
+// The widget is the one org blocks use for their header arguments (see
+// Editor::BeginSettingsPanel): dropdowns cycled with Ctrl-N/Ctrl-P,
+// stepped numbers, text fields, section headings and a per-row hint.
+/**
+ * @brief Implements mep.settings_open(specs, on_change): opens the typed-settings popup on mep's preferences.
+ * @param L Lua state; arg 1 the array of row specs, optional arg 2 an on_change(key, value) function.
+ * @return Number of values pushed (0).
+ */
+int l_settings_open(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    int on_change_ref = 0;
+    if (lua_gettop(L) >= 2 && lua_isfunction(L, 2)) {
+        lua_pushvalue(L, 2);
+        on_change_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    std::vector<SettingRow> rows;
+    const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        if (!lua_istable(L, -1)) {
+            lua_pop(L, 1);
+            continue;
+        }
+        SettingRow row;
+
+        /** @brief Reads one string field of the row table being converted, with a fallback. */
+        auto field_str = [&](const char *name, const char *fallback) {
+            lua_getfield(L, -1, name);
+            const char *v = lua_tostring(L, -1);
+            std::string out = v ? std::string(v) : std::string(fallback);
+            lua_pop(L, 1);
+            return out;
+        };
+        /** @brief Reads one number field of the row table being converted, with a fallback. */
+        auto field_num = [&](const char *name, double fallback) {
+            lua_getfield(L, -1, name);
+            const double v = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : fallback;
+            lua_pop(L, 1);
+            return v;
+        };
+
+        row.spec.key = field_str("key", "");
+        if (row.spec.key.empty()) {  // a row with no key has nothing to report on change
+            lua_pop(L, 1);
+            continue;
+        }
+        row.spec.section = field_str("section", "");
+        row.spec.label = field_str("label", row.spec.key.c_str());
+        row.spec.hint = field_str("hint", "");
+        row.value = field_str("value", "");
+
+        const std::string kind = field_str("kind", "text");
+        if (kind == "choice") {
+            row.spec.kind = SettingRowKind::kChoice;
+        } else if (kind == "number") {
+            row.spec.kind = SettingRowKind::kNumber;
+        } else if (kind == "switch") {
+            row.spec.kind = SettingRowKind::kSwitch;
+        } else {
+            row.spec.kind = SettingRowKind::kText;
+        }
+
+        if (row.spec.kind == SettingRowKind::kNumber) {
+            row.spec.min_value = field_num("min", 0.0);
+            row.spec.max_value = field_num("max", 0.0);
+            row.spec.step = field_num("step", 1.0);
+            row.spec.default_value = field_num("default", 0.0);
+        }
+
+        lua_getfield(L, -1, "choices");
+        if (lua_istable(L, -1)) {
+            const lua_Integer cn = static_cast<lua_Integer>(lua_rawlen(L, -1));
+            for (lua_Integer c = 1; c <= cn; c++) {
+                lua_rawgeti(L, -1, c);
+                const char *cv = lua_tostring(L, -1);
+                row.spec.choices.emplace_back(cv ? cv : "");
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        // A choice row's list must start with "" -- the widget uses the
+        // empty first entry as "not set", which is how a setting left to
+        // mep's own default stays distinguishable from one explicitly
+        // pinned to the same value. Added here so every caller does not
+        // have to remember it.
+        if (row.spec.kind == SettingRowKind::kChoice &&
+            (row.spec.choices.empty() || !row.spec.choices.front().empty())) {
+            row.spec.choices.insert(row.spec.choices.begin(), std::string());
+        }
+
+        rows.push_back(std::move(row));
+        lua_pop(L, 1);
+    }
+
+    const std::string title = (lua_gettop(L) >= 3 && lua_isstring(L, 3)) ? lua_tostring(L, 3) : "Settings";
+    GetEditor(L)->BeginSettingsPanel(std::move(rows), title, on_change_ref);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.settings_path(): the store's path, for the panel's own footer and for help text.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the path, or "" under wasm / with no data directory).
+ */
+int l_settings_path(lua_State *L) {
+#if !defined(__EMSCRIPTEN__)
+    const std::string p = SettingsStorePath();
+    lua_pushlstring(L, p.data(), p.size());
+#else
+    lua_pushliteral(L, "");
+#endif
+    return 1;
+}
+
 // --- LSP client (NVIM_PARITY_PLAN.md Part V Phase 20) ----------------------
 //
 // A Content-Length-framed JSON-RPC 2.0 client over Phase 1's Job
@@ -11286,7 +11515,7 @@ int l_pdf_current_page(lua_State *L) {
     return 1;
 }
 
-// mep.pdf_selection() -> {text=, page=, file=} for the focused PDF
+// mep.pdf_selection() -> {text=, page=, file=, source=} for the focused PDF
 // pane's current selection (the keyboard `v` one, else a finished mouse
 // drag), or nil when nothing is selected. `page` is 1-based, the number
 // the pane's own page box counts by. The same text `y` copies and the
@@ -11294,18 +11523,32 @@ int l_pdf_current_page(lua_State *L) {
 // thing with a selection without re-deriving any of it.
 int l_pdf_selection(lua_State *L) {
     Editor *ed = GetEditor(L);
-    const PdfSession *sess = ed->GetPdf(ed->ActivePaneId());
+    // Mutable because the highlight fallback below hit-tests annotations
+    // (Editor::ActiveAnnotTarget).
+    PdfSession *sess = ed->GetPdfMutable(ed->ActivePaneId());
     if (!sess) return luaL_error(L, "not a PDF pane");
-    const std::string text = ed->PdfSelectionText(*sess);
-    if (text.empty()) {
+    // Deliberately PdfAskPassage, not PdfSelectionText: the `K`/`A`/`C`
+    // keys resolve their passage through it, and the :MepPdfAsk/Discuss/
+    // Claude commands reach it through here -- the two surfaces answering
+    // "which passage?" differently is exactly the confusion this feature
+    // has already caused once.
+    std::string text;
+    std::string source;
+    int page = -1;
+    if (!ed->PdfAskPassage(*sess, &text, &page, &source)) {
         lua_pushnil(L);
         return 1;
     }
     lua_newtable(L);
     lua_pushlstring(L, text.data(), text.size());
     lua_setfield(L, -2, "text");
-    lua_pushinteger(L, ed->PdfSelectionPage(*sess) + 1);
+    lua_pushinteger(L, page + 1);
     lua_setfield(L, -2, "page");
+    // Which of the three sources the passage came from ("selection", "the
+    // highlight here", "the newest highlight on this page") -- so a script,
+    // or a transcript, can say what was actually asked about.
+    lua_pushlstring(L, source.data(), source.size());
+    lua_setfield(L, -2, "source");
     const int bid = sess->buffer_id;
     lua_pushstring(L, ed->BufferFilenameForLua(bid).c_str());
     lua_setfield(L, -2, "file");
@@ -14286,6 +14529,11 @@ const luaL_Reg kMepFuncs[] = {
     {"babel_cache_save", l_babel_cache_save},
     {"run_config_load", l_run_config_load},
     {"run_config_save", l_run_config_save},
+    {"settings_open", l_settings_open},
+    {"set_option", l_set_option},
+    {"settings_load", l_settings_load},
+    {"settings_save", l_settings_save},
+    {"settings_path", l_settings_path},
     {"chdir", l_chdir},
     {"getcwd", l_getcwd},
     {"workspace_list", l_workspace_list},
@@ -14612,6 +14860,14 @@ bool LuaEnv::DoFile(const std::string &path) {
 }
 
 void LuaEnv::CallRef(int ref) {
+    // The same guard every CallRefWith* below has, and this one was missing
+    // it. RefField hands back LUA_NOREF (-2) for an absent callback, so a
+    // caller that only checked `ref != 0` -- ActivateSidebarLine did --
+    // reached here with -2, lua_rawgeti pushed nil, and the user got
+    // "Lua error: attempt to call a nil value" for pressing Enter on a
+    // sidebar row that simply has no on_click. Nothing to call is not an
+    // error.
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return;
     lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
     if (lua_pcall(L_, 0, 0, 0) != LUA_OK) {
         const char *msg = lua_tostring(L_, -1);
@@ -14639,6 +14895,35 @@ void LuaEnv::CallRefWithString(int ref, const std::string &arg) {
     lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
     lua_pushlstring(L_, arg.data(), arg.size());
     if (lua_pcall(L_, 1, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+    }
+}
+
+void LuaEnv::CallGlobal3Strings(const char *fn, const std::string &a, const std::string &b,
+                                const std::string &c) {
+    lua_getglobal(L_, fn);
+    if (!lua_isfunction(L_, -1)) {
+        lua_pop(L_, 1);
+        return;
+    }
+    lua_pushlstring(L_, a.data(), a.size());
+    lua_pushlstring(L_, b.data(), b.size());
+    lua_pushlstring(L_, c.data(), c.size());
+    if (lua_pcall(L_, 3, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+    }
+}
+
+void LuaEnv::CallRefWith2Strings(int ref, const std::string &a, const std::string &b) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL) return;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushlstring(L_, a.data(), a.size());
+    lua_pushlstring(L_, b.data(), b.size());
+    if (lua_pcall(L_, 2, 0, 0) != LUA_OK) {
         const char *msg = lua_tostring(L_, -1);
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
         lua_pop(L_, 1);

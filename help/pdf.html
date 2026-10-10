@@ -45,7 +45,6 @@ So a quoted passage reads as prose rather than as <i>investiga- tor</i>.</p>
 <tr><td><code>v</code></td><td>start or stop a selection</td></tr>
 <tr><td><code>y</code></td><td>copy the selection</td></tr>
 <tr><td><code>K</code></td><td>ask about the selection</td></tr>
-<tr><td><code>A</code></td><td>discuss the selection</td></tr>
 <tr><td><code>Esc</code></td><td>leave</td></tr>
 </table>
 <p>The caret moves down the page, not through the file: a content stream
@@ -65,30 +64,59 @@ pick the highlight colour, <code>q</code> leaves.</p>
 <table>
 <tr><th>Key / command</th><th>Does</th></tr>
 <tr><td><code>K</code></td><td>a short answer in a popup</td></tr>
-<tr><td><code>A</code></td><td>open a discussion in the AI Agent sidebar</td></tr>
 <tr><td><code>C</code></td><td>hand it to Claude Code in a pane</td></tr>
 <tr><td><code>o</code> over a popup</td><td>move that answer into the sidebar</td></tr>
 <tr><td><code>:MepPdfYank</code></td><td>copy the selection</td></tr>
 <tr><td><code>:MepPdfAsk</code></td><td>the popup, by name</td></tr>
-<tr><td><code>:MepPdfDiscuss</code></td><td>the sidebar, by name</td></tr>
 <tr><td><code>:MepPdfClaude</code></td><td>Claude Code, by name</td></tr>
 </table>
 <p><code>K</code> asks nothing first: it sends a fixed prompt -- keep it short, explain
 the concept in simpler terms or define it -- and shows the reply in a box
-over the page. That is the whole interaction. When the selection is short,
-a lone symbol or a bare term, the rest of the page goes along as
-background so the model has something to go on.</p>
-<p>When the short answer is not enough, <code>o</code> over the box moves the passage
-and the reply into the <a href="ai-agents.html">AI Agent</a> sidebar and leaves you in a follow-up
-prompt, carrying on rather than starting over. <code>A</code> goes straight there,
-asking for your question first.</p>
-<p><code>C</code> is the one route that needs no API key. It types the passage into
-<a href="ai-terminal.html">Claude Code</a> running in a pane -- which brings its own credentials --
-opening one first if none is running. The reply is the agent's, in its
-own pane, so nothing streams back into the page.</p>
+over the page. That is the whole interaction.</p>
+<p>When the selection is <b>very</b> short -- under <code>mep.pdf_ask_context_under</code>
+characters, 40 by default, so a lone symbol or a bare term -- the rest of
+the page goes along as background so the model has something to go on.
+Above that a quoted passage stands on its own. Raise the threshold if you
+want more context, or set it to <code>0</code> to never send the page:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.pdf_ask_context_under = <span class="tok-cyan">0</span></code></pre></div>
+<p>A word of warning about raising it: the page is quoted as background only,
+and the prompt says so, but a one-line passage followed by a few thousand
+characters of page does not reliably hold the model's attention -- you get
+a summary of the page instead of an answer about the passage. That is why
+the default is as low as it is.</p>
+<p>When the short answer is not enough, <code>o</code> over the box hands the same
+passage to <a href="ai-terminal.html">Claude Code</a>, carrying on there rather than starting over.</p>
+<p><code>C</code> goes straight there, and is the route that needs no API key: it types
+the passage into Claude Code running in a pane -- which brings its own
+credentials and keeps its own history across restarts -- opening one
+first if none is running. The reply is the agent's, in its own pane, so
+nothing streams back into the page.</p>
+<p><code>C</code> is the same key, and the same gesture, as highlighting a run of
+ordinary text and pressing <code>C</code> in Visual mode. See <a href="ai-terminal.html">Claude Code in a pane</a>.</p>
 <p>All of them read the selection the keyboard made with <code>v</code> or the one a
-mouse drag left behind. The model, the key and everything else come from
-<a href="ai-commands.html">the AI settings</a>; the prompt <code>K</code> sends is <code>mep.pdf_ask_prompt</code>.</p>
+mouse drag left behind -- in any PDF pane, not only in annotate mode.</p>
+<p>With nothing selected they fall back to a highlight, so the obvious reading
+order works: highlight a passage as you read, then ask about it. That
+fallback matters because highlighting a selection consumes it -- <code>&lt;space&gt;h</code>
+turns the selection into an annotation and clears it -- so by the time you
+press <code>K</code> there is no selection left, only the highlight.</p>
+<p>Three sources are tried, in order of how specifically you pointed at the
+passage:</p>
+<table>
+<tr><th>Order</th><th>Passage used</th></tr>
+<tr><td>1</td><td>the selection, if there is one</td></tr>
+<tr><td>2</td><td>the highlight under the mouse, else under the caret</td></tr>
+<tr><td>3</td><td>the newest highlight on the page you are looking at</td></tr>
+</table>
+<p>The third exists because the first two both need a position: a plain PDF
+pane has no caret, and the mouse is usually nowhere near the text. It only
+ever considers the page on screen, so it cannot quote something you cannot
+see. When it is not your selection that was used, mep says which it took.</p>
+<p>With none of the three, they say so rather than doing nothing.</p>
+<p>How much context goes along with the passage is a setting --
+<code>&lt;leader&gt;hS</code>, under <b>PDF lookup</b>. See <a href="settings.html">Settings</a>.</p>
+<p>The model, the key and everything else come from <a href="ai-commands.html">the AI settings</a>; the
+prompt <code>K</code> sends is <code>mep.pdf_ask_prompt</code>.</p>
 <h1>Accessibility</h1>
 <p>A <i>tagged</i> PDF says what each piece of a page is and carries the words that
 stand for what cannot be read as text. mep reads those tags:</p>

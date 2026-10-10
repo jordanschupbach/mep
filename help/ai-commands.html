@@ -28,6 +28,23 @@ rewrite, and the reply takes the selection's place.</p>
 <p><code>&lt;leader&gt;ai</code> (<code>:MepAiContextPicker</code>) chooses what to include alongside your
 prompt -- other buffers, files, selections -- so a question about one
 function can carry the code it depends on.</p>
+<h1>Turning the API off</h1>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;ax</code></td><td>toggle all paid API use on or off</td></tr>
+<tr><td><code>&lt;leader&gt;ak</code></td><td>change the command that prints your key</td></tr>
+<tr><td><code>:MepAiKey</code></td><td>the same, by name</td></tr>
+</table>
+<p>With the API off, nothing here makes a paid call or even runs your key
+command. Most routes <b>fall back to</b> <a href="ai-terminal.html">Claude Code</a> rather than refusing --
+the same text, answered in a pane instead -- and say so when they do:</p>
+<pre>The API is off, so this went to Claude Code instead (&lt;leader&gt;ax turns the API back on).</pre>
+<p>Two cannot fall back, and refuse instead. <code>:MepAiReplaceSelection</code> has to
+put the reply back <b>into</b> the buffer, which an agent answering in a pane
+cannot do -- it checks before touching your selection, so nothing is
+deleted. Speech-to-text transcribes rather than chats, so there is nothing
+to hand over.</p>
+<p>The switch lives in <a href="settings.html">Settings</a> and is remembered.</p>
 <h1>The API key</h1>
 <p>mep looks in three places, in order, and caches what it finds *in memory
 for the session only* -- it is never written to disk and never stored in

@@ -351,7 +351,10 @@ constexpr int kHoverFocusVisibleRows = 20;
  * @param replace_mode Whether Insert mode should be reported as "REPLACE" instead of "INSERT".
  * @return The mode's display name string.
  */
-const char *ModeName(Mode m, bool replace_mode = false);
+// `settings_panel`: Mode::OrgBlockSettings drives two different popups (see
+// SettingsPanelSource), and "BLOCK-SETTINGS" is the wrong thing to show the
+// user while they are editing mep's own preferences.
+const char *ModeName(Mode m, bool replace_mode = false, bool settings_panel = false);
 
 // A stable, distinct color per participant id (COLLAB_CURSORS_PLAN.md) --
 // hashes `id` into a small fixed palette so the same participant always
@@ -3898,6 +3901,30 @@ struct OrgBlockSettingRow {
     int row = -1;
 };
 
+// The same popup, driving two different things. The widget below -- typed
+// rows with inline dropdowns, number steppers, text fields, section
+// headings and a per-row hint line -- was built for org block header args,
+// and is exactly what a preferences panel wants, so mep's Settings panel
+// reuses it rather than growing a second one. These neutral aliases are
+// what the Settings side spells the shared types as; the org names stay
+// because for org blocks they are the right names.
+using SettingRowKind = OrgHeaderArgKind;
+using SettingRowSpec = OrgHeaderArgSpec;
+using SettingRow = OrgBlockSettingRow;
+
+// Which of the two the popup is currently editing. Everything except
+// "where a committed value goes" is identical between them, which is why
+// one mode, one renderer and one input handler serve both.
+enum class SettingsPanelSource {
+    // Header arguments of an org block: a committed value is written into
+    // the buffer, and the rows are re-read from the block afterwards.
+    OrgBlock,
+    // mep's own preferences: a committed value goes to a Lua callback,
+    // which applies it and persists it. The rows are owned by whoever
+    // opened the panel and are never re-derived from a buffer.
+    MepSettings,
+};
+
 // mep_diag_wrap's own port (LUA_TO_CPP_PLAN.md Phase LSP): greedy word-
 // wrap of `text` to `width` columns (mep.float_preview itself doesn't
 // wrap). No Editor state needed. Always returns at least one line
@@ -6146,6 +6173,34 @@ public:
      * @brief Copies the focused PDF pane's selection (what `y` does there); false when the pane isn't a PDF.
      */
     bool PdfYankCurrentSelection();
+    /** @brief The passage Ask/Discuss/Claude act on: the live selection, else the highlight under the mouse or caret.
+     *
+     * Public for the same reason PdfSelectionText is: mep.pdf_selection hands the result to Lua, which is how
+     * the :MepPdfAsk / :MepPdfDiscuss / :MepPdfClaude commands reach it. Both those commands and the K/A/C
+     * keys resolve their passage through this one function on purpose -- the two surfaces disagreeing about
+     * which passage is "the" passage is exactly the confusion this feature has already caused once.
+     *
+     * The highlight fallback exists because turning a selection into a highlight CONSUMES it
+     * (PdfAnnotLeaderAction's `h` clears sel_quads and visual_active both), so "highlight a passage, then ask
+     * about it" -- the obvious reading order -- used to find nothing selected and refuse. A highlight is the
+     * most explicit statement of "this passage is the interesting one" a reader can make, which makes it
+     * exactly the right thing to fall back to.
+     *
+     * Three sources, in descending order of how specifically the reader pointed at the passage:
+     *   1. the live selection -- what they just made, and the most precise;
+     *   2. the highlight under the mouse, else the one the caret sits inside;
+     *   3. the NEWEST highlight on the page currently displayed.
+     * Step 3 exists because steps 1 and 2 both need something positional: in a plain PDF pane there is no
+     * caret at all, and the mouse is usually nowhere near the text, so highlighting a passage and then
+     * pressing K found nothing even though the reader had just said exactly which passage they meant.
+     *  @param sess The PDF pane.
+     *  @param text Receives the passage.
+     *  @param page Receives its 0-based page, or -1 when unknown.
+     *  @param source If non-null, receives a short phrase naming which of the three sources was used --
+     *         reported to the user so an answer about an unexpected passage is traceable rather than
+     *         mysterious. Untouched when this returns false.
+     *  @return False when there is no selection and no usable highlight (the caller reports that). */
+    bool PdfAskPassage(PdfSession &sess, std::string *text, int *page, std::string *source = nullptr);
     // Lazily creates (or re-creates, if the pane now shows a different PDF)
     // this pane's PdfSession -- aliasing the shared per-buffer PdfDoc +
     // annotation state -- and returns it, or nullptr if buffer_id isn't a
@@ -10932,6 +10987,31 @@ public:
      * @param begin_row The block's `#+begin_` row (an OrgBlockCard::begin_row).
      */
     void BeginOrgBlockSettings(int begin_row);
+    /** @brief Opens the SAME popup on mep's own preferences instead of an org block's header args.
+     *
+     * Identical widget, keys and renderer as BeginOrgBlockSettings -- the only difference is where a
+     * committed value goes: a Lua callback rather than the buffer. Backs mep.settings_open().
+     *  @param rows The rows to show, each already carrying its option's current value. Opening with no
+     *         rows is a no-op: the popup would have nothing to edit.
+     *  @param title The popup's title line.
+     *  @param on_change_ref Lua registry ref of an on_change(key, value) function, or 0 for none. Takes
+     *         ownership of the ref: it is released when the popup closes.
+     */
+    void BeginSettingsPanel(std::vector<SettingRow> rows, const std::string &title, int on_change_ref);
+    /** @brief Whether the shared settings popup is currently editing mep's preferences rather than an org block.
+     *  @return True only while a Settings session is open (see SettingsPanelSource). */
+    bool InSettingsPanel() const { return settings_source_ == SettingsPanelSource::MepSettings; }
+    // Ends a Settings session: releases the on_change ref and puts the
+    // shared popup back on its org-block default. Called from EVERY path
+    // that leaves the popup -- there are four, three of which call
+    // RestoreFromOverlay directly rather than going through
+    // CloseOrgBlockSettings, which is how the first version of this leaked
+    // the source: after a Settings popup, the next org block's committed
+    // value was still being routed to the Settings callback instead of
+    // into the buffer. Also called when an org popup OPENS, so an entry
+    // point fully establishes its own state rather than trusting the last
+    // close to have tidied up. Idempotent.
+    void EndSettingsPanelSession();
     /**
      * @brief Opens the settings popup for the block the cursor is in (`:MepOrgBlockSettings`, <leader>os).
      * @return True when a block was found and the popup opened; false (with a toast) otherwise.
@@ -12969,6 +13049,15 @@ private:
     // caret isn't inside any highlight on its page.
     PdfSession::AnnotTarget ActiveAnnotTarget(PdfSession &sess);
     PdfSession::AnnotTarget ResolveAnnotTargetAtCaret(PdfSession &sess);
+    /** @brief The most recently made session highlight on one page -- PdfAskPassage's last-resort passage.
+     *
+     * Session (pending) highlights only, newest first, which is the same order ResolveAnnotTargetAtCaret
+     * scans them in (they draw on top). Deliberately NOT file highlights: PdfDoc::PageAnnots has no
+     * meaningful "newest", and a highlight made in a previous session is not "the one I just made".
+     *  @param sess The PDF pane.
+     *  @param page The 0-based page to search; pass the page on screen, never another one.
+     *  @return A valid highlight target, or an invalid one when the page has no session highlight. */
+    PdfSession::AnnotTarget NewestPendingHighlightOnPage(PdfSession &sess, int page) const;
     // --- vim caret (annotate mode) ---
     void LoadCaretGlyphs(PdfSession &sess, int page);   // (re)load caret_glyphs/caret_rows for `page`, reset caret to its first glyph
     void SyncPdfCaretGlyph(PdfSession &sess);           // re-derive caret_glyph from caret_row/caret_col (clamping the latter)
@@ -12978,6 +13067,11 @@ private:
     void PdfCaretUpdateVisual(PdfSession &sess);         // recompute sel_quads from anchor..caret
     void PdfCaretEnsureVisible(PdfSession &sess);        // auto-scroll so the caret stays in view
     void PdfYankSelection(PdfSession &sess);             // `y`: copy the selection, leaving it selected
+    /** @brief Returns the text a highlight annotation covers, by hit-testing the page's glyphs against its quads.
+     *  @param sess The PDF pane.
+     *  @param t The annotation to read; anything but a highlight (kind 0) returns "".
+     *  @return The readable text under the highlight, or "" when `t` is invalid, not a highlight, or cannot be located. */
+    std::string PdfTextUnderAnnot(PdfSession &sess, const PdfSession::AnnotTarget &t);
     // `K` / `A` / `C`: ask a model about the selection -- a short answer
     // in a popup, a discussion in the AI Agent sidebar, or handed to
     // Claude Code in a pane. `how` is that key. The request itself
@@ -14615,6 +14709,13 @@ private:
     // --- Org block settings popup (Mode::OrgBlockSettings) ---
     std::vector<OrgBlockSettingRow> org_settings_rows_;
     std::string org_settings_title_;
+    // Which thing the popup is editing -- see SettingsPanelSource. Reset to
+    // OrgBlock when the popup closes, so a stale Settings session can never
+    // make an org block's committed value go to a dead Lua ref.
+    SettingsPanelSource settings_source_ = SettingsPanelSource::OrgBlock;
+    // MepSettings only: the on_change(key, value) callback, as a Lua
+    // registry ref. 0 = none. Released in CloseOrgBlockSettings.
+    int settings_change_ref_ = 0;
     // The block the popup is editing. The buffer id is kept so an edit
     // can never land in a different buffer than the one the gear was
     // clicked on, and the `#+begin_` row is where a new argument goes

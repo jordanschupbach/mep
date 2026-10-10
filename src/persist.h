@@ -9,7 +9,9 @@
 // to, matching how file I/O elsewhere in this codebase is already gated.
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -116,6 +118,51 @@ inline bool WriteJsonFile(const std::string &path, const Json &value) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) return false;
     out << value.dump();
+    return true;
+#endif
+}
+
+// Writes `value` as JSON to `path` so that a reader can never observe a
+// half-written file: serialize into `path` + ".tmp" alongside it, then
+// rename over the target. std::filesystem::rename replaces an existing
+// destination (and is rename(2) on POSIX), so the swap is atomic -- the
+// temp file is a sibling specifically so it lands on the same filesystem,
+// which is what makes that true.
+//
+// WriteJsonFile above truncates and writes in place, which is fine for a
+// file that is rewritten every few seconds and can be regenerated (the
+// window geometry, a workspace layout): losing one is a shrug. It is NOT
+// fine for a file that holds every preference the user has ever set, where
+// a crash between the truncate and the write would empty the lot.
+/** @brief Writes `value` as JSON to `path` via a temp file and an atomic rename.
+ *  @param path filesystem path to write the JSON document to.
+ *  @param value the JSON value to serialize and write.
+ *  @return true on success; false if the temp file could not be written or the rename failed
+ *          (in which case any existing file at `path` is left untouched). */
+inline bool WriteJsonFileAtomic(const std::string &path, const Json &value) {
+#if defined(__EMSCRIPTEN__)
+    (void)path;
+    (void)value;
+    return false;
+#else
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out << value.dump();
+        out.flush();
+        if (!out) {  // a full disk surfaces here, not at close()
+            out.close();
+            std::remove(tmp.c_str());
+            return false;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        std::remove(tmp.c_str());
+        return false;
+    }
     return true;
 #endif
 }

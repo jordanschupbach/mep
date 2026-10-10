@@ -70,12 +70,35 @@ public:
      */
     void CallGlobal2Strings(const char *fn, const std::string &a, const std::string &b);
     /**
+     * @brief Calls a global Lua function with three string arguments, discarding its result.
+     *
+     * CallGlobal2Strings plus one. The PDF ask routes use it to hand over the passage, where it came
+     * from, AND its page number: the Lua side quotes the rest of that page as background for a very
+     * short passage, and needs the page the passage is ON rather than whichever page the viewer
+     * happens to be showing.
+     * @param fn Name of the global function; a non-function is a no-op.
+     * @param a First string argument.
+     * @param b Second string argument.
+     * @param c Third string argument.
+     */
+    void CallGlobal3Strings(const char *fn, const std::string &a, const std::string &b, const std::string &c);
+    /**
      * @brief Invokes ref with a single string argument (job stdout/stderr lines, exit codes, ...),
      * reporting any error through the editor's status line. No-op if ref is LUA_NOREF (0 or -1).
      * @param ref Registry reference of the function to call.
      * @param arg String argument to pass to the Lua function.
      */
     void CallRefWithString(int ref, const std::string &arg);
+    /**
+     * @brief Calls the function behind `ref` with two string arguments, discarding its result.
+     *
+     * The Settings panel's on_change(key, value) callback. CallGlobal2Strings' shape, but against a
+     * registry ref rather than a global, since the panel is opened with a closure.
+     * @param ref Lua registry ref of the function; LUA_NOREF/LUA_REFNIL is a no-op.
+     * @param a First string argument.
+     * @param b Second string argument.
+     */
+    void CallRefWith2Strings(int ref, const std::string &a, const std::string &b);
     /**
      * @brief Calls a stored Lua function with one number argument.
      * @param ref Registry reference from a `mep.*` binding that took a function.

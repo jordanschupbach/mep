@@ -23,6 +23,30 @@ rewrite, and the reply takes the selection's place.
 prompt -- other buffers, files, selections -- so a question about one
 function can carry the code it depends on.
 
+* Turning the API off
+
+| Key / command   | Does                                        |
+|-----------------+---------------------------------------------|
+| =<leader>ax=    | toggle all paid API use on or off           |
+| =<leader>ak=    | change the command that prints your key     |
+| =:MepAiKey=     | the same, by name                           |
+
+With the API off, nothing here makes a paid call or even runs your key
+command. Most routes *fall back to* [[file:ai-terminal.html][Claude Code]] rather than refusing --
+the same text, answered in a pane instead -- and say so when they do:
+
+#+begin_example
+The API is off, so this went to Claude Code instead (<leader>ax turns the API back on).
+#+end_example
+
+Two cannot fall back, and refuse instead. =:MepAiReplaceSelection= has to
+put the reply back *into* the buffer, which an agent answering in a pane
+cannot do -- it checks before touching your selection, so nothing is
+deleted. Speech-to-text transcribes rather than chats, so there is nothing
+to hand over.
+
+The switch lives in [[file:settings.html][Settings]] and is remembered.
+
 * The API key
 
 mep looks in three places, in order, and caches what it finds *in memory

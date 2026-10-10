@@ -35,6 +35,13 @@ mep.leader_map(<span class="tok-green">'xr'</span>, <span class="tok-green">'Rel
 <p><code>print()</code> writes to the status line, so <code>:lua print(mep.line_count())</code>
 shows its result at the bottom of the window -- a perfectly good way to
 poke at the API before committing anything to a file.</p>
+<h1>The Settings panel</h1>
+<p>Most of what follows can be set from a panel instead: <code>&lt;leader&gt;hS</code> or
+<code>:MepSettings</code> shows the preferences people most often change, with their
+current values. It writes its own file and never touches <code>init.lua</code> --
+see <a href="settings.html">Settings</a> for the two stores and which one wins.</p>
+<p>Everything on this page still works, and anything the panel does not cover
+is configured here.</p>
 <h1>Options</h1>
 <p>Two families, which is a common source of confusion:</p>
 <p><b>=:set= options</b> are Vim-style and affect the editing model -- <code>number</code>,
@@ -47,12 +54,14 @@ mep.opt.tab_terminal_share = <span class="tok-cyan">0.4</span>     <span class="
 <table>
 <tr><th>Path</th><th>Holds</th></tr>
 <tr><td><code>~/.config/mep/init.lua</code></td><td>your configuration</td></tr>
+<tr><td><code>$XDG_DATA_HOME/mep/settings.json</code></td><td>what the Settings panel last saved</td></tr>
 <tr><td><code>$XDG_DATA_HOME/mep/workspaces/</code></td><td>per-project session state</td></tr>
 <tr><td><code>~/.config/github-copilot/</code></td><td>Copilot credentials, shared with other editors</td></tr>
 <tr><td><code>~/.local/share/mep/agent-sockets/</code></td><td>one socket per running mep</td></tr>
 </table>
 <h1>See also</h1>
 <ul>
+<li><a href="settings.html">Settings</a> -- the panel, and how it relates to this file.</li>
 <li><a href="options.html">Options</a> -- every option, with defaults.</li>
 <li><a href="keymaps.html">Remapping keys</a> -- changing the bindings.</li>
 <li><a href="recipes.html">Configuration recipes</a> -- worked examples.</li>

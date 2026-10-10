@@ -262,7 +262,6 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepPaneZoom= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
 | =:MepPdfAsk= | [[file:pdf.html][PDF]] |
 | =:MepPdfClaude= | [[file:pdf.html][PDF]] |
-| =:MepPdfDiscuss= | [[file:pdf.html][PDF]] |
 | =:MepPdfYank= | [[file:pdf.html][PDF]] |
 | =:MepPrevSheet= | [[file:sheets.html][Spreadsheets]] |
 | =:MepProjectAdd= | [[file:projects.html][Projects]] |

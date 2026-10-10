@@ -32,6 +32,25 @@ several mep instances open.</p>
 <p>Alternatively, point mep at it and it will be passed inline with
 <code>--mcp-config</code>:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.ai_terminal_mcp_server = <span class="tok-green">'/path/to/mep-mcp'</span></code></pre></div>
+<h1>Highlight something, press C</h1>
+<p>Anything you highlight can become the agent's prompt without copying,
+pasting or retyping it:</p>
+<table>
+<tr><th>Where</th><th>Gesture</th></tr>
+<tr><td>any text buffer</td><td>select in Visual mode, then <code>C</code></td></tr>
+<tr><td>a PDF</td><td>select or highlight a passage, then <code>C</code></td></tr>
+<tr><td>over a <code>K</code> answer box</td><td><code>o</code>, to carry that passage on</td></tr>
+</table>
+<p>The passage arrives quoted with where it came from -- <code>notes.py:12-20</code>, or
+<code>paper.pdf, page 3</code> -- so the agent can go and read around it rather than
+seeing a bare fragment. If no agent is running, one is started and the
+passage is sent as soon as it is ready.</p>
+<p>This is the only conversational route, on purpose. It needs no API key,
+and Claude Code keeps its own history, so a conversation survives closing
+mep. (There used to be an <code>A</code> that discussed a PDF passage over the API in
+a sidebar; it billed like <code>K</code>, kept no history, and has been removed.)</p>
+<p>A passage is sent as one line, because the agent's prompt treats a newline
+as submit.</p>
 <h1>Options</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.ai_terminal_cmd = <span class="tok-blue">{</span><span class="tok-green">'claude'</span>, <span class="tok-green">'--model'</span>, <span class="tok-green">'opus'</span>}  <span class="tok-comment">-- default {'claude'}</span>
 mep.opt.ai_terminal_share = <span class="tok-cyan">0.4</span>        <span class="tok-comment">-- the terminal's height fraction</span>

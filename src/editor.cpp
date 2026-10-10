@@ -2291,6 +2291,7 @@ void Editor::BeginOrgBlockSettings(int begin_row) {
         Notify("A " + card->kind + " block has no header arguments to set", NotifyLevel::Warn);
         return;
     }
+    EndSettingsPanelSession();  // this popup edits a block, not mep's settings
     org_settings_buffer_ = buffer_id;
     org_settings_begin_row_ = begin_row;
     org_settings_index_ = 0;
@@ -2329,6 +2330,12 @@ bool Editor::OpenOrgBlockSettingsAtCursor() {
 }
 
 void Editor::OrgSettingsReload() {
+    // A Settings session's rows belong to whoever opened the popup and are
+    // not derived from a buffer, so there is nothing to re-read -- and
+    // clearing them here would empty the panel on the first committed
+    // value. (OrgSettingsApply does not call this for that source anyway;
+    // this guard is so a future caller cannot reintroduce the bug.)
+    if (settings_source_ == SettingsPanelSource::MepSettings) return;
     org_settings_rows_.clear();
     org_settings_results_.clear();
     if (org_settings_buffer_ < 0 || org_settings_buffer_ >= static_cast<int>(buffers_.size())) {
@@ -2390,6 +2397,19 @@ void Editor::OrgSettingsReload() {
 
 void Editor::OrgSettingsApply(int index, const std::string &value) {
     if (index < 0 || index >= static_cast<int>(org_settings_rows_.size())) return;
+    if (settings_source_ == SettingsPanelSource::MepSettings) {
+        SettingRow &row = org_settings_rows_[static_cast<size_t>(index)];
+        if (value == row.value) return;  // nothing changed
+        // The row is updated here rather than by re-reading anything: the
+        // panel's Lua side owns the value now, and the popup has to show
+        // the new one immediately whether or not applying it had any
+        // visible effect.
+        row.value = value;
+        if (lua_ && settings_change_ref_ != 0) {
+            lua_->CallRefWith2Strings(settings_change_ref_, row.spec.key, value);
+        }
+        return;
+    }
     if (org_settings_buffer_ < 0 || org_settings_buffer_ >= static_cast<int>(buffers_.size())) return;
     const OrgBlockSettingRow row = org_settings_rows_[static_cast<size_t>(index)];
     if (value == row.value) return;  // nothing to write
@@ -12980,12 +13000,120 @@ bool Editor::PdfYankCurrentSelection() {
     return true;
 }
 
+std::string Editor::PdfTextUnderAnnot(PdfSession &sess, const PdfSession::AnnotTarget &t) {
+    if (!t.valid || t.kind != 0 || !sess.doc || t.page < 0) return std::string();
+    // AnnotTarget carries the annotation's identity, not its geometry, so
+    // recover the quads from whichever list it came out of.
+    const std::vector<pdfannots::Quad> *quads = nullptr;
+    if (!t.from_file) {
+        if (!sess.shared || t.pending_index < 0 ||
+            t.pending_index >= static_cast<int>(sess.shared->pending_annots.size()))
+            return std::string();
+        quads = &sess.shared->pending_annots[static_cast<size_t>(t.pending_index)].quads;
+    } else {
+        for (const pdfannots::PdfAnnot &a : sess.doc->PageAnnots(t.page)) {
+            if (a.src_obj == t.src_obj) {
+                quads = &a.quads;
+                break;
+            }
+        }
+    }
+    if (quads == nullptr || quads->empty()) return std::string();
+
+    // Same point-space centre-in-quad hit test ResolveAnnotTargetAtCaret
+    // uses, run the other way round: every glyph of the page against the
+    // annotation, rather than one glyph against every annotation.
+    // PageGlyphs caches per page (see its own comment), so this is cheap.
+    const std::vector<PdfGlyphBox> glyphs = sess.doc->PageGlyphs(t.page);
+    std::vector<int> indices;
+    for (size_t i = 0; i < glyphs.size(); i++) {
+        const PdfGlyphBox &g = glyphs[i];
+        const double cx = (g.left + g.right) * 0.5;
+        const double cy = (g.top + g.bottom) * 0.5;
+        for (const pdfannots::Quad &q : *quads) {
+            const double minx = std::min(std::min(q.x1, q.x2), std::min(q.x3, q.x4));
+            const double maxx = std::max(std::max(q.x1, q.x2), std::max(q.x3, q.x4));
+            const double miny = std::min(std::min(q.y1, q.y2), std::min(q.y3, q.y4));
+            const double maxy = std::max(std::max(q.y1, q.y2), std::max(q.y3, q.y4));
+            if (cx >= minx && cx <= maxx && cy >= miny && cy <= maxy) {
+                // Ascending, because the loop is -- which is what
+                // TextForGlyphs needs to reconstruct words and lines.
+                indices.push_back(static_cast<int>(i));
+                break;
+            }
+        }
+    }
+    if (indices.empty()) return std::string();
+    return sess.doc->TextForGlyphs(t.page, indices);
+}
+
+PdfSession::AnnotTarget Editor::NewestPendingHighlightOnPage(PdfSession &sess, int page) const {
+    PdfSession::AnnotTarget t;  // invalid by default
+    if (!sess.shared || page < 0) return t;
+    // Backwards: last pushed is the most recently made, and that is the one
+    // "the highlight I just made" means.
+    for (int i = static_cast<int>(sess.shared->pending_annots.size()) - 1; i >= 0; --i) {
+        const pdfannots::PdfAnnot &a = sess.shared->pending_annots[static_cast<size_t>(i)];
+        if (a.page != page || a.kind != pdfannots::Kind::Highlight) continue;
+        t.valid = true;
+        t.from_file = false;
+        t.page = a.page;
+        t.pending_index = i;
+        t.kind = 0;
+        t.contents = a.contents;
+        return t;
+    }
+    return t;
+}
+
+bool Editor::PdfAskPassage(PdfSession &sess, std::string *text, int *page, std::string *source) {
+    if (text == nullptr || page == nullptr) return false;
+    // 1. A live selection always wins: it is the more specific statement of
+    // intent, and it is what the reader just made.
+    *text = PdfSelectionText(sess);
+    if (!text->empty()) {
+        *page = PdfSelectionPage(sess);
+        if (source) *source = "selection";
+        return true;
+    }
+    // 2. The highlight under the mouse, else the one the caret sits in.
+    const PdfSession::AnnotTarget at_point = ActiveAnnotTarget(sess);
+    *text = PdfTextUnderAnnot(sess, at_point);
+    if (!text->empty()) {
+        *page = at_point.page;
+        if (source) *source = "the highlight here";
+        return true;
+    }
+    // 3. The newest highlight on the page being displayed. Both steps above
+    // need something positional -- a plain PDF pane has no caret at all, and
+    // the mouse is usually nowhere near the text -- so without this,
+    // highlighting a passage and then pressing K found nothing, even though
+    // the highlight was the reader saying exactly which passage they meant.
+    // Scoped to sess.page so this can never quote something off-screen.
+    const PdfSession::AnnotTarget newest = NewestPendingHighlightOnPage(sess, sess.page);
+    *text = PdfTextUnderAnnot(sess, newest);
+    if (!text->empty()) {
+        *page = newest.page;
+        if (source) *source = "the newest highlight on this page";
+        return true;
+    }
+    *page = -1;
+    return false;
+}
+
 void Editor::PdfAskAboutSelection(PdfSession &sess, int how) {
-    const std::string text = PdfSelectionText(sess);
-    if (text.empty()) {
-        Notify("Nothing selected (v to select, or drag)", NotifyLevel::Warn);
+    std::string text;
+    std::string source;
+    int page = -1;
+    if (!PdfAskPassage(sess, &text, &page, &source)) {
+        Notify("Nothing selected (v to select, or drag) and no highlight on this page", NotifyLevel::Warn);
         return;
     }
+    // Say which passage this is about whenever it was not the obvious one.
+    // A reader who selected text knows what they asked about; a reader who
+    // is getting the newest highlight on the page does not necessarily, and
+    // an answer about the wrong passage is otherwise baffling.
+    if (source != "selection") status_message_ = "Asking about " + source;
     if (!lua_) return;
     std::string where;
     const int bid = sess.buffer_id;
@@ -12994,7 +13122,6 @@ void Editor::PdfAskAboutSelection(PdfSession &sess, int how) {
         const size_t slash = path.find_last_of('/');
         where = slash == std::string::npos ? path : path.substr(slash + 1);
     }
-    const int page = PdfSelectionPage(sess);
     // The page the viewer counts by, which is the one the reader can
     // type into the page box -- not the folio printed on the paper,
     // which a PDF rarely states anywhere a reader could trust.
@@ -13002,8 +13129,14 @@ void Editor::PdfAskAboutSelection(PdfSession &sess, int how) {
         if (!where.empty()) where += ", ";
         where += "page " + std::to_string(page + 1);
     }
-    const char *fn = how == 'A' ? "mep_pdf_ai_discuss" : (how == 'C' ? "mep_pdf_ai_claude" : "mep_pdf_ai_popup");
-    lua_->CallGlobal2Strings(fn, text, where);
+    const char *fn = how == 'C' ? "mep_pdf_ai_claude" : "mep_pdf_ai_popup";
+    // The page goes over too (1-based, "" when unknown): for a very short
+    // passage the Lua side quotes the rest of its page as background, and
+    // it needs the page the passage is ON. It used to ask for "the current
+    // page", which is a different page as soon as you scroll away from a
+    // highlight -- so the "surrounding context" could come from somewhere
+    // else entirely.
+    lua_->CallGlobal3Strings(fn, text, where, page >= 0 ? std::to_string(page + 1) : std::string());
 }
 
 void Editor::PdfCaretEnsureVisible(PdfSession &sess) {
@@ -14899,24 +15032,44 @@ void Editor::HandlePdfInput() {
             pending_g_ = false;
             pending_count_ = 0;
             PdfYankSelection(*sess);
-        } else if (annotate && (cp == 'K' || cp == 'A' || cp == 'C')) {
-            // Ask a model about the selection: K answers in a popup
-            // without asking anything first, A opens a discussion in the
-            // AI Agent sidebar, C hands it to Claude Code in a pane --
-            // the one route that needs no API key, since the agent
-            // brings its own credentials. All three hand off to Lua
+        } else if (cp == 'K' || cp == 'C') {
+            // Ask about the selection: K answers in a popup without asking
+            // anything first; C hands the passage to Claude Code in a pane,
+            // which needs no API key since the agent brings its own
+            // credentials and keeps its own history. Both hand off to Lua
             // (kBuiltinPdfAi), where mep's model client lives. K mirrors
             // Visual mode, which already binds it to "send selection to
-            // the AI".
+            // the AI"; C now mirrors Visual mode too (mep.claude_send_
+            // selection), so highlighting a passage and handing it to the
+            // agent is the same key whether the pane holds a PDF or text.
+            //
+            // There used to be an `A` here as well -- a back-and-forth in
+            // the AI Agent sidebar. It was removed: it billed the API like
+            // K, but unlike K it had no history across restarts and a
+            // cramped non-wrapping sidebar, which is the job C does
+            // better in every respect.
+            //
+            // NOT gated on annotate mode, deliberately. It used to be,
+            // and that made these keys silently dead everywhere else --
+            // including the plain PDF pane, where a mouse drag leaves a
+            // perfectly good selection and the matching :MepPdfAsk /
+            // Discuss / Claude commands have always worked. Pressing `A`
+            // on a dragged selection did nothing at all and said nothing
+            // about why (see "every other printable key is a deliberate
+            // no-op" at the bottom of this loop), which read as the
+            // feature being broken. K/A/C are unclaimed in the other two
+            // PDF modes, so there is nothing to collide with, and
+            // PdfAskAboutSelection reports an empty passage itself.
             pending_g_ = false;
             pending_count_ = 0;
             if (cp == 'C') {
                 // Handing the passage to Claude Code splits the pane and
-                // moves focus into a terminal. Leave annotate mode and
-                // stop draining first: every other branch that changes
-                // the pane layout returns here too, because the rest of
-                // this loop goes on acting on `sess` and the mode it was
-                // entered with, and would undo the split it just made.
+                // moves focus into a terminal. Leave annotate/nav mode
+                // and stop draining first: every other branch that
+                // changes the pane layout returns here too, because the
+                // rest of this loop goes on acting on `sess` and the mode
+                // it was entered with, and would undo the split it just
+                // made. (A no-op when already in plain Mode::Pdf.)
                 mode_ = Mode::Pdf;
                 PdfAskAboutSelection(*sess, cp);
                 return;
@@ -25235,8 +25388,38 @@ void Editor::ClosePreview() {
 
 void Editor::CloseOrgBlockSettings() {
     if (mode_ != Mode::OrgBlockSettings) return;
-    OrgSettingsCommitEdit();
+    OrgSettingsCommitEdit();  // Escape keeps what was typed, as everywhere else here
+    EndSettingsPanelSession();
     RestoreFromOverlay();
+}
+
+void Editor::EndSettingsPanelSession() {
+    if (settings_change_ref_ != 0 && lua_) lua_->UnrefFunction(settings_change_ref_);
+    settings_change_ref_ = 0;
+    settings_source_ = SettingsPanelSource::OrgBlock;
+}
+
+void Editor::BeginSettingsPanel(std::vector<SettingRow> rows, const std::string &title, int on_change_ref) {
+    if (rows.empty()) {
+        if (on_change_ref != 0 && lua_) lua_->UnrefFunction(on_change_ref);
+        Notify("No settings to show", NotifyLevel::Warn);
+        return;
+    }
+    EndSettingsPanelSession();  // reopening must not leak the previous callback
+    settings_source_ = SettingsPanelSource::MepSettings;
+    settings_change_ref_ = on_change_ref;
+    org_settings_rows_ = std::move(rows);
+    org_settings_title_ = title;
+    // No buffer backs these rows; -1 keeps every org-side guard that checks
+    // this from ever acting on them.
+    org_settings_buffer_ = -1;
+    org_settings_begin_row_ = -1;
+    org_settings_results_.clear();
+    org_settings_index_ = 0;
+    org_settings_editing_ = false;
+    org_settings_pending_.clear();
+    overlay_previous_mode_ = mode_;
+    mode_ = Mode::OrgBlockSettings;
 }
 
 // Two states in one handler, and the difference is what j/k mean:
@@ -25246,6 +25429,7 @@ void Editor::CloseOrgBlockSettings() {
 // keeps what you typed", not a cancel.
 void Editor::HandleOrgBlockSettingsInput() {
     if (org_settings_rows_.empty()) {
+        EndSettingsPanelSession();
         RestoreFromOverlay();
         return;
     }
@@ -25348,6 +25532,7 @@ void Editor::HandleOrgBlockSettingsInput() {
         return;
     }
     if (escape) {
+        EndSettingsPanelSession();
         RestoreFromOverlay();
         return;
     }
@@ -25396,6 +25581,7 @@ void Editor::HandleOrgBlockSettingsInput() {
                 OrgSettingsApply(org_settings_index_, "");
                 return;
             case 'q':
+                EndSettingsPanelSession();
                 RestoreFromOverlay();
                 return;
             default:
@@ -26482,7 +26668,9 @@ void Editor::ActivateSidebarLine(int id, int line_index) {
         }
     } else if (line.kind == SidebarLine::Kind::Widget) {
         int ref = sb->sections[static_cast<size_t>(line.section_index)].widgets[static_cast<size_t>(line.widget_index)].on_click_ref;
-        if (ref != 0 && lua_) lua_->CallRef(ref);
+        // `> 0`, not `!= 0`: an absent on_click is LUA_NOREF (-2) from
+        // RefField, not 0, and -2 passed the old check.
+        if (ref > 0 && lua_) lua_->CallRef(ref);
     }
 }
 
@@ -28595,7 +28783,7 @@ bool Editor::CompletionResolveInfo(const std::string &text, std::string *detail,
 // since the addition of the agent-control socket, event.modeChanged's
 // "mode" field (agent_rpc.cpp) both want the same string for the same
 // mode, hence living here rather than as a main.cpp-private helper.
-const char *ModeName(Mode m, bool replace_mode) {
+const char *ModeName(Mode m, bool replace_mode, bool settings_panel) {
     switch (m) {
         case Mode::Normal: return "NORMAL";
         case Mode::Insert: return replace_mode ? "REPLACE" : "INSERT";
@@ -28610,7 +28798,7 @@ const char *ModeName(Mode m, bool replace_mode) {
         case Mode::Confirm: return "CONFIRM";
         case Mode::Select: return "SELECT";
         case Mode::Preview: return "PREVIEW";
-        case Mode::OrgBlockSettings: return "BLOCK-SETTINGS";
+        case Mode::OrgBlockSettings: return settings_panel ? "SETTINGS" : "BLOCK-SETTINGS";
         case Mode::Sidebar: return "SIDEBAR";
         case Mode::Picker: return "PICKER";
         case Mode::RoamGraph: return "ROAM-GRAPH";

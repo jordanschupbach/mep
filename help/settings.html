@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Configuration">
+<meta name="help-order" content="5">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Settings</h1>
+<h1>A panel for the settings worth changing</h1>
+<p>Most of mep is configured by writing Lua in <code>init.lua</code>. The Settings panel is
+for the preferences you are most likely to want to change, shown with their
+current values so you can see what they are without reading source --
+and remembered, so you set them once.</p>
+<table>
+<tr><th>Open it with</th><th>Where</th></tr>
+<tr><td><code>&lt;leader&gt;hS</code></td><td>the keyboard</td></tr>
+<tr><td><code>:MepSettings</code></td><td>the command line</td></tr>
+<tr><td>the gear</td><td>the panel strip, right of the tabs</td></tr>
+<tr><td><b>Settings</b> menu</td><td>the menu bar (<code>&lt;leader&gt;um</code> shows it)</td></tr>
+</table>
+<p>Inside, rows are typed. A dropdown cycles with <code>Ctrl-N</code> / <code>Ctrl-P</code>, a number
+steps with <code>j</code> / <code>k</code> once you are in it, and a text field just takes typing:</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>j</code> <code>k</code></td><td>move between rows</td></tr>
+<tr><td><code>Enter</code> <code>i</code></td><td>edit the focused row</td></tr>
+<tr><td><code>Ctrl-N</code> <code>Ctrl-P</code></td><td>change the focused row's value</td></tr>
+<tr><td><code>d</code></td><td>clear it, back to mep's own default</td></tr>
+<tr><td><code>Enter</code> <code>Esc</code></td><td>done editing, keeping what is there</td></tr>
+<tr><td><code>q</code></td><td>close</td></tr>
+</table>
+<p>The line under the list explains whatever row you are on. A value shown as
+<code>--</code> is one you have not set, so mep's own default applies.</p>
+<h1>What it does not do</h1>
+<p><b>It never writes <code>init.lua</code>.</b> Your config is a Lua program -- it can check
+whether a file exists and set an option only then -- so a panel that rewrote
+it would sooner or later mangle something that mattered. Instead the panel
+writes its own file:</p>
+<table>
+<tr><th>Path</th><th>Holds</th></tr>
+<tr><td><code>~/.config/mep/init.lua</code></td><td>your configuration, hand-written</td></tr>
+<tr><td><code>$XDG_DATA_HOME/mep/settings.json</code></td><td>what you last picked in the panel</td></tr>
+</table>
+<p>So the two can disagree about the same option, and the rule is: *the panel
+wins.* Its values are applied after <code>init.lua</code> has run, because a setting
+you just clicked has to take effect. Where <code>init.lua</code> also sets an option,
+that row says so:</p>
+<pre>[also set in init.lua; this wins]</pre>
+<p>That is a note, not a problem -- but if you want <code>init.lua</code> to be the
+authority for an option, clear the row with <code>d</code> and the stored value goes
+away.</p>
+<p>Secrets are deliberately not stored. The panel offers <b>API key command</b> -- a
+command that prints your key -- rather than the key itself, which mep keeps
+in memory for the session and never writes down.</p>
+<p>To change where the key comes from in a hurry, <code>&lt;leader&gt;ak</code> (<code>:MepAiKey</code>)
+prompts for that command prefilled with the current one, so editing a path
+is a few keystrokes. It also clears the key mep cached for this session --
+without that, the old key would keep being used and the change would look
+like it had silently failed.</p>
+<h1>The settings</h1>
+<h2>AI</h2>
+<p><b>Use the API at all</b> is the master switch, and it is the first row because
+it governs every other AI row. Turn it off and nothing in mep makes a paid
+call, or even runs your key command.</p>
+<p>Rather than simply refusing, most routes then <b>fall back to Claude Code</b> --
+the <code>K</code> popup, the <code>:MepAiSend</code> family, the AI Agent prompt -- sending the
+same passage to a pane instead, and saying so each time. Claude Code needs
+no key and keeps its own history, which is why one route stays open.</p>
+<p>Two exceptions refuse instead: <code>:MepAiReplaceSelection</code>, whose reply has to
+land back in the buffer (it checks <b>before</b> deleting your selection), and
+speech-to-text, which transcribes rather than chats.</p>
+<p><code>&lt;leader&gt;ax</code> toggles it without opening this panel.</p>
+<p>Two more things are easy to confuse, so they are two separate rows.</p>
+<p><b>API provider</b> is what <code>K</code> and <code>:MepAiSend</code> call over HTTP: <code>anthropic</code> or
+<code>openai</code>. An OpenAI-compatible server (a local model, say) is <code>openai</code> plus
+its own base URL.</p>
+<p><b>Agent in a pane</b> is the command <code>:aiterminal</code> runs -- <code>claude</code> or <code>codex</code>.
+This is the only way to use Codex: it has no HTTP API in mep, only a
+terminal agent.</p>
+<p>See <a href="ai-commands.html">Ask the model</a> and <a href="ai-terminal.html">Claude Code in a pane</a>.</p>
+<h2>PDF lookup</h2>
+<p><b>Context sent with a passage</b> is what goes to the model alongside the
+passage when you press <code>K</code> on a PDF:</p>
+<table>
+<tr><th>Mode</th><th>Sends</th></tr>
+<tr><td>highlight only</td><td>just your passage</td></tr>
+<tr><td>add page for short selections</td><td>the page too, but only for a bare term</td></tr>
+<tr><td>always add the page</td><td>the page every time</td></tr>
+</table>
+<p>The middle one is the default. Sending the page is useful for a lone symbol
+and counterproductive for a sentence: with a short quote and a whole page
+behind it, the model tends to summarise the page instead of answering about
+the quote. See <a href="pdf.html">PDF</a>.</p>
+<h2>Project layout</h2>
+<p><b>Reopen a project with its saved layout</b> decides what you get when you open a
+project with <code>--project</code>: its saved panes and splits, or the default file
+tree + readme + terminal layout. Off is the default. The layout is saved
+either way -- this only controls whether it is applied -- and it has no
+effect on a bare <code>mep</code>, which never restores a layout at all. See
+<a href="sessions.html">Sessions</a>.</p>
+<h2>Appearance</h2>
+<p>The colour scheme, line numbers, cursor line, soft wrap and text width. The
+colour scheme is worth noting: <code>:colorscheme</code> alone lasts the session, but
+set here it is remembered.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="config.html">Configuring mep</a> -- the Lua config, and the two option families.</li>
+<li><a href="options.html">Options</a> -- every option there is, with defaults.</li>
+<li><a href="sessions.html">Sessions</a> -- what is restored when you reopen a project.</li>
+</ul>
+</body>
+</html>

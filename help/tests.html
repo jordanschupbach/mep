@@ -32,12 +32,48 @@ mep.opt.lang_test_build_dirs = {<span class="tok-green">'build'</span>, <span cl
 <p>If mep cannot work out a runner for the filetype, it says so in one line
 rather than guessing.</p>
 <h1>The Tests panel</h1>
-<p><code>&lt;leader&gt;tT</code> (<code>:MepActivityTestPanel</code>) opens the test sidebar;
-<code>:MepActivityTestRun</code> runs from it.</p>
-<p>A failing test's location is a row you can press Enter on to jump straight
-to the line, so the loop is: run, read the failure, jump, fix.</p>
-<p><code>mep.activity_test_failure_lines()</code> exposes the parsed failure locations to
-Lua.</p>
+<p><code>&lt;leader&gt;tT</code> (<code>:MepActivityTestPanel</code>) opens the test sidebar. In a CMake
+project it lists every test ctest knows about, one row each, with a mark
+for where it stands:</p>
+<table>
+<tr><th>Mark</th><th>Means</th></tr>
+<tr><td>○</td><td>not run yet</td></tr>
+<tr><td>…</td><td>queued in the current run</td></tr>
+<tr><td>●</td><td>running now</td></tr>
+<tr><td>✓</td><td>passed (with how long it took)</td></tr>
+<tr><td>✗</td><td>failed, timed out, or its build failed</td></tr>
+</table>
+<p>Press Enter on a test to build its CMake target and run just that test.
+Enter on the summary row at the top (the build directory and the
+pass/fail/not-run counts) runs them all. The marks update live as ctest
+reports each test.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td>Enter</td><td>build and run the test under the cursor (summary: all)</td></tr>
+<tr><td><code>a</code></td><td>run every test</td></tr>
+<tr><td><code>f</code></td><td>re-run only the tests that failed</td></tr>
+<tr><td><code>o</code></td><td>show the output of the test under the cursor</td></tr>
+<tr><td><code>x</code></td><td>stop the run</td></tr>
+<tr><td><code>R</code></td><td>reload the test list (after adding a test and re-configuring)</td></tr>
+</table>
+<p><code>o</code> on a failed test shows what it printed. For a test whose build failed, it
+shows the build log, compiler error included. On the summary row it shows the
+whole last run. The popout (<code>mod1+m</code>) shows the same output beside the list
+as you move through it.</p>
+<p>The build directory is the first entry of <code>mep.opt.lang_test_build_dirs</code>
+that holds a configured ctest tree. Set <code>mep.activity_test_build_dir</code> to pick
+one yourself, and <code>mep.opt.activity_test_jobs</code> to run tests in parallel:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.activity_test_build_dir = <span class="tok-green">'build/native-dev'</span>
+mep.opt.activity_test_jobs = <span class="tok-cyan">8</span></code></pre></div>
+<p>Tests come from ordinary CMake: <code>enable_testing()</code> and one <code>add_test()</code>
+per test. Before running a test, mep builds the target its executable comes
+from. For a target nobody has built yet, it builds the target named after the
+test. mep's own windowless test binaries are registered this way, so
+<code>ctest --test-dir build/native</code> runs the same suite.</p>
+<p>Outside a CMake project, <code>:MepActivityTestRun</code> runs the whole suite once
+(<code>mep.activity_test_cmd</code>, or <code>npm test</code> when there is a <code>package.json</code>)
+and lists its failure lines; <code>mep.activity_test_failure_lines()</code> exposes
+them to Lua.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="run-button.html">Running the current file</a> -- <code>gr</code>, the sibling of <code>gt</code>.</li>

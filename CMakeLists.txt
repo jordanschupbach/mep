@@ -771,6 +771,7 @@ add_library(mep_core STATIC
     src/text_diff.cpp
     src/agent_rpc.cpp
     src/lua_env.cpp
+    src/test_runner.cpp
     src/xml_doc.cpp
     src/deflate.cpp
     src/zip_archive.cpp
@@ -1238,6 +1239,14 @@ target_include_directories(mep-indent-test PRIVATE src)
 target_compile_options(mep-indent-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-indent-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-indent-test)
+
+# The ctest parsing behind the Tests sidebar (src/test_runner.cpp): pure
+# string functions, checked against verbatim ctest output. No mep_core.
+add_executable(mep-test-runner-test EXCLUDE_FROM_ALL src/test_runner_test.cpp src/test_runner.cpp)
+target_include_directories(mep-test-runner-test PRIVATE src)
+target_compile_options(mep-test-runner-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-test-runner-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-test-runner-test)
 
 # The syntax-highlighting queries (src/treesitter_queries.h) and the span
 # pipeline TreesitterHighlight runs them through: which capture each token ends
@@ -2707,4 +2716,44 @@ if(EMSCRIPTEN)
         "-sSINGLE_FILE=1"
         "--shell-file=${CMAKE_SOURCE_DIR}/web/shell.html"
     )
+endif()
+
+# --- ctest registration ----------------------------------------------------
+# Every windowless test binary `just test` runs, registered with ctest under
+# its own target name, so `ctest --test-dir build/native` (and the Tests
+# sidebar, which lists `ctest --show-only=json-v1` and runs one test with
+# `cmake --build --target <name> && ctest -R ^<name>$`) see the same suite.
+# The binaries stay EXCLUDE_FROM_ALL: build them with the `tests` target (or
+# one at a time) first, or ctest reports the unbuilt ones as "Not Run".
+# Run from the source root, as `just test` does -- several tests open
+# fixtures by repo-relative path. Left out: mep-collab-session-test (needs a
+# live ws:// relay URL) and the test-gui binaries (need a display and a
+# path to mep itself).
+if(NOT EMSCRIPTEN)
+    enable_testing()
+    set(MEP_CTEST_TARGETS
+        mep-test-runner-test
+        mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test
+        mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test
+        mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test
+        mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test
+        mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test
+        mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test
+        mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
+        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test
+        mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test
+        mep-maxima-format-test mep-notebook-doc-test mep-office-rtf-test mep-workspace-test mep-fold-test
+        mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test
+        mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test
+        mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test
+        mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test
+        mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test
+        mep-youtube-player-test mep-collab-crdt-test)
+    foreach(t IN LISTS MEP_CTEST_TARGETS)
+        # if(TARGET): a few of these are platform-gated above.
+        if(TARGET ${t})
+            add_test(NAME ${t} COMMAND ${t})
+            set_tests_properties(${t} PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS unit)
+        endif()
+    endforeach()
 endif()

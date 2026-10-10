@@ -16,6 +16,9 @@
 #include <limits>
 #include <string>
 
+// mkdtemp: glibc declares it in <stdlib.h>, macOS only in <unistd.h>.
+#include <unistd.h>
+
 namespace {
 /**
  * @brief Prints a CHECK-failure message (with file/line) to stderr and aborts the process.

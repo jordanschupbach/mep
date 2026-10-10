@@ -15,6 +15,7 @@
 #include "maxima_format.h"
 #include "r_format.h"
 #include "tcp_client.h"
+#include "test_runner.h"
 #include "treesitter.h"
 
 #include <algorithm>
@@ -2985,6 +2986,132 @@ int l_activity_test_failure_lines(lua_State *L) {
         lua_setfield(L, -2, "line");
         lua_rawseti(L, -2, static_cast<int>(i + 1));
     }
+    return 1;
+}
+
+namespace {
+// One meptest::CtestResult as {name, status, detail, seconds, output}.
+void PushCtestResult(lua_State *L, const meptest::CtestResult &r) {
+    lua_createtable(L, 0, 5);
+    lua_pushlstring(L, r.name.data(), r.name.size());
+    lua_setfield(L, -2, "name");
+    lua_pushlstring(L, r.status.data(), r.status.size());
+    lua_setfield(L, -2, "status");
+    lua_pushlstring(L, r.detail.data(), r.detail.size());
+    lua_setfield(L, -2, "detail");
+    lua_pushnumber(L, r.seconds);
+    lua_setfield(L, -2, "seconds");
+    lua_createtable(L, static_cast<int>(r.output.size()), 0);
+    for (size_t i = 0; i < r.output.size(); i++) {
+        lua_pushlstring(L, r.output[i].data(), r.output[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    lua_setfield(L, -2, "output");
+}
+
+void PushCtestStrings(lua_State *L, const std::vector<std::string> &items) {
+    lua_createtable(L, static_cast<int>(items.size()), 0);
+    for (size_t i = 0; i < items.size(); i++) {
+        lua_pushlstring(L, items[i].data(), items[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+}
+}  // namespace
+
+// mep.ctest_parse_list(json) -> array of {name, command, working_dir,
+// labels, target}, or nil when `json` isn't `ctest --show-only=json-v1`
+// output: see meptest::ParseCtestList. `target` is meptest::CtestBuildTarget.
+/**
+ * @brief Implements mep.ctest_parse_list(json): parses ctest's JSON test listing.
+ * @param L Lua state; arg 1 is the text `ctest --show-only=json-v1` printed.
+ * @return Number of values pushed (1: array of test tables, or nil if not a ctest listing).
+ */
+int l_ctest_parse_list(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    std::vector<meptest::CtestTest> tests;
+    if (!meptest::ParseCtestList(std::string(s, len), &tests)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, static_cast<int>(tests.size()), 0);
+    for (size_t i = 0; i < tests.size(); i++) {
+        const meptest::CtestTest &t = tests[i];
+        lua_createtable(L, 0, 5);
+        lua_pushlstring(L, t.name.data(), t.name.size());
+        lua_setfield(L, -2, "name");
+        PushCtestStrings(L, t.command);
+        lua_setfield(L, -2, "command");
+        lua_pushlstring(L, t.working_dir.data(), t.working_dir.size());
+        lua_setfield(L, -2, "working_dir");
+        PushCtestStrings(L, t.labels);
+        lua_setfield(L, -2, "labels");
+        std::string target = meptest::CtestBuildTarget(t);
+        lua_pushlstring(L, target.data(), target.size());
+        lua_setfield(L, -2, "target");
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.ctest_parse_line(line) -> {kind = 'start', name} | {kind = 'result',
+// name, status, detail, seconds} | nil: see meptest::ParseCtestLine.
+/**
+ * @brief Implements mep.ctest_parse_line(line): classifies one line of a live ctest run.
+ * @param L Lua state; arg 1 is one output line.
+ * @return Number of values pushed (1: a start/result table, or nil for any other line).
+ */
+int l_ctest_parse_line(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    meptest::CtestLine line = meptest::ParseCtestLine(std::string(s, len));
+    if (line.kind == meptest::CtestLine::Kind::Other) {
+        lua_pushnil(L);
+        return 1;
+    }
+    PushCtestResult(L, line.result);
+    lua_pushstring(L, line.kind == meptest::CtestLine::Kind::Start ? "start" : "result");
+    lua_setfield(L, -2, "kind");
+    return 1;
+}
+
+// mep.ctest_parse_output(lines) -> array of {name, status, detail, seconds,
+// output}: see meptest::ParseCtestOutput.
+/**
+ * @brief Implements mep.ctest_parse_output(lines): every test result in a ctest run, with its output.
+ * @param L Lua state; arg 1 is an array of the run's output lines.
+ * @return Number of values pushed (1: array of result tables, in run order).
+ */
+int l_ctest_parse_output(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> lines;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        lines.emplace_back(lua_isstring(L, -1) ? lua_tostring(L, -1) : "");
+        lua_pop(L, 1);
+    }
+    std::vector<meptest::CtestResult> results = meptest::ParseCtestOutput(lines);
+    lua_createtable(L, static_cast<int>(results.size()), 0);
+    for (size_t i = 0; i < results.size(); i++) {
+        PushCtestResult(L, results[i]);
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.ctest_name_regex(name) -> '^name$' with regex metacharacters escaped:
+// see meptest::CtestExactNameRegex.
+/**
+ * @brief Implements mep.ctest_name_regex(name): an anchored ctest -R pattern matching exactly one test.
+ * @param L Lua state; arg 1 is the test name.
+ * @return Number of values pushed (1: the regex string).
+ */
+int l_ctest_name_regex(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    std::string re = meptest::CtestExactNameRegex(std::string(s, len));
+    lua_pushlstring(L, re.data(), re.size());
     return 1;
 }
 
@@ -11784,6 +11911,51 @@ int l_menubar_toggle(lua_State *L) {
     return 0;
 }
 /**
+ * @brief Implements mep.sidebars_toggle(): hides every sidebar (sidebar panes in every tab, docked sidebars) or shows them all again where they were.
+ * @param L Lua state.
+ * @return Number of values pushed (1: false when there was nothing to hide, else true).
+ */
+int l_sidebars_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->ToggleAllSidebars() ? 1 : 0);
+    return 1;
+}
+/**
+ * @brief Implements mep.sidebars_hidden(): whether mep.sidebars_toggle currently has the sidebars hidden.
+ * @param L Lua state.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_sidebars_hidden(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->SidebarsHidden() ? 1 : 0);
+    return 1;
+}
+/**
+ * @brief Implements mep.titlebar_supported(): whether the window's own title bar (macOS's traffic-light strip) can be hidden here.
+ * @param L Lua state.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_titlebar_supported(lua_State *L) {
+    lua_pushboolean(L, gfx::SupportsWindowTitleBarToggle() ? 1 : 0);
+    return 1;
+}
+/**
+ * @brief Implements mep.titlebar_visible(): whether the window's own title bar is showing (always true where it can't be hidden).
+ * @param L Lua state.
+ * @return Number of values pushed (1: boolean).
+ */
+int l_titlebar_visible(lua_State *L) {
+    lua_pushboolean(L, gfx::IsWindowTitleBarVisible() ? 1 : 0);
+    return 1;
+}
+/**
+ * @brief Implements mep.titlebar_set_visible(on): shows or hides the window's own title bar; a no-op where unsupported.
+ * @param L Lua state; arg 1 is the boolean visibility.
+ * @return Number of values pushed (0).
+ */
+int l_titlebar_set_visible(lua_State *L) {
+    gfx::SetWindowTitleBarVisible(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+/**
  * @brief Implements mep.border_toggle(): hides the menu bar, tab bar and status line together if any is showing, otherwise shows all three.
  * @param L Lua state.
  * @return Number of values pushed (0).
@@ -14249,6 +14421,10 @@ const luaL_Reg kMepFuncs[] = {
     {"unsetenv", l_unsetenv},
     {"direnv_set_active", l_direnv_set_active},
     {"activity_test_failure_lines", l_activity_test_failure_lines},
+    {"ctest_parse_list", l_ctest_parse_list},
+    {"ctest_parse_line", l_ctest_parse_line},
+    {"ctest_parse_output", l_ctest_parse_output},
+    {"ctest_name_regex", l_ctest_name_regex},
     {"syntax_highlight_fallback", l_syntax_highlight_fallback},
     {"org_highlight_emphasis", l_org_highlight_emphasis},
     {"md_toggle_checkbox", l_md_toggle_checkbox},
@@ -14516,6 +14692,11 @@ const luaL_Reg kMepFuncs[] = {
     {"scratch", l_scratch},
     {"toggle_zen", l_toggle_zen},
     {"menubar_toggle", l_menubar_toggle},
+    {"sidebars_toggle", l_sidebars_toggle},
+    {"sidebars_hidden", l_sidebars_hidden},
+    {"titlebar_supported", l_titlebar_supported},
+    {"titlebar_visible", l_titlebar_visible},
+    {"titlebar_set_visible", l_titlebar_set_visible},
     {"border_toggle", l_border_toggle},
     {"tabbar_toggle", l_tabbar_toggle},
     {"tabbar_set_visible", l_tabbar_set_visible},

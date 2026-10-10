@@ -1803,6 +1803,12 @@ struct Pane {
     // to derive the budget from. 0 (wrap off) until first drawn, matching
     // main.cpp's own "wrap_cols <= 0 means wrap is off" convention.
     int wrap_cols = 0;
+    // mod1+Shift+s (Editor::ToggleAllSidebars): a sidebar pane taken off
+    // screen without leaving the split tree, so showing it again puts it
+    // back exactly where it was even if the panes around it were split,
+    // closed or resized meanwhile. Every layout pass skips hidden leaves
+    // (VisibleSplitChildren), which is all that hiding is. Runtime only.
+    bool hidden = false;
 };
 
 enum class SplitDir { Leaf, Horizontal, Vertical };
@@ -1824,6 +1830,21 @@ struct SplitNode {
     // changes instead of carrying stale ratios forward.
     std::vector<float> shares;
 };
+
+// Whether anything under `node` is on screen (some leaf not Pane::hidden).
+bool SplitNodeVisible(const struct SplitNode *node);
+// The children of split node `node` that are on screen, each with its
+// share of the split axis. Every layout pass (Editor::ComputeRects,
+// main.cpp's ComputePaneScreenRects and DrawPaneTree) lays out exactly
+// these, so the three agree on hidden panes. With nothing hidden the
+// shares are the node's own (`shares`, or equal) untouched; otherwise
+// the visible children's shares are rescaled to fill the axis between
+// them.
+struct VisibleSplitChild {
+    int index;    // into node->children
+    float share;  // of the node's extent along its split axis
+};
+std::vector<VisibleSplitChild> VisibleSplitChildren(const struct SplitNode *node);
 
 struct Tab {
     // Stable identity from Editor::next_tab_id_ (never an index: :tabdelete
@@ -12243,6 +12264,18 @@ public:
     // pane while one is maximized, maximizes that one instead, keeping the
     // original saved layout for the eventual restore.
     void TogglePaneMaximize();
+    // mod1+Shift+s: hides every sidebar at once -- each sidebar pane in
+    // every tab (IsNavigatorPaneBuffer: the file tree, git, Structure,
+    // Tests, Buffers, ...) via Pane::hidden, plus any docked sidebar --
+    // and the next call shows them all again where they were. A tab made
+    // only of sidebar panes keeps them (something has to be on screen).
+    // Returns false when there was nothing to hide.
+    bool ToggleAllSidebars();
+    bool SidebarsHidden() const { return sidebars_hidden_; }
+    // Called once a frame before layout: focusing a hidden pane (reopening
+    // that sidebar by its own command, mep.pane_focus_buffer, ...) shows
+    // it again in place rather than leaving the cursor somewhere unseen.
+    void RevealActivePaneIfHidden();
     bool IsPaneMaximized() const;
     void TogglePaneZoom() { zoomed_pane_id_ = (zoomed_pane_id_ == ActivePaneId()) ? -1 : ActivePaneId(); }
     int ZoomedPaneId() const { return zoomed_pane_id_; }
@@ -14882,6 +14915,10 @@ private:
     bool mod1_tap_armed_ = false;
     double mod1_tap_down_at_ = 0.0;
     int zoomed_pane_id_ = -1;  // see TogglePaneZoom/ZoomedPaneId
+    // ToggleAllSidebars: whether sidebars are currently hidden, and the
+    // docked sidebars it closed (to reopen on the way back).
+    bool sidebars_hidden_ = false;
+    std::vector<int> sidebars_hidden_docked_;
     // Speech-to-text recording indicator (Lua-driven, see mep.stt_toggle):
     // purely a display flag for DrawTabBar's mic icon -- the actual
     // recording process/job lives entirely in Lua, this just tells the

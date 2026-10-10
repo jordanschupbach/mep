@@ -20567,29 +20567,54 @@ void Editor::TickWorkspacePersistence(double now) {
 }
 
 
+bool SplitNodeVisible(const SplitNode *node) {
+    if (node->dir == SplitDir::Leaf) return !node->pane.hidden;
+    for (const auto &child : node->children) {
+        if (SplitNodeVisible(child.get())) return true;
+    }
+    return false;
+}
+
+std::vector<VisibleSplitChild> VisibleSplitChildren(const SplitNode *node) {
+    std::vector<VisibleSplitChild> out;
+    const size_t n = node->children.size();
+    if (n == 0) return out;
+    const bool has_shares = node->shares.size() == n;
+    float visible_total = 0.0f;
+    for (size_t i = 0; i < n; i++) {
+        if (!SplitNodeVisible(node->children[i].get())) continue;
+        const float share = has_shares ? node->shares[i] : 1.0f / static_cast<float>(n);
+        out.push_back({static_cast<int>(i), share});
+        visible_total += share;
+    }
+    // Rescale only when something is actually hidden, so an ordinary
+    // layout keeps its exact shares (even ones that don't quite sum to 1).
+    if (out.size() < n && visible_total > 0.0f) {
+        for (auto &c : out) c.share /= visible_total;
+    }
+    return out;
+}
+
 void Editor::ComputeRects(const SplitNode *node, float x0, float y0, float x1, float y1,
                            std::vector<PaneRect> &out) const {
     if (node->dir == SplitDir::Leaf) {
-        out.push_back({node->pane.id, x0, y0, x1, y1});
+        if (!node->pane.hidden) out.push_back({node->pane.id, x0, y0, x1, y1});
         return;
     }
-    int n = static_cast<int>(node->children.size());
-    if (n == 0) return;
-    bool has_shares = node->shares.size() == static_cast<size_t>(n);
+    const std::vector<VisibleSplitChild> vis = VisibleSplitChildren(node);
+    const size_t n = vis.size();
     if (node->dir == SplitDir::Horizontal) {
         float y = y0;
-        for (int i = 0; i < n; i++) {
-            float h = has_shares ? (y1 - y0) * node->shares[static_cast<size_t>(i)] : (y1 - y0) / static_cast<float>(n);
-            float next_y = (i == n - 1) ? y1 : y + h;
-            ComputeRects(node->children[static_cast<size_t>(i)].get(), x0, y, x1, next_y, out);
+        for (size_t k = 0; k < n; k++) {
+            float next_y = (k == n - 1) ? y1 : y + (y1 - y0) * vis[k].share;
+            ComputeRects(node->children[static_cast<size_t>(vis[k].index)].get(), x0, y, x1, next_y, out);
             y = next_y;
         }
     } else {
         float x = x0;
-        for (int i = 0; i < n; i++) {
-            float w = has_shares ? (x1 - x0) * node->shares[static_cast<size_t>(i)] : (x1 - x0) / static_cast<float>(n);
-            float next_x = (i == n - 1) ? x1 : x + w;
-            ComputeRects(node->children[static_cast<size_t>(i)].get(), x, y0, next_x, y1, out);
+        for (size_t k = 0; k < n; k++) {
+            float next_x = (k == n - 1) ? x1 : x + (x1 - x0) * vis[k].share;
+            ComputeRects(node->children[static_cast<size_t>(vis[k].index)].get(), x, y0, next_x, y1, out);
             x = next_x;
         }
     }
@@ -20908,6 +20933,96 @@ void RestoreShares(SplitNode *node, const std::vector<std::vector<float>> &saved
 }  // namespace
 
 bool Editor::IsPaneMaximized() const { return ActiveTab().maximized_pane_id >= 0; }
+
+namespace {
+// Every tab in every workspace of every project -- ToggleAllSidebars'
+// hidden state is editor-wide, so switching tab or workspace while
+// sidebars are hidden doesn't bring another tab's back.
+template <typename Fn>
+void ForEachTab(std::vector<Project> &projects, Fn fn) {
+    for (Project &project : projects) {
+        for (Workspace &ws : project.workspaces) {
+            for (Tab &tab : ws.tabs) fn(tab);
+        }
+    }
+}
+
+void CollectLeafPanes(SplitNode *node, std::vector<Pane *> &out) {
+    if (node->dir == SplitDir::Leaf) {
+        out.push_back(&node->pane);
+        return;
+    }
+    for (auto &child : node->children) CollectLeafPanes(child.get(), out);
+}
+}  // namespace
+
+bool Editor::ToggleAllSidebars() {
+    // Every hidden sidebar may since have been reopened one by one
+    // (RevealActivePaneIfHidden); then there is nothing left to show and
+    // this press should hide them again rather than do nothing.
+    if (sidebars_hidden_ && sidebars_hidden_docked_.empty()) {
+        bool any_hidden = false;
+        ForEachTab(projects_, [&](Tab &tab) {
+            std::vector<Pane *> leaves;
+            if (tab.root) CollectLeafPanes(tab.root.get(), leaves);
+            for (Pane *pane : leaves) any_hidden = any_hidden || pane->hidden;
+        });
+        if (!any_hidden) sidebars_hidden_ = false;
+    }
+    if (sidebars_hidden_) {
+        ForEachTab(projects_, [](Tab &tab) {
+            std::vector<Pane *> leaves;
+            if (tab.root) CollectLeafPanes(tab.root.get(), leaves);
+            for (Pane *pane : leaves) pane->hidden = false;
+        });
+        for (int id : sidebars_hidden_docked_) OpenSidebar(id, false);
+        sidebars_hidden_docked_.clear();
+        sidebars_hidden_ = false;
+        return true;
+    }
+    bool hid_any = false;
+    ForEachTab(projects_, [&](Tab &tab) {
+        if (!tab.root) return;
+        std::vector<Pane *> leaves;
+        CollectLeafPanes(tab.root.get(), leaves);
+        std::vector<Pane *> sidebars;
+        for (Pane *pane : leaves) {
+            if (!pane->hidden && IsNavigatorPaneBuffer(pane->buffer_id)) sidebars.push_back(pane);
+        }
+        // Leave a tab that is nothing but sidebars alone: hiding them all
+        // would leave the tab blank with nowhere for the cursor to be.
+        if (sidebars.empty() || sidebars.size() == leaves.size()) return;
+        for (Pane *pane : sidebars) pane->hidden = true;
+        hid_any = true;
+        // The cursor can't stay in a pane that's no longer drawn: move it
+        // to the first visible one (RevealActivePaneIfHidden would
+        // otherwise just show the pane again).
+        const SplitNode *active = FindNode(tab.root.get(), tab.active_pane_id);
+        if (active && active->pane.hidden) {
+            for (Pane *pane : leaves) {
+                if (!pane->hidden) {
+                    tab.active_pane_id = pane->id;
+                    break;
+                }
+            }
+        }
+    });
+    for (const SidebarInstance &sb : sidebars_) {
+        if (sb.open && !sb.popout_only) sidebars_hidden_docked_.push_back(sb.id);
+    }
+    for (int id : sidebars_hidden_docked_) CloseSidebar(id);
+    if (!hid_any && sidebars_hidden_docked_.empty()) return false;
+    sidebars_hidden_ = true;
+    SyncModeToActivePaneBuffer();
+    return true;
+}
+
+void Editor::RevealActivePaneIfHidden() {
+    Tab &tab = ActiveTab();
+    if (!tab.root) return;
+    SplitNode *node = FindNode(tab.root.get(), tab.active_pane_id);
+    if (node && node->pane.hidden) node->pane.hidden = false;
+}
 
 void Editor::TogglePaneMaximize() {
     Tab &tab = ActiveTab();

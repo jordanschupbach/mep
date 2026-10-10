@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (221)
+* The bindings (230)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -75,6 +75,10 @@ that it does nothing.
 | =mep.clipboard_set= | copies text to the system clipboard |
 | =mep.clock= | monotonic seconds, read at the call (unlike mep.now(), which is fixed per frame) |
 | =mep.cpu_count= | the number of hardware threads, at least 1 |
+| =mep.ctest_name_regex= | an anchored ctest -R pattern matching exactly one test |
+| =mep.ctest_parse_line= | classifies one line of a live ctest run |
+| =mep.ctest_parse_list= | parses ctest's JSON test listing |
+| =mep.ctest_parse_output= | every test result in a ctest run, with its output |
 | =mep.current_buffer= | returns the active pane's buffer id |
 | =mep.current_pane_id= | returns the active pane's id |
 | =mep.current_tab_id= | returns the active tab's stable id |
@@ -168,6 +172,8 @@ that it does nothing.
 | =mep.settings_open= | opens the typed-settings popup on |
 | =mep.settings_path= | -- |
 | =mep.settings_save= | persists the Settings panel's values (a no-op under wasm) |
+| =mep.sidebars_hidden= | whether mep.sidebars_toggle currently has the sidebars hidden |
+| =mep.sidebars_toggle= | hides every sidebar (sidebar panes in every tab, docked sidebars) or shows them all again where they were |
 | =mep.sketch_add_arc= | entity_id |
 | =mep.sketch_add_circle= | entity_id |
 | =mep.sketch_add_ellipse= | entity_id |
@@ -203,6 +209,9 @@ that it does nothing.
 | =mep.termsend_register= | registers a source buffer's default termsend target |
 | =mep.termsend_target= | looks up the registered termsend target buffer for a source buffer |
 | =mep.termsend_unregister= | removes a source buffer's registered termsend target |
+| =mep.titlebar_set_visible= | shows or hides the window's own title bar; a no-op where unsupported |
+| =mep.titlebar_supported= | whether the window's own title bar (macOS's traffic-light strip) can be hidden here |
+| =mep.titlebar_visible= | whether the window's own title bar is showing (always true where it can't be hidden) |
 | =mep.todo_scan_matches= | scans the current buffer for TODO/FIXME/HACK/NOTE-style markers |
 | =mep.toggle_zen= | -- |
 | =mep.tree_build_rows= | builds the flattened row list for the file-tree sidebar |

@@ -44,6 +44,35 @@ again brings them all back. It applies to every pane at once, works in any
 mode, and is reachable from Lua as =mep.panebar_toggle()=,
 =mep.panebar_set_visible(on)= and =mep.panebar_visible()=.
 
+* Hiding all the sidebars
+
+=mod1+Shift+s= (=:MepSidebars=, also the Window menu's /Toggle Sidebars/)
+hides every sidebar at once -- the file tree, git, Structure, Tests, Todo,
+Buffers and the rest, whether they're open as panes or docked -- so the
+document panes get the whole window. Press it again and each comes back
+exactly where it was, at the size it was, even if you split or closed
+document panes in the meantime. It works in any mode, and in every tab.
+
+Reopening one sidebar while they're hidden (its own key or command) brings
+just that one back, in its old place. A tab that has nothing but sidebar
+panes keeps them, so there's always something on screen. From Lua:
+=mep.sidebars_toggle()= (false when there was nothing to hide) and
+=mep.sidebars_hidden()=.
+
+* Hiding the window title bar (macOS)
+
+On macOS mep's window starts without a title bar -- no close, minimize and
+zoom buttons, the content running right up to the top edge, like iTerm2's
+"No Title Bar" style. The Window menu's /Toggle Title Bar/ item,
+=:MepTitleBar= and =<leader>uw= bring it back (and take it away again).
+The choice is saved with the other settings, so it sticks across restarts;
+it is also the /Window title bar/ row of =:MepSettings=.
+
+With no title bar there is nothing to drag, so =Ctrl+Cmd= and a drag
+anywhere in the window moves it. From Lua: =mep.titlebar_toggle()=,
+=mep.titlebar_set_visible(on)= and =mep.titlebar_visible()=. On other
+platforms the window manager owns the title bar and these do nothing.
+
 * Resizing
 
 =mod1+Shift+h j k l= moves the split boundary between the current pane and

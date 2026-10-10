@@ -1407,12 +1407,14 @@ std::vector<PaneBorderRect> g_pane_border_rects;
  */
 void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h) {
     if (node->dir == SplitDir::Leaf) {
-        g_pane_screen_rects.push_back({node->pane.id, gfx::Rectangle{x, y, w, h}});
+        if (!node->pane.hidden) g_pane_screen_rects.push_back({node->pane.id, gfx::Rectangle{x, y, w, h}});
         return;
     }
-    int n = static_cast<int>(node->children.size());
+    // Only the children on screen (VisibleSplitChildren -- a sidebar pane
+    // hidden by mod1+Shift+s gets no room at all and no gap).
+    const std::vector<VisibleSplitChild> vis = VisibleSplitChildren(node);
+    const int n = static_cast<int>(vis.size());
     if (n == 0) return;
-    bool has_shares = node->shares.size() == static_cast<size_t>(n);
     constexpr float kBorderGrabPx = 6.0f;
     // Shares divide the FULL extent (matching Editor::ComputeRects, which
     // has no notion of pixel gaps), so the gap space is carved out of that
@@ -1420,35 +1422,41 @@ void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h)
     // width/height on screen is unchanged, just redistributed between gaps
     // and pane content.
     float total_gap = kPaneGapPx * static_cast<float>(std::max(0, n - 1));
+    // A border is only draggable between two children that are siblings
+    // in the tree too: resizing moves share from child `index` to child
+    // `index + 1`, which isn't the neighbour on screen across a hidden one.
+    auto resizable = [&](int k) { return vis[static_cast<size_t>(k) + 1].index == vis[static_cast<size_t>(k)].index + 1; };
     if (node->dir == SplitDir::Horizontal) {
         float avail = std::max(0.0f, h - total_gap);
         float cy = y;
-        for (int i = 0; i < n; i++) {
-            float ch = has_shares ? avail * node->shares[static_cast<size_t>(i)] : avail / static_cast<float>(n);
-            float child_end = (i == n - 1) ? y + h : cy + ch;
-            ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), x, cy, w, child_end - cy);
-            if (i < n - 1) {
-                float ch_next = has_shares ? avail * node->shares[static_cast<size_t>(i) + 1] : avail / static_cast<float>(n);
+        for (int k = 0; k < n; k++) {
+            const VisibleSplitChild &c = vis[static_cast<size_t>(k)];
+            float ch = avail * c.share;
+            float child_end = (k == n - 1) ? y + h : cy + ch;
+            ComputePaneScreenRects(node->children[static_cast<size_t>(c.index)].get(), x, cy, w, child_end - cy);
+            if (k < n - 1 && resizable(k)) {
+                float ch_next = avail * vis[static_cast<size_t>(k) + 1].share;
                 float gap_mid = child_end + kPaneGapPx / 2.0f;
-                g_pane_border_rects.push_back({node, i, false, gfx::Rectangle{x, gap_mid - kBorderGrabPx / 2.0f, w, kBorderGrabPx},
+                g_pane_border_rects.push_back({node, c.index, false, gfx::Rectangle{x, gap_mid - kBorderGrabPx / 2.0f, w, kBorderGrabPx},
                                                 gfx::Rectangle{x, cy, w, ch + kPaneGapPx + ch_next}});
             }
-            cy = child_end + (i < n - 1 ? kPaneGapPx : 0.0f);
+            cy = child_end + (k < n - 1 ? kPaneGapPx : 0.0f);
         }
     } else {
         float avail = std::max(0.0f, w - total_gap);
         float cx = x;
-        for (int i = 0; i < n; i++) {
-            float cw = has_shares ? avail * node->shares[static_cast<size_t>(i)] : avail / static_cast<float>(n);
-            float child_end = (i == n - 1) ? x + w : cx + cw;
-            ComputePaneScreenRects(node->children[static_cast<size_t>(i)].get(), cx, y, child_end - cx, h);
-            if (i < n - 1) {
-                float cw_next = has_shares ? avail * node->shares[static_cast<size_t>(i) + 1] : avail / static_cast<float>(n);
+        for (int k = 0; k < n; k++) {
+            const VisibleSplitChild &c = vis[static_cast<size_t>(k)];
+            float cw = avail * c.share;
+            float child_end = (k == n - 1) ? x + w : cx + cw;
+            ComputePaneScreenRects(node->children[static_cast<size_t>(c.index)].get(), cx, y, child_end - cx, h);
+            if (k < n - 1 && resizable(k)) {
+                float cw_next = avail * vis[static_cast<size_t>(k) + 1].share;
                 float gap_mid = child_end + kPaneGapPx / 2.0f;
-                g_pane_border_rects.push_back({node, i, true, gfx::Rectangle{gap_mid - kBorderGrabPx / 2.0f, y, kBorderGrabPx, h},
+                g_pane_border_rects.push_back({node, c.index, true, gfx::Rectangle{gap_mid - kBorderGrabPx / 2.0f, y, kBorderGrabPx, h},
                                                 gfx::Rectangle{cx, y, cw + kPaneGapPx + cw_next, h}});
             }
-            cx = child_end + (i < n - 1 ? kPaneGapPx : 0.0f);
+            cx = child_end + (k < n - 1 ? kPaneGapPx : 0.0f);
         }
     }
 }
@@ -12565,7 +12573,28 @@ const char *kBuiltinMenubarBindings =
     // The header strip above every pane, all panes at once.
     "mep.command('MepPaneBar', mep.panebar_toggle)\n"
     "mep.leader_map('up', 'Toggle the pane header bars', mep.panebar_toggle)\n"
-    "mep.map_mod1('t', mep.panebar_toggle)\n";
+    "mep.map_mod1('t', mep.panebar_toggle)\n"
+    // The window's own title bar (macOS's traffic lights), hidden there by
+    // default. Through mep.settings_set when the Settings row exists, so
+    // the choice survives a restart; elsewhere there is nothing to toggle.
+    "function mep.titlebar_toggle()\n"
+    "  if not mep.titlebar_supported() then\n"
+    "    mep.notify('The window title bar can only be hidden on macOS', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local v = mep.titlebar_visible() and 'off' or 'on'\n"
+    "  if not (mep.settings_set and mep.settings_set('window_title_bar', v)) then mep.titlebar_set_visible(v == 'on') end\n"
+    "end\n"
+    "mep.command('MepTitleBar', mep.titlebar_toggle)\n"
+    "mep.leader_map('uw', 'Toggle the window title bar', mep.titlebar_toggle)\n"
+    // Every sidebar at once -- file tree, git, Structure, Tests, Todo,
+    // Buffers ..., as panes or docked -- hidden and brought back exactly
+    // where they were (Editor::ToggleAllSidebars). Any mode.
+    "function mep.sidebars_toggle_notify()\n"
+    "  if not mep.sidebars_toggle() then mep.notify('No sidebars open') end\n"
+    "end\n"
+    "mep.command('MepSidebars', mep.sidebars_toggle_notify)\n"
+    "mep.map_mod1('S-s', mep.sidebars_toggle_notify)\n";
 
 // DAP client (Phase 26, extended for full debugging support -- see
 // TODO.org's "Add DAP debugging capabilities"): reuses Phase 20's
@@ -27665,23 +27694,121 @@ const char *kBuiltinActivityBar =
     "  if not h or not h.todo then mep.notify('Not a TODO headline', 'warn') return end\n"
     "  mep.activity_todo_start_agent(h.title)\n"
     "end)\n"
-    // Tests panel: a configured command, else auto-detected from
-    // project marker files (CMakeLists.txt -> ctest, package.json ->
-    // npm test). Failure lines get a click handler; since sidebar
-    // widgets have no multi-line detail view, "full output" is a toast
-    // of that one line -- see the phase's scope-cut note.
+    // Tests panel. In a CMake project with a configured build directory (the
+    // first of mep.opt.lang_test_build_dirs holding a CTestTestfile.cmake, or
+    // mep.activity_test_build_dir), it lists every test ctest knows about
+    // (`ctest --show-only=json-v1`, parsed by mep.ctest_parse_list --
+    // test_runner.cpp) as its own row, marked ○ not run / … queued /
+    // ● running / ✓ passed / ✗ failed. Enter on a row builds that test's
+    // CMake target and runs just that test (`ctest -R ^name$`); a, f and R run
+    // everything, re-run the failures, and re-read the list. Marks update live
+    // as ctest's own Start/Result lines stream in (mep.ctest_parse_line), and
+    // each test's output -- what --output-on-failure printed, or ctest's own
+    // "Could not find executable" for an unbuilt one (mep.ctest_parse_output)
+    // -- is kept for o / the popout preview. Anywhere else (no CMake build
+    // dir), it falls back to the old one-shot runner: a configured command,
+    // else `npm test` for a package.json, with failure lines listed.
     "mep.activity_test_cmd = nil\n"
+    "mep.activity_test_build_dir = nil\n"
     "local mep_activity_test_sidebar_id = nil\n"
     "local mep_activity_test_results = {}\n"
-    "local function mep_activity_test_detect_cmd()\n"
-    "  if mep.activity_test_cmd then return mep.activity_test_cmd end\n"
-    "  local f = io.open('CMakeLists.txt', 'r')\n"
-    "  if f then f:close() return {'ctest', '--test-dir', 'build'} end\n"
-    "  local f2 = io.open('package.json', 'r')\n"
-    "  if f2 then f2:close() return {'npm', 'test'} end\n"
+    "local mep_at = {dir = nil, tests = nil, state = {}, targets = {}, job = nil, phase = nil, log = {}, error = nil}\n"
+    "local function mep_at_shq(s)\n"
+    "  return \"'\" .. tostring(s):gsub(\"'\", \"'\\\\''\") .. \"'\"\n"
+    "end\n"
+    "local function mep_at_has_file(dir, name)\n"
+    "  local ok, list = pcall(mep.list_dir, dir)\n"
+    "  if not ok or type(list) ~= 'table' then return false end\n"
+    "  for _, e in ipairs(list) do\n"
+    "    if e.name == name then return true end\n"
+    "  end\n"
+    "  return false\n"
+    "end\n"
+    "local function mep_at_find_dir()\n"
+    "  if mep.activity_test_cmd then return nil end\n"
+    "  if mep.activity_test_build_dir then return mep.activity_test_build_dir end\n"
+    "  for _, d in ipairs(mep.opt.lang_test_build_dirs or {'build'}) do\n"
+    "    if mep_at_has_file(d, 'CTestTestfile.cmake') then return d end\n"
+    "  end\n"
     "  return nil\n"
     "end\n"
-    "function mep.activity_test_panel()\n"
+    // Every CMake target configured in the build dir, as a set: each one has a
+    // CMakeFiles/<target>.dir whether or not it's ever been built (Ninja and
+    // Make alike -- the same fact mep_lt_c_cmake_target relies on), checked
+    // one subdirectory deep for add_subdirectory projects. Only a test whose
+    // target is in here gets a `cmake --build --target` before it runs; a test
+    // whose command is a script or a system binary is just run.
+    "local function mep_at_scan_targets(dir)\n"
+    "  local set = {}\n"
+    "  local function scan(d)\n"
+    "    local ok, list = pcall(mep.list_dir, d .. '/CMakeFiles')\n"
+    "    if not ok or type(list) ~= 'table' then return end\n"
+    "    for _, e in ipairs(list) do\n"
+    "      local t = e.is_dir and e.name:match('^(.*)%.dir$')\n"
+    "      if t then set[t] = true end\n"
+    "    end\n"
+    "  end\n"
+    "  scan(dir)\n"
+    "  local ok, list = pcall(mep.list_dir, dir)\n"
+    "  if ok and type(list) == 'table' then\n"
+    "    for _, e in ipairs(list) do\n"
+    "      if e.is_dir and e.name ~= 'CMakeFiles' and e.name ~= '_deps' and e.name ~= 'Testing' then scan(dir .. '/' .. e.name) end\n"
+    "    end\n"
+    "  end\n"
+    "  return set\n"
+    "end\n"
+    "local mep_at_marks = {notrun = '○', queued = '…', running = '●', passed = '✓', failed = '✗', timeout = '✗', skipped = '-'}\n"
+    "local mep_at_hls = {running = 'Cyan', passed = 'Add', failed = 'Error', timeout = 'Error'}\n"
+    "local function mep_at_status(name)\n"
+    "  local s = mep_at.state[name]\n"
+    "  return s and s.status or 'notrun'\n"
+    "end\n"
+    "local function mep_at_ctest_widgets()\n"
+    "  local widgets = {}\n"
+    "  if not mep_at.dir then\n"
+    "    widgets[1] = {id = 'none', text = '(no CMake build dir with tests -- tried ' .. table.concat(mep.opt.lang_test_build_dirs or {}, ', ') .. ')'}\n"
+    "    return widgets\n"
+    "  end\n"
+    "  if not mep_at.tests then\n"
+    "    widgets[1] = {id = 'summary', text = mep_at.error or ('listing tests in ' .. mep_at.dir .. '…'), hl = mep_at.error and 'Error' or nil}\n"
+    "    return widgets\n"
+    "  end\n"
+    "  local n = {passed = 0, failed = 0, notrun = 0}\n"
+    "  for _, t in ipairs(mep_at.tests) do\n"
+    "    local st = mep_at_status(t.name)\n"
+    "    if st == 'passed' then n.passed = n.passed + 1\n"
+    "    elseif st == 'failed' or st == 'timeout' then n.failed = n.failed + 1\n"
+    "    elseif st == 'notrun' then n.notrun = n.notrun + 1 end\n"
+    "  end\n"
+    // An absolute mep.activity_test_build_dir would push the counts off
+    // the edge of a 44-column sidebar; its last two components say enough.
+    "  local shown = mep_at.dir\n"
+    "  if #shown > 20 then shown = shown:match('([^/]+/[^/]+)/*$') or shown end\n"
+    "  local summary = shown .. '  ✓ ' .. n.passed .. '  ✗ ' .. n.failed .. '  ○ ' .. n.notrun\n"
+    "  if mep_at.phase then summary = summary .. '  (' .. mep_at.phase .. ')' end\n"
+    "  widgets[1] = {id = 'summary', text = summary, hl = n.failed > 0 and 'Error' or nil,\n"
+    "    tooltip = 'Enter: run all  o: last run output', on_click = function() mep.activity_test_run_all() end}\n"
+    "  if #mep_at.tests == 0 then\n"
+    "    widgets[2] = {id = 'empty', text = '(ctest lists no tests -- enable_testing() + add_test())'}\n"
+    "  end\n"
+    "  for _, t in ipairs(mep_at.tests) do\n"
+    "    local st = mep_at_status(t.name)\n"
+    "    local s = mep_at.state[t.name]\n"
+    "    local text = (mep_at_marks[st] or '?') .. ' ' .. t.name\n"
+    "    if s and s.seconds and (st == 'passed' or st == 'failed' or st == 'timeout') then\n"
+    "      text = text .. string.format('  %.2fs', s.seconds)\n"
+    "    end\n"
+    // ctest's "Subprocess aborted***Exception:" -> "Subprocess aborted".
+    "    if s and s.status == 'failed' and s.detail and s.detail ~= 'Failed' then\n"
+    "      text = text .. '  ' .. (s.detail:gsub('%*%*%*.*$', ''):gsub(':$', ''))\n"
+    "    end\n"
+    "    widgets[#widgets + 1] = {id = 't:' .. t.name, text = text, hl = mep_at_hls[st],\n"
+    "      tooltip = 'Enter: build + run this test  o: its output',\n"
+    "      on_click = function() mep.activity_test_run_one(t.name) end}\n"
+    "  end\n"
+    "  return widgets\n"
+    "end\n"
+    "local function mep_at_fallback_widgets()\n"
     "  local widgets, r = {}, mep_activity_test_results\n"
     "  if r.code ~= nil then\n"
     "    widgets[#widgets + 1] = {id = 'summary', text = (r.code == 0 and 'PASSED' or 'FAILED') .. ' (exit ' .. r.code .. ')'}\n"
@@ -27695,11 +27822,220 @@ const char *kBuiltinActivityBar =
     "  else\n"
     "    widgets[#widgets + 1] = {id = 'none', text = '(no results yet -- run tests)'}\n"
     "  end\n"
-    "  if not mep_activity_test_sidebar_id then mep_activity_test_sidebar_id = mep.sidebar_create('Tests', 'right', 44) end\n"
+    "  return widgets\n"
+    "end\n"
+    // The output o shows / the popout previews for a row: one test's own
+    // output, or the whole last run's log for the summary row.
+    "local function mep_at_output_for(widget_id)\n"
+    "  if widget_id == 'summary' then return 'last run', mep_at.log end\n"
+    "  local name = widget_id and widget_id:match('^t:(.*)$')\n"
+    "  if not name then return nil end\n"
+    "  local s = mep_at.state[name]\n"
+    "  if not s then return name, {'(not run yet -- Enter runs it)'} end\n"
+    "  if s.status == 'queued' or s.status == 'running' then return name, {'(' .. s.status .. ')'} end\n"
+    "  local out = s.output or {}\n"
+    "  if #out == 0 then out = {'(' .. (s.detail or s.status) .. ', no output)'} end\n"
+    "  return name, out\n"
+    "end\n"
+    "local function mep_at_render()\n"
+    "  if not mep_activity_test_sidebar_id then\n"
+    "    mep_activity_test_sidebar_id = mep.sidebar_create('Tests', 'right', 44)\n"
+    "    mep.sidebar_set_on_key(mep_activity_test_sidebar_id, function(k) mep.activity_test_on_key(k) end)\n"
+    "    mep.sidebar_set_on_preview(mep_activity_test_sidebar_id, function(wid)\n"
+    "      local title, lines = mep_at_output_for(wid)\n"
+    "      mep.sidebar_set_preview(lines and table.concat(lines, '\\n') or '', nil, title)\n"
+    "    end)\n"
+    "    mep.sidebar_set_help(mep_activity_test_sidebar_id, {\n"
+    "      {'Enter', 'build + run the test (summary row: run all)'}, {'a', 'run all'}, {'f', 're-run failed'},\n"
+    "      {'o', 'show output'}, {'x', 'stop the run'}, {'R', 'reload the test list'}})\n"
+    "  end\n"
+    "  local widgets = mep_at.dir and mep_at_ctest_widgets() or mep_at_fallback_widgets()\n"
     "  mep.sidebar_set_sections(mep_activity_test_sidebar_id, {{id = 'tests', title = '', collapsed = false, widgets = widgets}})\n"
-    "  mep.sidebar_open(mep_activity_test_sidebar_id)\n"
+    "end\n"
+    // Re-reads the test list (and the configured-targets set) from ctest.
+    // Results already collected for tests still listed are kept.
+    "function mep.activity_test_reload()\n"
+    "  mep_at.dir = mep_at_find_dir()\n"
+    "  if not mep_at.dir then mep_at_render() return end\n"
+    "  mep_at.targets = mep_at_scan_targets(mep_at.dir)\n"
+    "  mep_at.error = nil\n"
+    "  local chunks = {}\n"
+    "  mep.job_start({'ctest', '--test-dir', mep_at.dir, '--show-only=json-v1'}, {\n"
+    "    on_stdout = function(line) chunks[#chunks + 1] = line end,\n"
+    "    on_exit = function(code)\n"
+    "      local tests = mep.ctest_parse_list(table.concat(chunks, '\\n'))\n"
+    "      if tests then\n"
+    "        mep_at.tests = tests\n"
+    "      else\n"
+    "        mep_at.tests = nil\n"
+    "        mep_at.error = 'ctest --show-only failed in ' .. mep_at.dir .. ' (exit ' .. tostring(code) .. ')'\n"
+    "      end\n"
+    "      mep_at_render()\n"
+    "    end,\n"
+    "  })\n"
+    "  mep_at_render()\n"
+    "end\n"
+    "local function mep_at_test(name)\n"
+    "  for _, t in ipairs(mep_at.tests or {}) do\n"
+    "    if t.name == name then return t end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // Runs `names` (nil = every test): builds their configured targets first,
+    // then ctest, all as one `sh -c` job so a build failure stops the tests
+    // from running against a stale binary. One run at a time.
+    "local function mep_at_run(names)\n"
+    "  if mep_at.job and mep.job_is_running(mep_at.job) then\n"
+    "    mep.notify('Tests are already running (x stops them)', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if not mep_at.tests then mep.notify('No test list yet', 'warn') return end\n"
+    "  local selected = {}\n"
+    "  if names then\n"
+    "    for _, n in ipairs(names) do\n"
+    "      local t = mep_at_test(n)\n"
+    "      if t then selected[#selected + 1] = t end\n"
+    "    end\n"
+    "  else\n"
+    "    selected = mep_at.tests\n"
+    "  end\n"
+    "  if #selected == 0 then mep.notify('No tests to run', 'warn') return end\n"
+    "  local targets, seen = {}, {}\n"
+    "  for _, t in ipairs(selected) do\n"
+    "    if mep_at.targets[t.target] and not seen[t.target] then\n"
+    "      seen[t.target] = true\n"
+    "      targets[#targets + 1] = mep_at_shq(t.target)\n"
+    "    end\n"
+    "  end\n"
+    "  local dir = mep_at_shq(mep_at.dir)\n"
+    "  local ctest = 'ctest --test-dir ' .. dir .. ' --output-on-failure'\n"
+    "  if names then\n"
+    "    local res = {}\n"
+    "    for _, t in ipairs(selected) do res[#res + 1] = mep.ctest_name_regex(t.name) end\n"
+    "    ctest = ctest .. ' -R ' .. mep_at_shq(table.concat(res, '|'))\n"
+    "  end\n"
+    "  if mep.opt.activity_test_jobs and mep.opt.activity_test_jobs > 1 then\n"
+    "    ctest = ctest .. ' -j ' .. math.floor(mep.opt.activity_test_jobs)\n"
+    "  end\n"
+    "  local script = ctest\n"
+    "  if #targets > 0 then\n"
+    "    script = 'cmake --build ' .. dir .. ' --target ' .. table.concat(targets, ' ') .. ' && ' .. ctest\n"
+    "  end\n"
+    "  for _, t in ipairs(selected) do\n"
+    "    mep_at.state[t.name] = {status = 'queued'}\n"
+    "  end\n"
+    "  mep_at.log = {'$ ' .. script}\n"
+    "  mep_at.phase = #targets > 0 and 'building' or 'running'\n"
+    "  local function on_line(line)\n"
+    "    mep_at.log[#mep_at.log + 1] = line\n"
+    "    local p = mep.ctest_parse_line(line)\n"
+    "    if not p then return end\n"
+    "    mep_at.phase = 'running'\n"
+    "    if p.kind == 'start' then\n"
+    "      mep_at.state[p.name] = {status = 'running'}\n"
+    "    else\n"
+    "      mep_at.state[p.name] = {status = p.status, detail = p.detail, seconds = p.seconds}\n"
+    "    end\n"
+    "    mep_at_render()\n"
+    "  end\n"
+    "  mep_at.job = mep.job_start({'sh', '-c', script}, {\n"
+    "    on_stdout = on_line,\n"
+    "    on_stderr = on_line,\n"
+    "    on_exit = function(code)\n"
+    "      mep_at.job = nil\n"
+    "      mep_at.phase = nil\n"
+    "      for _, r in ipairs(mep.ctest_parse_output(mep_at.log)) do\n"
+    "        mep_at.state[r.name] = {status = r.status, detail = r.detail, seconds = r.seconds, output = r.output}\n"
+    "      end\n"
+    // Whatever never got a Result line: the build failed (so ctest never
+    // ran), or the run was stopped. Their output is the run's whole log,
+    // which is where the compiler error is.
+    "      local unfinished, failed = 0, 0\n"
+    "      for _, t in ipairs(selected) do\n"
+    "        local s = mep_at.state[t.name]\n"
+    "        if s.status == 'queued' or s.status == 'running' then\n"
+    "          unfinished = unfinished + 1\n"
+    "          mep_at.state[t.name] = {status = code == -1 and 'notrun' or 'failed',\n"
+    "            detail = code == -1 and 'stopped' or 'build failed', output = mep_at.log}\n"
+    "        end\n"
+    "        local st = mep_at.state[t.name].status\n"
+    "        if st == 'failed' or st == 'timeout' or st == 'notrun' then failed = failed + 1 end\n"
+    "      end\n"
+    "      mep_at_render()\n"
+    "      if unfinished > 0 and code ~= -1 then\n"
+    "        mep.notify('Build failed -- o on any of its tests shows the log', 'error')\n"
+    "      elseif code == -1 then\n"
+    "        mep.notify('Test run stopped', 'warn')\n"
+    "      elseif failed == 0 then\n"
+    "        mep.notify(#selected .. (#selected == 1 and ' test passed' or ' tests passed'))\n"
+    "      else\n"
+    "        mep.notify(failed .. ' of ' .. #selected .. ' failed -- o shows output', 'error')\n"
+    "      end\n"
+    "    end,\n"
+    "  })\n"
+    "  mep_at_render()\n"
+    "end\n"
+    "function mep.activity_test_run_one(name) mep_at_run({name}) end\n"
+    "function mep.activity_test_run_all()\n"
+    "  if not mep_at.dir then mep.activity_test_run() return end\n"
+    "  mep_at_run(nil)\n"
+    "end\n"
+    "function mep.activity_test_run_failed()\n"
+    "  local names = {}\n"
+    "  for _, t in ipairs(mep_at.tests or {}) do\n"
+    "    local st = mep_at_status(t.name)\n"
+    "    if st == 'failed' or st == 'timeout' then names[#names + 1] = t.name end\n"
+    "  end\n"
+    "  if #names == 0 then mep.notify('No failed tests') return end\n"
+    "  mep_at_run(names)\n"
+    "end\n"
+    "function mep.activity_test_stop()\n"
+    "  if mep_at.job and mep.job_is_running(mep_at.job) then mep.job_kill(mep_at.job) end\n"
+    "end\n"
+    "function mep.activity_test_show_output()\n"
+    "  if not mep_activity_test_sidebar_id then return end\n"
+    "  local title, lines = mep_at_output_for(mep.sidebar_cursor_widget_id(mep_activity_test_sidebar_id))\n"
+    "  if not lines then return end\n"
+    "  if #lines == 0 then lines = {'(no output yet)'} end\n"
+    "  mep.float_preview(title, table.concat(lines, '\\n'))\n"
+    "end\n"
+    "function mep.activity_test_on_key(k)\n"
+    "  if k == 'a' then mep.activity_test_run_all()\n"
+    "  elseif k == 'f' then mep.activity_test_run_failed()\n"
+    "  elseif k == 'o' then mep.activity_test_show_output()\n"
+    "  elseif k == 'x' then mep.activity_test_stop()\n"
+    "  elseif k == 'R' then mep.activity_test_reload()\n"
+    "  end\n"
+    "end\n"
+    // Opening the panel lists the tests the first time (and whenever the
+    // build dir it found has since gone away or a different one appeared);
+    // R reloads by hand -- after adding a test and re-configuring, say.
+    "function mep.activity_test_panel()\n"
+    "  local was_open = mep_activity_test_sidebar_id ~= nil and mep.sidebar_is_open(mep_activity_test_sidebar_id)\n"
+    "  if not mep_at.tests or mep_at.dir ~= mep_at_find_dir() then\n"
+    "    mep.activity_test_reload()\n"
+    "  else\n"
+    "    mep_at_render()\n"
+    "  end\n"
+    "  mep.sidebar_open(mep_activity_test_sidebar_id, not was_open)\n"
+    "end\n"
+    // The fallback whole-suite runner, for projects without a CMake build dir.
+    "local function mep_activity_test_detect_cmd()\n"
+    "  if mep.activity_test_cmd then return mep.activity_test_cmd end\n"
+    "  local f2 = io.open('package.json', 'r')\n"
+    "  if f2 then f2:close() return {'npm', 'test'} end\n"
+    "  return nil\n"
     "end\n"
     "function mep.activity_test_run()\n"
+    "  if mep_at_find_dir() then\n"
+    "    if not mep_at.tests then\n"
+    "      mep.activity_test_panel()\n"
+    "      mep.notify('Listing tests -- run again once the list is up')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_at_run(nil)\n"
+    "    return\n"
+    "  end\n"
     "  local cmd = mep_activity_test_detect_cmd()\n"
     "  if not cmd then mep.notify('No test command configured or detected', 'warn') return end\n"
     "  local lines = {}\n"
@@ -34363,6 +34699,22 @@ const char *kBuiltinSettings =
     "   set = function(v) if v ~= '' then mep.git_gutter_enable(v == 'on', true) end end},\n"
     "}\n"
     "\n"
+    "-- The window's own title bar, only where it can be hidden (macOS, where\n"
+    "-- it starts hidden). Last row of Appearance, ahead of Git. Persisted\n"
+    "-- like any row, so mep.titlebar_toggle (the Window menu's item,\n"
+    "-- :MepTitleBar) goes through mep.settings_set and is remembered too.\n"
+    "if mep.titlebar_supported and mep.titlebar_supported() then\n"
+    "  local at = #mep.settings_schema + 1\n"
+    "  for i, row in ipairs(mep.settings_schema) do\n"
+    "    if row.section == 'Git' then at = i break end\n"
+    "  end\n"
+    "  table.insert(mep.settings_schema, at, {section = '', key = 'window_title_bar', label = 'Window title bar',\n"
+    "    kind = 'choice', choices = MEP_ON_OFF,\n"
+    "    hint = 'The close/minimize/zoom strip. Ctrl+Cmd+drag moves the window.',\n"
+    "    get = function() return mep.titlebar_visible() and 'on' or 'off' end,\n"
+    "    set = function(v) if v ~= '' then mep.titlebar_set_visible(v == 'on') end end})\n"
+    "end\n"
+    "\n"
     "local function mep_settings_by_key(key)\n"
     "  for _, s in ipairs(mep.settings_schema) do\n"
     "    if s.key == key then return s end\n"
@@ -34474,6 +34826,12 @@ void BuildMenus() {
              {"Close Workspace", [] { g_editor.RunCommand("wsdelete"); }},   // runs ":wsdelete"
              {"Next Workspace", [] { g_editor.RunCommand("wsnext"); }},      // runs ":wsnext"
              {"Previous Workspace", [] { g_editor.RunCommand("wsprevious"); }},  // runs ":wsprevious"
+             {"Toggle Sidebars", [] { g_editor.RunCommand("MepSidebars"); }},  // runs ":MepSidebars" (mod1+Shift+s)
+#ifdef __APPLE__
+             // The macOS window's own title bar (traffic lights), hidden by
+             // default -- mep.titlebar_toggle, remembered in settings.json.
+             {"Toggle Title Bar", [] { g_editor.RunCommand("MepTitleBar"); }},  // runs ":MepTitleBar"
+#endif
          }},
         {"Settings",
          {
@@ -56812,32 +57170,33 @@ const SplitNode *FindLeafNodeById(const SplitNode *node, int pane_id) {
 
 void DrawPaneTree(const SplitNode *node, float x, float y, float w, float h, int active_pane_id) {
     if (node->dir == SplitDir::Leaf) {
-        DrawPane(node->pane, x, y, w, h, node->pane.id == active_pane_id);
+        if (!node->pane.hidden) DrawPane(node->pane, x, y, w, h, node->pane.id == active_pane_id);
         return;
     }
-    int n = static_cast<int>(node->children.size());
+    // Mirrors ComputePaneScreenRects' own visible-children and gap math
+    // exactly (see kPaneGapPx and that function's comment) -- must stay in
+    // lockstep with it.
+    const std::vector<VisibleSplitChild> vis = VisibleSplitChildren(node);
+    const int n = static_cast<int>(vis.size());
     if (n == 0) return;
-    bool has_shares = node->shares.size() == static_cast<size_t>(n);
-    // Mirrors ComputePaneScreenRects' own gap math exactly (see kPaneGapPx
-    // and that function's comment) -- must stay in lockstep with it.
     float total_gap = kPaneGapPx * static_cast<float>(std::max(0, n - 1));
     if (node->dir == SplitDir::Horizontal) {
         float avail = std::max(0.0f, h - total_gap);
         float cy = y;
-        for (int i = 0; i < n; i++) {
-            float ch = has_shares ? avail * node->shares[static_cast<size_t>(i)] : avail / static_cast<float>(n);
-            float child_end = (i == n - 1) ? y + h : cy + ch;
-            DrawPaneTree(node->children[static_cast<size_t>(i)].get(), x, cy, w, child_end - cy, active_pane_id);
-            cy = child_end + (i < n - 1 ? kPaneGapPx : 0.0f);
+        for (int k = 0; k < n; k++) {
+            const VisibleSplitChild &c = vis[static_cast<size_t>(k)];
+            float child_end = (k == n - 1) ? y + h : cy + avail * c.share;
+            DrawPaneTree(node->children[static_cast<size_t>(c.index)].get(), x, cy, w, child_end - cy, active_pane_id);
+            cy = child_end + (k < n - 1 ? kPaneGapPx : 0.0f);
         }
     } else {
         float avail = std::max(0.0f, w - total_gap);
         float cx = x;
-        for (int i = 0; i < n; i++) {
-            float cw = has_shares ? avail * node->shares[static_cast<size_t>(i)] : avail / static_cast<float>(n);
-            float child_end = (i == n - 1) ? x + w : cx + cw;
-            DrawPaneTree(node->children[static_cast<size_t>(i)].get(), cx, y, child_end - cx, h, active_pane_id);
-            cx = child_end + (i < n - 1 ? kPaneGapPx : 0.0f);
+        for (int k = 0; k < n; k++) {
+            const VisibleSplitChild &c = vis[static_cast<size_t>(k)];
+            float child_end = (k == n - 1) ? x + w : cx + avail * c.share;
+            DrawPaneTree(node->children[static_cast<size_t>(c.index)].get(), cx, y, child_end - cx, h, active_pane_id);
+            cx = child_end + (k < n - 1 ? kPaneGapPx : 0.0f);
         }
     }
 }
@@ -57585,6 +57944,9 @@ void DrawEditor() {
         if (g_editor.ShouldShowDashboard()) {
             DrawDashboard(pane_x, static_cast<float>(content_top), pane_w, static_cast<float>(pane_area_h));
         } else {
+            // A sidebar pane hidden by mod1+Shift+s that has since been
+            // focused (reopened by its own command) comes back in place.
+            g_editor.RevealActivePaneIfHidden();
             ComputePaneScreenRects(g_editor.MutableActiveTabRoot(), pane_x, static_cast<float>(content_top), pane_w,
                                     static_cast<float>(pane_area_h));
             // While a sidebar has focus (Mode::Sidebar), tab.active_pane_id

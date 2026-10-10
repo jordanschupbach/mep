@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (221)</h1>
+<h1>The bindings (230)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -79,6 +79,10 @@ that it does nothing.</p>
 <tr><td><code>mep.clipboard_set</code></td><td>copies text to the system clipboard</td></tr>
 <tr><td><code>mep.clock</code></td><td>monotonic seconds, read at the call (unlike mep.now(), which is fixed per frame)</td></tr>
 <tr><td><code>mep.cpu_count</code></td><td>the number of hardware threads, at least 1</td></tr>
+<tr><td><code>mep.ctest_name_regex</code></td><td>an anchored ctest -R pattern matching exactly one test</td></tr>
+<tr><td><code>mep.ctest_parse_line</code></td><td>classifies one line of a live ctest run</td></tr>
+<tr><td><code>mep.ctest_parse_list</code></td><td>parses ctest's JSON test listing</td></tr>
+<tr><td><code>mep.ctest_parse_output</code></td><td>every test result in a ctest run, with its output</td></tr>
 <tr><td><code>mep.current_buffer</code></td><td>returns the active pane's buffer id</td></tr>
 <tr><td><code>mep.current_pane_id</code></td><td>returns the active pane's id</td></tr>
 <tr><td><code>mep.current_tab_id</code></td><td>returns the active tab's stable id</td></tr>
@@ -172,6 +176,8 @@ that it does nothing.</p>
 <tr><td><code>mep.settings_open</code></td><td>opens the typed-settings popup on</td></tr>
 <tr><td><code>mep.settings_path</code></td><td>--</td></tr>
 <tr><td><code>mep.settings_save</code></td><td>persists the Settings panel's values (a no-op under wasm)</td></tr>
+<tr><td><code>mep.sidebars_hidden</code></td><td>whether mep.sidebars_toggle currently has the sidebars hidden</td></tr>
+<tr><td><code>mep.sidebars_toggle</code></td><td>hides every sidebar (sidebar panes in every tab, docked sidebars) or shows them all again where they were</td></tr>
 <tr><td><code>mep.sketch_add_arc</code></td><td>entity_id</td></tr>
 <tr><td><code>mep.sketch_add_circle</code></td><td>entity_id</td></tr>
 <tr><td><code>mep.sketch_add_ellipse</code></td><td>entity_id</td></tr>
@@ -207,6 +213,9 @@ that it does nothing.</p>
 <tr><td><code>mep.termsend_register</code></td><td>registers a source buffer's default termsend target</td></tr>
 <tr><td><code>mep.termsend_target</code></td><td>looks up the registered termsend target buffer for a source buffer</td></tr>
 <tr><td><code>mep.termsend_unregister</code></td><td>removes a source buffer's registered termsend target</td></tr>
+<tr><td><code>mep.titlebar_set_visible</code></td><td>shows or hides the window's own title bar; a no-op where unsupported</td></tr>
+<tr><td><code>mep.titlebar_supported</code></td><td>whether the window's own title bar (macOS's traffic-light strip) can be hidden here</td></tr>
+<tr><td><code>mep.titlebar_visible</code></td><td>whether the window's own title bar is showing (always true where it can't be hidden)</td></tr>
 <tr><td><code>mep.todo_scan_matches</code></td><td>scans the current buffer for TODO/FIXME/HACK/NOTE-style markers</td></tr>
 <tr><td><code>mep.toggle_zen</code></td><td>--</td></tr>
 <tr><td><code>mep.tree_build_rows</code></td><td>builds the flattened row list for the file-tree sidebar</td></tr>

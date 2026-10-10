@@ -38,6 +38,13 @@ public:
     // A request to the window manager, so it lands a frame or two later
     // (the next frame's screen size shows it). A no-op where unsupported.
     virtual void SetWindowFullscreen(bool on) { (void)on; }
+    // The window manager's title bar (on macOS: the strip with the
+    // close/minimize/zoom buttons). Only the macOS backend can take it
+    // away -- it starts without one, iTerm2's "No Title Bar" style -- so
+    // everywhere else this reports unsupported and the setter is a no-op.
+    virtual bool SupportsWindowTitleBarToggle() { return false; }
+    virtual bool IsWindowTitleBarVisible() { return true; }
+    virtual void SetWindowTitleBarVisible(bool visible) { (void)visible; }
     // While another program's window is embedded in mep's with the pointer
     // passing straight to it (a web page in a mepml block), X would deliver
     // mep's keys to that window whenever the pointer rests over it (keys go

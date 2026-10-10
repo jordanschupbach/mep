@@ -180,6 +180,9 @@ struct NativeContext {
     std::function<void()> flush_2d;  // NativeContextFlush2D
     bool events_this_frame = true;   // EventsThisFrame
     bool focus_lost = false;         // set on resign-key, cleared each poll
+    // Whether the window has its title bar (traffic lights). Off by
+    // default -- see ApplyTitleBarStyle.
+    bool titlebar_visible = false;
 
     bool key_down[kKeyCount] = {};
     bool key_pressed[kKeyCount] = {};
@@ -210,6 +213,13 @@ struct NativeContext {
 }
 @end
 
+// A window that can take the keyboard without a title bar: AppKit only
+// lets a titled window become key/main unless the subclass says
+// otherwise, and mep's window is borderless whenever its title bar is
+// hidden (the default -- ApplyTitleBarStyle).
+@interface MepWindow : NSWindow
+@end
+
 @interface MepWindowDelegate : NSObject <NSWindowDelegate> {
   @public
     gfx::NativeContext *ctx;
@@ -226,6 +236,32 @@ namespace gfx {
 
 void NativeContextFlush2D(NativeContext *ctx) {
     if (ctx && ctx->flush_2d) ctx->flush_2d();
+}
+
+// Puts the window's style mask in line with ctx->titlebar_visible. Hidden
+// means borderless-but-resizable (no title bar, no traffic lights), the
+// way iTerm2's "No Title Bar" window style does it; the frame is kept, so
+// the content view grows into the strip the title bar gave up (or gives
+// it back) and the next frame simply sees a new screen size. Left alone
+// while full screen: AppKit's full screen needs a titled window, so
+// SetWindowFullscreen restores the title bar going in and
+// windowDidExitFullScreen calls this again coming out.
+void ApplyTitleBarStyle(NativeContext *ctx) {
+    if (ctx->window == nil) return;
+    if (([ctx->window styleMask] & NSWindowStyleMaskFullScreen) != 0) return;
+    NSUInteger style = NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+    if (ctx->titlebar_visible) style |= NSWindowStyleMaskTitled;
+    if ([ctx->window styleMask] == style) return;
+    // setStyleMask keeps the content size and moves the frame edge; keep
+    // the frame instead, so the window stays put and its content takes
+    // over (or gives back) the title bar's strip.
+    const NSRect frame = [ctx->window frame];
+    [ctx->window setStyleMask:style];
+    [ctx->window setFrame:frame display:YES];
+    [ctx->window setHasShadow:YES];
+    [ctx->window makeFirstResponder:ctx->view];
+    [ctx->gl_context update];
+    ctx->events_this_frame = true;
 }
 
 void NativeContextSetFlush2D(NativeContext *ctx, std::function<void()> fn) { ctx->flush_2d = std::move(fn); }
@@ -405,6 +441,14 @@ void HandleMouseMove(NativeContext *ctx, NSEvent *event) {
     gfx::HandleKeyChange(ctx, k, down, false);
 }
 - (void)mouseDown:(NSEvent *)event {
+    // Ctrl+Cmd+drag anywhere moves the window -- with the title bar
+    // hidden (the default) there is nothing else to grab it by. The click
+    // never reaches mep.
+    const NSEventModifierFlags move_mods = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+    if (([event modifierFlags] & move_mods) == move_mods) {
+        [[self window] performWindowDragWithEvent:event];
+        return;
+    }
     gfx::HandleMouseMove(ctx, event);
     gfx::HandleMouseButton(ctx, 0, true);
 }
@@ -454,6 +498,15 @@ void HandleMouseMove(NativeContext *ctx, NSEvent *event) {
 }
 @end
 
+@implementation MepWindow
+- (BOOL)canBecomeKeyWindow {
+    return YES;
+}
+- (BOOL)canBecomeMainWindow {
+    return YES;
+}
+@end
+
 @implementation MepWindowDelegate
 - (BOOL)windowShouldClose:(NSWindow *)sender {
     (void)sender;
@@ -470,6 +523,10 @@ void HandleMouseMove(NativeContext *ctx, NSEvent *event) {
 - (void)windowDidMove:(NSNotification *)notification {
     (void)notification;
     [ctx->gl_context update];
+}
+- (void)windowDidExitFullScreen:(NSNotification *)notification {
+    (void)notification;
+    gfx::ApplyTitleBarStyle(ctx);
 }
 - (void)windowDidResignKey:(NSNotification *)notification {
     (void)notification;
@@ -520,9 +577,13 @@ public:
 
             [NSApp finishLaunching];
 
-            const NSUInteger style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                                     NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
-            ctx_->window = [[NSWindow alloc]
+            // No title bar to start with (ctx_->titlebar_visible's
+            // default); ApplyTitleBarStyle below and SetWindowTitleBarVisible
+            // add it back on request.
+            const NSUInteger style = NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable |
+                                     NSWindowStyleMaskResizable |
+                                     (ctx_->titlebar_visible ? NSWindowStyleMaskTitled : 0);
+            ctx_->window = [[MepWindow alloc]
                 initWithContentRect:NSMakeRect(0, 0, static_cast<CGFloat>(width), static_cast<CGFloat>(height))
                           styleMask:style
                             backing:NSBackingStoreBuffered
@@ -534,6 +595,7 @@ public:
             [ctx_->window setTitle:[NSString stringWithUTF8String:title]];
             [ctx_->window setAcceptsMouseMovedEvents:YES];
             [ctx_->window setReleasedWhenClosed:NO];
+            [ctx_->window setHasShadow:YES];
             // Fullscreen is a first-class window state mep requests
             // (SetWindowFullscreen), not just a user gesture.
             [ctx_->window setCollectionBehavior:[ctx_->window collectionBehavior] |
@@ -688,7 +750,22 @@ public:
     void SetWindowFullscreen(bool on) override {
         if (ctx_->window == nil) return;
         const bool is_fullscreen = ([ctx_->window styleMask] & NSWindowStyleMaskFullScreen) != 0;
-        if (is_fullscreen != on) [ctx_->window toggleFullScreen:nil];
+        if (is_fullscreen == on) return;
+        // A borderless window can't enter AppKit full screen; give it its
+        // title bar back for the trip (windowDidExitFullScreen re-applies
+        // ctx_->titlebar_visible on the way out).
+        if (on && ([ctx_->window styleMask] & NSWindowStyleMaskTitled) == 0) {
+            [ctx_->window setStyleMask:[ctx_->window styleMask] | NSWindowStyleMaskTitled];
+        }
+        [ctx_->window toggleFullScreen:nil];
+    }
+    bool SupportsWindowTitleBarToggle() override { return true; }
+    bool IsWindowTitleBarVisible() override { return ctx_->titlebar_visible; }
+    void SetWindowTitleBarVisible(bool visible) override {
+        ctx_->titlebar_visible = visible;
+        @autoreleasepool {
+            ApplyTitleBarStyle(ctx_);
+        }
     }
     void SetTargetFPS(int fps) override {
         const int capped = fps > 0 ? fps : 0;

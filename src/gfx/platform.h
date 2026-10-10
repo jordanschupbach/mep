@@ -23,6 +23,9 @@ inline void SetWindowResizable() { GetBackends().platform->SetWindowResizable();
 inline void MaximizeWindow() { GetBackends().platform->MaximizeWindow(); }
 inline bool IsWindowMaximized() { return GetBackends().platform->IsWindowMaximized(); }
 inline void SetWindowFullscreen(bool on) { GetBackends().platform->SetWindowFullscreen(on); }
+inline bool SupportsWindowTitleBarToggle() { return GetBackends().platform->SupportsWindowTitleBarToggle(); }
+inline bool IsWindowTitleBarVisible() { return GetBackends().platform->IsWindowTitleBarVisible(); }
+inline void SetWindowTitleBarVisible(bool visible) { GetBackends().platform->SetWindowTitleBarVisible(visible); }
 inline void SetKeyboardFocusProxy(bool on) { GetBackends().platform->SetKeyboardFocusProxy(on); }
 inline void SetTargetFPS(int fps) { GetBackends().platform->SetTargetFPS(fps); }
 inline int GetScreenWidth() { return GetBackends().platform->GetScreenWidth(); }

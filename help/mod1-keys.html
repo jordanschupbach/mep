@@ -42,6 +42,29 @@ buttons -- so each pane's buffer runs right up to its top edge; pressing it
 again brings them all back. It applies to every pane at once, works in any
 mode, and is reachable from Lua as <code>mep.panebar_toggle()</code>,
 <code>mep.panebar_set_visible(on)</code> and <code>mep.panebar_visible()</code>.</p>
+<h1>Hiding all the sidebars</h1>
+<p><code>mod1+Shift+s</code> (<code>:MepSidebars</code>, also the Window menu's <i>Toggle Sidebars</i>)
+hides every sidebar at once -- the file tree, git, Structure, Tests, Todo,
+Buffers and the rest, whether they're open as panes or docked -- so the
+document panes get the whole window. Press it again and each comes back
+exactly where it was, at the size it was, even if you split or closed
+document panes in the meantime. It works in any mode, and in every tab.</p>
+<p>Reopening one sidebar while they're hidden (its own key or command) brings
+just that one back, in its old place. A tab that has nothing but sidebar
+panes keeps them, so there's always something on screen. From Lua:
+<code>mep.sidebars_toggle()</code> (false when there was nothing to hide) and
+<code>mep.sidebars_hidden()</code>.</p>
+<h1>Hiding the window title bar (macOS)</h1>
+<p>On macOS mep's window starts without a title bar -- no close, minimize and
+zoom buttons, the content running right up to the top edge, like iTerm2's
+"No Title Bar" style. The Window menu's <i>Toggle Title Bar</i> item,
+<code>:MepTitleBar</code> and <code>&lt;leader&gt;uw</code> bring it back (and take it away again).
+The choice is saved with the other settings, so it sticks across restarts;
+it is also the <i>Window title bar</i> row of <code>:MepSettings</code>.</p>
+<p>With no title bar there is nothing to drag, so <code>Ctrl+Cmd</code> and a drag
+anywhere in the window moves it. From Lua: <code>mep.titlebar_toggle()</code>,
+<code>mep.titlebar_set_visible(on)</code> and <code>mep.titlebar_visible()</code>. On other
+platforms the window manager owns the title bar and these do nothing.</p>
 <h1>Resizing</h1>
 <p><code>mod1+Shift+h j k l</code> moves the split boundary between the current pane and
 its neighbour.</p>

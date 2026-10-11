@@ -9,6 +9,9 @@
 #include "cpp_format.h"
 #include "python_format.h"
 #include "editor.h"
+#include "base64.h"
+#include "png_codec.h"
+#include "text_quality.h"
 #include "job.h"
 #include "org_doc.h"
 #include "project_search.h"
@@ -72,6 +75,11 @@ extern float GetCharWidthPx();
 // (g_font_size). Needed by kBuiltinOrgLatex's mep.font_size() binding; see
 // its own comment for why.
 extern float GetFontSizePx();
+// Defined in main.cpp -- sets the interface zoom (PreviewFontSize plus the
+// menu-label relayout it needs), the setter half of mep.font_size(). Already
+// used by Editor::MepmlPresent* for a full-screen deck; the Settings panel's
+// "Interface font size" row is the second caller.
+extern void SetFontSizePx(float px);
 // main.cpp: the editor's own typesetter, a LaTeX fragment to a PNG.
 extern bool MathRenderFastPng(const std::string &body, float px, const std::string &path);
 // Defined in main.cpp -- drops any cached inline-image texture for an
@@ -5343,6 +5351,14 @@ int l_buf_clear_latex_preview(lua_State *L) {
  * @return Number of values pushed (1: the font size in pixels).
  */
 int l_font_size(lua_State *L) {
+    // With a number, a setter: the interface zoom Ctrl+Shift+=/- drives,
+    // so the Settings panel can show and change it as a row rather than
+    // it only being reachable by keystroke. SetFontSizePx clamps to the
+    // build's own limits and schedules the font re-bake, so there is
+    // nothing to validate here.
+    if (lua_gettop(L) >= 1 && lua_isnumber(L, 1)) {
+        SetFontSizePx(static_cast<float>(lua_tonumber(L, 1)));
+    }
     lua_pushnumber(L, static_cast<double>(GetFontSizePx()));
     return 1;
 }
@@ -10514,11 +10530,30 @@ int l_set_option(lua_State *L) {
 // mep.settings_open(specs, on_change): opens the typed-settings popup on
 // mep's own preferences. `specs` is an array of row tables:
 //   {key=, label=, kind='choice'|'number'|'text'|'switch', value=,
-//    section=, hint=, choices={...}, min=, max=, step=, default=}
+//    section=, hint=, choices={...}, min=, max=, step=, default=,
+//    list=, labels={...}, groups={...}, preview=, allow_custom=, wide=}
 // `value` is the option's CURRENT value as a string, "" meaning unset (the
-// popup draws that as "--"). on_change(key, value) fires once per
-// committed row -- the Lua side applies and persists it, so nothing about
+// popup draws that as "--"). on_change(key, value, commit) fires per row:
+// commit=true means "apply and save", commit=false means "apply only" --
+// a drop-down's live preview, where a value is being tried on rather than
+// chosen, so moving over 20 colour schemes re-tints the UI 20 times and
+// writes settings.json none. The Lua side owns both, so nothing about
 // which options exist or how they are stored lives in C++.
+//
+// The second group of fields is presentation, and all of it is optional:
+//   list          pick from a list that opens over the panel, instead of
+//                 stepping the value in place with Ctrl-N/Ctrl-P
+//   labels        display text per `choices` entry (a model id is not
+//                 what a person recognises the model by)
+//   groups        a heading above an entry, "" to continue the previous
+//                 one -- "Anthropic" / "OpenAI" over a model list
+//   preview       apply each choice as the highlight moves; Escape then
+//                 cancels and puts the original back
+//   allow_custom  a filter matching no choice commits as typed, for a
+//                 list that cannot be exhaustive (OpenAI-compatible
+//                 servers have their own model names)
+//   wide          draw a text row as a wrapped box across the panel's
+//                 width, for a value that is prose rather than a word
 //
 // The widget is the one org blocks use for their header arguments (see
 // Editor::BeginSettingsPanel): dropdowns cycled with Ctrl-N/Ctrl-P,
@@ -10601,6 +10636,41 @@ int l_settings_open(lua_State *L) {
             }
         }
         lua_pop(L, 1);
+
+        /** @brief Reads one array-of-strings field of the row table being converted. */
+        auto field_strings = [&](const char *name, std::vector<std::string> *out) {
+            lua_getfield(L, -1, name);
+            if (lua_istable(L, -1)) {
+                const lua_Integer an = static_cast<lua_Integer>(lua_rawlen(L, -1));
+                for (lua_Integer a = 1; a <= an; a++) {
+                    lua_rawgeti(L, -1, a);
+                    const char *av = lua_tostring(L, -1);
+                    out->emplace_back(av ? av : "");
+                    lua_pop(L, 1);
+                }
+            }
+            lua_pop(L, 1);
+        };
+        /** @brief Reads one boolean field of the row table being converted. */
+        auto field_bool = [&](const char *name) {
+            lua_getfield(L, -1, name);
+            const bool v = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            return v;
+        };
+        // Presentation, all opt-in (see OrgHeaderArgSpec): `list` opens a
+        // drop-down instead of cycling in place, `labels`/`groups` give
+        // its entries readable names and headings, `preview` applies each
+        // as the highlight moves, `allow_custom` lets a filter matching
+        // nothing be committed as typed, and `wide` draws a text row as a
+        // box across the panel rather than a field in the value column.
+        row.spec.list_popup = field_bool("list");
+        row.spec.live_preview = field_bool("preview");
+        row.spec.allow_custom = field_bool("allow_custom");
+        row.spec.wide_text = field_bool("wide");
+        field_strings("labels", &row.spec.choice_labels);
+        field_strings("groups", &row.spec.choice_groups);
+
         // A choice row's list must start with "" -- the widget uses the
         // empty first entry as "not set", which is how a setting left to
         // mep's own default stays distinguishable from one explicitly
@@ -10609,6 +10679,16 @@ int l_settings_open(lua_State *L) {
         if (row.spec.kind == SettingRowKind::kChoice &&
             (row.spec.choices.empty() || !row.spec.choices.front().empty())) {
             row.spec.choices.insert(row.spec.choices.begin(), std::string());
+            // `labels`/`groups` are positional, so they have to shift with
+            // it -- otherwise every label lands one choice off, which is
+            // the kind of bug that looks like a bad list rather than a bad
+            // index. Only shifted when the caller supplied them at all.
+            if (!row.spec.choice_labels.empty()) {
+                row.spec.choice_labels.insert(row.spec.choice_labels.begin(), std::string());
+            }
+            if (!row.spec.choice_groups.empty()) {
+                row.spec.choice_groups.insert(row.spec.choice_groups.begin(), std::string());
+            }
         }
 
         rows.push_back(std::move(row));
@@ -11893,6 +11973,141 @@ int l_pdf_page_text(lua_State *L) {
     const std::string text = sess->doc->PageText(page);
     lua_pushlstring(L, text.data(), text.size());
     return 1;
+}
+
+// mep.pdf_page_text_quality([page]) -> degenerate, chars, distinct, digits
+//
+// Whether a page's extracted text is actually text, plus the numbers
+// behind the verdict. See text_quality.h: some PDFs map their glyphs to
+// arbitrary letters, so a page comes back as "D D C D DD D" with
+// nothing technically missing -- and a prompt quoting that is worse
+// than useless. The ask route uses this to decide whether to send the
+// page's words or the page itself as a picture.
+int l_pdf_page_text_quality(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    PdfSession *sess = ed->GetPdfMutable(ed->ActivePaneId());
+    if (!sess || !sess->doc) return luaL_error(L, "not a PDF pane");
+    const int page = lua_isnoneornil(L, 1) ? sess->page : static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    if (page < 0 || page >= sess->doc->PageCount()) return luaL_error(L, "no such page");
+    const textq::Quality q = textq::Measure(sess->doc->PageText(page));
+    lua_pushboolean(L, q.Degenerate() ? 1 : 0);
+    lua_pushinteger(L, static_cast<lua_Integer>(q.chars));
+    lua_pushinteger(L, static_cast<lua_Integer>(q.distinct));
+    lua_pushinteger(L, static_cast<lua_Integer>(q.digits));
+    return 4;
+}
+
+// mep.pdf_page_png([page], [scale], [x0, y0, x1, y1]) -> one page rendered to a base64 PNG, with its pixel width and height
+//
+// Ready to go into a model request as an image block.
+//
+// This is the answer for a page whose text cannot be extracted at all.
+// A scanned book is a stencil image with no glyphs in it, so there is
+// nothing to select and nothing for PageText to return -- and a PDF
+// whose fonts are Type 3 bitmaps, or whose images are JPEG 2000 (which
+// mep does not decode), is in the same position. Asking a model about
+// such a page used to send it a prompt quoting an empty passage. Sending
+// the picture instead is the only thing that can work.
+//
+// Returns nil plus a reason when the page rendered blank -- which is
+// what an unsupported image format (JPEG 2000) produces, and sending a
+// blank rectangle for a model to describe is worse than saying so.
+//
+// `page` is 1-based (as everywhere in the Lua API); default is the page
+// on screen. `scale` is px per point, default 2.0 -- the viewer's own
+// baseline, and enough for a model to read body text. The optional rect
+// is in the page's own POINT space (y-up, origin bottom-left, the same
+// space mep.pdf_selection's geometry uses), and crops the result; with
+// no rect the whole page is sent.
+int l_pdf_page_png(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    PdfSession *sess = ed->GetPdfMutable(ed->ActivePaneId());
+    if (!sess || !sess->doc) return luaL_error(L, "not a PDF pane");
+    const int page = lua_isnoneornil(L, 1) ? sess->page : static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    if (page < 0 || page >= sess->doc->PageCount()) return luaL_error(L, "no such page");
+    double scale = lua_isnoneornil(L, 2) ? 2.0 : luaL_checknumber(L, 2);
+    // Clamped rather than rejected: a caller asking for an absurd scale
+    // wants the biggest sensible image, not an error, and the renderer
+    // reduces the scale itself past 8192px either way.
+    scale = std::clamp(scale, 0.1, 8.0);
+
+    std::vector<unsigned char> rgba;
+    int w = 0, h = 0;
+    if (!sess->doc->RenderPage(page, static_cast<float>(scale), rgba, w, h) || w <= 0 || h <= 0)
+        return luaL_error(L, "could not render page");
+
+    // Optional crop, point space -> this raster's pixels. Rendering the
+    // whole page and cropping (rather than rendering just the region)
+    // keeps this on PdfDoc::RenderPage's one well-tested path, and the
+    // page is being rendered for the viewer anyway.
+    int cx0 = 0, cy0 = 0, cw = w, ch = h;
+    if (!lua_isnoneornil(L, 3)) {
+        const double px0 = luaL_checknumber(L, 3), py0 = luaL_checknumber(L, 4);
+        const double px1 = luaL_checknumber(L, 5), py1 = luaL_checknumber(L, 6);
+        const double page_h = sess->doc->PageHeightPt(page);
+        // Point space is y-up; the raster is y-down.
+        const double left = std::min(px0, px1), right = std::max(px0, px1);
+        const double top_pt = std::max(py0, py1), bot_pt = std::min(py0, py1);
+        cx0 = static_cast<int>(std::floor(left * scale));
+        cy0 = static_cast<int>(std::floor((page_h - top_pt) * scale));
+        int cx1 = static_cast<int>(std::ceil(right * scale));
+        int cy1 = static_cast<int>(std::ceil((page_h - bot_pt) * scale));
+        // A little margin, so a tight selection box does not clip the
+        // glyphs' own ink, and so a model sees a word's context.
+        const int pad = static_cast<int>(8.0 * scale);
+        cx0 = std::clamp(cx0 - pad, 0, w - 1);
+        cy0 = std::clamp(cy0 - pad, 0, h - 1);
+        cx1 = std::clamp(cx1 + pad, cx0 + 1, w);
+        cy1 = std::clamp(cy1 + pad, cy0 + 1, h);
+        cw = cx1 - cx0;
+        ch = cy1 - cy0;
+    }
+
+    const unsigned char *pixels = rgba.data();
+    std::vector<unsigned char> cropped;
+    if (cx0 != 0 || cy0 != 0 || cw != w || ch != h) {
+        cropped.resize(static_cast<size_t>(cw) * static_cast<size_t>(ch) * 4);
+        for (int y = 0; y < ch; ++y)
+            std::memcpy(&cropped[static_cast<size_t>(y) * static_cast<size_t>(cw) * 4],
+                        &rgba[(static_cast<size_t>(y + cy0) * static_cast<size_t>(w) + static_cast<size_t>(cx0)) * 4],
+                        static_cast<size_t>(cw) * 4);
+        pixels = cropped.data();
+    }
+
+    // A page that rendered to nothing must not be sent. mep refuses some
+    // image formats outright (JPEG 2000), and a scanned book in one of
+    // them renders as blank white paper with no warning anywhere -- so
+    // the picture would be a blank rectangle and the model would
+    // faithfully describe an empty page. Better to say the page cannot
+    // be read. A genuinely blank page lands here too, which is also the
+    // right answer: there is nothing to ask about.
+    bool uniform = true;
+    if (cw > 0 && ch > 0) {
+        const unsigned char *first = pixels;
+        for (int y = 0; y < ch && uniform; ++y) {
+            const unsigned char *row = pixels + static_cast<size_t>(y) * static_cast<size_t>(cw) * 4;
+            for (int x = 0; x < cw; ++x) {
+                const unsigned char *q = row + static_cast<size_t>(x) * 4;
+                if (q[0] != first[0] || q[1] != first[1] || q[2] != first[2]) {
+                    uniform = false;
+                    break;
+                }
+            }
+        }
+    }
+    if (uniform) {
+        lua_pushnil(L);
+        lua_pushstring(L, "the page rendered blank (an unsupported image format, or an empty page)");
+        return 2;
+    }
+
+    const std::string png = png::Encode(cw, ch, 4, pixels, cw * 4);
+    if (png.empty()) return luaL_error(L, "could not encode PNG");
+    const std::string b64 = base64::Encode(reinterpret_cast<const unsigned char *>(png.data()), png.size());
+    lua_pushlstring(L, b64.data(), b64.size());
+    lua_pushinteger(L, cw);
+    lua_pushinteger(L, ch);
+    return 3;
 }
 
 // mep.office_theme([on]) -> on: theme colours (Ctrl-R) set, or read.
@@ -15010,6 +15225,8 @@ const luaL_Reg kMepFuncs[] = {
     {"pdf_current_page", l_pdf_current_page},
     {"pdf_selection", l_pdf_selection},
     {"pdf_page_text", l_pdf_page_text},
+    {"pdf_page_png", l_pdf_page_png},
+    {"pdf_page_text_quality", l_pdf_page_text_quality},
     {"pdf_yank", l_pdf_yank},
     {"office_reload", l_office_reload},
     {"office_theme", l_office_theme},
@@ -15360,6 +15577,19 @@ void LuaEnv::CallRefWith2Strings(int ref, const std::string &a, const std::strin
     lua_pushlstring(L_, a.data(), a.size());
     lua_pushlstring(L_, b.data(), b.size());
     if (lua_pcall(L_, 2, 0, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+    }
+}
+
+void LuaEnv::CallRefWith2StringsAndBool(int ref, const std::string &a, const std::string &b, bool c) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL) return;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    lua_pushlstring(L_, a.data(), a.size());
+    lua_pushlstring(L_, b.data(), b.size());
+    lua_pushboolean(L_, c ? 1 : 0);
+    if (lua_pcall(L_, 3, 0, 0) != LUA_OK) {
         const char *msg = lua_tostring(L_, -1);
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
         lua_pop(L_, 1);

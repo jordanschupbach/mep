@@ -968,7 +968,12 @@ bool StoreSecret(const Account &a, const std::string &secret, std::string *error
     }
 #if defined(__APPLE__)
     return MacKeychainWrite(a, secret, error, interactive);
-#elif defined(_WIN32)
+#else
+    // Only the macOS keychain path can prompt, so everywhere else this
+    // is deliberately unused -- same (void) convention the rest of this
+    // file uses for platform-conditional parameters.
+    (void)interactive;
+#if defined(_WIN32)
     return WriteSecretFile(a, secret, true, error);
 #else
     if (mep::compat::ProgramOnPath("secret-tool")) {
@@ -978,6 +983,7 @@ bool StoreSecret(const Account &a, const std::string &secret, std::string *error
         if (p.exit_code == 0) return true;
     }
     return WriteSecretFile(a, secret, false, error);
+#endif
 #endif
 }
 

@@ -2144,6 +2144,19 @@ std::string OrgResultsWithFacet(const std::string &results, const std::string &f
     return joined;
 }
 
+bool OrgSettingsFilterMatch(const std::string &haystack, const std::string &needle) {
+    if (needle.empty()) return true;
+    if (needle.size() > haystack.size()) return false;
+    /** @brief Folds one byte to lower case, ASCII only. */
+    auto fold = [](char ch) { return static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); };
+    for (size_t i = 0; i + needle.size() <= haystack.size(); i++) {
+        size_t j = 0;
+        while (j < needle.size() && fold(haystack[i + j]) == fold(needle[j])) j++;
+        if (j == needle.size()) return true;
+    }
+    return false;
+}
+
 std::string OrgQuoteHeaderArgValue(const std::string &value) {
     if (value.empty()) return value;
     if (value.size() >= 2 && value.front() == '"' && value.back() == '"') return value;

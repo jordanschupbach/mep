@@ -32,6 +32,42 @@ const char *EncodingName(Base base, int code);
 // for anything outside that set.
 int GlyphNameToUnicode(const std::string &name);
 
+// Whether a glyph name is nothing but a spelling of `code` itself, and
+// so says nothing the code does not already say.
+//
+// Two conventions, both from producers that had no real name to give:
+//   * `/a65`, `/g23`, `/cid120`, `/index7`, `/glyph42` -- a prefix and
+//     the code in decimal.
+//   * `/A0`, `/BT`, `/CG` -- the code in base 36, high digit as a
+//     letter. (Verified against a real book: all 28 names sampled
+//     decoded to exactly their own code.)
+//
+// The *code* is required, not just the name, so this can be proved
+// rather than guessed: a name only loses to its code when it provably
+// encodes that code. It decides whether a code whose name will not
+// resolve may still be read as a character. dvips-style Type 3 bitmap
+// fonts name every glyph this way, so the code is the only reading
+// available and taking it recovers whole pages; a font with a real but
+// unlisted name like `/sq` (a square) is saying something specific, and
+// reading its code as a letter would invent text the page does not
+// contain.
+bool GlyphNameEncodesCode(const std::string &name, int code);
+
+// An accented letter written as one character, given the base letter and
+// the accent a PDF drew over it -- "e" plus an acute is U+00E9.
+//
+// PDFs routinely draw an accent as its own glyph positioned over the
+// letter, because that is how the font is built: one Type 1 program
+// with `e` and `acute` in it and no `eacute` at all. Extracted glyph by
+// glyph that reads as "FRE\u00b4DE\u00b4RIC", which is not a word any
+// search will find and not what a reader copying the name wants.
+//
+// `accent` is the *spacing* form, which is what the glyph's own
+// /ToUnicode or glyph name gives (U+00B4 ACUTE ACCENT, not U+0301
+// COMBINING ACUTE). Returns 0 when the pair has no single-character
+// form, which is the caller's signal to leave both alone.
+int ComposeAccented(int base, int accent);
+
 // CFF predefined standard string for SID 0 up to (but not including)
 // CffStandardStringCount() (CFF spec Appendix A, ~391 entries -- this
 // project's own transcription, self-sized rather than hardcoded to a

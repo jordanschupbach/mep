@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "text_quality.h"
 #include "platform_compat.h"
 #include "http_client.h"
 #include "agent_rpc.h"
@@ -2309,6 +2310,7 @@ void Editor::BeginOrgBlockSettings(int begin_row) {
     org_settings_index_ = 0;
     org_settings_editing_ = false;
     org_settings_pending_.clear();
+    org_settings_pending_cursor_ = 0;
     overlay_previous_mode_ = mode_;
     mode_ = Mode::OrgBlockSettings;
     OrgSettingsReload();
@@ -2418,7 +2420,9 @@ void Editor::OrgSettingsApply(int index, const std::string &value) {
         // visible effect.
         row.value = value;
         if (lua_ && settings_change_ref_ != 0) {
-            lua_->CallRefWith2Strings(settings_change_ref_, row.spec.key, value);
+            // commit = true: apply it AND write it to settings.json. The
+            // false case is OrgSettingsPreview below.
+            lua_->CallRefWith2StringsAndBool(settings_change_ref_, row.spec.key, value, true);
         }
         return;
     }
@@ -2450,6 +2454,152 @@ void Editor::OrgSettingsApply(int index, const std::string &value) {
     OrgSettingsReload();
 }
 
+void Editor::OrgSettingsPreview(int index, const std::string &value) {
+    if (settings_source_ != SettingsPanelSource::MepSettings) return;
+    if (index < 0 || index >= static_cast<int>(org_settings_rows_.size())) return;
+    if (lua_ == nullptr || settings_change_ref_ == 0) return;
+    // Deliberately does NOT touch row.value: the row still holds what was
+    // committed, which is what the list draws its checkmark against and
+    // what cancelling goes back to. Only the live UI moves.
+    lua_->CallRefWith2StringsAndBool(settings_change_ref_, org_settings_rows_[static_cast<size_t>(index)].spec.key,
+                                     value, false);
+}
+
+std::vector<int> Editor::OrgSettingsListMatches() const {
+    std::vector<int> out;
+    if (org_settings_index_ < 0 || org_settings_index_ >= static_cast<int>(org_settings_rows_.size())) return out;
+    const SettingRowSpec &spec = org_settings_rows_[static_cast<size_t>(org_settings_index_)].spec;
+    for (size_t i = 0; i < spec.choices.size(); i++) {
+        // Matched against both halves: someone who knows the model id
+        // types "haiku", someone reading the list types "Haiku", and the
+        // label is not always derived from the value.
+        const std::string &value = spec.choices[i];
+        const std::string &label = i < spec.choice_labels.size() ? spec.choice_labels[i] : value;
+        if (OrgSettingsFilterMatch(value, org_settings_list_filter_) ||
+            OrgSettingsFilterMatch(label, org_settings_list_filter_)) {
+            out.push_back(static_cast<int>(i));
+        }
+    }
+    return out;
+}
+
+void Editor::OrgSettingsListOpenAtFocus() {
+    if (org_settings_index_ < 0 || org_settings_index_ >= static_cast<int>(org_settings_rows_.size())) return;
+    const SettingRow &row = org_settings_rows_[static_cast<size_t>(org_settings_index_)];
+    if (!row.spec.list_popup) return;
+    org_settings_list_filter_.clear();
+    org_settings_list_before_ = row.value;
+    // Opens on what the row already holds, so Enter-then-Enter is a
+    // no-op rather than a silent jump to the first choice.
+    org_settings_list_index_ = 0;
+    for (size_t i = 0; i < row.spec.choices.size(); i++) {
+        if (row.spec.choices[i] == row.value) {
+            org_settings_list_index_ = static_cast<int>(i);
+            break;
+        }
+    }
+    org_settings_list_open_ = true;
+    org_settings_editing_ = true;
+    org_settings_pending_ = row.value;
+}
+
+void Editor::OrgSettingsListClose(bool commit) {
+    if (!org_settings_list_open_) return;
+    const int row_index = org_settings_index_;
+    const int choice = org_settings_list_index_;
+    const std::string filter = org_settings_list_filter_;
+    const std::string before = org_settings_list_before_;
+    // Cleared before applying, because applying can reread the rows (the
+    // org path) or notify, and neither should see a list that is still
+    // nominally open.
+    org_settings_list_index_ = -1;
+    org_settings_list_open_ = false;
+    org_settings_list_filter_.clear();
+    org_settings_list_before_.clear();
+    org_settings_editing_ = false;
+    org_settings_pending_.clear();
+    if (row_index < 0 || row_index >= static_cast<int>(org_settings_rows_.size())) return;
+    const SettingRowSpec &spec = org_settings_rows_[static_cast<size_t>(row_index)].spec;
+    if (!commit) {
+        // Put back whatever live_preview has been trying on. `before` is
+        // the row's committed value, so for a row that never previewed
+        // this re-applies what is already in force -- which is why it is
+        // gated on live_preview rather than run unconditionally.
+        if (spec.live_preview) OrgSettingsPreview(row_index, before);
+        return;
+    }
+    if (choice >= 0 && choice < static_cast<int>(spec.choices.size())) {
+        OrgSettingsApply(row_index, spec.choices[static_cast<size_t>(choice)]);
+        return;
+    }
+    // No choice under the highlight: with allow_custom the filter itself
+    // is the answer (a model name the list could never have listed),
+    // otherwise there is nothing to commit and the row keeps its value.
+    if (spec.allow_custom && !filter.empty()) {
+        OrgSettingsApply(row_index, filter);
+        return;
+    }
+    if (spec.live_preview) OrgSettingsPreview(row_index, before);
+}
+
+void Editor::OrgSettingsListStep(int direction) {
+    if (!org_settings_list_open_) return;
+    const std::vector<int> matches = OrgSettingsListMatches();
+    if (matches.empty()) return;
+    // Position within the *filtered* list, so j/k walk what is on screen
+    // rather than stepping invisibly through filtered-out choices.
+    int at = 0;
+    bool found = false;
+    for (size_t i = 0; i < matches.size(); i++) {
+        if (matches[i] == org_settings_list_index_) {
+            at = static_cast<int>(i);
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        // The highlight was filtered away; land on the nearest end rather
+        // than wrapping from a position that no longer exists.
+        at = direction >= 0 ? -1 : static_cast<int>(matches.size());
+    }
+    const int size = static_cast<int>(matches.size());
+    at = ((at + direction) % size + size) % size;
+    org_settings_list_index_ = matches[static_cast<size_t>(at)];
+    const SettingRow &row = org_settings_rows_[static_cast<size_t>(org_settings_index_)];
+    org_settings_pending_ = row.spec.choices[static_cast<size_t>(org_settings_list_index_)];
+    if (row.spec.live_preview) OrgSettingsPreview(org_settings_index_, org_settings_pending_);
+}
+
+void Editor::OrgSettingsListClampToFilter() {
+    if (!org_settings_list_open_) return;
+    const std::vector<int> matches = OrgSettingsListMatches();
+    if (matches.empty()) {
+        // Nothing left to highlight. Not an error state: on an
+        // allow_custom row this is a model name being typed that the list
+        // was never going to contain, and Enter commits it as typed.
+        org_settings_list_index_ = -1;
+        return;
+    }
+    for (int m : matches) {
+        if (m == org_settings_list_index_) return;  // still visible, leave it be
+    }
+    org_settings_list_index_ = matches.front();
+    const SettingRow &row = org_settings_rows_[static_cast<size_t>(org_settings_index_)];
+    org_settings_pending_ = row.spec.choices[static_cast<size_t>(org_settings_list_index_)];
+    if (row.spec.live_preview) OrgSettingsPreview(org_settings_index_, org_settings_pending_);
+}
+
+void Editor::OrgSettingsListChoose(int choice_index) {
+    if (!org_settings_list_open_) return;
+    if (choice_index >= 0 && choice_index < static_cast<int>(
+                                 org_settings_rows_[static_cast<size_t>(org_settings_index_)].spec.choices.size())) {
+        org_settings_list_index_ = choice_index;
+        OrgSettingsListClose(true);
+        return;
+    }
+    OrgSettingsListClose(false);
+}
+
 void Editor::OrgSettingsSelect(int index, bool begin_edit) {
     if (index < 0 || index >= static_cast<int>(org_settings_rows_.size())) return;
     // A click elsewhere while a field is open commits it first, the way
@@ -2462,16 +2612,34 @@ void Editor::OrgSettingsSelect(int index, bool begin_edit) {
     if (index >= static_cast<int>(org_settings_rows_.size())) return;
     org_settings_index_ = index;
     if (!begin_edit || org_settings_editing_) return;
+    // A list_popup row opens its drop-down instead of staging an inline
+    // value -- the one place "edit this row" means something other than
+    // "put a cursor in the field".
+    if (org_settings_rows_[static_cast<size_t>(index)].spec.list_popup) {
+        OrgSettingsListOpenAtFocus();
+        return;
+    }
     org_settings_editing_ = true;
     org_settings_pending_ = org_settings_rows_[static_cast<size_t>(index)].value;
+    // The caret starts at the end, which is where appending used to be
+    // the only option -- so a short value still behaves exactly as it did.
+    org_settings_pending_cursor_ = org_settings_pending_.size();
 }
 
 void Editor::OrgSettingsCommitEdit() {
     if (!org_settings_editing_) return;
+    // A drop-down has its own commit path (and its own notion of what the
+    // highlighted choice is), so route there rather than committing the
+    // staged string behind its back.
+    if (org_settings_list_open_) {
+        OrgSettingsListClose(true);
+        return;
+    }
     const int index = org_settings_index_;
     const std::string value = org_settings_pending_;
     org_settings_editing_ = false;
     org_settings_pending_.clear();
+    org_settings_pending_cursor_ = 0;
     OrgSettingsApply(index, value);
 }
 
@@ -5767,7 +5935,49 @@ constexpr float kMaxImageZoom = 20.0f;
 constexpr float kPdfZoomStep = 1.25f;
 constexpr float kMinPdfZoom = 0.1f;
 constexpr float kMaxPdfZoom = 8.0f;
-constexpr float kZoomSettleLo = 0.5f, kZoomSettleHi = 2.0f;
+// When a drifted `zoom` gets folded into a fresh render at a new
+// rendered_scale, i.e. when the page stops being a resampled bitmap and
+// becomes a real render again.
+//
+// This used to be a single wide band, [0.5, 2.0], and anything inside it
+// was shown by scaling the cached raster on the GPU with no re-render at
+// all. On a high-density display that is most of the time: a 144dpi
+// raster is small on a 283dpi panel, so reading means zooming to about
+// 2x, which sits just inside the old band -- and a bilinear magnification
+// of 144dpi is about 72dpi of real detail. Thin horizontal strokes
+// (fraction bars, radical overbars, matrix rules) are what that blurs
+// worst, which is why maths looked rasterized.
+//
+// So the band is now tight enough that the raster is always within a few
+// percent of its displayed size, and the re-render is debounced instead:
+// while the user is still zooming, the cheap GPU scale carries the view,
+// and a real render replaces it once they stop. The hard band is kept as
+// the old one, for a jump too big to leave on screen even briefly.
+constexpr float kZoomSettleLo = 0.96f, kZoomSettleHi = 1.04f;
+constexpr float kZoomSettleHardLo = 0.5f, kZoomSettleHardHi = 2.0f;
+// Long enough that holding +/- or spinning a wheel re-renders once at the
+// end rather than at every step, short enough not to read as lag.
+constexpr double kZoomSettleDelaySec = 0.15;
+// Budget for one pane's cached page rasters. rendered_scale now follows
+// the zoom, and raster bytes grow with its square -- a letter page is
+// ~7.8MB at the 2.0 baseline but ~124MB at 8.0 -- so the number of pages
+// kept has to fall as the scale rises, or zooming into a figure would
+// try to hold most of a gigabyte. At the baseline this is ~24 pages,
+// comfortably more than the +-3 band actually asks for, so nothing
+// changes until the scale really climbs.
+constexpr size_t kPdfRasterBudgetBytes = 192u * 1024u * 1024u;
+// ...and a ceiling on any single page's raster, which is what stops the
+// scale itself from running away. 64MB is about 5.8 px/pt on a letter
+// page, i.e. ~415dpi -- comfortably past any display's own density, so
+// the cap only bites when the reader is magnifying a detail rather than
+// reading.
+constexpr size_t kPdfPageRasterCapBytes = 64u * 1024u * 1024u;
+
+// Seconds since an arbitrary fixed point, for the debounce above. Only
+// differences are ever used, so the epoch does not matter.
+double MonotonicSeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 }  // namespace
 
 int Editor::WheelSteps(float &accum, float delta, float units_per_notch) {
@@ -12434,6 +12644,13 @@ void Editor::EnsurePdfPagesRastered(int pane_id) {
     if (it == pdfs_.end()) return;
     PdfSession &sess = it->second;
     if (!sess.doc) return;
+    // The debounced re-render SettlePdfZoom armed. Fired from here
+    // because this already runs once per frame per visible pane, so the
+    // deadline needs no timer of its own.
+    if (sess.zoom_settle_deadline > 0.0 && MonotonicSeconds() >= sess.zoom_settle_deadline) {
+        ApplyPdfRescale(sess);
+        prof_log("rescaled");
+    }
     int page_count = sess.doc->PageCount();
     if (page_count <= 0) return;
     // A sibling pane changed the shared annotation set: rebuild this pane's
@@ -12497,11 +12714,29 @@ void Editor::EnsurePdfPagesRastered(int pane_id) {
     // document (rendered_scale follows the zoom, so each raster shrinks as
     // more fit on screen -- the cap is belt and braces).
     constexpr int kMaxPagesAhead = 12;
+    // How many pages the raster budget allows at the current scale.
+    // rendered_scale now follows the zoom, so a page's raster grows with
+    // its square: ~7.8MB for a letter page at the 2.0 baseline, ~124MB at
+    // 8.0. Without this, zooming into a figure would keep trying to hold
+    // the same +-3 band and run to most of a gigabyte. At the baseline it
+    // works out well above the band actually requested, so ordinary
+    // reading is unaffected.
+    int budget_pages = kMaxPagesAhead + 4;
+    {
+        auto [bw, bh] = PdfPageSizePt(sess, sess.page);
+        const double sc = static_cast<double>(sess.rendered_scale);
+        const double bytes = bw * sc * bh * sc * 4.0;
+        if (bytes > 1.0) {
+            budget_pages = static_cast<int>(static_cast<double>(kPdfRasterBudgetBytes) / bytes);
+            budget_pages = std::clamp(budget_pages, 1, kMaxPagesAhead + 4);
+        }
+    }
     int ahead = 0;
     {
         const float vh = static_cast<float>(sess.viewport_h);
         float top = PdfPageScreenHeightPx(sess, sess.page) + kPdfPageGapPx - sess.scroll_y;
-        while (top < vh && sess.page + ahead + 1 < page_count && ahead < kMaxPagesAhead) {
+        while (top < vh && sess.page + ahead + 1 < page_count && ahead < kMaxPagesAhead &&
+               ahead + 1 < budget_pages) {
             ++ahead;
             top += PdfPageScreenHeightPx(sess, sess.page + ahead) + kPdfPageGapPx;
         }
@@ -12549,8 +12784,13 @@ void Editor::EnsurePdfPagesRastered(int pane_id) {
     // rendered pages (~50MB at the 144dpi baseline) regardless of
     // document length, same reasoning as the old +-1 bound just traded a
     // little higher for instant short back-jumps.
-    const int keep_lo = std::max(0, sess.page - 3);
-    const int keep_hi = std::min(page_count - 1, sess.page + std::max(3, ahead + 1));
+    // The +-3 band, narrowed to what the budget allows. At a high zoom
+    // that collapses to the page on screen, which is all that is visible
+    // there anyway.
+    const int back = std::clamp(budget_pages / 2, 0, 3);
+    const int fwd = std::max(0, std::min(std::max(3, ahead + 1), budget_pages - 1 - back));
+    const int keep_lo = std::max(0, sess.page - back);
+    const int keep_hi = std::min(page_count - 1, sess.page + fwd);
     for (auto rit = sess.rasters.begin(); rit != sess.rasters.end();) {
         if (rit->first < keep_lo || rit->first > keep_hi) rit = sess.rasters.erase(rit);
         else ++rit;
@@ -12871,6 +13111,7 @@ void Editor::PdfHighlightCurrentMatch() {
     // Consume the selection so a second :pdfhighlight doesn't re-add it.
     sess.sel_page = -1;
     sess.sel_quads.clear();
+    sess.sel_quads_pages.clear();
     status_message_ = std::string("Highlighted ") + what + " (:w to save into the PDF)";
 }
 
@@ -12916,9 +13157,18 @@ void Editor::LoadCaretGlyphs(PdfSession &sess, int page) {
     sess.caret_rows.clear();
     if (sess.doc) {
         for (const PdfTextRow &r : sess.doc->PageTextRows(page)) {
-            // A dedicated equation line is skipped outright -- see
-            // PdfSession::caret_rows (editor.h) for why.
-            if (r.display_math || r.glyphs.empty()) continue;
+            // Every non-empty row, equations included. They used to be
+            // skipped because a caret stepping through one lurched up
+            // and down the page -- but skipping them made a displayed
+            // equation unreachable: not navigable, not selectable, not
+            // yankable, and a click on one snapped away to the nearest
+            // line of prose. The lurching is fixed where it belonged,
+            // in the row's own glyph order (pdftext::PageGlyphRows now
+            // puts a row's dominant baseline first and hangs each
+            // sub/superscript cluster off the glyph it belongs to), so
+            // the caret walks an equation left to right like any other
+            // line and there is no reason left to drop it.
+            if (r.glyphs.empty()) continue;
             sess.caret_rows.push_back(r.glyphs);
         }
     }
@@ -12941,6 +13191,89 @@ void Editor::PdfCaretUpdateVisual(PdfSession &sess) {
     if (!sess.visual_active || !sess.doc || sess.caret_row < 0 || sess.visual_anchor_row < 0) return;
     sess.sel_page = sess.caret_page;
     sess.sel_quads.clear();
+    sess.sel_quads_pages.clear();
+
+    // A selection that runs across a page break: every page between the
+    // anchor's and the caret's contributes. The anchor page gives
+    // everything from its anchor row onward, the caret page everything
+    // up to the caret, and any page between them all of its rows.
+    // Walking it here (rather than only the current page) is what lets a
+    // paragraph continuing overleaf be selected, yanked and asked about
+    // as one passage.
+    const int anchor_page = sess.visual_anchor_page >= 0 ? sess.visual_anchor_page : sess.caret_page;
+    if (anchor_page != sess.caret_page) {
+        const int lo = std::min(anchor_page, sess.caret_page);
+        const int hi = std::max(anchor_page, sess.caret_page);
+        for (int p = lo; p <= hi; ++p) {
+            // The current page's rows are already loaded; others come
+            // from the document.
+            std::vector<std::vector<int>> prows;
+            std::vector<PdfGlyphBox> pglyphs;
+            if (p == sess.caret_page) {
+                prows = sess.caret_rows;
+                pglyphs = sess.caret_glyphs;
+            } else {
+                pglyphs = sess.doc->PageGlyphs(p);
+                for (const PdfTextRow &r : sess.doc->PageTextRows(p))
+                    if (!r.glyphs.empty()) prows.push_back(r.glyphs);
+            }
+            if (prows.empty()) continue;
+            const bool at_anchor = (p == anchor_page), at_caret = (p == sess.caret_page);
+            // Which end of this page the selection starts and stops at.
+            const bool forward = sess.caret_page > anchor_page;
+            int r0 = 0, c0 = 0;
+            int r1 = static_cast<int>(prows.size()) - 1;
+            int c1 = static_cast<int>(prows.back().size()) - 1;
+            if (at_anchor && forward) {
+                r0 = std::clamp(sess.visual_anchor_row, 0, static_cast<int>(prows.size()) - 1);
+                c0 = sess.visual_anchor_col;
+            } else if (at_anchor && !forward) {
+                r1 = std::clamp(sess.visual_anchor_row, 0, static_cast<int>(prows.size()) - 1);
+                c1 = sess.visual_anchor_col;
+            }
+            if (at_caret && forward) {
+                r1 = std::clamp(sess.caret_row, 0, static_cast<int>(prows.size()) - 1);
+                c1 = sess.caret_col;
+            } else if (at_caret && !forward) {
+                r0 = std::clamp(sess.caret_row, 0, static_cast<int>(prows.size()) - 1);
+                c0 = sess.caret_col;
+            }
+            std::vector<pdfannots::Quad> quads;
+            for (int r = r0; r <= r1 && r < static_cast<int>(prows.size()); ++r) {
+                const std::vector<int> &row = prows[static_cast<size_t>(r)];
+                if (row.empty()) continue;
+                const int last = static_cast<int>(row.size()) - 1;
+                const int from = std::clamp((r == r0) ? c0 : 0, 0, last);
+                const int to = std::clamp((r == r1) ? c1 : last, 0, last);
+                bool have = false;
+                double left = 0, right = 0, top = 0, bottom = 0;
+                for (int i = from; i <= to; ++i) {
+                    const PdfGlyphBox &g = pglyphs[static_cast<size_t>(row[static_cast<size_t>(i)])];
+                    if (!have) {
+                        left = g.left; right = g.right; top = g.top; bottom = g.bottom;
+                        have = true;
+                    } else {
+                        left = std::min(left, g.left);
+                        right = std::max(right, g.right);
+                        top = std::max(top, g.top);
+                        bottom = std::min(bottom, g.bottom);
+                    }
+                }
+                if (!have) continue;
+                pdfannots::Quad q;
+                q.x1 = left;  q.y1 = top;    q.x2 = right; q.y2 = top;
+                q.x3 = left;  q.y3 = bottom; q.x4 = right; q.y4 = bottom;
+                quads.push_back(q);
+            }
+            if (!quads.empty()) sess.sel_quads_pages[p] = std::move(quads);
+        }
+        // Keep the current page's own quads in sel_quads too, so any
+        // caller that only knows about the single-page fields still sees
+        // something sensible.
+        auto it = sess.sel_quads_pages.find(sess.caret_page);
+        if (it != sess.sel_quads_pages.end()) sess.sel_quads = it->second;
+        return;
+    }
     // One quad per visual row between anchor and caret, built from
     // caret_rows directly rather than from a glyph-index range: the
     // caret moves in visual order, which on a page whose content stream
@@ -12998,6 +13331,61 @@ void Editor::PdfCaretUpdateVisual(PdfSession &sess) {
 std::string Editor::PdfSelectionText(const PdfSession &sess) const {
     if (!sess.doc) return std::string();
     if (sess.visual_active && sess.caret_row >= 0 && sess.visual_anchor_row >= 0) {
+        // A selection across a page break reads as one passage, page by
+        // page in order -- which is the point of letting it cross at
+        // all: a paragraph continuing overleaf is one thing to quote.
+        const int anchor_page = sess.visual_anchor_page >= 0 ? sess.visual_anchor_page : sess.caret_page;
+        if (anchor_page != sess.caret_page && !sess.sel_quads_pages.empty()) {
+            const int lo = std::min(anchor_page, sess.caret_page);
+            const int hi = std::max(anchor_page, sess.caret_page);
+            const bool forward = sess.caret_page > anchor_page;
+            std::string out;
+            for (int p = lo; p <= hi; ++p) {
+                std::vector<std::vector<int>> prows;
+                if (p == sess.caret_page) {
+                    prows = sess.caret_rows;
+                } else {
+                    for (const PdfTextRow &r : sess.doc->PageTextRows(p))
+                        if (!r.glyphs.empty()) prows.push_back(r.glyphs);
+                }
+                if (prows.empty()) continue;
+                int r0 = 0, c0 = 0;
+                int r1 = static_cast<int>(prows.size()) - 1;
+                int c1 = static_cast<int>(prows.back().size()) - 1;
+                if (p == anchor_page) {
+                    if (forward) {
+                        r0 = std::clamp(sess.visual_anchor_row, 0, static_cast<int>(prows.size()) - 1);
+                        c0 = sess.visual_anchor_col;
+                    } else {
+                        r1 = std::clamp(sess.visual_anchor_row, 0, static_cast<int>(prows.size()) - 1);
+                        c1 = sess.visual_anchor_col;
+                    }
+                }
+                if (p == sess.caret_page) {
+                    if (forward) {
+                        r1 = std::clamp(sess.caret_row, 0, static_cast<int>(prows.size()) - 1);
+                        c1 = sess.caret_col;
+                    } else {
+                        r0 = std::clamp(sess.caret_row, 0, static_cast<int>(prows.size()) - 1);
+                        c0 = sess.caret_col;
+                    }
+                }
+                std::vector<int> indices;
+                for (int r = r0; r <= r1 && r < static_cast<int>(prows.size()); ++r) {
+                    const std::vector<int> &row = prows[static_cast<size_t>(r)];
+                    if (row.empty()) continue;
+                    const int last = static_cast<int>(row.size()) - 1;
+                    const int from = std::clamp((r == r0) ? c0 : 0, 0, last);
+                    const int to = std::clamp((r == r1) ? c1 : last, 0, last);
+                    for (int i = from; i <= to; ++i) indices.push_back(row[static_cast<size_t>(i)]);
+                }
+                const std::string part = sess.doc->TextForGlyphs(p, indices);
+                if (part.empty()) continue;
+                if (!out.empty()) out += '\n';
+                out += part;
+            }
+            return out;
+        }
         int r0 = sess.visual_anchor_row, c0 = sess.visual_anchor_col;
         int r1 = sess.caret_row, c1 = sess.caret_col;
         if (r1 < r0 || (r1 == r0 && c1 < c0)) {
@@ -13169,7 +13557,35 @@ void Editor::PdfAskAboutSelection(PdfSession &sess, int how) {
     std::string text;
     std::string source;
     int page = -1;
-    if (!PdfAskPassage(sess, &text, &page, &source)) {
+    const bool have_passage = PdfAskPassage(sess, &text, &page, &source);
+    // Whether this page's words are worth sending at all.
+    //
+    // Two ways they are not. A page with no text layer has nothing to
+    // select -- a scanned book is one stencil image, and an image in a
+    // format mep cannot decode (JPEG 2000) leaves the page blank. And a
+    // page whose glyphs map to arbitrary letters has text that is a
+    // lie: every font in The Art of Computer Programming vol. 4A is a
+    // Type 3 bitmap with no /ToUnicode, so its combinatorics extracts
+    // as "D D C D DD D". Quoting that to a model is worse than quoting
+    // nothing, and poppler makes its own different nonsense of the same
+    // file, so there is no reading of it to recover.
+    //
+    // Either way: fall through with an empty passage and let the Lua
+    // side send the page as a picture, which is the only thing that can
+    // work for those files. Checked on the whole page rather than the
+    // selection because a page is a big enough sample to judge; two
+    // selected words are not.
+    const int judge_page = (have_passage && page >= 0) ? page : sess.page;
+    bool usable = false;
+    if (sess.doc) {
+        const textq::Quality q = textq::Measure(sess.doc->PageText(judge_page));
+        usable = q.chars > 0 && !q.Degenerate();
+    }
+    if (!usable) {
+        text.clear();
+        page = judge_page;
+        source = "the page image";
+    } else if (!have_passage) {
         Notify("Nothing selected (v to select, or drag) and no highlight on this page", NotifyLevel::Warn);
         return;
     }
@@ -13177,7 +13593,7 @@ void Editor::PdfAskAboutSelection(PdfSession &sess, int how) {
     // A reader who selected text knows what they asked about; a reader who
     // is getting the newest highlight on the page does not necessarily, and
     // an answer about the wrong passage is otherwise baffling.
-    if (source != "selection") status_message_ = "Asking about " + source;
+    if (source != "selection" && source != "the page image") status_message_ = "Asking about " + source;
     if (!lua_) return;
     std::string where;
     const int bid = sess.buffer_id;
@@ -13272,6 +13688,17 @@ void Editor::PdfCaretMove(PdfSession &sess, int cp) {
             else if (r < rows - 1) { ++r; c = 0; }
             break;
         case '0': c = 0; break;
+        // gg / G, as vim means them with the page as the buffer: the
+        // first and last navigable rows. HandlePdfInput routes the keys
+        // here only when a caret is live; otherwise they stay page jumps.
+        case 'g':
+            r = 0;
+            c = 0;
+            break;
+        case 'G':
+            r = rows - 1;
+            c = last_col(r);
+            break;
         case '$': c = last_col(r); break;
         case 'w': {
             int rr = r, cc = c + 1;
@@ -13321,11 +13748,15 @@ void Editor::PdfCaretMove(PdfSession &sess, int cp) {
             if (r < rows - 1) {
                 ++r;
                 c = nearest_col(r, cx);
-            } else if (!sess.visual_active && sess.page < page_count - 1) {
+            } else if (sess.page < page_count - 1) {
                 // Past the last row: on to the next page's first row.
+                // Allowed while a visual selection is live too -- the
+                // selection follows across the break (see
+                // PdfCaretUpdateVisual).
                 sess.page++;
                 sess.scroll_y = 0;
                 LoadCaretGlyphs(sess, sess.page);
+                if (sess.visual_active) PdfCaretUpdateVisual(sess);
                 return;
             }
             break;
@@ -13333,7 +13764,7 @@ void Editor::PdfCaretMove(PdfSession &sess, int cp) {
             if (r > 0) {
                 --r;
                 c = nearest_col(r, cx);
-            } else if (!sess.visual_active && sess.page > 0) {
+            } else if (sess.page > 0) {
                 sess.page--;
                 LoadCaretGlyphs(sess, sess.page);
                 if (!sess.caret_rows.empty()) {
@@ -13343,6 +13774,7 @@ void Editor::PdfCaretMove(PdfSession &sess, int cp) {
                 }
                 sess.scroll_y = PdfPageScreenHeightPx(sess, sess.page);  // bottom of the page
                 RebasePdfScroll(sess);
+                if (sess.visual_active) PdfCaretUpdateVisual(sess);
                 return;
             }
             break;
@@ -13394,11 +13826,13 @@ void Editor::PdfCaretToggleVisual(PdfSession &sess) {
     if (sess.caret_glyph < 0) return;
     sess.visual_active = !sess.visual_active;
     if (sess.visual_active) {
+        sess.visual_anchor_page = sess.caret_page;
         sess.visual_anchor_row = sess.caret_row;
         sess.visual_anchor_col = sess.caret_col;
         PdfCaretUpdateVisual(sess);
     } else {
         sess.sel_quads.clear();
+        sess.sel_quads_pages.clear();
         sess.sel_page = -1;
     }
 }
@@ -13442,6 +13876,7 @@ void Editor::PdfAnnotLeaderAction(PdfSession &sess, int cp) {
             mode_ = Mode::Pdf;
             sess.visual_active = false;
             sess.sel_quads.clear();
+            sess.sel_quads_pages.clear();
             sess.sel_page = -1;
             status_message_ = "";
             break;
@@ -14792,12 +15227,50 @@ void Editor::ClampPdfPanX(PdfSession &sess) {
     sess.pan_x = std::clamp(sess.pan_x, 0, mx);
 }
 
-void Editor::SettlePdfZoom(PdfSession &sess) {
-    if (sess.zoom < kZoomSettleLo || sess.zoom > kZoomSettleHi) {
-        sess.rendered_scale *= sess.zoom;
-        sess.zoom = 1.0f;
-        sess.rasters.clear();
+// Folds the current `zoom` into `rendered_scale` and drops every cached
+// raster, so the pages come back rendered at the size they are shown at.
+// The on-screen size of a page is unchanged by this (rendered_scale *=
+// zoom; zoom = 1), so no scroll or pan state needs reinterpreting.
+void Editor::ApplyPdfRescale(PdfSession &sess) {
+    float want = sess.rendered_scale * sess.zoom;
+    // Past a point, rendering at the displayed scale stops being worth
+    // it: one page's raster grows with the square of the scale, so a
+    // letter page is ~7.8MB at the 2.0 baseline but ~124MB at 8.0, and a
+    // handful of those is more memory than the whole editor should hold.
+    // So the scale is capped by a per-page byte budget and the remainder
+    // is left in `zoom` -- i.e. beyond roughly 400dpi the view goes back
+    // to magnifying a bitmap, which is the right trade: at that point
+    // the reader is inspecting a detail, not reading a page, and they
+    // already have several times the detail the old fixed 144dpi gave.
+    auto [pw, ph] = PdfPageSizePt(sess, sess.page);
+    if (pw > 0 && ph > 0) {
+        const double max_scale = std::sqrt(static_cast<double>(kPdfPageRasterCapBytes) / (pw * ph * 4.0));
+        if (static_cast<double>(want) > max_scale) want = static_cast<float>(max_scale);
     }
+    if (want <= 0.0f) return;
+    // Whatever the cap did not absorb stays as a GPU scale, so the page
+    // keeps the on-screen size the user asked for either way.
+    sess.zoom = (sess.rendered_scale * sess.zoom) / want;
+    sess.rendered_scale = want;
+    sess.zoom_settle_deadline = 0.0;
+    sess.rasters.clear();
+}
+
+void Editor::SettlePdfZoom(PdfSession &sess) {
+    // Too far off to leave on screen as a resampled bitmap even for a
+    // moment: re-render now and accept one soft frame.
+    if (sess.zoom < kZoomSettleHardLo || sess.zoom > kZoomSettleHardHi) {
+        ApplyPdfRescale(sess);
+        return;
+    }
+    // Off 1.0 at all: arm a re-render. Re-arming on every zoom step is
+    // what debounces a held +/- or a wheel spin into one render at the
+    // end instead of one per step, each of which would throw away every
+    // cached page.
+    if (sess.zoom < kZoomSettleLo || sess.zoom > kZoomSettleHi)
+        sess.zoom_settle_deadline = MonotonicSeconds() + kZoomSettleDelaySec;
+    else
+        sess.zoom_settle_deadline = 0.0;
 }
 
 void Editor::ApplyPdfZoom(PdfSession &sess, float new_zoom) {
@@ -14922,6 +15395,7 @@ void Editor::HandlePdfInput() {
             if (has_selection) {
                 sess->visual_active = false;
                 sess->sel_quads.clear();
+                sess->sel_quads_pages.clear();
                 sess->sel_page = -1;
                 pending_count_ = 0;
             } else {
@@ -14994,16 +15468,23 @@ void Editor::HandlePdfInput() {
             apply_zoom(sess->zoom / kPdfZoomStep);
         } else if (cp == '=') {
             FitPdfPage(*sess);
-        } else if (nav && cp >= '0' && cp <= '9') {
-            // Count prefix for Space/f/b, accumulated into the shared
-            // pending_count_ (same digit rules as normal mode's own count:
-            // a bare '0' only continues an existing count). The status bar
-            // already renders PendingCount(), so the pending digits are
-            // visible with no extra wiring. Capped before the multiply so
-            // absurd input can't overflow; goto_page's clamp does the rest.
-            if (cp != '0' || pending_count_ != 0) {
-                if (pending_count_ < 100000000) pending_count_ = pending_count_ * 10 + (cp - '0');
-            }
+        } else if (((nav || annotate) && cp >= '1' && cp <= '9') ||
+                   ((nav || annotate) && cp == '0' && pending_count_ != 0)) {
+            // Count prefix -- for Space/f/b in nav, and for the caret
+            // motions in annotate. Accumulated into the shared
+            // pending_count_ (same digit rules as normal mode's own
+            // count). The status bar already renders PendingCount(), so
+            // the pending digits are visible with no extra wiring.
+            // Capped before the multiply so absurd input can't overflow;
+            // goto_page's clamp does the rest.
+            //
+            // Annotate was left out of this, which made the caret the one
+            // vim motion in the editor that ignored its count: nothing
+            // ever set pending_count_ there, so `3w` moved one word.
+            // '0' stays out of it unless a count is already going, because
+            // in annotate mode a bare '0' is the line-start motion -- the
+            // same rule vim itself uses.
+            if (pending_count_ < 100000000) pending_count_ = pending_count_ * 10 + (cp - '0');
         } else if (nav && cp == 'g') {
             // Nav's 'g' opens the go-to-page prompt (HandlePdfNavGotoInput
             // takes over next frame) instead of normal mode's gg chord --
@@ -15024,16 +15505,30 @@ void Editor::HandlePdfInput() {
             // gg -> first page, reusing pending_g_ the same way normal mode's
             // own gg does (see HandleNormalInput) -- reset on entry to this
             // mode in OpenPdfInPlace so it can't leak in from elsewhere.
+            //
+            // In annotate mode it is a caret motion instead, to the first
+            // row of the page: there the page is the buffer, and jumping
+            // the view somewhere the caret is not would strand it. The
+            // page jumps are still there in the other two PDF modes, one
+            // Esc away.
             if (pending_g_) {
                 pending_g_ = false;
-                goto_page(0);
+                if (annotate && sess->caret_row >= 0) {
+                    PdfCaretMove(*sess, 'g');
+                } else {
+                    goto_page(0);
+                }
             } else {
                 pending_g_ = true;
             }
         } else if (cp == 'G') {
             pending_g_ = false;
             pending_count_ = 0;
-            goto_page(page_count - 1);
+            if (annotate && sess->caret_row >= 0) {
+                PdfCaretMove(*sess, 'G');  // last row of the page
+            } else {
+                goto_page(page_count - 1);
+            }
         } else if (cp == '/') {
             pending_g_ = false;
             pending_count_ = 0;
@@ -15056,9 +15551,16 @@ void Editor::HandlePdfInput() {
         } else if (annotate && (cp == 'h' || cp == 'l' || cp == 'j' || cp == 'k' || cp == 'w' || cp == 'b' ||
                                  cp == 'e' || cp == '0' || cp == '$')) {
             // Vim caret motions (h/l char, j/k line, w/b/e word, 0/$ line ends).
+            //
+            // Count-prefixed, like every other vim motion: `3w` moves
+            // three words. This used to throw pending_count_ away, so a
+            // count typed before a caret motion silently did nothing --
+            // the one place in the editor where a vim motion ignored its
+            // count. Capped so a mistyped `999999j` cannot stall a frame.
             pending_g_ = false;
+            const int repeat = std::clamp(pending_count_ > 0 ? pending_count_ : 1, 1, 1000);
             pending_count_ = 0;
-            PdfCaretMove(*sess, cp);
+            for (int i = 0; i < repeat; ++i) PdfCaretMove(*sess, cp);
         } else if (annotate && cp == 'v') {
             // Start/stop a visual selection at the caret (a direct motion-like
             // key). All annotation ACTIONS are under the <space> leader.
@@ -25601,6 +26103,14 @@ void Editor::EndSettingsPanelSession() {
     if (settings_change_ref_ != 0 && lua_) lua_->UnrefFunction(settings_change_ref_);
     settings_change_ref_ = 0;
     settings_source_ = SettingsPanelSource::OrgBlock;
+    // The list state is panel-only, and the org path shares these members
+    // -- so it is cleared here rather than left for a later org popup to
+    // open with a stale drop-down up.
+    org_settings_list_index_ = -1;
+    org_settings_list_open_ = false;
+    org_settings_list_filter_.clear();
+    org_settings_list_before_.clear();
+    org_settings_pending_cursor_ = 0;
 }
 
 void Editor::BeginSettingsPanel(std::vector<SettingRow> rows, const std::string &title, int on_change_ref) {
@@ -25622,6 +26132,11 @@ void Editor::BeginSettingsPanel(std::vector<SettingRow> rows, const std::string 
     org_settings_index_ = 0;
     org_settings_editing_ = false;
     org_settings_pending_.clear();
+    org_settings_pending_cursor_ = 0;
+    org_settings_list_index_ = -1;
+    org_settings_list_open_ = false;
+    org_settings_list_filter_.clear();
+    org_settings_list_before_.clear();
     overlay_previous_mode_ = mode_;
     mode_ = Mode::OrgBlockSettings;
 }
@@ -25639,12 +26154,20 @@ void Editor::HandleOrgBlockSettingsInput() {
     }
     bool escape = false, enter = false, backspace = false;
     bool key_down = false, key_up = false;
+    bool key_left = false, key_right = false, key_home = false, key_end = false, key_delete = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
         else if (key == gfx::Key::Backspace) backspace = true;
         else if (key == gfx::Key::Down) key_down = true;
         else if (key == gfx::Key::Up) key_up = true;
+        // The caret keys, for the text rows. Harmless on every other
+        // kind, which simply never reads them.
+        else if (key == gfx::Key::Left) key_left = true;
+        else if (key == gfx::Key::Right) key_right = true;
+        else if (key == gfx::Key::Home) key_home = true;
+        else if (key == gfx::Key::End) key_end = true;
+        else if (key == gfx::Key::Delete) key_delete = true;
     }
     // Ctrl-held letters produce no character event at all, so they're
     // read as keys -- and can't then be seen twice by the char loops
@@ -25695,10 +26218,55 @@ void Editor::HandleOrgBlockSettingsInput() {
         }
         if (staged) {
             org_settings_pending_ = next;
+            org_settings_pending_cursor_ = org_settings_pending_.size();
         } else {
             OrgSettingsApply(org_settings_index_, next);
         }
     };
+    // An open drop-down comes first, because it owns every key while it
+    // is up -- including Escape, which here means "cancel" rather than
+    // this popup's usual "keep what you did". That inversion is the point
+    // of a previewing list: backing out has to put the UI back.
+    if (org_settings_list_open_) {
+        if (escape) {
+            OrgSettingsListClose(false);
+            return;
+        }
+        if (enter) {
+            // Nothing highlighted, and this row cannot take a typed name:
+            // there is nothing to choose, so Enter stays put rather than
+            // dismissing the list. A filter that matches nothing is a typo
+            // to fix, not a decision to abandon -- and closing silently
+            // would look like the choice had been made.
+            if (org_settings_list_index_ < 0 &&
+                !org_settings_rows_[static_cast<size_t>(org_settings_index_)].spec.allow_custom) {
+                return;
+            }
+            OrgSettingsListClose(true);
+            return;
+        }
+        if (backspace && !org_settings_list_filter_.empty()) {
+            size_t cut = org_settings_list_filter_.size() - 1;
+            while (cut > 0 && (static_cast<unsigned char>(org_settings_list_filter_[cut]) & 0xC0) == 0x80) cut--;
+            org_settings_list_filter_.erase(cut);
+            // The highlight may have been on a choice the widened filter
+            // still shows, so only pull it back when it has fallen out.
+            OrgSettingsListClampToFilter();
+        }
+        if (ctrl_next || key_down) OrgSettingsListStep(1);
+        if (ctrl_prev || key_up) OrgSettingsListStep(-1);
+        for (int cp = gfx::GetCharPressed(); cp != 0; cp = gfx::GetCharPressed()) {
+            if (cp < 32 || cp > 0x10FFFF) continue;
+            // Every printable character narrows the list -- there is no
+            // j/k-as-navigation escape hatch here, unlike the in-place
+            // cycle, because with 63 choices typing is the fast path and
+            // a list you cannot type "jellybeans" into is worse than one
+            // you cannot walk with j.
+            AppendUtf8(org_settings_list_filter_, cp);
+            OrgSettingsListClampToFilter();
+        }
+        return;
+    }
     if (org_settings_editing_) {
         if (escape || enter) {
             OrgSettingsCommitEdit();
@@ -25706,11 +26274,44 @@ void Editor::HandleOrgBlockSettingsInput() {
         }
         const OrgHeaderArgKind kind = org_settings_rows_[static_cast<size_t>(org_settings_index_)].spec.kind;
         const bool typed_field = kind == OrgHeaderArgKind::kText || kind == OrgHeaderArgKind::kNumber;
-        if (backspace && typed_field && !org_settings_pending_.empty()) {
-            // One UTF-8 codepoint, not one byte.
-            size_t cut = org_settings_pending_.size() - 1;
-            while (cut > 0 && (static_cast<unsigned char>(org_settings_pending_[cut]) & 0xC0) == 0x80) cut--;
-            org_settings_pending_.erase(cut);
+        if (org_settings_pending_cursor_ > org_settings_pending_.size()) {
+            org_settings_pending_cursor_ = org_settings_pending_.size();
+        }
+        if (typed_field) {
+            // A caret, rather than append-and-backspace-from-the-end.
+            // One word of filename survived the old behaviour; a
+            // paragraph of prompt (the Quick ask row) does not, and
+            // every text row gets the same keys for free.
+            /** @brief Steps `at` one UTF-8 codepoint left within the staged value. */
+            auto prev_cp = [&](size_t at) {
+                if (at == 0) return size_t{0};
+                size_t i = at - 1;
+                while (i > 0 && (static_cast<unsigned char>(org_settings_pending_[i]) & 0xC0) == 0x80) i--;
+                return i;
+            };
+            /** @brief Steps `at` one UTF-8 codepoint right within the staged value. */
+            auto next_cp = [&](size_t at) {
+                if (at >= org_settings_pending_.size()) return org_settings_pending_.size();
+                size_t i = at + 1;
+                while (i < org_settings_pending_.size() &&
+                       (static_cast<unsigned char>(org_settings_pending_[i]) & 0xC0) == 0x80) {
+                    i++;
+                }
+                return i;
+            };
+            if (key_left) org_settings_pending_cursor_ = prev_cp(org_settings_pending_cursor_);
+            if (key_right) org_settings_pending_cursor_ = next_cp(org_settings_pending_cursor_);
+            if (key_home) org_settings_pending_cursor_ = 0;
+            if (key_end) org_settings_pending_cursor_ = org_settings_pending_.size();
+            if (backspace && org_settings_pending_cursor_ > 0) {
+                const size_t from = prev_cp(org_settings_pending_cursor_);
+                org_settings_pending_.erase(from, org_settings_pending_cursor_ - from);
+                org_settings_pending_cursor_ = from;
+            }
+            if (key_delete && org_settings_pending_cursor_ < org_settings_pending_.size()) {
+                const size_t to = next_cp(org_settings_pending_cursor_);
+                org_settings_pending_.erase(org_settings_pending_cursor_, to - org_settings_pending_cursor_);
+            }
         }
         if (ctrl_next || key_down) step_value(1, true);
         if (ctrl_prev || key_up) step_value(-1, true);
@@ -25731,7 +26332,13 @@ void Editor::HandleOrgBlockSettingsInput() {
                 if (!(std::isdigit(cp) || cp == '.' || cp == '-' || cp == '+')) continue;
             }
             if (cp < 32 || cp > 0x10FFFF) continue;
-            AppendUtf8(org_settings_pending_, cp);
+            // Inserted at the caret, not appended: AppendUtf8 only knows
+            // how to grow a string, so the codepoint is encoded into a
+            // scratch string and spliced in.
+            std::string one;
+            AppendUtf8(one, cp);
+            org_settings_pending_.insert(org_settings_pending_cursor_, one);
+            org_settings_pending_cursor_ += one.size();
         }
         return;
     }

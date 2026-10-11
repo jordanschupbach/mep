@@ -1,0 +1,4102 @@
+{
+ "kind": "text",
+ "aggregate": {
+  "f1": 0.8824161301281879,
+  "missing_rate": 0.13313524980282304
+ },
+ "files": [
+  {
+   "file": "/home/ben/books/bens-library/Calculus Early Transcendentals (Jon Rogawski, Colin Adams, Robert Franzosa).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.0,
+   "missing_rate": 0.0,
+   "ref_words": 1,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 140
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 280
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/Causality.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9695318118999818,
+   "missing_rate": 0.04102860444958105,
+   "ref_words": 3461,
+   "worst": [
+    {
+     "precision": 0.970873786407767,
+     "recall": 0.9174311926605505,
+     "f1": 0.9433962264150944,
+     "missing_rate": 0.08256880733944955,
+     "ref_words": 436,
+     "hyp_words": 412,
+     "missing_sample": [
+      "the",
+      "section",
+      "chapter",
+      "of",
+      "be",
+      "for",
+      "mal",
+      "in",
+      "rela",
+      "tionships",
+      "struc",
+      "tural"
+     ],
+     "page": 60
+    },
+    {
+     "precision": 0.9736842105263158,
+     "recall": 0.946983546617916,
+     "f1": 0.9601482854494904,
+     "missing_rate": 0.05301645338208409,
+     "ref_words": 547,
+     "hyp_words": 532,
+     "missing_sample": [
+      "pa",
+      "vari",
+      "ables",
+      "y",
+      "de",
+      "and",
+      "x",
+      "ra",
+      "tio",
+      "metaphys",
+      "ical",
+      "viation"
+     ],
+     "page": 181
+    },
+    {
+     "precision": 0.9721577726218097,
+     "recall": 0.9522727272727273,
+     "f1": 0.9621125143513203,
+     "missing_rate": 0.04772727272727273,
+     "ref_words": 440,
+     "hyp_words": 431,
+     "missing_sample": [
+      "a",
+      "z",
+      "x",
+      "prob",
+      "ability",
+      "in",
+      "condi",
+      "tioned",
+      "inter",
+      "vention",
+      "g",
+      "t"
+     ],
+     "page": 363
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/Lab_Exercises_LaMeres_Intro_to_Logic_wVHDL_DE10-Lite_May2022.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.980515210452691,
+   "missing_rate": 0.026473526473526472,
+   "ref_words": 2002,
+   "worst": [
+    {
+     "precision": 0.25,
+     "recall": 0.14285714285714285,
+     "f1": 0.18181818181818182,
+     "missing_rate": 0.8571428571428571,
+     "ref_words": 7,
+     "hyp_words": 4,
+     "missing_sample": [
+      "lab",
+      "exercises",
+      "lite",
+      "version",
+      "may",
+      "2022"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.9802955665024631,
+     "recall": 0.9521531100478469,
+     "f1": 0.9660194174757282,
+     "missing_rate": 0.04784688995215311,
+     "ref_words": 209,
+     "hyp_words": 203,
+     "missing_sample": [
+      "11",
+      "figure",
+      "8",
+      "are",
+      "there",
+      "you",
+      "ll",
+      "notice",
+      "a",
+      "handful"
+     ],
+     "page": 182
+    },
+    {
+     "precision": 0.9871794871794872,
+     "recall": 0.9746835443037974,
+     "f1": 0.980891719745223,
+     "missing_rate": 0.02531645569620253,
+     "ref_words": 395,
+     "hyp_words": 390,
+     "missing_sample": [
+      "the",
+      "a",
+      "number",
+      "take",
+      "detector",
+      "prior",
+      "5",
+      "s",
+      "concept",
+      "check"
+     ],
+     "page": 52
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/Probabilistic Graphical Models_ Principles and Techniques -- Daphne Koller and Nir Friedman -- Adaptative computation and machine learning series, -- 9780262013192 -- 1603939e6f2b5b47d500d34cf7bfd05f -- Anna?s Archive.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9575131057866632,
+   "missing_rate": 0.041345093715545754,
+   "ref_words": 3628,
+   "worst": [
+    {
+     "precision": 0.9237472766884531,
+     "recall": 0.902127659574468,
+     "f1": 0.9128094725511302,
+     "missing_rate": 0.09787234042553192,
+     "ref_words": 470,
+     "hyp_words": 459,
+     "missing_sample": [
+      "\u03b4",
+      "c",
+      "\u03b2",
+      "\u03c3",
+      "\u03b4i",
+      "s",
+      "\u03b4j",
+      "\u03b2i",
+      "different",
+      "y",
+      "\u03c8i",
+      "\u03b4k"
+     ],
+     "page": 476
+    },
+    {
+     "precision": 0.9145299145299145,
+     "recall": 0.9145299145299145,
+     "f1": 0.9145299145299145,
+     "missing_rate": 0.08547008547008547,
+     "ref_words": 468,
+     "hyp_words": 468,
+     "missing_sample": [
+      "1",
+      "ieq\u03b8",
+      "q\u03b8",
+      "sufficient",
+      "reparam",
+      "eterize",
+      "\u03c4",
+      "h",
+      "y",
+      "pagxi"
+     ],
+     "page": 317
+    },
+    {
+     "precision": 0.9391447368421053,
+     "recall": 0.9564489112227805,
+     "f1": 0.9477178423236514,
+     "missing_rate": 0.04355108877721943,
+     "ref_words": 597,
+     "hyp_words": 608,
+     "missing_sample": [
+      "sufficient",
+      "m",
+      "\u03b5",
+      "v",
+      "k",
+      "\u03b8",
+      "ykk",
+      "family",
+      "aggreexponential",
+      "con",
+      "tribute",
+      "different"
+     ],
+     "page": 793
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/ai/Artificial_Intelligence_A_Modern_Approac.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9969939391046768,
+   "missing_rate": 0.00399400898652022,
+   "ref_words": 2003,
+   "worst": [
+    {
+     "precision": 0.9888268156424581,
+     "recall": 0.9779005524861878,
+     "f1": 0.9833333333333334,
+     "missing_rate": 0.022099447513812154,
+     "ref_words": 181,
+     "hyp_words": 179,
+     "missing_sample": [
+      "273",
+      "297",
+      "365",
+      "427"
+     ],
+     "page": 1934
+    },
+    {
+     "precision": 0.996551724137931,
+     "recall": 0.993127147766323,
+     "f1": 0.9948364888123924,
+     "missing_rate": 0.006872852233676976,
+     "ref_words": 291,
+     "hyp_words": 290,
+     "missing_sample": [
+      "sentences",
+      "assumptions"
+     ],
+     "page": 644
+    },
+    {
+     "precision": 0.9974747474747475,
+     "recall": 0.9949622166246851,
+     "f1": 0.9962168978562421,
+     "missing_rate": 0.005037783375314861,
+     "ref_words": 397,
+     "hyp_words": 396,
+     "missing_sample": [
+      "2",
+      "h"
+     ],
+     "page": 1611
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/causal_calculus.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8202659289096824,
+   "missing_rate": 0.20098371777476254,
+   "ref_words": 5896,
+   "worst": [
+    {
+     "precision": 0.7955706984667802,
+     "recall": 0.724031007751938,
+     "f1": 0.7581168831168831,
+     "missing_rate": 0.27596899224806204,
+     "ref_words": 645,
+     "hyp_words": 587,
+     "missing_sample": [
+      "of",
+      "the",
+      "causal",
+      "and",
+      "or",
+      "to",
+      "rules",
+      "models",
+      "cycles",
+      "informatics",
+      "institute",
+      "university"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.7614035087719299,
+     "recall": 0.7977941176470589,
+     "f1": 0.7791741472172351,
+     "missing_rate": 0.20220588235294118,
+     "ref_words": 816,
+     "hyp_words": 855,
+     "missing_sample": [
+      "the",
+      "\u03c3",
+      "in",
+      "to",
+      "acyclic",
+      "criterion",
+      "of",
+      "backdoor",
+      "case",
+      "and",
+      "2",
+      "can"
+     ],
+     "page": 6
+    },
+    {
+     "precision": 0.8296296296296296,
+     "recall": 0.7990487514863258,
+     "f1": 0.8140520896426408,
+     "missing_rate": 0.20095124851367419,
+     "ref_words": 841,
+     "hyp_words": 810,
+     "missing_sample": [
+      "the",
+      "ioscm",
+      "of",
+      "by",
+      "for",
+      "and",
+      "with",
+      "an",
+      "j",
+      "to",
+      "defined",
+      "define"
+     ],
+     "page": 2
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/ctbn-thesis.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9603584922423883,
+   "missing_rate": 0.042692939244663386,
+   "ref_words": 1827,
+   "worst": [
+    {
+     "precision": 0.9246987951807228,
+     "recall": 0.9303030303030303,
+     "f1": 0.9274924471299094,
+     "missing_rate": 0.0696969696969697,
+     "ref_words": 330,
+     "hyp_words": 332,
+     "missing_sample": [
+      "lim",
+      "as",
+      "a",
+      "set",
+      "of",
+      "each",
+      "can",
+      "we",
+      "intensity",
+      "cim",
+      "q1y",
+      "q12"
+     ],
+     "page": 39
+    },
+    {
+     "precision": 0.9043062200956937,
+     "recall": 0.9692307692307692,
+     "f1": 0.9356435643564355,
+     "missing_rate": 0.03076923076923077,
+     "ref_words": 195,
+     "hyp_words": 209,
+     "missing_sample": [
+      "ctbn",
+      "phase",
+      "mean",
+      "test",
+      "log",
+      "likelihood"
+     ],
+     "page": 136
+    },
+    {
+     "precision": 0.9785932721712538,
+     "recall": 0.9411764705882353,
+     "f1": 0.95952023988006,
+     "missing_rate": 0.058823529411764705,
+     "ref_words": 340,
+     "hyp_words": 327,
+     "missing_sample": [
+      "p",
+      "that",
+      "h",
+      "i",
+      "0",
+      "\u03c6",
+      "q",
+      "to",
+      "as",
+      "v",
+      "\u03b9",
+      "instantiation"
+     ],
+     "page": 117
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/math-stats/In All Likelihood Statistical Modelling and Inference Using Likelihood by Yudi Pawitan (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9937824359801127,
+   "missing_rate": 0.008,
+   "ref_words": 2500,
+   "worst": [
+    {
+     "precision": 0.9901477832512315,
+     "recall": 0.9804878048780488,
+     "f1": 0.9852941176470588,
+     "missing_rate": 0.01951219512195122,
+     "ref_words": 205,
+     "hyp_words": 203,
+     "missing_sample": [
+      "l",
+      "i",
+      "8"
+     ],
+     "page": 273
+    },
+    {
+     "precision": 0.9934640522875817,
+     "recall": 0.987012987012987,
+     "f1": 0.990228013029316,
+     "missing_rate": 0.012987012987012988,
+     "ref_words": 462,
+     "hyp_words": 459,
+     "missing_sample": [
+      "ct",
+      "2"
+     ],
+     "page": 477
+    },
+    {
+     "precision": 0.9955056179775281,
+     "recall": 0.9888392857142857,
+     "f1": 0.9921612541993281,
+     "missing_rate": 0.011160714285714286,
+     "ref_words": 448,
+     "hyp_words": 445,
+     "missing_sample": [
+      "i",
+      "e",
+      "x",
+      "l",
+      "9j"
+     ],
+     "page": 68
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/math-stats/casella_berger-statistical_inference.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.0,
+   "missing_rate": 0.0,
+   "ref_words": 1,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 85
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 171
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/misc/Head First Design Patterns - U-Cursos ( PDFDrive ).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.7917526182139024,
+   "missing_rate": 0.1516690856313498,
+   "ref_words": 1378,
+   "worst": [
+    {
+     "precision": 0.42333333333333334,
+     "recall": 0.7175141242937854,
+     "f1": 0.5324947589098532,
+     "missing_rate": 0.2824858757062147,
+     "ref_words": 177,
+     "hyp_words": 300,
+     "missing_sample": [
+      "the",
+      "in",
+      "object",
+      "view",
+      "of",
+      "that",
+      "body",
+      "state",
+      "is",
+      "it",
+      "composed",
+      "with"
+     ],
+     "page": 595
+    },
+    {
+     "precision": 0.6422764227642277,
+     "recall": 0.7821782178217822,
+     "f1": 0.7053571428571429,
+     "missing_rate": 0.21782178217821782,
+     "ref_words": 202,
+     "hyp_words": 246,
+     "missing_sample": [
+      "ducks",
+      "2",
+      "weighs",
+      "the",
+      "duck",
+      "dewey",
+      "we",
+      "arrays",
+      "method",
+      "let",
+      "here",
+      "sorting"
+     ],
+     "page": 340
+    },
+    {
+     "precision": 0.662962962962963,
+     "recall": 0.7850877192982456,
+     "f1": 0.7188755020080321,
+     "missing_rate": 0.2149122807017544,
+     "ref_words": 228,
+     "hyp_words": 270,
+     "missing_sample": [
+      "the",
+      "quarter",
+      "here",
+      "quarte",
+      "out",
+      "machine",
+      "of",
+      "state",
+      "diagram",
+      "1",
+      "ll",
+      "gumba"
+     ],
+     "page": 425
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/misc/ScreenplayFormatPacket.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9987752602571953,
+   "missing_rate": 0.001224739742804654,
+   "ref_words": 1633,
+   "worst": [
+    {
+     "precision": 0.9939759036144579,
+     "recall": 0.9939759036144579,
+     "f1": 0.9939759036144579,
+     "missing_rate": 0.006024096385542169,
+     "ref_words": 332,
+     "hyp_words": 332,
+     "missing_sample": [
+      "chapter",
+      "1"
+     ],
+     "page": 3
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 479,
+     "hyp_words": 479,
+     "missing_sample": [],
+     "page": 6
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/bens-library/misc/The Lost Hero.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9990500933668913,
+   "missing_rate": 0.0012642225031605564,
+   "ref_words": 1582,
+   "worst": [
+    {
+     "precision": 0.9963235294117647,
+     "recall": 0.9926739926739927,
+     "f1": 0.9944954128440368,
+     "missing_rate": 0.007326007326007326,
+     "ref_words": 273,
+     "hyp_words": 272,
+     "missing_sample": [
+      "w",
+      "ho"
+     ],
+     "page": 146
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 228,
+     "hyp_words": 228,
+     "missing_sample": [],
+     "page": 73
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/classic_literature/1984.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9976640967035797,
+   "missing_rate": 0.0036054596961112542,
+   "ref_words": 3883,
+   "worst": [
+    {
+     "precision": 0.9937007874015747,
+     "recall": 0.9782945736434109,
+     "f1": 0.9859375,
+     "missing_rate": 0.021705426356589147,
+     "ref_words": 645,
+     "hyp_words": 635,
+     "missing_sample": [
+      "be",
+      "but",
+      "not",
+      "even",
+      "and",
+      "could",
+      "with",
+      "your",
+      "difficult",
+      "breathing",
+      "controlled",
+      "an"
+     ],
+     "page": 45
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 4,
+     "hyp_words": 4,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 651,
+     "hyp_words": 651,
+     "missing_sample": [],
+     "page": 22
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/c++/2011-shaffer-data_structures_and_algorithm_analysis_c++_version.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9303659028416413,
+   "missing_rate": 0.11257570359814749,
+   "ref_words": 2807,
+   "worst": [
+    {
+     "precision": 0.963855421686747,
+     "recall": 0.8064516129032258,
+     "f1": 0.8781558726673984,
+     "missing_rate": 0.1935483870967742,
+     "ref_words": 496,
+     "hyp_words": 415,
+     "missing_sample": [
+      "the",
+      "a",
+      "0",
+      "of",
+      "value",
+      "bit",
+      "to",
+      "is",
+      "2",
+      "in",
+      "nodes",
+      "that"
+     ],
+     "page": 459
+    },
+    {
+     "precision": 0.9685534591194969,
+     "recall": 0.8346883468834688,
+     "f1": 0.8966521106259098,
+     "missing_rate": 0.16531165311653118,
+     "ref_words": 369,
+     "hyp_words": 318,
+     "missing_sample": [
+      "the",
+      "is",
+      "time",
+      "to",
+      "value",
+      "this",
+      "for",
+      "array",
+      "a",
+      "of",
+      "n",
+      "required"
+     ],
+     "page": 76
+    },
+    {
+     "precision": 0.976,
+     "recall": 0.8551401869158879,
+     "f1": 0.9115815691158157,
+     "missing_rate": 0.14485981308411214,
+     "ref_words": 428,
+     "hyp_words": 375,
+     "missing_sample": [
+      "of",
+      "to",
+      "a",
+      "table",
+      "storing",
+      "this",
+      "the",
+      "one",
+      "way",
+      "accomplish",
+      "goal",
+      "is"
+     ],
+     "page": 536
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/c++/2012-drozdek-data_structures_and_algorithms_in_c++.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.7012382562804597,
+   "missing_rate": 0.15167548500881833,
+   "ref_words": 3402,
+   "worst": [
+    {
+     "precision": 0.0,
+     "recall": 1.0,
+     "f1": 0.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 11,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 0.45932203389830506,
+     "recall": 0.7970588235294118,
+     "f1": 0.5827956989247312,
+     "missing_rate": 0.20294117647058824,
+     "ref_words": 340,
+     "hyp_words": 590,
+     "missing_sample": [
+      "the",
+      "learning",
+      "rights",
+      "or",
+      "content",
+      "to",
+      "be",
+      "not",
+      "cengage",
+      "may",
+      "suppressed",
+      "any"
+     ],
+     "page": 613
+    },
+    {
+     "precision": 0.5143266475644699,
+     "recall": 0.8310185185185185,
+     "f1": 0.6353982300884956,
+     "missing_rate": 0.16898148148148148,
+     "ref_words": 432,
+     "hyp_words": 698,
+     "missing_sample": [
+      "the",
+      "or",
+      "learning",
+      "rights",
+      "content",
+      "to",
+      "not",
+      "may",
+      "be",
+      "any",
+      "cengage",
+      "suppressed"
+     ],
+     "page": 102
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/c/Algorithms in C by Robert Sedgewick (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.0,
+   "missing_rate": 0.0,
+   "ref_words": 1,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 84
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 168
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/c/Algorithms in C, Parts 1-4 Fundamentals, Data Structures, Sorting, Searching by Sedgewick, Robert (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9343421111918593,
+   "missing_rate": 0.029814420444174018,
+   "ref_words": 3287,
+   "worst": [
+    {
+     "precision": 0.8415841584158416,
+     "recall": 0.9497206703910615,
+     "f1": 0.8923884514435696,
+     "missing_rate": 0.05027932960893855,
+     "ref_words": 537,
+     "hyp_words": 606,
+     "missing_sample": [
+      "the",
+      "sort",
+      "pass",
+      "radix",
+      "of",
+      "by",
+      "file",
+      "keys",
+      "can",
+      "be",
+      "lsd",
+      "an"
+     ],
+     "page": 450
+    },
+    {
+     "precision": 0.837979094076655,
+     "recall": 0.9543650793650794,
+     "f1": 0.8923933209647495,
+     "missing_rate": 0.04563492063492063,
+     "ref_words": 504,
+     "hyp_words": 574,
+     "missing_sample": [
+      "the",
+      "of",
+      "keys",
+      "no",
+      "for",
+      "and",
+      "or",
+      "tb1",
+      "binary",
+      "inserting",
+      "10000",
+      "01000"
+     ],
+     "page": 630
+    },
+    {
+     "precision": 0.844559585492228,
+     "recall": 0.9532163742690059,
+     "f1": 0.8956043956043956,
+     "missing_rate": 0.04678362573099415,
+     "ref_words": 513,
+     "hyp_words": 579,
+     "missing_sample": [
+      "we",
+      "link",
+      "trees",
+      "the",
+      "node",
+      "with",
+      "subtree",
+      "to",
+      "from",
+      "this",
+      "an",
+      "two"
+     ],
+     "page": 540
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/c/Skiena2020_Book_TheAlgorithmDesignManual.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.860943678546759,
+   "missing_rate": 0.09171483622350675,
+   "ref_words": 2595,
+   "worst": [
+    {
+     "precision": 0.47743467933491684,
+     "recall": 0.7810880829015544,
+     "f1": 0.5926289926289926,
+     "missing_rate": 0.2189119170984456,
+     "ref_words": 772,
+     "hyp_words": 1263,
+     "missing_sample": [
+      "that",
+      "here",
+      "the",
+      "we",
+      "of",
+      "for",
+      "and",
+      "nation",
+      "to",
+      "have",
+      "it",
+      "this"
+     ],
+     "page": 700
+    },
+    {
+     "precision": 0.9837133550488599,
+     "recall": 0.9263803680981595,
+     "f1": 0.9541864139020537,
+     "missing_rate": 0.0736196319018405,
+     "ref_words": 326,
+     "hyp_words": 307,
+     "missing_sample": [
+      "n",
+      "is",
+      "a",
+      "prime",
+      "the",
+      "of",
+      "table",
+      "primes",
+      "algorithms",
+      "can",
+      "you",
+      "such"
+     ],
+     "page": 500
+    },
+    {
+     "precision": 0.9850746268656716,
+     "recall": 0.9428571428571428,
+     "f1": 0.9635036496350364,
+     "missing_rate": 0.05714285714285714,
+     "ref_words": 280,
+     "hyp_words": 268,
+     "missing_sample": [
+      "n",
+      "lg",
+      "the",
+      "any",
+      "program",
+      "for",
+      "computing",
+      "maximum",
+      "clique",
+      "in",
+      "a",
+      "graph"
+     ],
+     "page": 600
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/general/1997-knuth-the_art_of_computer_programming-vol_1-fundamental_algorithms.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9845877792930925,
+   "missing_rate": 0.02050113895216401,
+   "ref_words": 3073,
+   "worst": [
+    {
+     "precision": 0.961352657004831,
+     "recall": 0.9590361445783132,
+     "f1": 0.9601930036188178,
+     "missing_rate": 0.04096385542168675,
+     "ref_words": 415,
+     "hyp_words": 414,
+     "missing_sample": [
+      "20",
+      "wj",
+      "lj",
+      "the",
+      "path",
+      "are",
+      "and",
+      "11",
+      "here",
+      "lengths",
+      "34",
+      "40"
+     ],
+     "page": 423
+    },
+    {
+     "precision": 0.9844559585492227,
+     "recall": 0.9547738693467337,
+     "f1": 0.9693877551020409,
+     "missing_rate": 0.04522613065326633,
+     "ref_words": 398,
+     "hyp_words": 386,
+     "missing_sample": [
+      "n",
+      "1",
+      "in",
+      "the",
+      "a1",
+      "a2",
+      "a3",
+      "equation",
+      "which",
+      "was",
+      "presented",
+      "without"
+     ],
+     "page": 84
+    },
+    {
+     "precision": 0.9941520467836257,
+     "recall": 0.96045197740113,
+     "f1": 0.9770114942528735,
+     "missing_rate": 0.03954802259887006,
+     "ref_words": 354,
+     "hyp_words": 342,
+     "missing_sample": [
+      "the",
+      "of",
+      "in",
+      "important",
+      "this",
+      "we",
+      "course",
+      "study",
+      "will",
+      "also",
+      "work",
+      "out"
+     ],
+     "page": 253
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/general/2009-cormen-introduction_to_algorithms.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8611792266514964,
+   "missing_rate": 0.18633931381806737,
+   "ref_words": 3177,
+   "worst": [
+    {
+     "precision": 0.9130434782608695,
+     "recall": 0.6268656716417911,
+     "f1": 0.7433628318584071,
+     "missing_rate": 0.373134328358209,
+     "ref_words": 67,
+     "hyp_words": 46,
+     "missing_sample": [
+      "s",
+      "r",
+      "e",
+      "o",
+      "c",
+      "n",
+      "t",
+      "h",
+      "m",
+      "a",
+      "l",
+      "i"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.8997134670487106,
+     "recall": 0.7476190476190476,
+     "f1": 0.8166449934980494,
+     "missing_rate": 0.2523809523809524,
+     "ref_words": 420,
+     "hyp_words": 349,
+     "missing_sample": [
+      "s",
+      "earch",
+      "d",
+      "eterministic",
+      "that",
+      "the",
+      "such",
+      "a\u0153i",
+      "of",
+      "indices",
+      "r",
+      "andom"
+     ],
+     "page": 164
+    },
+    {
+     "precision": 0.8732718894009217,
+     "recall": 0.7672064777327935,
+     "f1": 0.8168103448275861,
+     "missing_rate": 0.23279352226720648,
+     "ref_words": 494,
+     "hyp_words": 434,
+     "missing_sample": [
+      "t",
+      "m",
+      "erge",
+      "1",
+      "c",
+      "\u0153p2",
+      "\u0153p1",
+      "\u0153q1",
+      "b",
+      "inary",
+      "s",
+      "earch"
+     ],
+     "page": 820
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/general/Computer Algorithms.  Introduction to Design and Analysis by Sara Baase, Allen Van Gelder (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.0,
+   "missing_rate": 0.0,
+   "ref_words": 1,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 86
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 173
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/general/Randomized Algorithms by Rajeev Motwani, Prabhakar Raghavan (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9932995406456461,
+   "missing_rate": 0.007499184871209651,
+   "ref_words": 3067,
+   "worst": [
+    {
+     "precision": 0.9764705882352941,
+     "recall": 0.9764705882352941,
+     "f1": 0.9764705882352941,
+     "missing_rate": 0.023529411764705882,
+     "ref_words": 340,
+     "hyp_words": 340,
+     "missing_sample": [
+      "cjes",
+      "k",
+      "lzj"
+     ],
+     "page": 122
+    },
+    {
+     "precision": 0.9859154929577465,
+     "recall": 0.9722222222222222,
+     "f1": 0.979020979020979,
+     "missing_rate": 0.027777777777777776,
+     "ref_words": 360,
+     "hyp_words": 355,
+     "missing_sample": [
+      "2",
+      "n",
+      "log",
+      "ii",
+      "n4",
+      "n2",
+      "logq1"
+     ],
+     "page": 306
+    },
+    {
+     "precision": 0.9915966386554622,
+     "recall": 0.9936842105263158,
+     "f1": 0.9926393270241851,
+     "missing_rate": 0.00631578947368421,
+     "ref_words": 475,
+     "hyp_words": 476,
+     "missing_sample": [
+      "x",
+      "2",
+      "distributed"
+     ],
+     "page": 429
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/general/The Art of Computer Programming Volume 3 Sorting and Searching (Donald E. Knuth) (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9612842961061726,
+   "missing_rate": 0.037037037037037035,
+   "ref_words": 2862,
+   "worst": [
+    {
+     "precision": 0.019945602901178604,
+     "recall": 1.0,
+     "f1": 0.03911111111111111,
+     "missing_rate": 0.0,
+     "ref_words": 22,
+     "hyp_words": 1103,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 0.7517241379310344,
+     "recall": 0.9008264462809917,
+     "f1": 0.8195488721804511,
+     "missing_rate": 0.09917355371900827,
+     "ref_words": 121,
+     "hyp_words": 145,
+     "missing_sample": [
+      "073",
+      "083",
+      "379",
+      "389",
+      "709",
+      "727",
+      "739",
+      "751",
+      "853",
+      "859",
+      "919",
+      "937"
+     ],
+     "page": 501
+    },
+    {
+     "precision": 0.9582504970178927,
+     "recall": 0.9009345794392524,
+     "f1": 0.9287090558766858,
+     "missing_rate": 0.09906542056074766,
+     "ref_words": 535,
+     "hyp_words": 503,
+     "missing_sample": [
+      "1",
+      "2",
+      "en",
+      "an",
+      "the",
+      "of",
+      "sin",
+      "\u03b8",
+      "12",
+      "26",
+      "21",
+      "24"
+     ],
+     "page": 702
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/general/The Art of Computer Programming, Volume 4A Combinatorial Algorithms, Part 1 (Donald E. Knuth) (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.015909470646312752,
+   "missing_rate": 0.9915151515151515,
+   "ref_words": 825,
+   "worst": [
+    {
+     "precision": 0.0,
+     "recall": 0.0,
+     "f1": 0.0,
+     "missing_rate": 1.0,
+     "ref_words": 82,
+     "hyp_words": 0,
+     "missing_sample": [
+      "0",
+      "v",
+      "1",
+      "3",
+      "9",
+      "5",
+      "2",
+      "ii",
+      "6",
+      "b",
+      "q",
+      "f"
+     ],
+     "page": 225
+    },
+    {
+     "precision": 0.0,
+     "recall": 0.0,
+     "f1": 0.0,
+     "missing_rate": 1.0,
+     "ref_words": 40,
+     "hyp_words": 0,
+     "missing_sample": [
+      "7",
+      "8",
+      "2",
+      "6",
+      "h",
+      "j",
+      "0",
+      "5",
+      "q",
+      "g",
+      "9"
+     ],
+     "page": 337
+    },
+    {
+     "precision": 0.0,
+     "recall": 0.0,
+     "f1": 0.0,
+     "missing_rate": 1.0,
+     "ref_words": 151,
+     "hyp_words": 0,
+     "missing_sample": [
+      "t",
+      "3",
+      "h",
+      "2",
+      "5",
+      "1",
+      "e",
+      "s",
+      "a",
+      "j",
+      "g",
+      "6"
+     ],
+     "page": 450
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/general/The art of computer programming. Vol.2. Seminumerical algorithms (Knuth, Donald E) (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9312149198842019,
+   "missing_rate": 0.0828356271098416,
+   "ref_words": 3851,
+   "worst": [
+    {
+     "precision": 0.9066091954022989,
+     "recall": 0.8504043126684636,
+     "f1": 0.8776077885952712,
+     "missing_rate": 0.1495956873315364,
+     "ref_words": 742,
+     "hyp_words": 696,
+     "missing_sample": [
+      "2",
+      "m",
+      "1",
+      "d",
+      "ay",
+      "y",
+      "mod",
+      "m2",
+      "vi",
+      "u1",
+      "uk",
+      "mi"
+     ],
+     "page": 684
+    },
+    {
+     "precision": 0.9052453468697124,
+     "recall": 0.8901830282861897,
+     "f1": 0.8976510067114093,
+     "missing_rate": 0.10981697171381032,
+     "ref_words": 601,
+     "hyp_words": 591,
+     "missing_sample": [
+      "\u03be",
+      "zn",
+      "i",
+      "e",
+      "j",
+      "sm",
+      "12",
+      "h",
+      "2m",
+      "3",
+      "1",
+      "the"
+     ],
+     "page": 586
+    },
+    {
+     "precision": 0.9174311926605505,
+     "recall": 0.8880994671403197,
+     "f1": 0.9025270758122744,
+     "missing_rate": 0.11190053285968028,
+     "ref_words": 563,
+     "hyp_words": 545,
+     "missing_sample": [
+      "1",
+      "un",
+      "ln",
+      "lim",
+      "mod",
+      "x",
+      "c1",
+      "ck",
+      "xn",
+      "2",
+      "sup",
+      "4"
+     ],
+     "page": 195
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/algorithms/linear_algebra/Matrix Computations (Gene H. Golub, Charles F. Van Loan) (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.20425182323904695,
+   "missing_rate": 0.7885412740294007,
+   "ref_words": 2653,
+   "worst": [
+    {
+     "precision": 0.10714285714285714,
+     "recall": 0.27184466019417475,
+     "f1": 0.1537053979871912,
+     "missing_rate": 0.7281553398058253,
+     "ref_words": 309,
+     "hyp_words": 784,
+     "missing_sample": [
+      "the",
+      "and",
+      "is",
+      "of",
+      "this",
+      "that",
+      "vector",
+      "be",
+      "in",
+      "form",
+      "by",
+      "solution"
+     ],
+     "page": 292
+    },
+    {
+     "precision": 0.1836734693877551,
+     "recall": 0.16321243523316062,
+     "f1": 0.17283950617283952,
+     "missing_rate": 0.8367875647668394,
+     "ref_words": 386,
+     "hyp_words": 343,
+     "missing_sample": [
+      "the",
+      "of",
+      "8",
+      "q",
+      "is",
+      "k",
+      "matrix",
+      "that",
+      "if",
+      "then",
+      "are",
+      "to"
+     ],
+     "page": 487
+    },
+    {
+     "precision": 0.20348837209302326,
+     "recall": 0.18041237113402062,
+     "f1": 0.1912568306010929,
+     "missing_rate": 0.8195876288659794,
+     "ref_words": 388,
+     "hyp_words": 344,
+     "missing_sample": [
+      "the",
+      "in",
+      "is",
+      "of",
+      "j",
+      "that",
+      "by",
+      "a",
+      "and",
+      "to",
+      "cholesky",
+      "this"
+     ],
+     "page": 682
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/compilers/Compilers Principles, Techniques,  Tools (Alfred V. Aho, Monica S. Lam, Ravi Sethi etc.) (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8336857116099371,
+   "missing_rate": 0.1502572898799314,
+   "ref_words": 2915,
+   "worst": [
+    {
+     "precision": 0.7341772151898734,
+     "recall": 0.7631578947368421,
+     "f1": 0.7483870967741936,
+     "missing_rate": 0.23684210526315788,
+     "ref_words": 380,
+     "hyp_words": 395,
+     "missing_sample": [
+      "11",
+      "2",
+      "code",
+      "loop",
+      "c1",
+      "c2",
+      "64",
+      "number",
+      "be",
+      "components",
+      "3",
+      "synchronization"
+     ],
+     "page": 905
+    },
+    {
+     "precision": 0.8085642317380353,
+     "recall": 0.8209718670076727,
+     "f1": 0.8147208121827412,
+     "missing_rate": 0.17902813299232737,
+     "ref_words": 391,
+     "hyp_words": 397,
+     "missing_sample": [
+      "2",
+      "8",
+      "code",
+      "loop",
+      "be",
+      "9",
+      "expr3",
+      "does",
+      "temporary",
+      "becomes",
+      "expr1",
+      "expr2"
+     ],
+     "page": 129
+    },
+    {
+     "precision": 0.810304449648712,
+     "recall": 0.8564356435643564,
+     "f1": 0.8327316486161251,
+     "missing_rate": 0.14356435643564355,
+     "ref_words": 404,
+     "hyp_words": 427,
+     "missing_sample": [
+      "be",
+      "6",
+      "2",
+      "code",
+      "label",
+      "1",
+      "correspond",
+      "5",
+      "symbolic",
+      "labels",
+      "operation",
+      "364"
+     ],
+     "page": 388
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/1985-shamos-computational_geometry-an_introduction.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9845820593504025,
+   "missing_rate": 0.014980026631158456,
+   "ref_words": 3004,
+   "worst": [
+    {
+     "precision": 0.9424657534246575,
+     "recall": 0.9745042492917847,
+     "f1": 0.958217270194986,
+     "missing_rate": 0.025495750708215296,
+     "ref_words": 353,
+     "hyp_words": 365,
+     "missing_sample": [
+      "x",
+      "i",
+      "1",
+      "all",
+      "nearest",
+      "neighbors"
+     ],
+     "page": 205
+    },
+    {
+     "precision": 0.9757412398921833,
+     "recall": 0.9731182795698925,
+     "f1": 0.97442799461642,
+     "missing_rate": 0.026881720430107527,
+     "ref_words": 372,
+     "hyp_words": 371,
+     "missing_sample": [
+      "n",
+      "2",
+      "3",
+      "p",
+      "asshowninfigure2"
+     ],
+     "page": 51
+    },
+    {
+     "precision": 0.9850187265917603,
+     "recall": 0.9704797047970479,
+     "f1": 0.9776951672862454,
+     "missing_rate": 0.02952029520295203,
+     "ref_words": 271,
+     "hyp_words": 267,
+     "missing_sample": [
+      "i",
+      "u",
+      "ntersections",
+      "x",
+      "1",
+      "2"
+     ],
+     "page": 308
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/1996-laszlo-computational_geometry_and_computer_graphics_in_c++.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9942802612013609,
+   "missing_rate": 0.005541346973572037,
+   "ref_words": 2346,
+   "worst": [
+    {
+     "precision": 0.8,
+     "recall": 0.8888888888888888,
+     "f1": 0.8421052631578948,
+     "missing_rate": 0.1111111111111111,
+     "ref_words": 9,
+     "hyp_words": 10,
+     "missing_sample": [
+      "geometry"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.9839357429718876,
+     "recall": 0.9919028340080972,
+     "f1": 0.9879032258064516,
+     "missing_rate": 0.008097165991902834,
+     "ref_words": 247,
+     "hyp_words": 249,
+     "missing_sample": [
+      "crossesfrom"
+     ],
+     "page": 141
+    },
+    {
+     "precision": 0.9919028340080972,
+     "recall": 0.98989898989899,
+     "f1": 0.9908998988877654,
+     "missing_rate": 0.010101010101010102,
+     "ref_words": 495,
+     "hyp_words": 494,
+     "missing_sample": [
+      "south",
+      "east",
+      "fig",
+      "ure",
+      "quadrantsare"
+     ],
+     "page": 246
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/1998-orourke-computational_geometry_in_c.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9085121318632601,
+   "missing_rate": 0.12423873325213154,
+   "ref_words": 2463,
+   "worst": [
+    {
+     "precision": 0.9371428571428572,
+     "recall": 0.8353140916808149,
+     "f1": 0.8833034111310593,
+     "missing_rate": 0.16468590831918506,
+     "ref_words": 589,
+     "hyp_words": 525,
+     "missing_sample": [
+      "the",
+      "of",
+      "to",
+      "code",
+      "is",
+      "in",
+      "c",
+      "if",
+      "are",
+      "4",
+      "a",
+      "elements"
+     ],
+     "page": 89
+    },
+    {
+     "precision": 0.9304029304029304,
+     "recall": 0.8523489932885906,
+     "f1": 0.8896672504378283,
+     "missing_rate": 0.1476510067114094,
+     "ref_words": 596,
+     "hyp_words": 546,
+     "missing_sample": [
+      "of",
+      "a",
+      "the",
+      "circle",
+      "that",
+      "d",
+      "empty",
+      "points",
+      "f",
+      "5",
+      "t",
+      "point"
+     ],
+     "page": 179
+    },
+    {
+     "precision": 0.9461883408071748,
+     "recall": 0.8940677966101694,
+     "f1": 0.9193899782135075,
+     "missing_rate": 0.1059322033898305,
+     "ref_words": 472,
+     "hyp_words": 446,
+     "missing_sample": [
+      "of",
+      "n",
+      "the",
+      "4",
+      "2",
+      "be",
+      "this",
+      "by",
+      "an",
+      "must",
+      "internal",
+      "bool"
+     ],
+     "page": 44
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/2004-orourke-handbook_of_discrete_computational_geometry.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.5230703175951573,
+   "missing_rate": 0.49480100394406595,
+   "ref_words": 2789,
+   "worst": [
+    {
+     "precision": 0.375,
+     "recall": 0.011583011583011582,
+     "f1": 0.022471910112359553,
+     "missing_rate": 0.9884169884169884,
+     "ref_words": 518,
+     "hyp_words": 16,
+     "missing_sample": [
+      "the",
+      "of",
+      "d",
+      "to",
+      "and",
+      "points",
+      "vertices",
+      "in",
+      "a",
+      "with",
+      "polytopes",
+      "for"
+     ],
+     "page": 389
+    },
+    {
+     "precision": 1.0,
+     "recall": 0.017699115044247787,
+     "f1": 0.034782608695652174,
+     "missing_rate": 0.9823008849557522,
+     "ref_words": 339,
+     "hyp_words": 6,
+     "missing_sample": [
+      "of",
+      "the",
+      "a",
+      "and",
+      "real",
+      "algebra",
+      "algebraic",
+      "geometry",
+      "in",
+      "computational",
+      "problem",
+      "for"
+     ],
+     "page": 779
+    },
+    {
+     "precision": 0.8,
+     "recall": 0.01927710843373494,
+     "f1": 0.037647058823529415,
+     "missing_rate": 0.980722891566265,
+     "ref_words": 415,
+     "hyp_words": 10,
+     "missing_sample": [
+      "the",
+      "of",
+      "in",
+      "a",
+      "metric",
+      "for",
+      "0",
+      "be",
+      "to",
+      "1",
+      "and",
+      "space"
+     ],
+     "page": 194
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/2008-mark-computational_geometry-algorithms_and_applications.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9468761036219538,
+   "missing_rate": 0.07862550960978451,
+   "ref_words": 3434,
+   "worst": [
+    {
+     "precision": 0.9407894736842105,
+     "recall": 0.7944444444444444,
+     "f1": 0.8614457831325301,
+     "missing_rate": 0.20555555555555555,
+     "ref_words": 360,
+     "hyp_words": 304,
+     "missing_sample": [
+      "n",
+      "log",
+      "the",
+      "and",
+      "k",
+      "p1",
+      "2",
+      "we",
+      "union",
+      "p2",
+      "of",
+      "o"
+     ],
+     "page": 48
+    },
+    {
+     "precision": 0.974293059125964,
+     "recall": 0.8855140186915887,
+     "f1": 0.9277845777233781,
+     "missing_rate": 0.11448598130841121,
+     "ref_words": 428,
+     "hyp_words": 389,
+     "missing_sample": [
+      "the",
+      "n",
+      "of",
+      "are",
+      "in",
+      "robot",
+      "a",
+      "log",
+      "map",
+      "13",
+      "t",
+      "rapezoidal"
+     ],
+     "page": 291
+    },
+    {
+     "precision": 0.9735349716446124,
+     "recall": 0.9196428571428571,
+     "f1": 0.945821854912764,
+     "missing_rate": 0.08035714285714286,
+     "ref_words": 560,
+     "hyp_words": 529,
+     "missing_sample": [
+      "n",
+      "log",
+      "the",
+      "segments",
+      "log2",
+      "theorem",
+      "10",
+      "let",
+      "s",
+      "be",
+      "a",
+      "set"
+     ],
+     "page": 242
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/2010-theobald-nonlinear_computational_geometry.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.5363557131915399,
+   "missing_rate": 0.49392857142857144,
+   "ref_words": 2800,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 0.004555808656036446,
+     "f1": 0.009070294784580499,
+     "missing_rate": 0.9954441913439636,
+     "ref_words": 439,
+     "hyp_words": 2,
+     "missing_sample": [
+      "and",
+      "pp",
+      "geometry",
+      "j",
+      "in",
+      "of",
+      "computational",
+      "discrete",
+      "s",
+      "m",
+      "geometric",
+      "permutations"
+     ],
+     "page": 91
+    },
+    {
+     "precision": 0.9019607843137255,
+     "recall": 0.09126984126984126,
+     "f1": 0.16576576576576577,
+     "missing_rate": 0.9087301587301587,
+     "ref_words": 504,
+     "hyp_words": 51,
+     "missing_sample": [
+      "the",
+      "of",
+      "and",
+      "is",
+      "to",
+      "a",
+      "i",
+      "6",
+      "three",
+      "pencil",
+      "e",
+      "0"
+     ],
+     "page": 212
+    },
+    {
+     "precision": 0.8823529411764706,
+     "recall": 0.09740259740259741,
+     "f1": 0.1754385964912281,
+     "missing_rate": 0.9025974025974026,
+     "ref_words": 462,
+     "hyp_words": 51,
+     "missing_sample": [
+      "the",
+      "of",
+      "a",
+      "we",
+      "balls",
+      "and",
+      "is",
+      "to",
+      "disjoint",
+      "center",
+      "in",
+      "denote"
+     ],
+     "page": 60
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/2012-aanaes-guide_to_computational_geometry_processing.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8554372744389837,
+   "missing_rate": 0.21476246564585788,
+   "ref_words": 2547,
+   "worst": [
+    {
+     "precision": 0.9245283018867925,
+     "recall": 0.6712328767123288,
+     "f1": 0.7777777777777778,
+     "missing_rate": 0.3287671232876712,
+     "ref_words": 73,
+     "hyp_words": 53,
+     "missing_sample": [
+      "points",
+      "the",
+      "surface",
+      "reconstruction",
+      "using",
+      "radial",
+      "basis",
+      "functions",
+      "in",
+      "are",
+      "simply",
+      "mesh"
+     ],
+     "page": 288
+    },
+    {
+     "precision": 0.9493670886075949,
+     "recall": 0.7267441860465116,
+     "f1": 0.823271130625686,
+     "missing_rate": 0.27325581395348836,
+     "ref_words": 516,
+     "hyp_words": 395,
+     "missing_sample": [
+      "the",
+      "of",
+      "curvature",
+      "is",
+      "in",
+      "a",
+      "triangle",
+      "meshes",
+      "to",
+      "this",
+      "on",
+      "mean"
+     ],
+     "page": 165
+    },
+    {
+     "precision": 0.90625,
+     "recall": 0.7742718446601942,
+     "f1": 0.8350785340314136,
+     "missing_rate": 0.22572815533980584,
+     "ref_words": 412,
+     "hyp_words": 352,
+     "missing_sample": [
+      "the",
+      "fji",
+      "partial",
+      "and",
+      "we",
+      "methods",
+      "for",
+      "derivatives",
+      "of",
+      "function",
+      "are",
+      "in"
+     ],
+     "page": 82
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/2015-wenk-map_construction_algorithms.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9271712858969007,
+   "missing_rate": 0.11455748552522746,
+   "ref_words": 2418,
+   "worst": [
+    {
+     "precision": 0.896551724137931,
+     "recall": 0.6046511627906976,
+     "f1": 0.7222222222222221,
+     "missing_rate": 0.3953488372093023,
+     "ref_words": 86,
+     "hyp_words": 58,
+     "missing_sample": [
+      "an",
+      "turn",
+      "type",
+      "is",
+      "by",
+      "symbol",
+      "and",
+      "2",
+      "computing",
+      "intersection",
+      "nodes",
+      "odd"
+     ],
+     "page": 32
+    },
+    {
+     "precision": 0.9621848739495799,
+     "recall": 0.849721706864564,
+     "f1": 0.9024630541871922,
+     "missing_rate": 0.150278293135436,
+     "ref_words": 539,
+     "hyp_words": 476,
+     "missing_sample": [
+      "the",
+      "a",
+      "of",
+      "is",
+      "curve",
+      "and",
+      "street",
+      "modelled",
+      "curves",
+      "sample",
+      "on",
+      "fattening"
+     ],
+     "page": 48
+    },
+    {
+     "precision": 0.9837133550488599,
+     "recall": 0.877906976744186,
+     "f1": 0.9278033794162827,
+     "missing_rate": 0.12209302325581395,
+     "ref_words": 344,
+     "hyp_words": 307,
+     "missing_sample": [
+      "the",
+      "of",
+      "candidate",
+      "geometric",
+      "noi",
+      "and",
+      "a",
+      "hubs",
+      "are",
+      "that",
+      "centroids",
+      "resulting"
+     ],
+     "page": 112
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/Algorithmic Geometry by Jean-Daniel Boissonnat, Mariette Yvinec, Herve Bronniman (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 1.0,
+   "missing_rate": 0.0,
+   "ref_words": 2635,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 7,
+     "hyp_words": 7,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 158,
+     "hyp_words": 158,
+     "missing_sample": [],
+     "page": 67
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 240,
+     "hyp_words": 240,
+     "missing_sample": [],
+     "page": 135
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/Handbook of Discrete and Computational Geometry, Third Edition by Csaba D. Toth, Joseph ORourke, Jacob E. Goodman (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9558297315478008,
+   "missing_rate": 0.06428347444339919,
+   "ref_words": 3189,
+   "worst": [
+    {
+     "precision": 0.9593345656192237,
+     "recall": 0.9073426573426573,
+     "f1": 0.9326145552560646,
+     "missing_rate": 0.09265734265734266,
+     "ref_words": 572,
+     "hyp_words": 541,
+     "missing_sample": [
+      "i",
+      "log",
+      "d",
+      "em",
+      "l",
+      "\u03b1",
+      "\u03c3",
+      "fr\u00e9chet",
+      "of",
+      "the",
+      "in",
+      "for"
+     ],
+     "page": 243
+    },
+    {
+     "precision": 0.9562841530054644,
+     "recall": 0.9114583333333334,
+     "f1": 0.9333333333333332,
+     "missing_rate": 0.08854166666666667,
+     "ref_words": 384,
+     "hyp_words": 366,
+     "missing_sample": [
+      "i",
+      "\u03bb",
+      "\u03be1",
+      "\u03bes",
+      "\u03bei",
+      "ki",
+      "r",
+      "non",
+      "n",
+      "convex",
+      "negative",
+      "v"
+     ],
+     "page": 975
+    },
+    {
+     "precision": 0.9697674418604652,
+     "recall": 0.9164835164835164,
+     "f1": 0.9423728813559323,
+     "missing_rate": 0.08351648351648351,
+     "ref_words": 455,
+     "hyp_words": 430,
+     "missing_sample": [
+      "i",
+      "n",
+      "log",
+      "in",
+      "side",
+      "triangu",
+      "lation",
+      "num",
+      "ber",
+      "ran",
+      "dom",
+      "distribu"
+     ],
+     "page": 731
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/LEDA - A platform for Combinatorial and Geometric Computing by Kurt Mehlhorn, Stefan N\udce4her (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.6869926452319487,
+   "missing_rate": 0.40773694390715665,
+   "ref_words": 2585,
+   "worst": [
+    {
+     "precision": 0.7634408602150538,
+     "recall": 0.23905723905723905,
+     "f1": 0.3641025641025641,
+     "missing_rate": 0.7609427609427609,
+     "ref_words": 297,
+     "hyp_words": 93,
+     "missing_sample": [
+      "gw",
+      "set",
+      "node",
+      "s",
+      "t",
+      "and",
+      "the",
+      "flow",
+      "edge",
+      "g",
+      "to",
+      "label"
+     ],
+     "page": 910
+    },
+    {
+     "precision": 0.8102189781021898,
+     "recall": 0.378839590443686,
+     "f1": 0.5162790697674418,
+     "missing_rate": 0.621160409556314,
+     "ref_words": 293,
+     "hyp_words": 137,
+     "missing_sample": [
+      "g",
+      "e",
+      "free",
+      "the",
+      "edge",
+      "w",
+      "node",
+      "if",
+      "and",
+      "rev",
+      "return",
+      "edges"
+     ],
+     "page": 390
+    },
+    {
+     "precision": 0.8160377358490566,
+     "recall": 0.4726775956284153,
+     "f1": 0.5986159169550173,
+     "missing_rate": 0.5273224043715847,
+     "ref_words": 366,
+     "hyp_words": 212,
+     "missing_sample": [
+      "exp",
+      "c",
+      "point",
+      "the",
+      "m",
+      "p",
+      "and",
+      "1",
+      "to",
+      "kernel",
+      "ldexp",
+      "inv"
+     ],
+     "page": 650
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/computation_conformal_geometry/Computational conformal geometry (Gu Xianfeng David  Yau Shing-Tung) (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.0,
+   "missing_rate": 0.0,
+   "ref_words": 1,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 36
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 73
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/computation_conformal_geometry/Jin2018_Book_ConformalGeometry.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.7852692550818993,
+   "missing_rate": 0.29623724489795916,
+   "ref_words": 3136,
+   "worst": [
+    {
+     "precision": 0.8342857142857143,
+     "recall": 0.6226012793176973,
+     "f1": 0.7130647130647132,
+     "missing_rate": 0.3773987206823028,
+     "ref_words": 469,
+     "hyp_words": 350,
+     "missing_sample": [
+      "j",
+      "jk",
+      "i",
+      "the",
+      "a",
+      "vertex",
+      "edge",
+      "f",
+      "is",
+      "li",
+      "and",
+      "v"
+     ],
+     "page": 159
+    },
+    {
+     "precision": 0.8644859813084113,
+     "recall": 0.6292517006802721,
+     "f1": 0.7283464566929134,
+     "missing_rate": 0.3707482993197279,
+     "ref_words": 294,
+     "hyp_words": 214,
+     "missing_sample": [
+      "the",
+      "m",
+      "2",
+      "of",
+      "centroid",
+      "p1",
+      "p2",
+      "1",
+      "two",
+      "spherical",
+      "is",
+      "points"
+     ],
+     "page": 79
+    },
+    {
+     "precision": 0.8740359897172236,
+     "recall": 0.7068607068607069,
+     "f1": 0.7816091954022989,
+     "missing_rate": 0.29313929313929316,
+     "ref_words": 481,
+     "hyp_words": 389,
+     "missing_sample": [
+      "v",
+      "f",
+      "c",
+      "j",
+      "the",
+      "a",
+      "partition",
+      "i",
+      "p",
+      "ar",
+      "10",
+      "of"
+     ],
+     "page": 278
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/computation_conformal_geometry/Variational Principles for Discrete Surfaces Theories and Algorithms (Dai Junfel  Gu Xianfeng David  Luo Feng) (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.0,
+   "missing_rate": 0.0,
+   "ref_words": 1,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 0
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 17
+    },
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 0,
+     "hyp_words": 0,
+     "missing_sample": [],
+     "page": 35
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_geometry/optimal_transport/2020-pyre-computational_optimal_transport.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9372017450601716,
+   "missing_rate": 0.06134738426797139,
+   "ref_words": 2657,
+   "worst": [
+    {
+     "precision": 0.08955223880597014,
+     "recall": 0.2608695652173913,
+     "f1": 0.13333333333333333,
+     "missing_rate": 0.7391304347826086,
+     "ref_words": 23,
+     "hyp_words": 67,
+     "missing_sample": [
+      "and",
+      "arxiv",
+      "1803",
+      "00567v4",
+      "stat",
+      "ml",
+      "18",
+      "mar",
+      "2020",
+      "gabriel",
+      "peyr\u00e9",
+      "marco"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.8507853403141361,
+     "recall": 0.876010781671159,
+     "f1": 0.8632138114209827,
+     "missing_rate": 0.12398921832884097,
+     "ref_words": 371,
+     "hyp_words": 382,
+     "missing_sample": [
+      "min",
+      "\u03b1",
+      "\u03b2",
+      "max",
+      "pi",
+      "def",
+      "rn",
+      "hc",
+      "ha",
+      "fi",
+      "hb",
+      "1n"
+     ],
+     "page": 26
+    },
+    {
+     "precision": 0.8942307692307693,
+     "recall": 0.9465648854961832,
+     "f1": 0.9196538936959208,
+     "missing_rate": 0.05343511450381679,
+     "ref_words": 393,
+     "hyp_words": 416,
+     "missing_sample": [
+      "aij",
+      "d2p",
+      "jd2p",
+      "of",
+      "44",
+      "41",
+      "12",
+      "43",
+      "4j",
+      "wasser",
+      "stein",
+      "distance"
+     ],
+     "page": 130
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_information_geometry/2017-nielson-computational_information_geometry_for_image_and_signal_processing.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8326092708395695,
+   "missing_rate": 0.23830121903263862,
+   "ref_words": 2543,
+   "worst": [
+    {
+     "precision": 0.8498727735368957,
+     "recall": 0.6410748560460653,
+     "f1": 0.7308533916849015,
+     "missing_rate": 0.35892514395393477,
+     "ref_words": 521,
+     "hyp_words": 393,
+     "missing_sample": [
+      "p",
+      "l",
+      "the",
+      "\u03c6",
+      "b",
+      "u",
+      "e",
+      "of",
+      "in",
+      "v",
+      "for",
+      "by"
+     ],
+     "page": 234
+    },
+    {
+     "precision": 0.8926380368098159,
+     "recall": 0.6583710407239819,
+     "f1": 0.7578125,
+     "missing_rate": 0.3416289592760181,
+     "ref_words": 442,
+     "hyp_words": 326,
+     "missing_sample": [
+      "the",
+      "of",
+      "is",
+      "and",
+      "ln",
+      "a",
+      "k",
+      "this",
+      "parameters",
+      "samples",
+      "2",
+      "\u03b2"
+     ],
+     "page": 195
+    },
+    {
+     "precision": 0.9446640316205533,
+     "recall": 0.7940199335548173,
+     "f1": 0.8628158844765342,
+     "missing_rate": 0.2059800664451827,
+     "ref_words": 301,
+     "hyp_words": 253,
+     "missing_sample": [
+      "the",
+      "in",
+      "of",
+      "with",
+      "are",
+      "to",
+      "structure",
+      "natural",
+      "geodesics",
+      "lines",
+      "sets",
+      "exponential"
+     ],
+     "page": 78
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_number_theory/1999_Book_AlgorithmicAlgebraAndNumberThe.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9765682579173645,
+   "missing_rate": 0.03090575275397797,
+   "ref_words": 3268,
+   "worst": [
+    {
+     "precision": 0.910958904109589,
+     "recall": 0.8286604361370716,
+     "f1": 0.8678629690048939,
+     "missing_rate": 0.17133956386292834,
+     "ref_words": 321,
+     "hyp_words": 292,
+     "missing_sample": [
+      "3",
+      "2",
+      "h",
+      "x",
+      "2yt",
+      "2y",
+      "e",
+      "k",
+      "4x",
+      "g",
+      "2u",
+      "v"
+     ],
+     "page": 215
+    },
+    {
+     "precision": 0.9876237623762376,
+     "recall": 0.9755501222493888,
+     "f1": 0.981549815498155,
+     "missing_rate": 0.02444987775061125,
+     "ref_words": 409,
+     "hyp_words": 404,
+     "missing_sample": [
+      "g",
+      "l",
+      "2"
+     ],
+     "page": 377
+    },
+    {
+     "precision": 0.9886148007590133,
+     "recall": 0.9774859287054409,
+     "f1": 0.9830188679245283,
+     "missing_rate": 0.0225140712945591,
+     "ref_words": 533,
+     "hyp_words": 527,
+     "missing_sample": [
+      "wash",
+      "ington",
+      "char",
+      "acter",
+      "pro",
+      "ceedings",
+      "deter",
+      "mination",
+      "al",
+      "gebras",
+      "habilitationss",
+      "chrift"
+     ],
+     "page": 323
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_number_theory/Numerical Recipes for Number Theory by Henri Cohen (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9826605902441825,
+   "missing_rate": 0.02528507684680218,
+   "ref_words": 2017,
+   "worst": [
+    {
+     "precision": 0.9444444444444444,
+     "recall": 0.9444444444444444,
+     "f1": 0.9444444444444444,
+     "missing_rate": 0.05555555555555555,
+     "ref_words": 18,
+     "hyp_words": 18,
+     "missing_sample": [
+      "universit\u00e9"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.9786476868327402,
+     "recall": 0.9548611111111112,
+     "f1": 0.9666080843585237,
+     "missing_rate": 0.04513888888888889,
+     "ref_words": 288,
+     "hyp_words": 281,
+     "missing_sample": [
+      "x",
+      "z",
+      "f",
+      "2",
+      "return",
+      "a",
+      "\u03b1",
+      "e",
+      "ea"
+     ],
+     "page": 36
+    },
+    {
+     "precision": 0.9906832298136646,
+     "recall": 0.9494047619047619,
+     "f1": 0.9696048632218844,
+     "missing_rate": 0.050595238095238096,
+     "ref_words": 336,
+     "hyp_words": 322,
+     "missing_sample": [
+      "the",
+      "f",
+      "if",
+      "poles",
+      "note",
+      "that",
+      "even",
+      "does",
+      "not",
+      "have",
+      "it",
+      "may"
+     ],
+     "page": 110
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_number_theory/Yan2000_Book_NumberTheoryForComputing.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9432925131153993,
+   "missing_rate": 0.07049937054133446,
+   "ref_words": 2383,
+   "worst": [
+    {
+     "precision": 0.8723849372384938,
+     "recall": 0.7707948243992606,
+     "f1": 0.8184494602551521,
+     "missing_rate": 0.22920517560073936,
+     "ref_words": 541,
+     "hyp_words": 478,
+     "missing_sample": [
+      "2",
+      "f",
+      "29",
+      "73",
+      "77",
+      "fn",
+      "27",
+      "31",
+      "34",
+      "39",
+      "41",
+      "40"
+     ],
+     "page": 49
+    },
+    {
+     "precision": 0.9414414414414415,
+     "recall": 0.9008620689655172,
+     "f1": 0.9207048458149779,
+     "missing_rate": 0.09913793103448276,
+     "ref_words": 232,
+     "hyp_words": 222,
+     "missing_sample": [
+      "10",
+      "1",
+      "w",
+      "14",
+      "1001",
+      "17",
+      "hm"
+     ],
+     "page": 99
+    },
+    {
+     "precision": 0.9885057471264368,
+     "recall": 0.9772727272727273,
+     "f1": 0.9828571428571428,
+     "missing_rate": 0.022727272727272728,
+     "ref_words": 88,
+     "hyp_words": 87,
+     "missing_sample": [
+      "x",
+      "3"
+     ],
+     "page": 148
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_number_theory/Yan2015_Book_QuantumComputationalNumberTheo.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9189374590866348,
+   "missing_rate": 0.1108263933376041,
+   "ref_words": 1561,
+   "worst": [
+    {
+     "precision": 0.8563829787234043,
+     "recall": 0.696969696969697,
+     "f1": 0.7684964200477328,
+     "missing_rate": 0.30303030303030304,
+     "ref_words": 231,
+     "hyp_words": 188,
+     "missing_sample": [
+      "g",
+      "pm",
+      "c",
+      "ea",
+      "j",
+      "to",
+      "a",
+      "eb",
+      "12",
+      "algorithm",
+      "da",
+      "quantum"
+     ],
+     "page": 226
+    },
+    {
+     "precision": 0.9300699300699301,
+     "recall": 0.7777777777777778,
+     "f1": 0.8471337579617835,
+     "missing_rate": 0.2222222222222222,
+     "ref_words": 171,
+     "hyp_words": 143,
+     "missing_sample": [
+      "m",
+      "ea",
+      "eb",
+      "da",
+      "db"
+     ],
+     "page": 161
+    },
+    {
+     "precision": 0.9682539682539683,
+     "recall": 0.8905109489051095,
+     "f1": 0.9277566539923954,
+     "missing_rate": 0.10948905109489052,
+     "ref_words": 137,
+     "hyp_words": 126,
+     "missing_sample": [
+      "c",
+      "rabin",
+      "can",
+      "n",
+      "the",
+      "roots",
+      "of",
+      "modulo",
+      "and",
+      "hence",
+      "recover",
+      "m"
+     ],
+     "page": 97
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/2010-edelsbrunner-computational_topology-an_introduction.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9703704916759118,
+   "missing_rate": 0.03551797040169133,
+   "ref_words": 2365,
+   "worst": [
+    {
+     "precision": 0.9615384615384616,
+     "recall": 0.91324200913242,
+     "f1": 0.9367681498829039,
+     "missing_rate": 0.0867579908675799,
+     "ref_words": 438,
+     "hyp_words": 416,
+     "missing_sample": [
+      "\u03c3",
+      "ui",
+      "\u03bbi",
+      "p",
+      "combinations",
+      "bd",
+      "int",
+      "1",
+      "the",
+      "is",
+      "of",
+      "points"
+     ],
+     "page": 73
+    },
+    {
+     "precision": 0.9287833827893175,
+     "recall": 0.9513677811550152,
+     "f1": 0.93993993993994,
+     "missing_rate": 0.0486322188449848,
+     "ref_words": 329,
+     "hyp_words": 337,
+     "missing_sample": [
+      "poincar\u00e9",
+      "compl\u00e9ment",
+      "\u010dech",
+      "no",
+      "tices",
+      "math",
+      "ematics",
+      "\u00e0",
+      "cinqui\u00e8me"
+     ],
+     "page": 147
+    },
+    {
+     "precision": 0.9864603481624759,
+     "recall": 0.9770114942528736,
+     "f1": 0.9817131857555342,
+     "missing_rate": 0.022988505747126436,
+     "ref_words": 522,
+     "hyp_words": 517,
+     "missing_sample": [
+      "f",
+      "ai",
+      "\u03c3i",
+      "k",
+      "l",
+      "p",
+      "samepdimension",
+      "\u03c4i",
+      "rank"
+     ],
+     "page": 110
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/2014-edelsbrunner-a_short_course_in_computational_geometry_and_topology.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8093051125263078,
+   "missing_rate": 0.26158645276292336,
+   "ref_words": 2244,
+   "worst": [
+    {
+     "precision": 0.18181818181818182,
+     "recall": 0.631578947368421,
+     "f1": 0.2823529411764706,
+     "missing_rate": 0.3684210526315789,
+     "ref_words": 19,
+     "hyp_words": 66,
+     "missing_sample": [
+      "springer",
+      "briefs",
+      "applied",
+      "sciences",
+      "technology",
+      "mathematical",
+      "methods"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.8359133126934984,
+     "recall": 0.5921052631578947,
+     "f1": 0.693196405648267,
+     "missing_rate": 0.40789473684210525,
+     "ref_words": 456,
+     "hyp_words": 323,
+     "missing_sample": [
+      "the",
+      "a",
+      "to",
+      "in",
+      "iff",
+      "det",
+      "circle",
+      "we",
+      "by",
+      "v",
+      "that",
+      "on"
+     ],
+     "page": 26
+    },
+    {
+     "precision": 0.8592057761732852,
+     "recall": 0.6574585635359116,
+     "f1": 0.7449139280125195,
+     "missing_rate": 0.3425414364640884,
+     "ref_words": 362,
+     "hyp_words": 277,
+     "missing_sample": [
+      "the",
+      "and",
+      "i",
+      "of",
+      "k",
+      "we",
+      "u",
+      "vertex",
+      "persistence",
+      "a",
+      "in",
+      "lower"
+     ],
+     "page": 91
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/2015_Book_TopologicalAndStatisticalMetho.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.867428963429012,
+   "missing_rate": 0.17987065481002426,
+   "ref_words": 2474,
+   "worst": [
+    {
+     "precision": 0.864693446088795,
+     "recall": 0.7630597014925373,
+     "f1": 0.8107036669970268,
+     "missing_rate": 0.23694029850746268,
+     "ref_words": 536,
+     "hyp_words": 473,
+     "missing_sample": [
+      "size",
+      "the",
+      "d1",
+      "of",
+      "and",
+      "in",
+      "input",
+      "kid1",
+      "on",
+      "cn",
+      "1",
+      "is"
+     ],
+     "page": 259
+    },
+    {
+     "precision": 0.8980582524271845,
+     "recall": 0.7505070993914807,
+     "f1": 0.8176795580110497,
+     "missing_rate": 0.24949290060851928,
+     "ref_words": 493,
+     "hyp_words": 412,
+     "missing_sample": [
+      "the",
+      "of",
+      "m",
+      "s",
+      "integral",
+      "removed",
+      "a",
+      "to",
+      "that",
+      "line",
+      "general",
+      "simplification"
+     ],
+     "page": 74
+    },
+    {
+     "precision": 0.9378109452736318,
+     "recall": 0.8072805139186295,
+     "f1": 0.8676639815880322,
+     "missing_rate": 0.19271948608137046,
+     "ref_words": 467,
+     "hyp_words": 402,
+     "missing_sample": [
+      "the",
+      "a",
+      "is",
+      "of",
+      "function",
+      "to",
+      "that",
+      "in",
+      "space",
+      "or",
+      "whereas",
+      "persistence"
+     ],
+     "page": 111
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/2016-chazal-the_structure_and_stability_of_persistence_modules.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8602368622190418,
+   "missing_rate": 0.2002534854245881,
+   "ref_words": 2367,
+   "worst": [
+    {
+     "precision": 0.8379446640316206,
+     "recall": 0.762589928057554,
+     "f1": 0.7984934086629002,
+     "missing_rate": 0.23741007194244604,
+     "ref_words": 278,
+     "hyp_words": 253,
+     "missing_sample": [
+      "\u03b4",
+      "y",
+      "\u03b7",
+      "1v",
+      "\u03c8",
+      "\u03c6",
+      "1u",
+      "wts",
+      "the",
+      "2y",
+      "w",
+      "\u03c61u"
+     ],
+     "page": 76
+    },
+    {
+     "precision": 0.8808510638297873,
+     "recall": 0.7419354838709677,
+     "f1": 0.8054474708171208,
+     "missing_rate": 0.25806451612903225,
+     "ref_words": 279,
+     "hyp_words": 235,
+     "missing_sample": [
+      "the",
+      "vts",
+      "of",
+      "with",
+      "is",
+      "maps",
+      "for",
+      "empty",
+      "over",
+      "diagram",
+      "iff",
+      "surjective"
+     ],
+     "page": 61
+    },
+    {
+     "precision": 0.9465408805031447,
+     "recall": 0.7678571428571429,
+     "f1": 0.847887323943662,
+     "missing_rate": 0.23214285714285715,
+     "ref_words": 392,
+     "hyp_words": 318,
+     "missing_sample": [
+      "the",
+      "is",
+      "to",
+      "that",
+      "x",
+      "persistence",
+      "intervals",
+      "of",
+      "in",
+      "theorem",
+      "an",
+      "3"
+     ],
+     "page": 30
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/2016-chen-structural_analysis_of_metallic_glasses_with_computational_homology.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8547825219772728,
+   "missing_rate": 0.21223152530032763,
+   "ref_words": 2747,
+   "worst": [
+    {
+     "precision": 0.47368421052631576,
+     "recall": 0.8181818181818182,
+     "f1": 0.6,
+     "missing_rate": 0.18181818181818182,
+     "ref_words": 22,
+     "hyp_words": 38,
+     "missing_sample": [
+      "springer",
+      "briefs",
+      "of",
+      "materials"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.9136363636363637,
+     "recall": 0.6463022508038585,
+     "f1": 0.7570621468926555,
+     "missing_rate": 0.3536977491961415,
+     "ref_words": 311,
+     "hyp_words": 220,
+     "missing_sample": [
+      "the",
+      "of",
+      "atomic",
+      "in",
+      "cubical",
+      "homology",
+      "we",
+      "analysis",
+      "manner",
+      "distortion",
+      "or",
+      "by"
+     ],
+     "page": 49
+    },
+    {
+     "precision": 0.9377289377289377,
+     "recall": 0.6649350649350649,
+     "f1": 0.7781155015197568,
+     "missing_rate": 0.33506493506493507,
+     "ref_words": 385,
+     "hyp_words": 273,
+     "missing_sample": [
+      "the",
+      "of",
+      "in",
+      "metallic",
+      "to",
+      "glasses",
+      "viewpoint",
+      "a",
+      "this",
+      "atomic",
+      "structure",
+      "configurations"
+     ],
+     "page": 59
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/2016-peters-computational_proximity-excursions_in_the_topology_of_digital_images.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8171839252474458,
+   "missing_rate": 0.24382207578253706,
+   "ref_words": 2428,
+   "worst": [
+    {
+     "precision": 0.6434782608695652,
+     "recall": 0.5896414342629482,
+     "f1": 0.6153846153846154,
+     "missing_rate": 0.4103585657370518,
+     "ref_words": 251,
+     "hyp_words": 230,
+     "missing_sample": [
+      "1",
+      "t",
+      "0",
+      "p",
+      "offset",
+      "cifns",
+      "first",
+      "2",
+      "pdata",
+      "3",
+      "true",
+      "middle"
+     ],
+     "page": 393
+    },
+    {
+     "precision": 0.8962962962962963,
+     "recall": 0.6402116402116402,
+     "f1": 0.7469135802469136,
+     "missing_rate": 0.35978835978835977,
+     "ref_words": 189,
+     "hyp_words": 135,
+     "missing_sample": [
+      "in",
+      "11",
+      "v",
+      "p",
+      "are",
+      "the",
+      "theorem",
+      "a",
+      "\u03b4\u03c6",
+      "nerve",
+      "near",
+      "if"
+     ],
+     "page": 337
+    },
+    {
+     "precision": 0.8892857142857142,
+     "recall": 0.6693548387096774,
+     "f1": 0.7638036809815949,
+     "missing_rate": 0.33064516129032256,
+     "ref_words": 372,
+     "hyp_words": 280,
+     "missing_sample": [
+      "a",
+      "of",
+      "set",
+      "b",
+      "points",
+      "the",
+      "and",
+      "nonempty",
+      "let",
+      "in",
+      "\u03b4\u03c6",
+      "has"
+     ],
+     "page": 56
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/2018-chambers-research_in_computational_topology.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9167486887139475,
+   "missing_rate": 0.11986301369863013,
+   "ref_words": 2920,
+   "worst": [
+    {
+     "precision": 0.9688249400479616,
+     "recall": 0.8451882845188284,
+     "f1": 0.9027932960893854,
+     "missing_rate": 0.15481171548117154,
+     "ref_words": 478,
+     "hyp_words": 417,
+     "missing_sample": [
+      "we",
+      "in",
+      "more",
+      "of",
+      "applications",
+      "are",
+      "persistent",
+      "homology",
+      "graphs",
+      "persistence",
+      "the",
+      "spaces"
+     ],
+     "page": 26
+    },
+    {
+     "precision": 0.970276008492569,
+     "recall": 0.8478664192949907,
+     "f1": 0.904950495049505,
+     "missing_rate": 0.15213358070500926,
+     "ref_words": 539,
+     "hyp_words": 471,
+     "missing_sample": [
+      "of",
+      "the",
+      "a",
+      "x",
+      "that",
+      "and",
+      "about",
+      "called",
+      "maximal",
+      "tree",
+      "graphs",
+      "in"
+     ],
+     "page": 107
+    },
+    {
+     "precision": 0.9326599326599326,
+     "recall": 0.8878205128205128,
+     "f1": 0.909688013136289,
+     "missing_rate": 0.11217948717948718,
+     "ref_words": 312,
+     "hyp_words": 297,
+     "missing_sample": [
+      "ai",
+      "the",
+      "of",
+      "sequence",
+      "edge",
+      "that",
+      "and",
+      "triangle",
+      "in",
+      "triangles",
+      "longest",
+      "next"
+     ],
+     "page": 133
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/2020_Book_TopologicalDataAnalysis.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.8297213149242998,
+   "missing_rate": 0.2296570275722932,
+   "ref_words": 2974,
+   "worst": [
+    {
+     "precision": 0.8114754098360656,
+     "recall": 0.6513157894736842,
+     "f1": 0.7226277372262774,
+     "missing_rate": 0.34868421052631576,
+     "ref_words": 304,
+     "hyp_words": 244,
+     "missing_sample": [
+      "c",
+      "k",
+      "j",
+      "and",
+      "0",
+      "\u03c4",
+      "\u03b8",
+      "1",
+      "the",
+      "then",
+      "\u03b8j",
+      "a"
+     ],
+     "page": 456
+    },
+    {
+     "precision": 0.8464285714285714,
+     "recall": 0.6336898395721925,
+     "f1": 0.7247706422018348,
+     "missing_rate": 0.3663101604278075,
+     "ref_words": 374,
+     "hyp_words": 280,
+     "missing_sample": [
+      "of",
+      "partition",
+      "the",
+      "a",
+      "we",
+      "be",
+      "into",
+      "in",
+      "dendrograms",
+      "to",
+      "that",
+      "are"
+     ],
+     "page": 391
+    },
+    {
+     "precision": 0.8132911392405063,
+     "recall": 0.6640826873385013,
+     "f1": 0.7311522048364154,
+     "missing_rate": 0.3359173126614987,
+     "ref_words": 387,
+     "hyp_words": 316,
+     "missing_sample": [
+      "the",
+      "of",
+      "that",
+      "q",
+      "degenerate",
+      "for",
+      "pcface",
+      "adjacent",
+      "2",
+      "proposition",
+      "number",
+      "to"
+     ],
+     "page": 326
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/Geometric and Topological Inference by Boissonnat, Jean-Daniel Chazal, Fr\udce9d\udce9ric Yvinec, Mariette (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.928680712940725,
+   "missing_rate": 0.10119047619047619,
+   "ref_words": 2520,
+   "worst": [
+    {
+     "precision": 0.9484126984126984,
+     "recall": 0.8269896193771626,
+     "f1": 0.8835489833641405,
+     "missing_rate": 0.17301038062283736,
+     "ref_words": 289,
+     "hyp_words": 252,
+     "missing_sample": [
+      "rd",
+      "of",
+      "the",
+      "a",
+      "delaunay",
+      "x",
+      "point",
+      "is",
+      "p",
+      "this",
+      "be",
+      "in"
+     ],
+     "page": 61
+    },
+    {
+     "precision": 0.9468599033816425,
+     "recall": 0.8376068376068376,
+     "f1": 0.888888888888889,
+     "missing_rate": 0.1623931623931624,
+     "ref_words": 234,
+     "hyp_words": 207,
+     "missing_sample": [
+      "the",
+      "of",
+      "0",
+      "9",
+      "5",
+      "critical",
+      "10",
+      "25",
+      "30",
+      "in",
+      "to",
+      "we"
+     ],
+     "page": 185
+    },
+    {
+     "precision": 0.9342105263157895,
+     "recall": 0.857487922705314,
+     "f1": 0.8942065491183879,
+     "missing_rate": 0.14251207729468598,
+     "ref_words": 414,
+     "hyp_words": 380,
+     "missing_sample": [
+      "rch",
+      "m",
+      "the",
+      "delt",
+      "of",
+      "d",
+      "sin",
+      "\u03b8q",
+      "is",
+      "\u03b52",
+      "\u03b54",
+      "empty"
+     ],
+     "page": 154
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/Kaczynski2004_Book_ComputationalHomology.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9919280441070631,
+   "missing_rate": 0.00848536274925753,
+   "ref_words": 2357,
+   "worst": [
+    {
+     "precision": 0.9815384615384616,
+     "recall": 0.9815384615384616,
+     "f1": 0.9815384615384616,
+     "missing_rate": 0.018461538461538463,
+     "ref_words": 325,
+     "hyp_words": 325,
+     "missing_sample": [
+      "jk",
+      "a",
+      "pk",
+      "6",
+      "pkok",
+      "ok"
+     ],
+     "page": 305
+    },
+    {
+     "precision": 0.9896103896103896,
+     "recall": 0.9794344473007712,
+     "f1": 0.9844961240310078,
+     "missing_rate": 0.02056555269922879,
+     "ref_words": 389,
+     "hyp_words": 385,
+     "missing_sample": [
+      "g",
+      "t"
+     ],
+     "page": 366
+    },
+    {
+     "precision": 0.9912023460410557,
+     "recall": 0.9912023460410557,
+     "f1": 0.9912023460410557,
+     "missing_rate": 0.008797653958944282,
+     "ref_words": 341,
+     "hyp_words": 341,
+     "missing_sample": [
+      "l",
+      "easily",
+      "r"
+     ],
+     "page": 244
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computational_topology/Persistence Theory From Quiver Representations to Data Analysis by Steve Y. Oudot (z-lib.org).pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9784043231459761,
+   "missing_rate": 0.02526315789473684,
+   "ref_words": 3800,
+   "worst": [
+    {
+     "precision": 0.42105263157894735,
+     "recall": 0.8,
+     "f1": 0.5517241379310345,
+     "missing_rate": 0.2,
+     "ref_words": 20,
+     "hyp_words": 38,
+     "missing_sample": [
+      "mathematical",
+      "surveys",
+      "and",
+      "monographs"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.9470802919708029,
+     "recall": 0.9284436493738819,
+     "f1": 0.9376693766937669,
+     "missing_rate": 0.07155635062611806,
+     "ref_words": 559,
+     "hyp_words": 548,
+     "missing_sample": [
+      "of",
+      "in",
+      "indecomposable",
+      "ar",
+      "the",
+      "isomor",
+      "phism",
+      "representations",
+      "dimensional",
+      "that",
+      "stance",
+      "\u00e30"
+     ],
+     "page": 200
+    },
+    {
+     "precision": 0.988950276243094,
+     "recall": 0.9623655913978495,
+     "f1": 0.9754768392370572,
+     "missing_rate": 0.03763440860215054,
+     "ref_words": 372,
+     "hyp_words": 362,
+     "missing_sample": [
+      "o",
+      "in",
+      "and",
+      "for",
+      "1",
+      "persistence",
+      "considered",
+      "kernels",
+      "cokernels",
+      "introduced",
+      "section"
+     ],
+     "page": 171
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computer_algebra/2015_Book_ComputerAlgebraAndPolynomials.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9691241504980252,
+   "missing_rate": 0.0358656667753505,
+   "ref_words": 3067,
+   "worst": [
+    {
+     "precision": 0.5454545454545454,
+     "recall": 0.72,
+     "f1": 0.6206896551724138,
+     "missing_rate": 0.28,
+     "ref_words": 25,
+     "hyp_words": 33,
+     "missing_sample": [
+      "state",
+      "of",
+      "the",
+      "art",
+      "survey",
+      "lncs",
+      "8942"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.9519038076152304,
+     "recall": 0.9576612903225806,
+     "f1": 0.9547738693467337,
+     "missing_rate": 0.04233870967741935,
+     "ref_words": 496,
+     "hyp_words": 499,
+     "missing_sample": [
+      "bus\u00e9",
+      "gr\u00f6bner",
+      "gradu",
+      "ate",
+      "prov",
+      "idence",
+      "ap\u00e9ry",
+      "\u00e9limination",
+      "m\u00e9thodes",
+      "engi",
+      "neering",
+      "parametriz"
+     ],
+     "page": 55
+    },
+    {
+     "precision": 0.9778393351800554,
+     "recall": 0.9363395225464191,
+     "f1": 0.9566395663956639,
+     "missing_rate": 0.0636604774535809,
+     "ref_words": 377,
+     "hyp_words": 361,
+     "missing_sample": [
+      "y",
+      "4y",
+      "8y",
+      "and",
+      "solution",
+      "2",
+      "7",
+      "64",
+      "3",
+      "a",
+      "in",
+      "5"
+     ],
+     "page": 111
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "/home/ben/books/computer_science/computer_vision/2012-ray-soft_computing_approach_to_pattern_classification_and_object_recognition.pdf",
+   "n_pages_measured": 8,
+   "f1": 0.9629065760973377,
+   "missing_rate": 0.05467889908256881,
+   "ref_words": 2725,
+   "worst": [
+    {
+     "precision": 0.9686684073107049,
+     "recall": 0.8355855855855856,
+     "f1": 0.8972188633615478,
+     "missing_rate": 0.16441441441441443,
+     "ref_words": 444,
+     "hyp_words": 383,
+     "missing_sample": [
+      "of",
+      "the",
+      "vowels",
+      "and",
+      "on",
+      "frequencies",
+      "classification",
+      "a",
+      "type",
+      "to",
+      "for",
+      "telugu"
+     ],
+     "page": 45
+    },
+    {
+     "precision": 0.9570707070707071,
+     "recall": 0.9132530120481928,
+     "f1": 0.9346485819975339,
+     "missing_rate": 0.08674698795180723,
+     "ref_words": 415,
+     "hyp_words": 396,
+     "missing_sample": [
+      "f",
+      "fi",
+      "the",
+      "of",
+      "is",
+      "area",
+      "abcd",
+      "f1",
+      "m1",
+      "f2",
+      "m2",
+      "ci"
+     ],
+     "page": 157
+    },
+    {
+     "precision": 0.9829059829059829,
+     "recall": 0.92,
+     "f1": 0.9504132231404959,
+     "missing_rate": 0.08,
+     "ref_words": 125,
+     "hyp_words": 117,
+     "missing_sample": [
+      "pattern",
+      "in",
+      "fuzzy",
+      "sets",
+      "recognition",
+      "methodology",
+      "and",
+      "methods",
+      "recogn"
+     ],
+     "page": 67
+    }
+   ],
+   "pages": null
+  }
+ ]
+}

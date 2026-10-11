@@ -110,7 +110,8 @@ public:
     // rendering matrix's own linear part, so rotated/skewed text renders
     // rotated/skewed). GetGlyphBitmap is exactly {scale_x, 0, 0, -scale_y}.
     unsigned char *GetGlyphBitmapMatrix(uint32_t code, float a, float b, float c, float d, int *width, int *height,
-                                        int *xoff, int *yoff) const;
+                                        int *xoff, int *yoff,
+                                        float dx = 0.0f, float dy = 0.0f) const;
     void FreeGlyphBitmap(unsigned char *bitmap) const;
 
     // Type 3 fonts (spec 9.6.5) have no outlines: each glyph is a content

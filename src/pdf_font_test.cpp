@@ -207,6 +207,66 @@ void TestCompositeFontWArrayBothForms() {
     CHECK(font.GetWidth(999) == 1000);    // outside W entirely: falls back to DW
 }
 
+// Every part of /W, and /DescendantFonts itself, may be an indirect
+// reference -- and real producers write them that way.
+//
+// This is where a whole book's text went wrong. One had its entire /W
+// as `[1 240 0 R]`: the width list behind a reference. The parser tested
+// the raw element's type, saw something that was not an array, and
+// broke out of the loop with no widths at all, so every CID fell back
+// to /DW. Since the advance comes from the width, every glyph position
+// after the first on a line was wrong -- and text that extracted
+// perfectly in content-stream order scrambled when sorted into visual
+// order: "The Singular Value Decomposition" became "ThSegi unVllaauDreeo
+// cpmsoition", every glyph reporting the same width.
+void TestCompositeFontWArrayIndirectParts() {
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [] >>"},
+            // /DescendantFonts behind a reference too.
+            {3, "<< /Type /Font /Subtype /Type0 /Encoding /Identity-H /DescendantFonts 7 0 R >>"},
+            // /W itself indirect, and inside it the grouped width list is
+            // a reference, and the uniform range's own width is one.
+            {4, "<< /Type /Font /Subtype /CIDFontType0 /DW 1000 /W 5 0 R >>"},
+            {5, "[10 6 0 R 20 25 8 0 R]"},
+            {6, "[200 300]"},
+            {7, "[4 0 R]"},
+            {8, "400"},
+        },
+        1);
+    pdfxref::XrefTable table;
+    pdfobj::Object font_dict = LoadFontDict(doc, &table, 3);
+    pdffont::PdfFont font;
+    font.Load(B(doc), doc.size(), table, font_dict);
+    CHECK(font.BytesPerCode() == 2);
+    CHECK(font.GetWidth(10) == 200);   // grouped list, behind a reference
+    CHECK(font.GetWidth(11) == 300);
+    CHECK(font.GetWidth(20) == 400);   // uniform range whose width is a reference
+    CHECK(font.GetWidth(25) == 400);
+    CHECK(font.GetWidth(999) == 1000);  // still falls back to DW outside /W
+}
+
+// A /W range running backwards, or spanning the whole CID space, must
+// not be walked: it would allocate a map entry per integer in it.
+void TestCompositeFontWArrayRejectsAbsurdRange() {
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [] >>"},
+            {3, "<< /Type /Font /Subtype /Type0 /Encoding /Identity-H /DescendantFonts [4 0 R] >>"},
+            {4, "<< /Type /Font /Subtype /CIDFontType0 /DW 777 /W [5 [100] 900 100 300] >>"},
+        },
+        1);
+    pdfxref::XrefTable table;
+    pdfobj::Object font_dict = LoadFontDict(doc, &table, 3);
+    pdffont::PdfFont font;
+    font.Load(B(doc), doc.size(), table, font_dict);
+    CHECK(font.GetWidth(5) == 100);     // the good entry before it still applies
+    CHECK(font.GetWidth(100) == 777);   // the backwards range was skipped, so DW
+    CHECK(font.GetWidth(900) == 777);
+}
+
 void TestCompositeFontDefaultWidthWithNoW() {
     std::string doc = BuildDoc(
         {
@@ -385,6 +445,8 @@ int main() {
     TestMissingWidthFallback();
     TestDifferencesOverridesBaseEncoding();
     TestCompositeFontWArrayBothForms();
+    TestCompositeFontWArrayIndirectParts();
+    TestCompositeFontWArrayRejectsAbsurdRange();
     TestCompositeFontDefaultWidthWithNoW();
     std::printf("pdf_font_test: all checks passed\n");
     return 0;

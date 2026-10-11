@@ -15,12 +15,20 @@
 <h1>Reading</h1>
 <p>Open a <code>.pdf</code> and it renders in a pane. Scrolling, zoom and the usual pane
 keys work.</p>
+<p>Zooming re-renders the page at the size it is shown at, rather than
+scaling up the pixels it was already drawn with, so text and mathematics
+stay sharp as you magnify. The re-render waits until you stop zooming,
+so holding <code>+</code> or spinning the wheel stays smooth and renders once at
+the end. Past roughly 400dpi the view does go back to magnifying --
+beyond that a page raster costs more memory than it is worth, and at
+that magnification you are looking at a detail rather than reading.</p>
 <table>
 <tr><th>From Lua</th><th>Does</th></tr>
 <tr><td><code>mep.pdf_goto_page(n)</code></td><td>jump to a page</td></tr>
 <tr><td><code>mep.pdf_current_page()</code></td><td>which page is showing</td></tr>
 <tr><td><code>mep.pdf_outline()</code></td><td>the document's outline</td></tr>
 <tr><td><code>mep.pdf_reload()</code></td><td>re-read the file</td></tr>
+<tr><td><code>mep.pdf_page_png(n)</code></td><td>a page as a PNG, base64</td></tr>
 <tr><td><code>mep.is_pdf_buffer(buf)</code></td><td>is this a PDF?</td></tr>
 </table>
 <h1>The outline</h1>
@@ -29,11 +37,25 @@ keys work.</p>
 <h1>Links</h1>
 <p>Internal links jump within the document; external ones open in the browser.</p>
 <h1>Text</h1>
+<p>Accents are put back together: a font that draws an acute as its own
+glyph over an "e" still yields <i>é</i>, not <i>e´</i>, so the word is one a
+search can find. Nested lists keep their indentation, so which item sits
+under which survives being copied out.</p>
 <p>Text is extracted, not just rasterised, so search finds real words -- and
 what you select is real text, not a picture of it: words and lines are
 reconstructed from the glyphs, ligatures are written out as the letters
 they stand for, and a word broken over a line end is put back together.
 So a quoted passage reads as prose rather than as <i>investiga- tor</i>.</p>
+<p>Some PDFs cannot be read as text at all. A scanned book is one big
+image, with no words in it to find. Others are worse than empty: a page
+whose fonts carry no character information extracts as plausible-looking
+nonsense -- real typeset text that comes out as <code>D D C D DD D</code> -- and
+quoting that to a model is worse than quoting nothing. Asking about
+either kind of page (<code>K</code>) sends the page itself as a picture instead --
+and if the page will not even render, because it uses an image format
+mep does not decode, it says so rather than sending a blank sheet. <code>mep.pdf_ask_image_prompt</code> is the question asked
+in that case and <code>mep.pdf_ask_image_scale</code> how finely the page is
+rendered for it.</p>
 <h1>Annotating</h1>
 <p><code>a</code> enters annotate mode -- a modal state of its own, like Visual.</p>
 <table>
@@ -41,21 +63,36 @@ So a quoted passage reads as prose rather than as <i>investiga- tor</i>.</p>
 <tr><td><code>hjkl</code></td><td>move the caret a character or a line</td></tr>
 <tr><td><code>w</code> <code>b</code> <code>e</code></td><td>by word</td></tr>
 <tr><td><code>0</code> <code>$</code></td><td>to the ends of the line</td></tr>
+<tr><td><code>gg</code> <code>G</code></td><td>to the first or last line of the page</td></tr>
+<tr><td><code>3w</code></td><td>any motion takes a count</td></tr>
 <tr><td>click</td><td>place the caret</td></tr>
 <tr><td><code>v</code></td><td>start or stop a selection</td></tr>
 <tr><td><code>y</code></td><td>copy the selection</td></tr>
 <tr><td><code>K</code></td><td>ask about the selection</td></tr>
 <tr><td><code>Esc</code></td><td>clear the selection; again to leave</td></tr>
 </table>
+<p>Motions take counts, as they do everywhere else: <code>3w</code> moves three
+words, <code>5j</code> five lines. <code>gg</code> and <code>G</code> go to the first and last line of
+the page -- in annotate mode the page is the buffer; the first- and
+last-*page* jumps are still on those keys in the other two PDF modes,
+one <code>Esc</code> away.</p>
 <p>The caret moves down the page, not through the file: a content stream
 emits a page in whatever order it likes -- body text, then the running
 header, then the footnotes -- and following that order would send the
 caret back to the top of the page mid-paragraph.</p>
-<p>Displayed equations are stepped over. Their glyphs sit on several
-baselines at once -- a summation, its indices, the main line -- so a
-caret walking through one lurches up and down rather than along.
-Mathematics <b>inside</b> a line of prose is ordinary text and stays
-selectable.</p>
+<p>Displayed equations are selectable like any other line. Their glyphs
+sit on several baselines at once -- a summation, its indices, the main
+line -- so within an equation the caret follows the main baseline first
+and then each subscript or limit, rather than hopping between baselines
+in bare left-to-right order. Yanking one gives the operator and its
+limits as separate words, so a quoted equation reads as mathematics
+rather than as one run-together string.</p>
+<p>A selection can run across a page break, so a paragraph that continues
+overleaf is one passage to copy or ask about rather than two.</p>
+<p>Dragging with the mouse selects the same thing the keyboard would: both
+resolve the run between their two ends in reading order down the page,
+so a drag across two paragraphs no longer picks up the running header
+that the file happened to emit between them.</p>
 <p><code>Esc</code> unwinds one layer at a time, as it does in Visual mode: with a
 passage selected it drops the selection and keeps you in annotate mode, and
 only an <code>Esc</code> with nothing selected leaves. A key you press constantly to
@@ -140,6 +177,10 @@ revisions. An unsupported one says so rather than rendering blank.</p>
 -- a white page in a dark editor is jarring. The header reads
 <code>[theme, Ctrl-R]</code>; <code>Ctrl-R</code> shows the document's real colours, which is what
 you want when checking how something will print.</p>
+<p>The re-tint keeps the text's weight: a half-covered glyph edge carries
+half the light after re-tinting as it did before, so stems and fraction
+bars read as thick in a dark theme as in a light one. In a light theme it
+does nothing at all -- black text on white paper maps to exactly itself.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="viewers-overview.html">What mep can open</a> -- the other formats.</li>

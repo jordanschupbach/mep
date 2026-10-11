@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <utility>
 
 namespace pdfenc {
 
@@ -189,6 +190,65 @@ const std::unordered_map<std::string, int> &GlyphList() {
         // Common ligatures seen in real /Differences arrays beyond the
         // base tables (e.g. Type1 fonts with a ligature-rich charset).
         {"ff", 0xFB00}, {"ffi", 0xFB03}, {"ffl", 0xFB04},
+
+        // --- Greek, by AGL name -------------------------------------
+        // TeX's maths italic fonts (CMMI and friends) name every Greek
+        // variable this way and carry no /ToUnicode, so without these a
+        // formula's variables are not merely mis-mapped: an unmapped
+        // glyph is dropped from the text layer outright
+        // (pdf_content.cpp's ShowText only keeps a TextGlyph whose
+        // GetUnicodeText came back non-empty), taking its geometry with
+        // it. `Delta`, `Omega`, `pi` and `mu` are deliberately absent
+        // here -- they are already above, mapped to the Symbol-font
+        // codepoints the base encodings use.
+        {"Alpha", 0x0391}, {"Beta", 0x0392}, {"Gamma", 0x0393}, {"Epsilon", 0x0395},
+        {"Zeta", 0x0396}, {"Eta", 0x0397}, {"Theta", 0x0398}, {"Iota", 0x0399},
+        {"Kappa", 0x039A}, {"Lambda", 0x039B}, {"Mu", 0x039C}, {"Nu", 0x039D},
+        {"Xi", 0x039E}, {"Omicron", 0x039F}, {"Pi", 0x03A0}, {"Rho", 0x03A1},
+        {"Sigma", 0x03A3}, {"Tau", 0x03A4}, {"Upsilon", 0x03A5}, {"Phi", 0x03A6},
+        {"Chi", 0x03A7}, {"Psi", 0x03A8},
+        {"alpha", 0x03B1}, {"beta", 0x03B2}, {"gamma", 0x03B3}, {"delta", 0x03B4},
+        {"epsilon", 0x03B5}, {"zeta", 0x03B6}, {"eta", 0x03B7}, {"theta", 0x03B8},
+        {"iota", 0x03B9}, {"kappa", 0x03BA}, {"lambda", 0x03BB}, {"nu", 0x03BD},
+        {"xi", 0x03BE}, {"omicron", 0x03BF}, {"rho", 0x03C1}, {"sigma", 0x03C3},
+        {"tau", 0x03C4}, {"upsilon", 0x03C5}, {"phi", 0x03C6}, {"chi", 0x03C7},
+        {"psi", 0x03C8}, {"omega", 0x03C9}, {"sigma1", 0x03C2},
+        // AGL's own names for the variant letterforms TeX uses freely.
+        {"theta1", 0x03D1}, {"phi1", 0x03D5}, {"omega1", 0x03D6}, {"epsilon1", 0x03F5},
+        {"rho1", 0x03F1}, {"kappa1", 0x03F0}, {"Upsilon1", 0x03D2},
+
+        // --- set theory, logic, relations ---------------------------
+        {"element", 0x2208}, {"notelement", 0x2209}, {"owner", 0x220B},
+        {"union", 0x222A}, {"intersection", 0x2229}, {"emptyset", 0x2205},
+        {"propersubset", 0x2282}, {"propersuperset", 0x2283},
+        {"reflexsubset", 0x2286}, {"reflexsuperset", 0x2287},
+        {"notsubset", 0x2284}, {"logicaland", 0x2227}, {"logicalor", 0x2228},
+        {"universal", 0x2200}, {"existential", 0x2203}, {"suchthat", 0x220D},
+        {"therefore", 0x2234}, {"equivalence", 0x2261}, {"congruent", 0x2245},
+        {"similar", 0x223C}, {"proportional", 0x221D}, {"perpendicular", 0x22A5},
+        {"angle", 0x2220}, {"gradient", 0x2207}, {"nabla", 0x2207},
+        {"dotmath", 0x22C5}, {"asteriskmath", 0x2217}, {"circlemultiply", 0x2297},
+        {"circleplus", 0x2295}, {"minusplus", 0x2213}, {"muchless", 0x226A},
+        {"muchgreater", 0x226B}, {"precedes", 0x227A}, {"follows", 0x227B},
+        {"lessorequalslant", 0x2A7D}, {"greaterorequalslant", 0x2A7E},
+        {"aleph", 0x2135}, {"weierstrass", 0x2118}, {"Ifraktur", 0x2111},
+        {"Rfraktur", 0x211C}, {"circlecopyrt", 0x00A9},
+
+        // --- arrows -------------------------------------------------
+        {"arrowleft", 0x2190}, {"arrowup", 0x2191}, {"arrowright", 0x2192},
+        {"arrowdown", 0x2193}, {"arrowboth", 0x2194}, {"arrowupdn", 0x2195},
+        {"arrowdblleft", 0x21D0}, {"arrowdblup", 0x21D1}, {"arrowdblright", 0x21D2},
+        {"arrowdbldown", 0x21D3}, {"arrowdblboth", 0x21D4},
+        {"arrownortheast", 0x2197}, {"arrowsoutheast", 0x2198},
+        {"arrownorthwest", 0x2196}, {"arrowsouthwest", 0x2199},
+
+        // --- delimiters and operators TeX names without a size -----
+        {"bardbl", 0x2016}, {"angbracketleft", 0x27E8}, {"angbracketright", 0x27E9},
+        {"floorleft", 0x230A}, {"floorright", 0x230B},
+        {"ceilingleft", 0x2308}, {"ceilingright", 0x2309},
+        {"coproduct", 0x2210}, {"contintegral", 0x222E},
+        {"infinity", 0x221E}, {"prime", 0x2032}, {"primedbl", 0x2033},
+        {"ellipsis", 0x2026}, {"periodcentered", 0x00B7},
     };
     return table;
 }
@@ -270,6 +330,41 @@ const char *EncodingName(Base base, int code) {
     return nullptr;
 }
 
+// The size-variant suffixes TeX's extension fonts (CMEX and the AMS
+// families) append to an operator or delimiter name: a displayed sum is
+// `summationdisplay`, a tall paren is `parenleftbig`/`parenleftBig`/
+// `parenleftbigg`/`parenleftBigg`, a radical scaled for a two-line
+// fraction is `radicalbig`. Longest first, so `bigg` is tried before
+// `big` and the stem that comes out is the real name rather than
+// `...g`.
+//
+// Mapping a size variant onto its base codepoint loses the typographic
+// size, which is the right trade: a reader quoting or asking a model
+// about an equation wants the operator, and the alternative is the
+// glyph being dropped from the text layer altogether.
+const char *const kSizeSuffixes[] = {
+    "Bigg", "bigg", "Big", "big", "display", "text", "script", "scriptscript", "altdisplay",
+};
+
+// The numeric size suffixes the same fonts use instead of words
+// (`parenleft1` .. `parenleft4`, `braceex`, `bracketbt`/`tp`/`ex` for
+// the pieces of an extensible delimiter).
+bool StripTrailingDigit(std::string *name) {
+    if (name->size() < 2) return false;
+    char c = name->back();
+    if (c < '1' || c > '4') return false;
+    name->pop_back();
+    return true;
+}
+
+bool StripSuffix(std::string *name, const char *suffix) {
+    const size_t n = std::strlen(suffix);
+    if (name->size() <= n) return false;
+    if (name->compare(name->size() - n, n, suffix) != 0) return false;
+    name->resize(name->size() - n);
+    return true;
+}
+
 int GlyphNameToUnicode(const std::string &name) {
     const auto &table = GlyphList();
     auto it = table.find(name);
@@ -282,7 +377,144 @@ int GlyphNameToUnicode(const std::string &name) {
         int v = ParseHexEscape(name, 1);
         if (v >= 0) return v;
     }
+
+    // A variant selector after a period (AGL's own convention, spec
+    // appendix): `a.sc` is small-cap a, `summation.alt` an alternate
+    // summation. The base name is what the glyph reads as.
+    const size_t dot = name.find('.');
+    if (dot != std::string::npos && dot > 0) {
+        int v = GlyphNameToUnicode(name.substr(0, dot));
+        if (v >= 0) return v;
+    }
+
+    // A TeX size variant: strip one suffix and re-resolve. Done in a
+    // loop rather than recursively over every combination, since real
+    // names carry at most one size suffix plus at most one digit.
+    std::string stem = name;
+    bool stripped = false;
+    for (const char *suffix : kSizeSuffixes) {
+        if (StripSuffix(&stem, suffix)) {
+            stripped = true;
+            break;
+        }
+    }
+    if (!stripped) stripped = StripTrailingDigit(&stem);
+    if (stripped && stem != name) {
+        auto sit = table.find(stem);
+        if (sit != table.end()) return sit->second;
+    }
+
     return -1;
+}
+
+namespace {
+// The spacing accent a PDF draws, and the combining mark it stands for.
+// clang-format off
+const std::pair<int, int> kSpacingToCombining[] = {{0x005E, 0x0302}, {0x0060, 0x0300}, {0x007E, 0x0303}, {0x00A8, 0x0308}, {0x00AF, 0x0304}, {0x00B4, 0x0301}, {0x00B8, 0x0327}, {0x02C6, 0x0302}, {0x02C7, 0x030C}, {0x02D8, 0x0306}, {0x02D9, 0x0307}, {0x02DA, 0x030A}, {0x02DB, 0x0328}, {0x02DC, 0x0303}, {0x02DD, 0x030B}};
+// (base letter, combining mark) -> the single precomposed character,
+// for every Latin letter in U+00C0..U+024F reachable from one of the
+// accents above. Generated from the Unicode decomposition data rather
+// than written by hand.
+const int kComposeTable[][3] = {
+    {0x0041, 0x0300, 0x00C0}, {0x0041, 0x0301, 0x00C1}, {0x0041, 0x0302, 0x00C2}, {0x0041, 0x0303, 0x00C3},
+    {0x0041, 0x0304, 0x0100}, {0x0041, 0x0306, 0x0102}, {0x0041, 0x0307, 0x0226}, {0x0041, 0x0308, 0x00C4},
+    {0x0041, 0x030A, 0x00C5}, {0x0041, 0x030C, 0x01CD}, {0x0041, 0x0328, 0x0104}, {0x0043, 0x0301, 0x0106},
+    {0x0043, 0x0302, 0x0108}, {0x0043, 0x0307, 0x010A}, {0x0043, 0x030C, 0x010C}, {0x0043, 0x0327, 0x00C7},
+    {0x0044, 0x030C, 0x010E}, {0x0045, 0x0300, 0x00C8}, {0x0045, 0x0301, 0x00C9}, {0x0045, 0x0302, 0x00CA},
+    {0x0045, 0x0304, 0x0112}, {0x0045, 0x0306, 0x0114}, {0x0045, 0x0307, 0x0116}, {0x0045, 0x0308, 0x00CB},
+    {0x0045, 0x030C, 0x011A}, {0x0045, 0x0327, 0x0228}, {0x0045, 0x0328, 0x0118}, {0x0047, 0x0301, 0x01F4},
+    {0x0047, 0x0302, 0x011C}, {0x0047, 0x0306, 0x011E}, {0x0047, 0x0307, 0x0120}, {0x0047, 0x030C, 0x01E6},
+    {0x0047, 0x0327, 0x0122}, {0x0048, 0x0302, 0x0124}, {0x0048, 0x030C, 0x021E}, {0x0049, 0x0300, 0x00CC},
+    {0x0049, 0x0301, 0x00CD}, {0x0049, 0x0302, 0x00CE}, {0x0049, 0x0303, 0x0128}, {0x0049, 0x0304, 0x012A},
+    {0x0049, 0x0306, 0x012C}, {0x0049, 0x0307, 0x0130}, {0x0049, 0x0308, 0x00CF}, {0x0049, 0x030C, 0x01CF},
+    {0x0049, 0x0328, 0x012E}, {0x004A, 0x0302, 0x0134}, {0x004B, 0x030C, 0x01E8}, {0x004B, 0x0327, 0x0136},
+    {0x004C, 0x0301, 0x0139}, {0x004C, 0x030C, 0x013D}, {0x004C, 0x0327, 0x013B}, {0x004E, 0x0300, 0x01F8},
+    {0x004E, 0x0301, 0x0143}, {0x004E, 0x0303, 0x00D1}, {0x004E, 0x030C, 0x0147}, {0x004E, 0x0327, 0x0145},
+    {0x004F, 0x0300, 0x00D2}, {0x004F, 0x0301, 0x00D3}, {0x004F, 0x0302, 0x00D4}, {0x004F, 0x0303, 0x00D5},
+    {0x004F, 0x0304, 0x014C}, {0x004F, 0x0306, 0x014E}, {0x004F, 0x0307, 0x022E}, {0x004F, 0x0308, 0x00D6},
+    {0x004F, 0x030B, 0x0150}, {0x004F, 0x030C, 0x01D1}, {0x004F, 0x0328, 0x01EA}, {0x0052, 0x0301, 0x0154},
+    {0x0052, 0x030C, 0x0158}, {0x0052, 0x0327, 0x0156}, {0x0053, 0x0301, 0x015A}, {0x0053, 0x0302, 0x015C},
+    {0x0053, 0x030C, 0x0160}, {0x0053, 0x0327, 0x015E}, {0x0054, 0x030C, 0x0164}, {0x0054, 0x0327, 0x0162},
+    {0x0055, 0x0300, 0x00D9}, {0x0055, 0x0301, 0x00DA}, {0x0055, 0x0302, 0x00DB}, {0x0055, 0x0303, 0x0168},
+    {0x0055, 0x0304, 0x016A}, {0x0055, 0x0306, 0x016C}, {0x0055, 0x0308, 0x00DC}, {0x0055, 0x030A, 0x016E},
+    {0x0055, 0x030B, 0x0170}, {0x0055, 0x030C, 0x01D3}, {0x0055, 0x0328, 0x0172}, {0x0057, 0x0302, 0x0174},
+    {0x0059, 0x0301, 0x00DD}, {0x0059, 0x0302, 0x0176}, {0x0059, 0x0304, 0x0232}, {0x0059, 0x0308, 0x0178},
+    {0x005A, 0x0301, 0x0179}, {0x005A, 0x0307, 0x017B}, {0x005A, 0x030C, 0x017D}, {0x0061, 0x0300, 0x00E0},
+    {0x0061, 0x0301, 0x00E1}, {0x0061, 0x0302, 0x00E2}, {0x0061, 0x0303, 0x00E3}, {0x0061, 0x0304, 0x0101},
+    {0x0061, 0x0306, 0x0103}, {0x0061, 0x0307, 0x0227}, {0x0061, 0x0308, 0x00E4}, {0x0061, 0x030A, 0x00E5},
+    {0x0061, 0x030C, 0x01CE}, {0x0061, 0x0328, 0x0105}, {0x0063, 0x0301, 0x0107}, {0x0063, 0x0302, 0x0109},
+    {0x0063, 0x0307, 0x010B}, {0x0063, 0x030C, 0x010D}, {0x0063, 0x0327, 0x00E7}, {0x0064, 0x030C, 0x010F},
+    {0x0065, 0x0300, 0x00E8}, {0x0065, 0x0301, 0x00E9}, {0x0065, 0x0302, 0x00EA}, {0x0065, 0x0304, 0x0113},
+    {0x0065, 0x0306, 0x0115}, {0x0065, 0x0307, 0x0117}, {0x0065, 0x0308, 0x00EB}, {0x0065, 0x030C, 0x011B},
+    {0x0065, 0x0327, 0x0229}, {0x0065, 0x0328, 0x0119}, {0x0067, 0x0301, 0x01F5}, {0x0067, 0x0302, 0x011D},
+    {0x0067, 0x0306, 0x011F}, {0x0067, 0x0307, 0x0121}, {0x0067, 0x030C, 0x01E7}, {0x0067, 0x0327, 0x0123},
+    {0x0068, 0x0302, 0x0125}, {0x0068, 0x030C, 0x021F}, {0x0069, 0x0300, 0x00EC}, {0x0069, 0x0301, 0x00ED},
+    {0x0069, 0x0302, 0x00EE}, {0x0069, 0x0303, 0x0129}, {0x0069, 0x0304, 0x012B}, {0x0069, 0x0306, 0x012D},
+    {0x0069, 0x0308, 0x00EF}, {0x0069, 0x030C, 0x01D0}, {0x0069, 0x0328, 0x012F}, {0x006A, 0x0302, 0x0135},
+    {0x006A, 0x030C, 0x01F0}, {0x006B, 0x030C, 0x01E9}, {0x006B, 0x0327, 0x0137}, {0x006C, 0x0301, 0x013A},
+    {0x006C, 0x030C, 0x013E}, {0x006C, 0x0327, 0x013C}, {0x006E, 0x0300, 0x01F9}, {0x006E, 0x0301, 0x0144},
+    {0x006E, 0x0303, 0x00F1}, {0x006E, 0x030C, 0x0148}, {0x006E, 0x0327, 0x0146}, {0x006F, 0x0300, 0x00F2},
+    {0x006F, 0x0301, 0x00F3}, {0x006F, 0x0302, 0x00F4}, {0x006F, 0x0303, 0x00F5}, {0x006F, 0x0304, 0x014D},
+    {0x006F, 0x0306, 0x014F}, {0x006F, 0x0307, 0x022F}, {0x006F, 0x0308, 0x00F6}, {0x006F, 0x030B, 0x0151},
+    {0x006F, 0x030C, 0x01D2}, {0x006F, 0x0328, 0x01EB}, {0x0072, 0x0301, 0x0155}, {0x0072, 0x030C, 0x0159},
+    {0x0072, 0x0327, 0x0157}, {0x0073, 0x0301, 0x015B}, {0x0073, 0x0302, 0x015D}, {0x0073, 0x030C, 0x0161},
+    {0x0073, 0x0327, 0x015F}, {0x0074, 0x030C, 0x0165}, {0x0074, 0x0327, 0x0163}, {0x0075, 0x0300, 0x00F9},
+    {0x0075, 0x0301, 0x00FA}, {0x0075, 0x0302, 0x00FB}, {0x0075, 0x0303, 0x0169}, {0x0075, 0x0304, 0x016B},
+    {0x0075, 0x0306, 0x016D}, {0x0075, 0x0308, 0x00FC}, {0x0075, 0x030A, 0x016F}, {0x0075, 0x030B, 0x0171},
+    {0x0075, 0x030C, 0x01D4}, {0x0075, 0x0328, 0x0173}, {0x0077, 0x0302, 0x0175}, {0x0079, 0x0301, 0x00FD},
+    {0x0079, 0x0302, 0x0177}, {0x0079, 0x0304, 0x0233}, {0x0079, 0x0308, 0x00FF}, {0x007A, 0x0301, 0x017A},
+    {0x007A, 0x0307, 0x017C}, {0x007A, 0x030C, 0x017E}, {0x00C6, 0x0301, 0x01FC}, {0x00C6, 0x0304, 0x01E2},
+    {0x00D8, 0x0301, 0x01FE}, {0x00E6, 0x0301, 0x01FD}, {0x00E6, 0x0304, 0x01E3}, {0x00F8, 0x0301, 0x01FF},
+    {0x01B7, 0x030C, 0x01EE}, {0x0292, 0x030C, 0x01EF},
+};
+// clang-format on
+}  // namespace
+
+int ComposeAccented(int base, int accent) {
+    int combining = 0;
+    for (const auto &m : kSpacingToCombining)
+        if (m.first == accent) {
+            combining = m.second;
+            break;
+        }
+    // Already a combining mark (some fonts' /ToUnicode gives that form).
+    if (combining == 0 && accent >= 0x0300 && accent <= 0x036F) combining = accent;
+    if (combining == 0) return 0;
+    for (const auto &row : kComposeTable)
+        if (row[0] == base && row[1] == combining) return row[2];
+    return 0;
+}
+
+bool GlyphNameEncodesCode(const std::string &name, int code) {
+    if (code < 0 || code > 255 || name.empty()) return false;
+
+    // <prefix><decimal code>, e.g. /a65.
+    size_t i = 0;
+    while (i < name.size() && std::isalpha(static_cast<unsigned char>(name[i])) != 0) ++i;
+    if (i > 0 && i < name.size()) {
+        bool all_digits = true;
+        for (size_t k = i; k < name.size(); ++k)
+            if (std::isdigit(static_cast<unsigned char>(name[k])) == 0) all_digits = false;
+        if (all_digits) {
+            const std::string prefix = name.substr(0, i);
+            const bool known = prefix == "a" || prefix == "g" || prefix == "G" || prefix == "c" ||
+                               prefix == "cid" || prefix == "index" || prefix == "glyph" || prefix == "char";
+            if (known && std::atoi(name.c_str() + i) == code) return true;
+        }
+    }
+
+    // Two characters, the code in base 36 with the high digit written as
+    // a letter: code 0 is "A0", code 48 is "BC", code 88 is "CG".
+    if (name.size() == 2) {
+        const char hi = name[0], lo = name[1];
+        if (hi >= 'A' && hi <= 'Z') {
+            int lo_val = -1;
+            if (lo >= '0' && lo <= '9') lo_val = lo - '0';
+            else if (lo >= 'A' && lo <= 'Z') lo_val = 10 + (lo - 'A');
+            if (lo_val >= 0 && (hi - 'A') * 36 + lo_val == code) return true;
+        }
+    }
+    return false;
 }
 
 const char *CffStandardString(int sid) {

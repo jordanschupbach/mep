@@ -978,6 +978,47 @@ struct OrgHeaderArgSpec {
     std::string facet;
     // One line under the list explaining what the focused option does.
     std::string hint;
+
+    // --- Presentation, used only by mep's own Settings panel ------------
+    //
+    // Every field below is additive and defaults to "behave exactly as
+    // before", which is what lets the org-block side of this shared
+    // widget stay untouched: org's own specs (OrgHeaderArgSpecsFor) never
+    // set any of them, so they never take any of the paths they unlock.
+
+    // Pick the value from a list that opens over the panel, rather than
+    // stepping it in place with Ctrl-N/Ctrl-P. For a row with more
+    // choices than a reader can hold in their head -- 63 colour schemes --
+    // stepping one at a time is not a chooser, it is a search by
+    // exhaustion.
+    bool list_popup = false;
+    // What to show for each `choices` entry, parallel to it; an empty
+    // entry (or a short vector) falls back to the value itself. A model
+    // id is what the API wants and not what a person recognises it by.
+    std::vector<std::string> choice_labels;
+    // Group heading drawn above a choice in the open list, "" to continue
+    // the previous group. Deliberately the same shape `section` already
+    // has for rows -- a heading carried on the entry it precedes -- so
+    // there is one idea here, used twice, rather than two.
+    std::vector<std::string> choice_groups;
+    // Apply each choice as the highlight moves over it, before anything
+    // is committed, and put the original back if the list is cancelled.
+    // Only meaningful with list_popup. This is the one place in the popup
+    // where Escape reverts rather than keeping what you did: a cancel
+    // that kept the preview would leave the UI wearing a theme the user
+    // just backed out of.
+    bool live_preview = false;
+    // A filter that matches no choice can be committed as typed. For the
+    // OpenAI model row, whose list cannot be exhaustive -- any
+    // OpenAI-compatible server has its own model names (see
+    // help/ai-commands.org on mep.ai_base_url) -- so the list must not
+    // close the door on typing one.
+    bool allow_custom = false;
+    // A kText row whose value is prose rather than a word: drawn as a
+    // wrapped box across the panel's width with its label above it,
+    // instead of a one-line field in the value column. A 200-character
+    // prompt in a 14-character field is not editable.
+    bool wide_text = false;
 };
 
 /**
@@ -1019,6 +1060,21 @@ std::string OrgResultsFacetValue(const std::string &results, const std::string &
  * @return The rewritten value; "" when nothing is left, which the caller writes as "remove :results".
  */
 std::string OrgResultsWithFacet(const std::string &results, const std::string &facet, const std::string &word);
+
+/**
+ * @brief Whether a drop-down filter matches a choice, ignoring ASCII case.
+ *
+ * The Settings panel's drop-down narrowing. Both the input handler (which choice the
+ * highlight may land on) and the renderer (which entries are drawn) have to agree exactly
+ * about what matches, or a click lands on a different entry than the one under the pointer --
+ * so there is one function and they both call it. ASCII-only folding is deliberate: the
+ * things filtered here are option values and labels (theme names, model ids), which are
+ * ASCII by construction.
+ * @param haystack The choice's value or label.
+ * @param needle The typed filter; empty always matches.
+ * @return True on a substring match.
+ */
+bool OrgSettingsFilterMatch(const std::string &haystack, const std::string &needle);
 
 /**
  * @brief Quotes a header-arg value if it needs it, so it survives the reparse as one value.

@@ -16,11 +16,16 @@
 // until Phase 8.
 
 #include "pdf_document.h"
+#include "pdf_font.h"
 #include "pdf_object.h"
 #include "pdf_xref.h"
 
 #include <cstddef>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace pdfrender {
@@ -47,6 +52,79 @@ void Transform(const Mat2D &m, double x, double y, double *out_x, double *out_y)
 // dimensions separately from rotation -- see PDFIUM_REMOVAL_PLAN.md
 // Phase 5's own note on this distinction.
 Mat2D PageToDeviceMatrix(double llx, double lly, double urx, double ury, int rotate, double px_per_pt);
+
+// Decoded font programs and rasterized glyph bitmaps, reusable across
+// every render of one document.
+//
+// Both used to be per-render. Interpreter::font_cache lived on a single
+// Interpreter instance, so every page render re-parsed and re-decoded
+// every embedded font program from scratch, and a Form XObject's
+// recursive sub-interpreter started from an empty one; no glyph bitmap
+// was kept at all, so each occurrence of each letter was outlined from
+// its charstring, allocated, composited and freed again.
+//
+// That cost is why the viewer did not re-render on zoom. It magnified a
+// fixed-144dpi raster bilinearly instead, which on a high-density
+// display means reading a page at roughly half the detail the renderer
+// could have produced. Making a re-render cheap is what lets the scale
+// follow the zoom.
+//
+// Thread-safe, because PdfDoc::RenderPage runs on a worker thread and
+// several panes can share one document. Owned by the document, so it is
+// dropped when the file is reloaded.
+class RenderCache {
+public:
+    // The font for `obj_num`, loading it via `load` on a miss. `load` is
+    // called with no lock held -- parsing a font program is slow and
+    // must not block another pane's render -- so two threads racing the
+    // same font may both parse it; one result is kept and both callers
+    // get that one.
+    std::shared_ptr<pdffont::PdfFont> Font(int obj_num, const std::function<std::shared_ptr<pdffont::PdfFont>()> &load);
+
+    // One rasterized glyph: coverage bitmap plus the offsets
+    // CompositeGlyphBitmap needs. Shared, so callers must not write to
+    // it.
+    struct Glyph {
+        std::vector<unsigned char> bitmap;
+        int w = 0, h = 0, xoff = 0, yoff = 0;
+    };
+    // The glyph for (font object, code, render matrix), rasterizing via
+    // `render` on a miss. The matrix is part of the key by its exact
+    // float bits: every glyph in one text run shares a matrix, so runs
+    // hit, and a different font size correctly misses rather than being
+    // scaled.
+    //
+    // Returns null only if `render` produced nothing (a blank glyph, an
+    // unparseable charstring). A null result is cached too, so a bad
+    // glyph is not retried once per occurrence.
+    std::shared_ptr<const Glyph> GlyphBitmap(int font_obj, unsigned int code, float a, float b, float c, float d,
+                                             const std::function<std::shared_ptr<Glyph>()> &render);
+
+    void Clear();
+
+    // Rough resident size of the glyph bitmaps, for the cap below.
+    size_t GlyphBytes() const;
+
+private:
+    struct GlyphKey {
+        int font_obj;
+        unsigned int code;
+        // Raw float bits, so this is an exact-match key with no
+        // tolerance -- two matrices that differ at all are two entries.
+        unsigned int a, b, c, d;
+        bool operator==(const GlyphKey &o) const {
+            return font_obj == o.font_obj && code == o.code && a == o.a && b == o.b && c == o.c && d == o.d;
+        }
+    };
+    struct GlyphKeyHash {
+        size_t operator()(const GlyphKey &k) const;
+    };
+
+    mutable std::mutex mu_;
+    std::unordered_map<int, std::shared_ptr<pdffont::PdfFont>> fonts_;
+    std::unordered_map<GlyphKey, std::shared_ptr<const Glyph>, GlyphKeyHash> glyphs_;
+    size_t glyph_bytes_ = 0;
+};
 
 // An RGBA8 (row-major, width*4 bytes/row) render target, opaque white
 // background -- matches pdf_doc.h's RenderPage contract.
@@ -127,7 +205,7 @@ std::string GetPageContent(const unsigned char *data, size_t len, const pdfxref:
 // rather than failing the whole page").
 void RenderContentStream(const std::string &content, Canvas &canvas, const Mat2D &initial_ctm,
                           const pdfobj::Object &resources, const unsigned char *doc_data, size_t doc_len,
-                          const pdfxref::XrefTable &table);
+                          const pdfxref::XrefTable &table, RenderCache *cache = nullptr);
 
 // Runs the exact same interpreter as RenderContentStream (rendering
 // still happens into `canvas` -- pass a small throwaway one, e.g.
@@ -141,6 +219,6 @@ void RenderContentStream(const std::string &content, Canvas &canvas, const Mat2D
 void ExtractContentStreamText(const std::string &content, Canvas &canvas, const Mat2D &initial_ctm,
                                const pdfobj::Object &resources, const unsigned char *doc_data, size_t doc_len,
                                const pdfxref::XrefTable &table, std::vector<TextGlyph> *out_glyphs,
-                               std::vector<MarkedBox> *out_marked = nullptr);
+                               std::vector<MarkedBox> *out_marked = nullptr, RenderCache *cache = nullptr);
 
 }  // namespace pdfrender

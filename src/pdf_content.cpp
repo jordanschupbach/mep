@@ -1,5 +1,7 @@
 #include "pdf_content.h"
 
+#include <cstring>
+
 #include "gfx/rasterizer.h"
 #include "pdf_filters.h"
 #include "pdf_font.h"
@@ -429,8 +431,12 @@ void CompositeGlyphBitmap(Canvas &canvas, const unsigned char *bitmap, int gw, i
     unsigned char r = static_cast<unsigned char>(std::clamp(rgb[0], 0.0f, 1.0f) * 255.0f + 0.5f);
     unsigned char g = static_cast<unsigned char>(std::clamp(rgb[1], 0.0f, 1.0f) * 255.0f + 0.5f);
     unsigned char b = static_cast<unsigned char>(std::clamp(rgb[2], 0.0f, 1.0f) * 255.0f + 0.5f);
-    int base_x = static_cast<int>(std::lround(origin_x)) + xoff;
-    int base_y = static_cast<int>(std::lround(origin_y)) + yoff;
+    // Floor, not round: the glyph was rasterized with its sub-pixel
+    // offset already applied (see ShowText), so the whole-pixel part is
+    // all that is left to place. Rounding here would add the half-pixel
+    // displacement back.
+    int base_x = static_cast<int>(std::floor(origin_x)) + xoff;
+    int base_y = static_cast<int>(std::floor(origin_y)) + yoff;
     for (int y = 0; y < gh; ++y) {
         int py = base_y + y;
         if (py < 0 || py >= canvas.height) continue;
@@ -624,6 +630,12 @@ struct DecodedImage {
     int width = 0, height = 0;
     std::vector<unsigned char> rgba;  // width*height*4, straight alpha
     bool is_mask = false;             // true: rgb unused, colorized with the current fill color at draw time
+    // /Interpolate (spec 8.9.5.1, Table 89), default false: whether the
+    // producer wants the image smoothed when it is drawn larger than its
+    // own sample grid. Honoured only for magnification -- minification
+    // is averaged regardless, since that is anti-aliasing rather than
+    // interpolation and no viewer leaves it off.
+    bool interpolate = false;
 };
 
 // Full-name-or-abbreviated key lookup -- inline images (BI/ID/EI) use
@@ -770,6 +782,8 @@ ColorSpaceInfo ImageColorSpace(const pdfobj::Object &dict, const pdfobj::Object 
 bool DecodeImageDict(const pdfobj::Object &dict, const std::string &raw, const pdfobj::Object &resources,
                       const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
                       DecodedImage *out) {
+    if (const pdfobj::Object *interp = FindKey(dict, "Interpolate", "I"))
+        out->interpolate = interp->type == pdfobj::Type::Bool && interp->bool_val;
     bool is_mask = false;
     if (const pdfobj::Object *im = FindKey(dict, "ImageMask", "IM")) is_mask = im->bool_val && im->type == pdfobj::Type::Bool;
     int width = static_cast<int>(FindKey(dict, "Width", "W") ? FindKey(dict, "Width", "W")->AsInt() : 0);
@@ -848,9 +862,126 @@ bool DecodeImageDict(const pdfobj::Object &dict, const std::string &raw, const p
     return true;
 }
 
+// One filtered sample of `img` at unit-square position (u, v), given how
+// much of the source one device pixel covers (`fu`, `fv`, in texels).
+//
+// Nearest-neighbour was the original choice, and it aliases badly under
+// *minification* -- which is what a scanned page is, 2500-odd source
+// pixels landing on a 1200-pixel-wide render. One texel in four or more
+// was being read and the rest discarded, so thin strokes broke up and
+// bitonal scans came out speckled. Bilinear would not fix that either:
+// it still reads at most four texels however many a pixel covers, so
+// minification has to be a box average over the real footprint.
+//
+// Magnification is left alone unless the producer asked for smoothing
+// via /Interpolate, which defaults to false (spec 8.9.5.1) -- blurring
+// a deliberately blocky image, or the hard edge of a stencil mask, is
+// not an improvement.
+//
+// Written against the alpha channel as well as the colour, which is what
+// makes it smooth an ImageMask -- a scanned bitonal page, and the bitmap
+// glyphs of a Type 3 font, are ImageMasks, and they are the case where
+// nearest-neighbour is most visible.
+void SampleImage(const DecodedImage &img, double u, double v, double fu, double fv, unsigned char out[4]) {
+    const double cx = u * img.width;
+    const double cy = (1.0 - v) * img.height;  // image space is y-down
+    const double hx = std::max(0.5, std::abs(fu) * 0.5);
+    const double hy = std::max(0.5, std::abs(fv) * 0.5);
+
+    if (hx <= 0.5 && hy <= 0.5) {
+        if (!img.interpolate) {
+            // Magnifying an image whose producer did not ask for
+            // interpolation: spec 8.9.5.1 says do not smooth it, and
+            // /Interpolate defaults to false. Blurring here would also
+            // soften the deliberately hard edges of an ImageMask used
+            // as a stencil.
+            const int col = std::clamp(static_cast<int>(cx), 0, img.width - 1);
+            const int row = std::clamp(static_cast<int>(cy), 0, img.height - 1);
+            const size_t idx =
+                (static_cast<size_t>(row) * static_cast<size_t>(img.width) + static_cast<size_t>(col)) * 4;
+            for (int c = 0; c < 4; ++c) out[c] = img.rgba[idx + static_cast<size_t>(c)];
+            return;
+        }
+        // Magnifying with /Interpolate true: bilinear between the four
+        // texels around the sample point. Texel centres sit at +0.5,
+        // hence the shift.
+        const double sx = cx - 0.5, sy = cy - 0.5;
+        const int x0 = static_cast<int>(std::floor(sx)), y0 = static_cast<int>(std::floor(sy));
+        const double tx = sx - static_cast<double>(x0), ty = sy - static_cast<double>(y0);
+        const int xa = std::clamp(x0, 0, img.width - 1), xb = std::clamp(x0 + 1, 0, img.width - 1);
+        const int ya = std::clamp(y0, 0, img.height - 1), yb = std::clamp(y0 + 1, 0, img.height - 1);
+        const size_t i00 = (static_cast<size_t>(ya) * static_cast<size_t>(img.width) + static_cast<size_t>(xa)) * 4;
+        const size_t i10 = (static_cast<size_t>(ya) * static_cast<size_t>(img.width) + static_cast<size_t>(xb)) * 4;
+        const size_t i01 = (static_cast<size_t>(yb) * static_cast<size_t>(img.width) + static_cast<size_t>(xa)) * 4;
+        const size_t i11 = (static_cast<size_t>(yb) * static_cast<size_t>(img.width) + static_cast<size_t>(xb)) * 4;
+        for (int c = 0; c < 4; ++c) {
+            const double top = static_cast<double>(img.rgba[i00 + static_cast<size_t>(c)]) * (1.0 - tx) +
+                               static_cast<double>(img.rgba[i10 + static_cast<size_t>(c)]) * tx;
+            const double bot = static_cast<double>(img.rgba[i01 + static_cast<size_t>(c)]) * (1.0 - tx) +
+                               static_cast<double>(img.rgba[i11 + static_cast<size_t>(c)]) * tx;
+            out[c] = static_cast<unsigned char>(std::clamp(top * (1.0 - ty) + bot * ty, 0.0, 255.0) + 0.5);
+        }
+        return;
+    }
+
+    // Minifying: average the texels this device pixel actually covers.
+    // Capped per axis so a figure scaled down to nothing cannot walk the
+    // whole source for one pixel -- past that the skipped texels change
+    // the average by less than a level.
+    constexpr int kMaxTaps = 8;
+    int ix0 = static_cast<int>(std::floor(cx - hx)), ix1 = static_cast<int>(std::ceil(cx + hx));
+    int iy0 = static_cast<int>(std::floor(cy - hy)), iy1 = static_cast<int>(std::ceil(cy + hy));
+    ix0 = std::clamp(ix0, 0, img.width - 1);
+    ix1 = std::clamp(ix1, ix0 + 1, img.width);
+    iy0 = std::clamp(iy0, 0, img.height - 1);
+    iy1 = std::clamp(iy1, iy0 + 1, img.height);
+    const int step_x = std::max(1, (ix1 - ix0 + kMaxTaps - 1) / kMaxTaps);
+    const int step_y = std::max(1, (iy1 - iy0 + kMaxTaps - 1) / kMaxTaps);
+    // Integers, not doubles: the samples are bytes and the counts are
+    // small, so this cannot overflow a 32-bit accumulator for any
+    // footprint this loop will take (8x8 taps x 255). A stencil's colour
+    // comes from the fill colour rather than the image, so only its
+    // alpha is averaged -- there is nothing in the other three channels
+    // to average.
+    //
+    // Measured cost of the filtering as a whole, on the fixture built
+    // for it (a full-page 2400x3000 stencil, tools/pdf_make_scan.py):
+    // 108ms to draw with point sampling against 143ms with this, three
+    // runs each. Most of that 108ms is decoding 7.2M source pixels, not
+    // sampling them. The +32% buys 39% less error against poppler on
+    // that fixture and 16-32% on the pages of a real 4205x6000 CCITT
+    // scan; on a page of text rather than an image it is unmeasurable.
+    // The cap below never binds at a scan's own ratio -- 4 and 8 taps
+    // per axis time identically -- it is only there so a figure scaled
+    // down to nothing cannot walk the whole source for one pixel.
+    unsigned int acc_a = 0, acc_r = 0, acc_g = 0, acc_b = 0;
+    unsigned int n = 0;
+    for (int y = iy0; y < iy1; y += step_y) {
+        const size_t row = static_cast<size_t>(y) * static_cast<size_t>(img.width);
+        for (int x = ix0; x < ix1; x += step_x) {
+            const unsigned char *t = &img.rgba[(row + static_cast<size_t>(x)) * 4];
+            acc_a += t[3];
+            if (!img.is_mask) {
+                acc_r += t[0];
+                acc_g += t[1];
+                acc_b += t[2];
+            }
+            ++n;
+        }
+    }
+    if (n == 0) n = 1;
+    out[3] = static_cast<unsigned char>((acc_a + n / 2) / n);
+    if (img.is_mask) {
+        out[0] = out[1] = out[2] = 0;  // unused; DrawImage substitutes the fill colour
+    } else {
+        out[0] = static_cast<unsigned char>((acc_r + n / 2) / n);
+        out[1] = static_cast<unsigned char>((acc_g + n / 2) / n);
+        out[2] = static_cast<unsigned char>((acc_b + n / 2) / n);
+    }
+}
+
 // Composites `img` onto `canvas` as if it fills the unit square under
-// `ctm`, via inverse-mapping + nearest-neighbor sampling (see this
-// section's own top comment). `mask_rgb` colors an ImageMask's opaque
+// `ctm`, via inverse-mapping + filtered sampling (see SampleImage). `mask_rgb` colors an ImageMask's opaque
 // texels (spec: painted with the current fill color); ignored for a
 // real image.
 void DrawImage(Canvas &canvas, const DecodedImage &img, const Mat2D &ctm, const ClipMask &clip,
@@ -871,15 +1002,23 @@ void DrawImage(Canvas &canvas, const DecodedImage &img, const Mat2D &ctm, const 
     int x1 = std::min(canvas.width, static_cast<int>(std::ceil(max_x)));
     int y1 = std::min(canvas.height, static_cast<int>(std::ceil(max_y)));
 
+    // One device pixel's footprint in source texels. The inverse maps
+    // device space to the unit square, so its linear part gives how far
+    // u and v move per pixel; scaling by the source dimensions turns
+    // that into texels. Both axes of the step are counted, so a rotated
+    // or skewed placement gets a footprint rather than just its
+    // axis-aligned part.
+    const double texels_per_px_u = std::hypot(inv.a, inv.c) * static_cast<double>(img.width);
+    const double texels_per_px_v = std::hypot(inv.b, inv.d) * static_cast<double>(img.height);
+
     for (int py = y0; py < y1; ++py) {
         for (int px = x0; px < x1; ++px) {
             double u, v;
             Transform(inv, static_cast<double>(px) + 0.5, static_cast<double>(py) + 0.5, &u, &v);
             if (u < 0 || u >= 1 || v < 0 || v >= 1) continue;
-            int col = std::clamp(static_cast<int>(u * img.width), 0, img.width - 1);
-            int row = std::clamp(static_cast<int>((1.0 - v) * img.height), 0, img.height - 1);  // image space is y-down
-            size_t idx = (static_cast<size_t>(row) * static_cast<size_t>(img.width) + static_cast<size_t>(col)) * 4;
-            double src_alpha = static_cast<double>(img.rgba[idx + 3]) / 255.0;
+            unsigned char sample[4];
+            SampleImage(img, u, v, texels_per_px_u, texels_per_px_v, sample);
+            double src_alpha = static_cast<double>(sample[3]) / 255.0;
             if (src_alpha <= 0) continue;
             size_t cpx = static_cast<size_t>(py) * static_cast<size_t>(canvas.width) + static_cast<size_t>(px);
             double a = src_alpha * static_cast<double>(std::clamp(alpha, 0.0f, 1.0f));
@@ -891,9 +1030,9 @@ void DrawImage(Canvas &canvas, const DecodedImage &img, const Mat2D &ctm, const 
                 g = static_cast<unsigned char>(std::clamp(mask_rgb[1], 0.0f, 1.0f) * 255.0f + 0.5f);
                 b = static_cast<unsigned char>(std::clamp(mask_rgb[2], 0.0f, 1.0f) * 255.0f + 0.5f);
             } else {
-                r = img.rgba[idx + 0];
-                g = img.rgba[idx + 1];
-                b = img.rgba[idx + 2];
+                r = sample[0];
+                g = sample[1];
+                b = sample[2];
             }
             unsigned char *dst = &canvas.rgba[cpx * 4];
             dst[0] = static_cast<unsigned char>(dst[0] + (static_cast<double>(r) - dst[0]) * a + 0.5);
@@ -914,6 +1053,11 @@ struct Interpreter {
     const unsigned char *doc_data;
     size_t doc_len;
     const pdfxref::XrefTable &table;
+
+    // Shared across every render of this document when the caller
+    // provides one; null means fall back to the per-Interpreter
+    // font_cache below.
+    RenderCache *cache = nullptr;
 
     std::vector<GState> gs;
     std::vector<pdfobj::Object> operands;
@@ -936,6 +1080,10 @@ struct Interpreter {
     // a deliberate simplicity-over-micro-optimization tradeoff, see
     // PDFIUM_REMOVAL_PLAN.md Phase 10's own note on this).
     std::unordered_map<int, std::shared_ptr<pdffont::PdfFont>> font_cache;
+    // Which object number each resolved font came from, so a cached
+    // glyph can be keyed by it. -1 for a font that was not an indirect
+    // reference and so has no stable identity to cache under.
+    std::unordered_map<const pdffont::PdfFont *, int> font_obj_of_;
 
     // Non-null only for text extraction (ExtractContentStreamText,
     // PDFIUM_REMOVAL_PLAN.md Phase 11) -- ShowText appends one TextGlyph
@@ -1058,11 +1206,26 @@ struct Interpreter {
             auto it = font_cache.find(key);
             if (it != font_cache.end()) return it->second;
         }
-        pdfobj::Object font_dict = Deref(doc_data, doc_len, table, *ref);
-        if (!font_dict.IsDict()) return nullptr;
-        auto font = std::make_shared<pdffont::PdfFont>();
-        font->Load(doc_data, doc_len, table, font_dict);
+        // Resolve the dict before consulting the shared cache: a font
+        // that is not an indirect reference has no stable key and must
+        // be loaded inline.
+        const unsigned char *data = doc_data;
+        const size_t len = doc_len;
+        const pdfxref::XrefTable &tbl = table;
+        pdfobj::Object entry = *ref;
+        auto load = [data, len, &tbl, entry]() -> std::shared_ptr<pdffont::PdfFont> {
+            pdfobj::Object font_dict = Deref(data, len, tbl, entry);
+            if (!font_dict.IsDict()) return nullptr;
+            auto f = std::make_shared<pdffont::PdfFont>();
+            f->Load(data, len, tbl, font_dict);
+            return f;
+        };
+        std::shared_ptr<pdffont::PdfFont> font = (cache && key >= 0) ? cache->Font(key, load) : load();
+        if (!font) return nullptr;
+        // Kept locally as well, so a second Tf for the same font in this
+        // stream costs no lock at all.
         if (key >= 0) font_cache[key] = font;
+        font_obj_of_[font.get()] = key;
         return font;
     }
 
@@ -1085,27 +1248,110 @@ struct Interpreter {
             Mat2D trm = Multiply(text_space_matrix, Multiply(text_matrix, g.ctm));
             double origin_x, origin_y;
             Transform(trm, 0, 0, &origin_x, &origin_y);
-            // Per-axis scale of Trm's linear part -- only used for the
-            // extracted-text box heights below; glyphs themselves go
-            // through the full matrix (rotated axis labels in R/matplotlib
-            // plots, landscape pages, etc. used to render upright).
-            float scale_y = static_cast<float>(std::sqrt(trm.c * trm.c + trm.d * trm.d));
-
-            if (g.render_mode != 3) {  // 3 = invisible
-                int gw, gh, xoff, yoff;
-                unsigned char *bmp = nullptr;
+            // Rasterize the glyph -- unless this run is only after the
+            // text, in which case there is nothing to draw it onto. An
+            // extraction pass is given a throwaway 1x1 canvas, so every
+            // glyph was being outlined from its charstring, allocated,
+            // composited against that one pixel and freed, purely to be
+            // discarded. It is about 98% of extraction time: on the
+            // fixtures, pulling a page's glyphs out took 3.5-4.5ms while
+            // the row grouping and text assembly that actually use the
+            // result took 0.06ms. Search re-extracts every page of the
+            // document, so it paid that per page.
+            //
+            // Nothing in the glyph bitmap feeds the extracted text: the
+            // text comes from the code's /ToUnicode, and DrawType3Glyph
+            // deliberately runs a glyph procedure with no text_output of
+            // its own (see its comment).
+            if (g.render_mode != 3 && text_output == nullptr) {  // 3 = invisible
+                const float *rgb = (g.render_mode == 1) ? g.stroke_rgb : g.fill_rgb;  // 1=stroke-only: approximate with stroke color, no separate outline-only rendering
+                const float alpha = (g.render_mode == 1) ? g.stroke_alpha : g.fill_alpha;
                 if (g.font->IsType3()) {
+                    // A Type 3 glyph is a content stream, not an
+                    // outline, so there is no bitmap to cache -- it runs
+                    // through a sub-interpreter against the live canvas.
                     DrawType3Glyph(code, trm);
                 } else {
-                    bmp = g.font->GetGlyphBitmapMatrix(code, static_cast<float>(trm.a), static_cast<float>(trm.b),
-                                                       static_cast<float>(trm.c), static_cast<float>(trm.d), &gw, &gh,
-                                                       &xoff, &yoff);
-                }
-                if (bmp) {
-                    const float *rgb = (g.render_mode == 1) ? g.stroke_rgb : g.fill_rgb;  // 1=stroke-only: approximate with stroke color, no separate outline-only rendering
-                    float alpha = (g.render_mode == 1) ? g.stroke_alpha : g.fill_alpha;
-                    CompositeGlyphBitmap(canvas, bmp, gw, gh, origin_x, origin_y, xoff, yoff, g.clip, rgb, alpha);
-                    g.font->FreeGlyphBitmap(bmp);
+                    const float ma = static_cast<float>(trm.a), mb = static_cast<float>(trm.b);
+                    const float mc = static_cast<float>(trm.c), md = static_cast<float>(trm.d);
+                    // Where the pen sits *within* its pixel. Composite
+                    // time rounds the origin to a whole pixel, so
+                    // without this each glyph is displaced by up to half
+                    // a pixel horizontally and vertically, independently
+                    // of its neighbours. Running prose hides that;
+                    // stacked mathematics does not, because a fraction
+                    // bar and the numerator above it get unrelated
+                    // displacements.
+                    //
+                    // Quantized rather than taken exactly, so the glyph
+                    // cache still hits: a run of text shares a matrix,
+                    // and N phases per axis costs N*N cache entries per
+                    // glyph instead of one rasterization per occurrence.
+                    //
+                    // Two per axis, measured. Against poppler at 144dpi
+                    // on the maths fixtures, two phases scored
+                    // 0.0355/0.0382/0.0367 RMSE and four scored
+                    // 0.0368/0.0374/0.0364 -- the same within noise --
+                    // while four made a warm re-render at a new zoom
+                    // about 35% slower (5.6ms against 3.5ms a page),
+                    // four times the cache entries meaning that many
+                    // fewer hits. Half-pixel placement already removes
+                    // most of the misalignment; the rest is not worth
+                    // the cache.
+                    constexpr int kPhaseSteps = 2;
+                    auto phase_of = [](double v) {
+                        double frac = v - std::floor(v);
+                        int q = static_cast<int>(std::lround(frac * kPhaseSteps));
+                        return q % kPhaseSteps;  // a frac that rounds to 1.0 is phase 0 of the next pixel
+                    };
+                    const int px_phase = phase_of(origin_x), py_phase = phase_of(origin_y);
+                    const float sub_x = static_cast<float>(px_phase) / kPhaseSteps;
+                    const float sub_y = static_cast<float>(py_phase) / kPhaseSteps;
+                    // Every glyph in a text run shares this matrix, and
+                    // a page reuses a few dozen (code, matrix) pairs
+                    // across thousands of occurrences, so this is where
+                    // caching pays. Without it each occurrence was
+                    // outlined from its charstring, allocated,
+                    // composited and freed again.
+                    auto raster = [&]() -> std::shared_ptr<RenderCache::Glyph> {
+                        int gw = 0, gh = 0, xoff = 0, yoff = 0;
+                        unsigned char *bmp =
+                            g.font->GetGlyphBitmapMatrix(code, ma, mb, mc, md, &gw, &gh, &xoff, &yoff, sub_x, sub_y);
+                        if (!bmp) return nullptr;
+                        auto out = std::make_shared<RenderCache::Glyph>();
+                        out->w = gw;
+                        out->h = gh;
+                        out->xoff = xoff;
+                        out->yoff = yoff;
+                        const size_t n = static_cast<size_t>(gw) * static_cast<size_t>(gh);
+                        out->bitmap.assign(bmp, bmp + n);
+                        g.font->FreeGlyphBitmap(bmp);
+                        return out;
+                    };
+                    const int font_obj = [&]() {
+                        auto it = font_obj_of_.find(g.font.get());
+                        return it == font_obj_of_.end() ? -1 : it->second;
+                    }();
+                    if (cache && font_obj >= 0) {
+                        // The phase joins the code in the key: the same
+                        // glyph at the same size is a different bitmap
+                        // at a different sub-pixel position.
+                        const unsigned int keyed_code =
+                            (code << 4) | (static_cast<unsigned int>(px_phase) << 2) |
+                            static_cast<unsigned int>(py_phase);
+                        std::shared_ptr<const RenderCache::Glyph> cached =
+                            cache->GlyphBitmap(font_obj, keyed_code, ma, mb, mc, md, raster);
+                        if (cached)
+                            CompositeGlyphBitmap(canvas, cached->bitmap.data(), cached->w, cached->h, origin_x,
+                                                 origin_y, cached->xoff, cached->yoff, g.clip, rgb, alpha);
+                    } else {
+                        // No shared cache, or a font with no stable
+                        // object number to key one by.
+                        std::shared_ptr<RenderCache::Glyph> made = raster();
+                        if (made)
+                            CompositeGlyphBitmap(canvas, made->bitmap.data(), made->w, made->h, origin_x, origin_y,
+                                                 made->xoff, made->yoff, g.clip, rgb, alpha);
+                    }
                 }
             }
 
@@ -1114,19 +1360,50 @@ struct Interpreter {
             if (text_output) {
                 std::string text = g.font->GetUnicodeText(code);
                 if (!text.empty()) {
-                    double end_x, end_y;
-                    Transform(trm, w0 / 1000.0, 0, &end_x, &end_y);
+                    // The glyph's em box, transformed corner by corner
+                    // through the full text render matrix and then
+                    // bounded. Ascent/descent stay approximate
+                    // (0.75em/-0.2em from the baseline) because no real
+                    // per-font ascent/descent is plumbed through PdfFont
+                    // for this purpose -- a rough highlight box, not
+                    // pixel-exact glyph bounds, is the norm for PDF
+                    // search UIs generally.
+                    //
+                    // Taking all four corners rather than just the
+                    // baseline's two endpoints is what makes this hold
+                    // for rotated text. The advance used to be measured
+                    // along x and the em height along y independently,
+                    // which for 90-degree-rotated text (a landscape
+                    // page, a rotated axis label) put the whole advance
+                    // into the vertical extent and left left == right:
+                    // every box on such a page was zero-width, so the
+                    // row grouper and the word-gap test had no usable
+                    // horizontal geometry and a landscape page
+                    // extracted one character per line. For unrotated
+                    // text this is arithmetically identical to what it
+                    // replaced.
+                    const double ex = w0 / 1000.0;
+                    const double asc = 0.75, desc = -0.2;
+                    const double corners[4][2] = {{0, desc}, {ex, desc}, {0, asc}, {ex, asc}};
+                    double min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+                    for (int ci = 0; ci < 4; ++ci) {
+                        double cx, cy;
+                        Transform(trm, corners[ci][0], corners[ci][1], &cx, &cy);
+                        if (ci == 0) {
+                            min_x = max_x = cx;
+                            min_y = max_y = cy;
+                        } else {
+                            min_x = std::min(min_x, cx);
+                            max_x = std::max(max_x, cx);
+                            min_y = std::min(min_y, cy);
+                            max_y = std::max(max_y, cy);
+                        }
+                    }
                     TextGlyph tg;
-                    tg.left = std::min(origin_x, end_x);
-                    tg.right = std::max(origin_x, end_x);
-                    // Approximate ascent/descent (0.75em/-0.2em from
-                    // baseline) via the same isotropic scale_y used for
-                    // rendering -- no real per-font ascent/descent is
-                    // plumbed through PdfFont for this purpose; a rough
-                    // highlight box, not pixel-exact glyph bounds, is
-                    // the norm for PDF search UIs generally.
-                    tg.bottom = origin_y - static_cast<double>(scale_y) * 0.2;
-                    tg.top = origin_y + static_cast<double>(scale_y) * 0.75;
+                    tg.left = min_x;
+                    tg.right = max_x;
+                    tg.bottom = min_y;
+                    tg.top = max_y;
                     tg.utf8_text = std::move(text);
                     tg.mcid = CurrentMcid();
                     tg.artifact = InArtifact();
@@ -1170,6 +1447,7 @@ struct Interpreter {
 
         ++form_depth;
         Interpreter sub{canvas, doc_data, doc_len, table};
+        sub.cache = cache;
         sub.gs.push_back(Top());
         sub.Top().ctm = glyph_ctm;
         for (int k = 0; k < 3; ++k) sub.Top().stroke_rgb[k] = Top().fill_rgb[k];
@@ -1591,6 +1869,88 @@ struct Interpreter {
 
 }  // namespace
 
+// -- RenderCache -----------------------------------------------------------
+
+namespace {
+// Rough budget for cached glyph bitmaps. A glyph at a normal reading
+// scale is a few hundred bytes and one page has on the order of a
+// hundred distinct (code, matrix) pairs, so this holds many pages'
+// worth at several scales; past it the whole glyph map is dropped
+// rather than evicted one by one, which keeps the bookkeeping to a
+// counter and costs one re-raster of the pages still on screen.
+constexpr size_t kGlyphCacheBudget = 48u * 1024u * 1024u;
+
+unsigned int FloatBits(float f) {
+    unsigned int out = 0;
+    static_assert(sizeof(out) == sizeof(f), "float is not 32 bits");
+    std::memcpy(&out, &f, sizeof(out));
+    return out;
+}
+}  // namespace
+
+size_t RenderCache::GlyphKeyHash::operator()(const GlyphKey &k) const {
+    // A plain mix; the keys are small integers and raw float bits, which
+    // std::hash would not spread any better.
+    size_t h = static_cast<size_t>(k.font_obj) * 0x9E3779B97F4A7C15ull;
+    h ^= static_cast<size_t>(k.code) + 0x165667B19E3779F9ull + (h << 6) + (h >> 2);
+    for (unsigned int v : {k.a, k.b, k.c, k.d}) h ^= static_cast<size_t>(v) + 0x9E3779B9ull + (h << 6) + (h >> 2);
+    return h;
+}
+
+std::shared_ptr<pdffont::PdfFont> RenderCache::Font(int obj_num,
+                                                    const std::function<std::shared_ptr<pdffont::PdfFont>()> &load) {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = fonts_.find(obj_num);
+        if (it != fonts_.end()) return it->second;
+    }
+    // Loaded without the lock: parsing an embedded font program is the
+    // slow thing this cache exists to avoid, and holding the mutex
+    // across it would serialize two panes' renders on it.
+    std::shared_ptr<pdffont::PdfFont> loaded = load();
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = fonts_.find(obj_num);
+    if (it != fonts_.end()) return it->second;  // another thread won; keep one copy
+    fonts_[obj_num] = loaded;
+    return loaded;
+}
+
+std::shared_ptr<const RenderCache::Glyph> RenderCache::GlyphBitmap(
+    int font_obj, unsigned int code, float a, float b, float c, float d,
+    const std::function<std::shared_ptr<Glyph>()> &render) {
+    const GlyphKey key{font_obj, code, FloatBits(a), FloatBits(b), FloatBits(c), FloatBits(d)};
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        auto it = glyphs_.find(key);
+        if (it != glyphs_.end()) return it->second;
+    }
+    std::shared_ptr<Glyph> made = render();
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = glyphs_.find(key);
+    if (it != glyphs_.end()) return it->second;
+    if (glyph_bytes_ > kGlyphCacheBudget) {
+        glyphs_.clear();
+        glyph_bytes_ = 0;
+    }
+    if (made) glyph_bytes_ += made->bitmap.size();
+    std::shared_ptr<const Glyph> stored = made;
+    glyphs_[key] = stored;  // a null result is cached too: a bad glyph is not retried per occurrence
+    return stored;
+}
+
+void RenderCache::Clear() {
+    std::lock_guard<std::mutex> lk(mu_);
+    fonts_.clear();
+    glyphs_.clear();
+    glyph_bytes_ = 0;
+}
+
+size_t RenderCache::GlyphBytes() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    return glyph_bytes_;
+}
+
+
 void Interpreter::DoXObject(const std::string &name, const pdfobj::Object &resources) {
     if (form_depth > 16) return;  // guard against a malformed self-referential Form chain
     const pdfobj::Object *xobj_dict = resources.IsDict() ? resources.Find("XObject") : nullptr;
@@ -1651,6 +2011,7 @@ void Interpreter::DoXObject(const std::string &name, const pdfobj::Object &resou
 
     ++form_depth;
     Interpreter sub{canvas, doc_data, doc_len, table};
+    sub.cache = cache;  // a Form XObject's fonts and glyphs are the same document's
     sub.gs.push_back(Top());
     sub.form_depth = form_depth;
     sub.text_output = text_output;  // propagate so text inside a Form XObject is extracted too
@@ -1704,8 +2065,9 @@ std::string GetPageContent(const unsigned char *data, size_t len, const pdfxref:
 
 void RenderContentStream(const std::string &content, Canvas &canvas, const Mat2D &initial_ctm,
                           const pdfobj::Object &resources, const unsigned char *doc_data, size_t doc_len,
-                          const pdfxref::XrefTable &table) {
+                          const pdfxref::XrefTable &table, RenderCache *cache) {
     Interpreter interp{canvas, doc_data, doc_len, table};
+    interp.cache = cache;
     GState initial;
     initial.ctm = initial_ctm;
     interp.gs.push_back(initial);
@@ -1715,8 +2077,9 @@ void RenderContentStream(const std::string &content, Canvas &canvas, const Mat2D
 void ExtractContentStreamText(const std::string &content, Canvas &canvas, const Mat2D &initial_ctm,
                                const pdfobj::Object &resources, const unsigned char *doc_data, size_t doc_len,
                                const pdfxref::XrefTable &table, std::vector<TextGlyph> *out_glyphs,
-                               std::vector<MarkedBox> *out_marked) {
+                               std::vector<MarkedBox> *out_marked, RenderCache *cache) {
     Interpreter interp{canvas, doc_data, doc_len, table};
+    interp.cache = cache;
     GState initial;
     initial.ctm = initial_ctm;
     interp.gs.push_back(initial);

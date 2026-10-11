@@ -265,6 +265,127 @@ void TestGlyphNameToUnicodeEscapes() {
     CHECK(pdfenc::GlyphNameToUnicode("uniZZZZ") == -1);       // non-hex
 }
 
+// The glyph names TeX's own maths fonts use, which carry no
+// /ToUnicode of their own -- so this table is the only thing standing
+// between a formula's variables and being dropped from the text layer
+// entirely (pdf_content.cpp's ShowText keeps a glyph only when
+// GetUnicodeText returned something).
+void TestGlyphNameToUnicodeGreek() {
+    CHECK(pdfenc::GlyphNameToUnicode("alpha") == 0x03B1);
+    CHECK(pdfenc::GlyphNameToUnicode("beta") == 0x03B2);
+    CHECK(pdfenc::GlyphNameToUnicode("theta") == 0x03B8);
+    CHECK(pdfenc::GlyphNameToUnicode("lambda") == 0x03BB);
+    CHECK(pdfenc::GlyphNameToUnicode("sigma") == 0x03C3);
+    CHECK(pdfenc::GlyphNameToUnicode("omega") == 0x03C9);
+    CHECK(pdfenc::GlyphNameToUnicode("Sigma") == 0x03A3);
+    CHECK(pdfenc::GlyphNameToUnicode("Lambda") == 0x039B);
+    // AGL's variant letterforms, which TeX uses as freely as the base ones.
+    CHECK(pdfenc::GlyphNameToUnicode("theta1") == 0x03D1);
+    CHECK(pdfenc::GlyphNameToUnicode("phi1") == 0x03D5);
+    CHECK(pdfenc::GlyphNameToUnicode("sigma1") == 0x03C2);
+    // Already present via the Symbol-font codepoints the base encodings
+    // use, and deliberately left that way rather than remapped.
+    CHECK(pdfenc::GlyphNameToUnicode("pi") == 0x03C0);
+    CHECK(pdfenc::GlyphNameToUnicode("mu") == 0x00B5);
+}
+
+void TestGlyphNameToUnicodeMathOperators() {
+    CHECK(pdfenc::GlyphNameToUnicode("element") == 0x2208);
+    CHECK(pdfenc::GlyphNameToUnicode("notelement") == 0x2209);
+    CHECK(pdfenc::GlyphNameToUnicode("union") == 0x222A);
+    CHECK(pdfenc::GlyphNameToUnicode("intersection") == 0x2229);
+    CHECK(pdfenc::GlyphNameToUnicode("universal") == 0x2200);
+    CHECK(pdfenc::GlyphNameToUnicode("existential") == 0x2203);
+    CHECK(pdfenc::GlyphNameToUnicode("equivalence") == 0x2261);
+    CHECK(pdfenc::GlyphNameToUnicode("gradient") == 0x2207);
+    CHECK(pdfenc::GlyphNameToUnicode("nabla") == 0x2207);
+    CHECK(pdfenc::GlyphNameToUnicode("arrowright") == 0x2192);
+    CHECK(pdfenc::GlyphNameToUnicode("arrowdblright") == 0x21D2);
+    CHECK(pdfenc::GlyphNameToUnicode("dotmath") == 0x22C5);
+}
+
+// A size variant resolves to the operator it is a variant of. The size
+// itself is deliberately dropped: what a reader copying an equation
+// wants is the summation sign, and the alternative is no glyph at all.
+void TestGlyphNameToUnicodeTexSizeVariants() {
+    CHECK(pdfenc::GlyphNameToUnicode("summationdisplay") == 0x2211);
+    CHECK(pdfenc::GlyphNameToUnicode("integraldisplay") == 0x222B);
+    CHECK(pdfenc::GlyphNameToUnicode("producttext") == 0x220F);
+    CHECK(pdfenc::GlyphNameToUnicode("radicalbig") == 0x221A);
+    CHECK(pdfenc::GlyphNameToUnicode("radicalBigg") == 0x221A);
+    CHECK(pdfenc::GlyphNameToUnicode("parenleftbig") == 0x0028);
+    CHECK(pdfenc::GlyphNameToUnicode("parenrightBig") == 0x0029);
+    CHECK(pdfenc::GlyphNameToUnicode("braceleftbigg") == 0x007B);
+    CHECK(pdfenc::GlyphNameToUnicode("bracketleftBigg") == 0x005B);
+    // The numeric-suffix spelling of the same idea.
+    CHECK(pdfenc::GlyphNameToUnicode("parenleft1") == 0x0028);
+    CHECK(pdfenc::GlyphNameToUnicode("bracketright4") == 0x005D);
+    // Longest-suffix-first matters: stripping "big" out of "bigg" would
+    // leave a trailing g and resolve to nothing.
+    CHECK(pdfenc::GlyphNameToUnicode("summationbigg") == 0x2211);
+    // A digit outside 1-4 is not a size suffix -- "a5" is not an "a".
+    CHECK(pdfenc::GlyphNameToUnicode("a5") == -1);
+}
+
+// AGL's own variant-selector convention: everything after the first dot
+// is a stylistic selector, not part of what the glyph reads as.
+void TestGlyphNameToUnicodeDotSuffix() {
+    CHECK(pdfenc::GlyphNameToUnicode("a.sc") == 0x0061);
+    CHECK(pdfenc::GlyphNameToUnicode("summation.alt") == 0x2211);
+    CHECK(pdfenc::GlyphNameToUnicode("one.oldstyle") == 0x0031);
+    CHECK(pdfenc::GlyphNameToUnicode(".notdef") == -1);
+    CHECK(pdfenc::GlyphNameToUnicode("notarealname.sc") == -1);
+}
+
+// Which glyph names are nothing but a spelling of the code itself.
+//
+// This decides whether a code whose name will not resolve may be read
+// as a character anyway. Getting it wrong in one direction loses whole
+// pages (dvips Type 3 bitmap fonts name every glyph after its own code,
+// and dropping those extracted one book's bibliography as three
+// characters); getting it wrong in the other invents text, by reading a
+// font's `/sq` as whatever letter its code happens to be. Requiring the
+// name to decode to *this* code is what makes it provable either way.
+void TestGlyphNameEncodesCode() {
+    // <prefix><decimal code>, the dvips Type 3 convention.
+    CHECK(pdfenc::GlyphNameEncodesCode("a65", 65));
+    CHECK(pdfenc::GlyphNameEncodesCode("a16", 16));
+    CHECK(pdfenc::GlyphNameEncodesCode("g23", 23));
+    CHECK(pdfenc::GlyphNameEncodesCode("cid120", 120));
+    CHECK(pdfenc::GlyphNameEncodesCode("index7", 7));
+    CHECK(pdfenc::GlyphNameEncodesCode("glyph42", 42));
+    // ...but only for the code it actually names.
+    CHECK(!pdfenc::GlyphNameEncodesCode("a65", 66));
+    CHECK(!pdfenc::GlyphNameEncodesCode("g23", 7));
+
+    // Base 36, high digit as a letter -- every one of these was observed
+    // in a real book at exactly this code.
+    CHECK(pdfenc::GlyphNameEncodesCode("A0", 0));
+    CHECK(pdfenc::GlyphNameEncodesCode("A1", 1));
+    CHECK(pdfenc::GlyphNameEncodesCode("AB", 11));
+    CHECK(pdfenc::GlyphNameEncodesCode("AX", 33));
+    CHECK(pdfenc::GlyphNameEncodesCode("BC", 48));
+    CHECK(pdfenc::GlyphNameEncodesCode("BT", 65));
+    CHECK(pdfenc::GlyphNameEncodesCode("C8", 80));
+    CHECK(pdfenc::GlyphNameEncodesCode("CG", 88));
+    CHECK(!pdfenc::GlyphNameEncodesCode("CG", 89));
+
+    // Real names must never be overridden by their code -- including
+    // ones this codebase cannot map.
+    CHECK(!pdfenc::GlyphNameEncodesCode("sq", 65));
+    CHECK(!pdfenc::GlyphNameEncodesCode("square", 65));
+    CHECK(!pdfenc::GlyphNameEncodesCode("alpha", 65));
+    CHECK(!pdfenc::GlyphNameEncodesCode("summationdisplay", 65));
+    CHECK(!pdfenc::GlyphNameEncodesCode(".notdef", 65));
+    CHECK(!pdfenc::GlyphNameEncodesCode("", 65));
+    CHECK(!pdfenc::GlyphNameEncodesCode("123", 123));
+    CHECK(!pdfenc::GlyphNameEncodesCode("zz9", 9));
+    // AE and OE look like the base-36 form but are real AGL names; they
+    // resolve on their own and so never reach this test in practice.
+    CHECK(pdfenc::GlyphNameToUnicode("AE") == 0x00C6);
+    CHECK(pdfenc::GlyphNameToUnicode("OE") == 0x0152);
+}
+
 }  // namespace
 
 int main() {
@@ -274,6 +395,11 @@ int main() {
     TestCffStandardStringsMatchStandardEncodingInAsciiRange();
     TestCffStandardStringsBasics();
     TestGlyphNameToUnicodeEscapes();
+    TestGlyphNameToUnicodeGreek();
+    TestGlyphNameToUnicodeMathOperators();
+    TestGlyphNameToUnicodeTexSizeVariants();
+    TestGlyphNameToUnicodeDotSuffix();
+    TestGlyphNameEncodesCode();
     std::printf("pdf_encodings_test: all checks passed\n");
     return 0;
 }

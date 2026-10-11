@@ -2356,6 +2356,44 @@ target_compile_options(mep-pdf-text-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANIT
 target_link_options(mep-pdf-text-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-pdf-text-test)
 
+# mep-pdf-probe: a headless CLI over the PDF stack, so extraction/render
+# behaviour is measurable from a script (tools/pdf_accuracy.py) over a
+# corpus of real files. Same link set as mep-pdf-text-test plus the PNG
+# encoder for `render`. Not a test -- it asserts nothing; it reports.
+add_executable(mep-pdf-probe EXCLUDE_FROM_ALL src/pdf_probe_main.cpp src/pdf_text.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp src/png_codec.cpp)
+target_include_directories(mep-pdf-probe PRIVATE src)
+target_compile_options(mep-pdf-probe PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-probe PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-probe)
+
+# mep-pdf-bench: timings for the PDF paths a reader waits on -- page
+# rasterization and per-page text extraction. Nothing timed the PDF
+# stack before; MEP_PDF_PROF=1 only reports frames already over 100ms.
+# Appends to bench_results/history.jsonl like every other bench here.
+add_executable(mep-pdf-bench EXCLUDE_FROM_ALL src/pdf_bench_main.cpp src/pdf_doc.cpp src/pdf_annots.cpp src/pdf_writer.cpp src/pdf_outline.cpp src/pdf_links.cpp src/pdf_struct.cpp src/a11y_pdf.cpp src/a11y_doc.cpp src/pdf_text.cpp src/pdf_content.cpp src/pdf_document.cpp src/pdf_xref.cpp src/pdf_crypt.cpp src/pdf_filters.cpp src/ccitt_codec.cpp src/pdf_object.cpp src/pdf_font.cpp src/pdf_encodings.cpp src/gfx/cff.cpp src/gfx/type1.cpp src/gfx/truetype.cpp src/gfx/rasterizer.cpp src/deflate.cpp src/jpeg_codec.cpp)
+target_include_directories(mep-pdf-bench PRIVATE src)
+target_compile_options(mep-pdf-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-pdf-bench PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-pdf-bench)
+
+# mep-theme-recolor-test: the night-mode recolour's numeric invariants
+# (a light theme is a no-op; a dark theme preserves perceived ink).
+# Header-only, so it links nothing.
+add_executable(mep-theme-recolor-test EXCLUDE_FROM_ALL src/theme_recolor_test.cpp)
+target_include_directories(mep-theme-recolor-test PRIVATE src)
+target_compile_options(mep-theme-recolor-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-theme-recolor-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-theme-recolor-test)
+
+# mep-text-quality-test: the threshold that decides whether asking a
+# model about a PDF page quotes its text or sends the page as an image.
+# Header-only, so it links nothing.
+add_executable(mep-text-quality-test EXCLUDE_FROM_ALL src/text_quality_test.cpp)
+target_include_directories(mep-text-quality-test PRIVATE src)
+target_compile_options(mep-text-quality-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-text-quality-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-text-quality-test)
+
 # PDFIUM_REMOVAL_PLAN.md Phase 9: gfx/cff.h/.cpp's CFF/Type2-charstring
 # outline engine -- not yet wired into mep_core/the live app (that's
 # Phase 13's swap-in job), same "standalone test target only" pattern

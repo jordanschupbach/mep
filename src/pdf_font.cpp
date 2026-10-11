@@ -647,6 +647,31 @@ void PdfFont::Impl::LoadType3Font(const unsigned char *doc_data, size_t doc_len,
         std::string name = enc.Explicit(c);
         if (name.empty()) continue;
         int unicode = pdfenc::GlyphNameToUnicode(name);
+        if (unicode < 0) {
+            // A glyph name that says nothing. dvips-style Type 3 bitmap
+            // fonts -- what a TeX document from before outline fonts
+            // looks like -- name every glyph `/aNN` where NN *is* the
+            // character code, so the name carries no information the
+            // code does not already have. Reading the code through
+            // StandardEncoding is then the only available reading, and
+            // it is the right one: these fonts are bitmaps of ordinary
+            // text fonts laid out on ordinary text codes.
+            //
+            // Only for names that provably spell the code itself
+            // (GlyphNameEncodesCode).
+            // A real but unlisted name like `/sq`, a square, means
+            // something specific, and reading its code as a letter would
+            // invent text the page does not contain.
+            //
+            // Without this such a page extracted as nothing at all --
+            // one book's bibliography pages came back with three
+            // characters between them, while poppler, which applies the
+            // same fallback, read them in full.
+            if (pdfenc::GlyphNameEncodesCode(name, c)) {
+                if (const char *std_name = pdfenc::EncodingName(pdfenc::Base::kStandard, c))
+                    unicode = pdfenc::GlyphNameToUnicode(std_name);
+            }
+        }
         if (unicode >= 0) code_to_unicode[c] = unicode;
         const pdfobj::Object *proc = procs.IsDict() ? procs.Find(name) : nullptr;
         if (!proc || !proc->IsReference()) continue;
@@ -662,9 +687,24 @@ void PdfFont::Impl::LoadType3Font(const unsigned char *doc_data, size_t doc_len,
 
 void PdfFont::Impl::LoadCompositeFont(const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,
                                        const pdfobj::Object &font_dict) {
-    const pdfobj::Object *descendants = font_dict.Find("DescendantFonts");
-    if (!descendants || !descendants->IsArray() || descendants->array_val.empty()) return;
-    pdfobj::Object cid_font = Deref(doc_data, doc_len, table, descendants->array_val[0]);
+    const pdfobj::Object *descendants_entry = font_dict.Find("DescendantFonts");
+    if (!descendants_entry) return;
+    // Dereferenced before the type check, because /DescendantFonts is
+    // very often `21 0 R` rather than an inline array -- the same
+    // indirect-reference-not-dereferenced bug class the /W entry below
+    // already documents, one level further up.
+    //
+    // Missing it meant returning here, before /DW, /W and /CIDToGIDMap
+    // were read at all, so every CID fell back to the 1000-unit default
+    // width. Not a subtle failure: a glyph's advance, and therefore
+    // every position derived from it, was wrong for the whole font, so
+    // text that extracted perfectly in content-stream order scrambled
+    // the moment it was sorted into visual order. One real book came
+    // out as "ThSegi unVllaauDreeo cpmsoition" for "The Singular Value
+    // Decomposition", every glyph of it reporting the identical width.
+    pdfobj::Object descendants = Deref(doc_data, doc_len, table, *descendants_entry);
+    if (!descendants.IsArray() || descendants.array_val.empty()) return;
+    pdfobj::Object cid_font = Deref(doc_data, doc_len, table, descendants.array_val[0]);
     if (!cid_font.IsDict()) return;
 
     if (const pdfobj::Object *dw = cid_font.Find("DW")) default_width = dw->AsDouble(1000);
@@ -677,17 +717,43 @@ void PdfFont::Impl::LoadCompositeFont(const unsigned char *doc_data, size_t doc_
         if (w_obj.IsArray()) {
             size_t i = 0;
             const auto &arr = w_obj.array_val;
+            // Every element is dereferenced before it is looked at.
+            // Both forms the spec allows for /W (Table 121) -- `c [w1 w2
+            // ...]` and `cFirst cLast w` -- can have any of their parts
+            // written as an indirect reference, and real producers do:
+            // one book's whole /W was `[ 1 240 0 R ]`, the width list
+            // behind a reference. Testing the raw element's type sent
+            // that straight to the `break` below, leaving the map empty
+            // so every CID fell back to the 1000-unit default width.
+            //
+            // Not a cosmetic error: the advance comes from this width,
+            // so every glyph position after the first on a line is
+            // wrong, and text that reads correctly in content-stream
+            // order scrambles the moment it is sorted into visual order.
+            // "The Singular Value Decomposition" came out as "ThSegi
+            // unVllaauDreeo cpmsoition", every glyph reporting the same
+            // width.
+            auto at = [&](size_t k) { return Deref(doc_data, doc_len, table, arr[k]); };
             while (i < arr.size()) {
-                if (!arr[i].IsNumber()) break;
-                int c_first = static_cast<int>(arr[i].AsInt());
+                const pdfobj::Object first = at(i);
+                if (!first.IsNumber()) break;
+                const int c_first = static_cast<int>(first.AsInt());
                 if (i + 1 >= arr.size()) break;
-                if (arr[i + 1].IsArray()) {
-                    const auto &widths = arr[i + 1].array_val;
-                    for (size_t k = 0; k < widths.size(); ++k) cid_width[c_first + static_cast<int>(k)] = widths[k].AsDouble();
+                const pdfobj::Object second = at(i + 1);
+                if (second.IsArray()) {
+                    const auto &widths = second.array_val;
+                    for (size_t k = 0; k < widths.size(); ++k)
+                        cid_width[c_first + static_cast<int>(k)] =
+                            Deref(doc_data, doc_len, table, widths[k]).AsDouble();
                     i += 2;
-                } else if (arr[i + 1].IsNumber() && i + 2 < arr.size() && arr[i + 2].IsNumber()) {
-                    int c_last = static_cast<int>(arr[i + 1].AsInt());
-                    double width = arr[i + 2].AsDouble();
+                } else if (second.IsNumber() && i + 2 < arr.size()) {
+                    const pdfobj::Object third = at(i + 2);
+                    if (!third.IsNumber()) break;
+                    const int c_last = static_cast<int>(second.AsInt());
+                    const double width = third.AsDouble();
+                    // Guarded: a corrupt range must not spin for ages or
+                    // allocate a map entry per integer in it.
+                    if (c_last < c_first || c_last - c_first > 65535) break;
                     for (int c = c_first; c <= c_last; ++c) cid_width[c] = width;
                     i += 3;
                 } else {
@@ -889,7 +955,7 @@ double PdfFont::GetWidth(uint32_t code) const {
 }
 
 unsigned char *PdfFont::GetGlyphBitmapMatrix(uint32_t code, float a, float b, float c, float d, int *width,
-                                             int *height, int *xoff, int *yoff) const {
+                                             int *height, int *xoff, int *yoff, float dx, float dy) const {
     *width = *height = *xoff = *yoff = 0;
     if (impl_->skip_glyphs || impl_->engine == Engine::kNone) return nullptr;
 
@@ -924,11 +990,11 @@ unsigned char *PdfFont::GetGlyphBitmapMatrix(uint32_t code, float a, float b, fl
     if (gid < 0) return nullptr;
     switch (impl_->engine) {
         case Engine::kTrueType:
-            return gfx::tt::GetGlyphBitmapMatrix(&impl_->tt_info, ma, mb, mc, md, gid, width, height, xoff, yoff);
+            return gfx::tt::GetGlyphBitmapMatrix(&impl_->tt_info, ma, mb, mc, md, gid, width, height, xoff, yoff, dx, dy);
         case Engine::kCff:
-            return gfx::cff::GetGlyphBitmapMatrix(&impl_->cff_info, ma, mb, mc, md, gid, width, height, xoff, yoff);
+            return gfx::cff::GetGlyphBitmapMatrix(&impl_->cff_info, ma, mb, mc, md, gid, width, height, xoff, yoff, dx, dy);
         case Engine::kType1:
-            return gfx::t1::GetGlyphBitmapMatrix(&impl_->t1_info, ma, mb, mc, md, gid, width, height, xoff, yoff);
+            return gfx::t1::GetGlyphBitmapMatrix(&impl_->t1_info, ma, mb, mc, md, gid, width, height, xoff, yoff, dx, dy);
         case Engine::kNone:
             break;
     }

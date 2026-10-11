@@ -1,0 +1,154 @@
+{
+ "kind": "render",
+ "aggregate": {
+  "rmse": 0.051417884999999997,
+  "diff_frac": 0.015521818470654255
+ },
+ "files": [
+  {
+   "file": "test/pdf_fixtures/bullets_cm.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0544726,
+   "diff_frac": 0.012966676569617745,
+   "worst": [
+    {
+     "rmse": 0.0544726,
+     "diff_frac": 0.012966676569617745,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/bullets_tagged.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0216373,
+   "diff_frac": 0.0027186695385224796,
+   "worst": [
+    {
+     "rmse": 0.0216373,
+     "diff_frac": 0.0027186695385224796,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/cid_unicode.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0228618,
+   "diff_frac": 0.003213817092493563,
+   "worst": [
+    {
+     "rmse": 0.0228618,
+     "diff_frac": 0.003213817092493563,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/display_math.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0547836,
+   "diff_frac": 0.011797922030765169,
+   "worst": [
+    {
+     "rmse": 0.0547836,
+     "diff_frac": 0.011797922030765169,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/inline_math.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0502037,
+   "diff_frac": 0.01160553657489932,
+   "worst": [
+    {
+     "rmse": 0.0502037,
+     "diff_frac": 0.01160553657489932,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/ligatures_hyphen.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0392007,
+   "diff_frac": 0.0070646208820228425,
+   "worst": [
+    {
+     "rmse": 0.0392007,
+     "diff_frac": 0.0070646208820228425,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/rotated.pdf",
+   "n_pages_measured": 2,
+   "rmse": 0.02505435,
+   "diff_frac": 0.0024631011916551133,
+   "worst": [
+    {
+     "rmse": 0.0296342,
+     "diff_frac": 0.003418581237208688,
+     "page": 0
+    },
+    {
+     "rmse": 0.0204745,
+     "diff_frac": 0.0015076211461015382,
+     "page": 1
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/scan_bitonal.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0999187,
+   "diff_frac": 0.08022576665346273,
+   "worst": [
+    {
+     "rmse": 0.0999187,
+     "diff_frac": 0.08022576665346273,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/twocolumn_header.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0580775,
+   "diff_frac": 0.014595505710701789,
+   "worst": [
+    {
+     "rmse": 0.0580775,
+     "diff_frac": 0.014595505710701789,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/type3_bitmap.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0879686,
+   "diff_frac": 0.008566568462401796,
+   "worst": [
+    {
+     "rmse": 0.0879686,
+     "diff_frac": 0.008566568462401796,
+     "page": 0
+    }
+   ],
+   "pages": null
+  }
+ ]
+}

@@ -201,6 +201,14 @@ void TestExtractPageTextContainsShownWords() {
 // appear in that fixture, confirming Search actually finds it, with a
 // page index/rect that both make sense.
 void CheckRealFixture(const std::string &path) {
+    // Fixtures that deliberately carry no text layer: a scanned page is
+    // a stencil image, so there is nothing for Search to find and
+    // nothing here to assert. They exist for the render comparison
+    // (tools/pdf_accuracy.py render), not this one.
+    if (path.find("scan_bitonal") != std::string::npos) {
+        std::printf("  %s: no text layer by design, skipped\n", path.c_str());
+        return;
+    }
     std::ifstream in(path, std::ios::binary);
     CHECK(in.good());
     std::ostringstream ss;
@@ -215,6 +223,39 @@ void CheckRealFixture(const std::string &path) {
         query = "plain text before the image";
     } else if (path.find("tectonic_test") != std::string::npos || path.find("libreoffice_test") != std::string::npos) {
         query = "quicksort";
+    } else if (path.find("degenerate_text") != std::string::npos) {
+        // This fixture's text is deliberately nonsense (its font maps
+        // every code to one of three glyphs), so the query is nonsense
+        // too -- Search still has to find it, which is the point: the
+        // extraction machinery works, the file is lying to it.
+        query = "DBBB";
+    } else if (path.find("bullets_tagged") != std::string::npos) {
+        // Inside the item whose /ActualText spans marker and body, so it
+        // only matches when that implausible span is ignored rather than
+        // honoured -- otherwise the whole item reads as one bullet.
+        query = "sits inside one wide span";
+    } else if (path.find("bullets_cm") != std::string::npos) {
+        // A bulleted item's own body text, which is the thing that was
+        // reaching an AI prompt as nothing but the bullet.
+        query = "nested list follows this item";
+    } else if (path.find("display_math") != std::string::npos) {
+        // Prose beside the equations; the equations themselves are
+        // checked by tools/pdf_accuracy.py against the oracle, not here.
+        query = "summation with limits";
+    } else if (path.find("inline_math") != std::string::npos) {
+        query = "observation";
+    } else if (path.find("twocolumn_header") != std::string::npos) {
+        query = "first column";
+    } else if (path.find("ligatures_hyphen") != std::string::npos) {
+        // Spans a ligature (ffi) and so only matches if /ToUnicode's
+        // multi-character text survived extraction.
+        query = "difficulties";
+    } else if (path.find("rotated") != std::string::npos) {
+        // On the landscape page, so it only matches when the page's
+        // /Rotate is accounted for in row grouping.
+        query = "landscape";
+    } else if (path.find("cid_unicode") != std::string::npos) {
+        query = "Unicode engine";
     } else {
         query = "the";
     }
@@ -480,6 +521,283 @@ void TestSelectionGlyphRangeMatchesRects() {
     CHECK(pdftext::SelectionGlyphRange({}, 0, 0, 1, 1).empty());
 }
 
+// An /ActualText span is honoured when it is a plausible replacement
+// for its glyphs, and ignored when it is not.
+//
+// The case that matters: real tagged-PDF producers wrap a whole list
+// item -- marker and body together -- in one marked-content sequence
+// whose /ActualText is just the bullet. Taking that at its word erases
+// the item, which is where "I highlighted a bulleted item and the model
+// only knew it was bulleted" came from. poppler erases it too.
+void TestJoinGlyphTextIgnoresImplausibleActualText() {
+    // Twelve glyphs of real text, all claiming an /ActualText of one
+    // bullet character. The bullet is a label, not a transcription.
+    std::vector<pdftext::GlyphBox> g;
+    const char *words[] = {"Se", "cond", " ", "item", " ", "body", " ", "text", " ", "in", "a", "span"};
+    double x = 0;
+    for (const char *w : words) {
+        g.push_back(Box(x, 100, x + 10, 90, w, "\u00b7"));
+        x += 10;
+    }
+    const std::string out = pdftext::JoinGlyphText(g, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11});
+    // The glyphs' own text survives; the bullet does not stand in for it.
+    CHECK(out.find("Second") != std::string::npos);
+    CHECK(out.find("span") != std::string::npos);
+    // ...and that holds for the last glyph of the span too: deciding per
+    // glyph rather than per span made the tail look short and honoured
+    // it, turning the final word back into the bullet.
+    CHECK(out.size() > 20);
+
+    // A short span, which is what /ActualText is actually for (a
+    // ligature, a decorative glyph), is still honoured -- same contract
+    // TestJoinGlyphTextActualTextReadOnce asserts.
+    std::vector<pdftext::GlyphBox> lig = {
+        Box(0, 100, 10, 90, "1", "one half"),
+        Box(10, 100, 20, 90, "/", "one half"),
+        Box(20, 100, 30, 90, "2", "one half"),
+    };
+    CHECK(pdftext::JoinGlyphText(lig, {0, 1, 2}) == "one half");
+}
+
+// A drag must select what was dragged over, not whatever the producer
+// emitted in between.
+//
+// The failing case, which is the normal case on a typeset page: the
+// content stream emits the body text first and the running header
+// afterwards, so the header's glyphs have HIGHER indices than body text
+// below them on the page. Taking the contiguous run of indices between
+// two points in the body therefore swept the header in -- on one real
+// book, 451 of 485 pages order their content this way.
+void TestSelectionGlyphRangeIsVisualNotStreamOrder() {
+    // Two body lines (emitted first), then a header ABOVE them on the
+    // page (emitted last, so highest indices).
+    std::vector<pdftext::GlyphBox> g;
+    // Body line 1 at y[90,100]: indices 0..3
+    for (int i = 0; i < 4; ++i)
+        g.push_back(Box(70 + i * 10, 100, 80 + i * 10, 90, std::string(1, static_cast<char>('a' + i))));
+    // Body line 2 at y[70,80]: indices 4..7
+    for (int i = 0; i < 4; ++i)
+        g.push_back(Box(70 + i * 10, 80, 80 + i * 10, 70, std::string(1, static_cast<char>('e' + i))));
+    // The running header at y[130,140] -- above both, emitted last:
+    // indices 8..11.
+    for (int i = 0; i < 4; ++i)
+        g.push_back(Box(70 + i * 10, 140, 80 + i * 10, 130, "H"));
+
+    // Drag from the first body glyph to the last one. In stream order
+    // that is 0..7 and happens to be right; the header is outside.
+    std::vector<int> r = pdftext::SelectionGlyphRange(g, 72, 95, 112, 75);
+    CHECK(r.size() == 8);
+    for (int gi : r) CHECK(gi < 8);  // no header
+
+    // Now the case that used to break: drag from the HEADER down into
+    // the body. Visually that covers the header and body line 1; in
+    // stream order the indices run 0..11, which is the whole page.
+    r = pdftext::SelectionGlyphRange(g, 72, 135, 112, 95);
+    CHECK(!r.empty());
+    // Every selected glyph must be one a reader dragged over: the
+    // header, or body line 1. Body line 2 sits below the drag's end.
+    for (int gi : r) {
+        const pdftext::GlyphBox &b = g[static_cast<size_t>(gi)];
+        CHECK(b.bottom >= 90.0);  // header (130) or body line 1 (90)
+    }
+    // ...and it really did include both of those rows, so this is not
+    // passing by selecting nothing.
+    bool saw_header = false, saw_body = false;
+    for (int gi : r) {
+        if (g[static_cast<size_t>(gi)].bottom > 120) saw_header = true;
+        if (g[static_cast<size_t>(gi)].bottom < 120) saw_body = true;
+    }
+    CHECK(saw_header && saw_body);
+}
+
+// --- intra-row glyph order, and joining a row as one line -----------
+//
+// The defect these cover: a row holding more than one baseline used to
+// be sorted purely by x, interleaving the baselines, and the text
+// assembled from that order broke a line wherever the vertical position
+// jumped. A real thesis page's "lim" with its own limit beneath came out
+// as "\u2206 / li / t / m / \u21920" -- five lines for one operator.
+
+// "lim" on the main baseline with "dt" centred underneath it, the shape
+// of \lim_{\Delta t \to 0}. Sorted by x the two baselines interleave;
+// the row must instead read as the operator followed by its limit.
+void TestGlyphRowsOrderLimitAfterItsOperator() {
+    // Geometry copied from pdflatex's own output for \lim_{\Delta t \to 0}
+    // (test/pdf_fixtures/display_math.pdf), rounded: the operator on a
+    // 10.36-high baseline at y=339.42, the limit 6.68 below it at 7.57
+    // high, and -- the part that matters -- the limit CENTRED under the
+    // operator, so it starts to the left of "l" and ends to the right of
+    // "m". Invented geometry would not reproduce either the fold that
+    // puts them in one row or the x overlap that marks the limit as a
+    // separate structure.
+    std::vector<pdftext::GlyphBox> g = {
+        Box(225.68, 349.78, 228.71, 339.42, "l"),
+        Box(228.71, 349.78, 231.74, 339.42, "i"),
+        Box(231.74, 349.78, 240.83, 339.42, "m"),
+        Box(221.85, 340.31, 228.91, 332.74, "d"),
+        Box(228.91, 340.31, 244.67, 332.74, "t"),
+    };
+    std::vector<pdftext::GlyphRow> rows = pdftext::PageGlyphRows(g);
+    CHECK(rows.size() == 1);
+    // The three main-baseline glyphs come first, in x order, then the
+    // limit's own two -- not d,l,i,t,m as x order alone would give.
+    CHECK(rows[0].glyphs.size() == 5);
+    CHECK(rows[0].glyphs[0] == 0 && rows[0].glyphs[1] == 1 && rows[0].glyphs[2] == 2);
+    CHECK(rows[0].glyphs[3] == 3 && rows[0].glyphs[4] == 4);
+    // And the row reads as one line: the operator, then its limit as a
+    // separate word, with no line break anywhere.
+    const std::string line = pdftext::JoinGlyphRowText(g, rows[0].glyphs);
+    CHECK(line.find('\n') == std::string::npos);
+    CHECK(line == "lim dt");
+}
+
+// An inline subscript must NOT be split off: "x_i" is the single word
+// "xi", which is how poppler reads it too. The separating rule is how
+// far below the baseline the satellite sits -- a displayed limit a full
+// glyph height, an inline subscript about a third of one.
+void TestJoinGlyphRowTextKeepsInlineSubscriptAttached() {
+    // Again pdflatex's own geometry, from the "S_t" in the same fixture:
+    // the base 10.36 high on its baseline, the subscript 7.57 high and
+    // only 1.10 below it, sitting immediately to the right of the base
+    // rather than under it.
+    std::vector<pdftext::GlyphBox> g = {
+        Box(263.64, 349.78, 270.33, 339.42, "x"),
+        Box(270.32, 345.89, 273.38, 338.32, "i"),
+    };
+    std::vector<pdftext::GlyphRow> rows = pdftext::PageGlyphRows(g);
+    CHECK(rows.size() == 1);
+    CHECK(pdftext::JoinGlyphRowText(g, rows[0].glyphs) == "xi");
+}
+
+// A row is one line however many baselines it holds, so joining one
+// never emits a newline -- that is the whole difference from
+// JoinGlyphText, which has to guess.
+void TestJoinGlyphRowTextNeverBreaksALine() {
+    std::vector<pdftext::GlyphBox> g = {
+        Box(0, 100, 10, 90, "a"), Box(10, 84, 20, 76, "b"), Box(20, 100, 30, 90, "c"),
+    };
+    const std::string line = pdftext::JoinGlyphRowText(g, {0, 1, 2});
+    CHECK(line.find('\n') == std::string::npos);
+}
+
+// JoinGlyphRows puts exactly one newline between rows, and rejoins a
+// word broken over a row end.
+void TestJoinGlyphRowsSeparatesRowsAndRejoinsHyphen() {
+    std::vector<pdftext::GlyphBox> g = {
+        Box(0, 100, 10, 90, "dia"), Box(10, 100, 20, 90, "-"),   // row 0: "dia-"
+        Box(0, 80, 10, 70, "gram"),                               // row 1: "gram"
+        Box(0, 60, 10, 50, "Next"),                               // row 2
+    };
+    const std::string joined = pdftext::JoinGlyphRows(g, {{0, 1}, {2}, {3}});
+    CHECK(joined == "diagram\nNext");
+}
+
+// An accent drawn over a letter becomes one character with it.
+//
+// A font built without precomposed glyphs -- one Type 1 program holding
+// `e` and `acute` and no `eacute` at all -- draws the accent as its own
+// glyph positioned over the letter. Read glyph by glyph that is
+// "FRE\u00b4DE\u00b4RIC": not a word any search will find, and not what a
+// reader copying the name wants.
+void TestJoinGlyphRowTextComposesAccents() {
+    // Geometry from a real page: the acute sits inside the E's own
+    // horizontal span and about 2pt higher. Note the accent is EMITTED
+    // first in the content stream, so after the left-to-right sort it
+    // lands just after its base.
+    std::vector<pdftext::GlyphBox> g = {
+        Box(161.12, 720.41, 166.64, 712.84, "F"),
+        Box(166.64, 720.41, 172.88, 712.84, "R"),
+        Box(172.87, 720.41, 178.63, 712.84, "E"),
+        Box(173.63, 722.43, 177.86, 714.86, "\u00b4"),
+        Box(178.63, 720.41, 185.09, 712.84, "D"),
+    };
+    std::vector<pdftext::GlyphRow> rows = pdftext::PageGlyphRows(g);
+    CHECK(rows.size() == 1);
+    const std::string line = pdftext::JoinGlyphRowText(g, rows[0].glyphs);
+    CHECK(line == "FR\u00c9D");
+
+    // A quote or prime that merely FOLLOWS a letter, sitting beside it
+    // rather than over it, must be left alone.
+    std::vector<pdftext::GlyphBox> q = {
+        Box(100, 110, 108, 100, "q"),
+        Box(108, 112, 112, 104, "\u00b4"),  // beyond the q's right edge
+    };
+    std::vector<pdftext::GlyphRow> qrows = pdftext::PageGlyphRows(q);
+    CHECK(pdftext::JoinGlyphRowText(q, qrows[0].glyphs) == "q\u00b4");
+
+    // A pair with no single-character form stays as it was.
+    std::vector<pdftext::GlyphBox> z = {
+        Box(100, 110, 108, 100, "q"),
+        Box(101, 112, 107, 104, "\u00b4"),  // over it, but there is no q-acute
+    };
+    std::vector<pdftext::GlyphRow> zrows = pdftext::PageGlyphRows(z);
+    CHECK(pdftext::JoinGlyphRowText(z, zrows[0].glyphs) == "q\u00b4");
+}
+
+// A nested list keeps its nesting when copied out.
+//
+// Which item sits under which is the structure of a list, and it is
+// carried only by the indentation. A paragraph's own first-line indent
+// is NOT structure, so it must not be reproduced -- otherwise ordinary
+// prose comes out with stray spaces down its left edge.
+void TestJoinGlyphRowsKeepsListIndentation() {
+    std::vector<pdftext::GlyphBox> g;
+    auto row_at = [&](double left, double bottom, const std::string &first, const std::string &rest) {
+        const int start = static_cast<int>(g.size());
+        g.push_back(Box(left, bottom + 10, left + 8, bottom, first));
+        g.push_back(Box(left + 16, bottom + 10, left + 60, bottom, rest));  // a real gap after the marker
+        return std::vector<int>{start, start + 1};
+    };
+    // Two outer items at x=70, one nested at x=90 (just over one step
+    // for 10pt text), and an indented paragraph line that is not a list.
+    std::vector<std::vector<int>> rows;
+    rows.push_back(row_at(70, 200, "\u2022", "outer one"));
+    rows.push_back(row_at(90, 185, "\u2013", "nested"));
+    rows.push_back(row_at(70, 170, "\u2022", "outer two"));
+    rows.push_back(row_at(90, 155, "Indented", "prose line"));
+
+    const std::string out = pdftext::JoinGlyphRows(g, rows);
+    CHECK(out.find("\u2022 outer one\n") != std::string::npos);
+    // The nested item is indented...
+    CHECK(out.find("\n  \u2013 nested\n") != std::string::npos);
+    // ...the outer ones are not...
+    CHECK(out.find("\n\u2022 outer two\n") != std::string::npos);
+    // ...and the indented prose line is left alone, marker-less.
+    CHECK(out.find("\nIndented prose line") != std::string::npos);
+}
+
+// --- rotated pages ---------------------------------------------------
+//
+// Glyph boxes stay in the page's unrotated point space, because
+// annotation quads round-trip through it. On a /Rotate 90 page that
+// means text advances along the axis the row grouper would otherwise
+// take for the line-advance axis, and a landscape page came back one
+// character per line. PageGlyphRows is told the rotation instead.
+void TestGlyphRowsHandleRotatedPage() {
+    // A /Rotate 90 page: in unrotated point space the line advances
+    // along +y at a constant x, and successive lines step along +x.
+    // Two lines of three glyphs each.
+    std::vector<pdftext::GlyphBox> g = {
+        // line 1 at x[100,114], advancing y 200->230
+        Box(100, 210, 114, 200, "A"), Box(100, 220, 114, 210, "B"), Box(100, 230, 114, 220, "C"),
+        // line 2 at x[120,134], same y range
+        Box(120, 210, 134, 200, "D"), Box(120, 220, 134, 210, "E"), Box(120, 230, 134, 220, "F"),
+    };
+    // Told the page is upright, the grouper buckets by `bottom` -- the
+    // axis text advances along here -- and gets this wrong.
+    std::vector<pdftext::GlyphRow> upright = pdftext::PageGlyphRows(g, 0);
+    CHECK(upright.size() == 3);  // one "row" per advance step: the bug
+
+    // Told the truth, it finds the two real lines, each reading A,B,C.
+    std::vector<pdftext::GlyphRow> rows = pdftext::PageGlyphRows(g, 90);
+    CHECK(rows.size() == 2);
+    CHECK(rows[0].glyphs.size() == 3 && rows[1].glyphs.size() == 3);
+    CHECK(pdftext::JoinGlyphRowText(g, rows[0].glyphs, 90) == "ABC");
+    CHECK(pdftext::JoinGlyphRowText(g, rows[1].glyphs, 90) == "DEF");
+    // Row extents come back in the caller's own (unrotated) space.
+    CHECK(rows[0].top == 230 && rows[0].bottom == 200);
+}
+
 int main(int argc, char **argv) {
     TestSearchFindsWordCaseInsensitively();
     TestSearchMultiWordQuerySpansWordGap();
@@ -503,6 +821,15 @@ int main(int argc, char **argv) {
     TestJoinGlyphTextHonoursIndices();
     TestEndsWithLetterHyphen();
     TestSelectionGlyphRangeMatchesRects();
+    TestGlyphRowsOrderLimitAfterItsOperator();
+    TestJoinGlyphRowTextKeepsInlineSubscriptAttached();
+    TestJoinGlyphRowTextNeverBreaksALine();
+    TestJoinGlyphRowsSeparatesRowsAndRejoinsHyphen();
+    TestGlyphRowsHandleRotatedPage();
+    TestJoinGlyphRowTextComposesAccents();
+    TestJoinGlyphRowsKeepsListIndentation();
+    TestJoinGlyphTextIgnoresImplausibleActualText();
+    TestSelectionGlyphRangeIsVisualNotStreamOrder();
     std::printf("pdf_text_test: all checks passed\n");
 
     for (int i = 1; i < argc; ++i) CheckRealFixture(argv[i]);

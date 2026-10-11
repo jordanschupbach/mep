@@ -1,5 +1,7 @@
 #include "model3d_doc.h"
 
+#include "base64.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -39,35 +41,6 @@ void EulerXYZDegToQuat(const Vec3f &deg, float q[4]) {
     q[3] = cx * cy * cz + sx * sy * sz;
 }
 
-std::string Base64Encode(const unsigned char *data, size_t len) {
-    static const char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve((len + 2) / 3 * 4);
-    size_t i = 0;
-    for (; i + 2 < len; i += 3) {
-        unsigned int n = (static_cast<unsigned int>(data[i]) << 16) | (static_cast<unsigned int>(data[i + 1]) << 8) |
-                         static_cast<unsigned int>(data[i + 2]);
-        out.push_back(kTable[(n >> 18) & 0x3F]);
-        out.push_back(kTable[(n >> 12) & 0x3F]);
-        out.push_back(kTable[(n >> 6) & 0x3F]);
-        out.push_back(kTable[n & 0x3F]);
-    }
-    size_t rem = len - i;
-    if (rem == 1) {
-        unsigned int n = static_cast<unsigned int>(data[i]) << 16;
-        out.push_back(kTable[(n >> 18) & 0x3F]);
-        out.push_back(kTable[(n >> 12) & 0x3F]);
-        out.push_back('=');
-        out.push_back('=');
-    } else if (rem == 2) {
-        unsigned int n = (static_cast<unsigned int>(data[i]) << 16) | (static_cast<unsigned int>(data[i + 1]) << 8);
-        out.push_back(kTable[(n >> 18) & 0x3F]);
-        out.push_back(kTable[(n >> 12) & 0x3F]);
-        out.push_back(kTable[(n >> 6) & 0x3F]);
-        out.push_back('=');
-    }
-    return out;
-}
 
 void AppendBytes(std::vector<unsigned char> &buf, const void *data, size_t len) {
     if (len == 0) return;
@@ -1504,7 +1477,7 @@ bool SaveModel3DGltf(const Scene &scene, const std::string &path, std::string *e
         std::vector<unsigned char> png_data = gfx::ExportImageToMemory(img, ".png");
         if (png_data.empty()) continue;
         Json image_entry = Json::Object();
-        image_entry["uri"] = std::string("data:image/png;base64,") + Base64Encode(png_data.data(), png_data.size());
+        image_entry["uri"] = std::string("data:image/png;base64,") + base64::Encode(png_data.data(), png_data.size());
         int image_index = static_cast<int>(images_json.size());
         images_json.push_back(image_entry);
         Json texture_entry = Json::Object();
@@ -1680,7 +1653,7 @@ bool SaveModel3DGltf(const Scene &scene, const std::string &path, std::string *e
 
     Json buf = Json::Object();
     buf["byteLength"] = static_cast<int>(buffer.size());
-    buf["uri"] = "data:application/octet-stream;base64," + Base64Encode(buffer.data(), buffer.size());
+    buf["uri"] = "data:application/octet-stream;base64," + base64::Encode(buffer.data(), buffer.size());
     Json buffers_arr = Json::Array();
     buffers_arr.push_back(buf);
     doc["buffers"] = buffers_arr;

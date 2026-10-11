@@ -500,7 +500,7 @@ unsigned char *GetCodepointBitmap(const FontInfo *info, float scale_x, float sca
 }
 
 unsigned char *GetGlyphBitmapMatrix(const FontInfo *info, float a, float b, float c, float d, int glyph_index,
-                                    int *width, int *height, int *xoff, int *yoff) {
+                                    int *width, int *height, int *xoff, int *yoff, float dx, float dy) {
     *width = *height = *xoff = *yoff = 0;
     if (glyph_index < 0 || glyph_index >= info->num_glyphs) return nullptr;
 
@@ -515,8 +515,11 @@ unsigned char *GetGlyphBitmapMatrix(const FontInfo *info, float a, float b, floa
     float xmin = 1e30f, ymin = 1e30f, xmax = -1e30f, ymax = -1e30f;
     for (Contour &ct : contours) {
         for (GlyphPoint &p : ct) {
-            float px = a * p.x + c * p.y;
-            float py = b * p.x + d * p.y;
+            // dx/dy place the glyph on a fraction of a pixel; see
+            // raster::RasterizeOutline, which does the same for the
+            // outline-based engines.
+            float px = a * p.x + c * p.y + dx;
+            float py = b * p.x + d * p.y + dy;
             p.x = px;
             p.y = py;
             xmin = std::min(xmin, px);

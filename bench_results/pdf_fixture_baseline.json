@@ -1,0 +1,246 @@
+{
+ "kind": "text",
+ "aggregate": {
+  "f1": 0.8979006300862311,
+  "missing_rate": 0.11142857142857143
+ },
+ "files": [
+  {
+   "file": "test/pdf_fixtures/bullets_cm.pdf",
+   "n_pages_measured": 1,
+   "f1": 1.0,
+   "missing_rate": 0.0,
+   "ref_words": 117,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 1.0,
+     "f1": 1.0,
+     "missing_rate": 0.0,
+     "ref_words": 117,
+     "hyp_words": 117,
+     "missing_sample": [],
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/cid_unicode.pdf",
+   "n_pages_measured": 1,
+   "f1": 0.7297297297297297,
+   "missing_rate": 0.38636363636363635,
+   "ref_words": 44,
+   "worst": [
+    {
+     "precision": 0.9,
+     "recall": 0.6136363636363636,
+     "f1": 0.7297297297297297,
+     "missing_rate": 0.38636363636363635,
+     "ref_words": 44,
+     "hyp_words": 30,
+     "missing_sample": [
+      "a",
+      "cid",
+      "keyed",
+      "this",
+      "page",
+      "is",
+      "typeset",
+      "by",
+      "unicode",
+      "engine",
+      "so",
+      "its"
+     ],
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/display_math.pdf",
+   "n_pages_measured": 1,
+   "f1": 0.9397590361445782,
+   "missing_rate": 0.07142857142857142,
+   "ref_words": 126,
+   "worst": [
+    {
+     "precision": 0.9512195121951219,
+     "recall": 0.9285714285714286,
+     "f1": 0.9397590361445782,
+     "missing_rate": 0.07142857142857142,
+     "ref_words": 126,
+     "hyp_words": 123,
+     "missing_sample": [
+      "\u03b50",
+      "\u03bc0",
+      "x",
+      "z",
+      "r",
+      "j",
+      "lim"
+     ],
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/inline_math.pdf",
+   "n_pages_measured": 1,
+   "f1": 0.974910394265233,
+   "missing_rate": 0.02857142857142857,
+   "ref_words": 140,
+   "worst": [
+    {
+     "precision": 0.9784172661870504,
+     "recall": 0.9714285714285714,
+     "f1": 0.974910394265233,
+     "missing_rate": 0.02857142857142857,
+     "ref_words": 140,
+     "hyp_words": 139,
+     "missing_sample": [
+      "x2i",
+      "\u03b8",
+      "i",
+      "p"
+     ],
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/ligatures_hyphen.pdf",
+   "n_pages_measured": 1,
+   "f1": 0.9108910891089111,
+   "missing_rate": 0.1320754716981132,
+   "ref_words": 53,
+   "worst": [
+    {
+     "precision": 0.9583333333333334,
+     "recall": 0.8679245283018868,
+     "f1": 0.910891089108911,
+     "missing_rate": 0.1320754716981132,
+     "ref_words": 53,
+     "hyp_words": 48,
+     "missing_sample": [
+      "and",
+      "saxon",
+      "twenty",
+      "five",
+      "are",
+      "genuinely",
+      "hyphenated"
+     ],
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/rotated.pdf",
+   "n_pages_measured": 2,
+   "f1": 0.20273536701037237,
+   "missing_rate": 0.6938775510204082,
+   "ref_words": 49,
+   "worst": [
+    {
+     "precision": 0.056818181818181816,
+     "recall": 0.18518518518518517,
+     "f1": 0.08695652173913043,
+     "missing_rate": 0.8148148148148148,
+     "ref_words": 27,
+     "hyp_words": 88,
+     "missing_sample": [
+      "page",
+      "and",
+      "the",
+      "landscape",
+      "this",
+      "carries",
+      "rotate",
+      "entry",
+      "its",
+      "width",
+      "height",
+      "swap"
+     ],
+     "page": 0
+    },
+    {
+     "precision": 0.2777777777777778,
+     "recall": 0.45454545454545453,
+     "f1": 0.3448275862068966,
+     "missing_rate": 0.5454545454545454,
+     "ref_words": 22,
+     "hyp_words": 36,
+     "missing_sample": [
+      "line",
+      "base",
+      "the",
+      "rees",
+      "deg",
+      "ty",
+      "thir",
+      "ext",
+      "set",
+      "vertically",
+      "up",
+      "page"
+     ],
+     "page": 1
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/twocolumn_header.pdf",
+   "n_pages_measured": 1,
+   "f1": 0.9806451612903225,
+   "missing_rate": 0.02564102564102564,
+   "ref_words": 156,
+   "worst": [
+    {
+     "precision": 0.987012987012987,
+     "recall": 0.9743589743589743,
+     "f1": 0.9806451612903225,
+     "missing_rate": 0.02564102564102564,
+     "ref_words": 156,
+     "hyp_words": 154,
+     "missing_sample": [
+      "a",
+      "2",
+      "1"
+     ],
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/type3_bitmap.pdf",
+   "n_pages_measured": 1,
+   "f1": 0.888888888888889,
+   "missing_rate": 0.2,
+   "ref_words": 15,
+   "worst": [
+    {
+     "precision": 1.0,
+     "recall": 0.8,
+     "f1": 0.888888888888889,
+     "missing_rate": 0.2,
+     "ref_words": 15,
+     "hyp_words": 12,
+     "missing_sample": [
+      "abcd",
+      "abcdabcdabcd"
+     ],
+     "page": 0
+    }
+   ],
+   "pages": null
+  }
+ ]
+}

@@ -104,7 +104,8 @@ unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y
 // GetGlyphBitmap itself is exactly this with {scale_x, 0, 0, -scale_y})
 // so rotated/skewed PDF text renders rotated/skewed instead of upright.
 unsigned char *GetGlyphBitmapMatrix(const FontInfo *info, float a, float b, float c, float d, int glyph_index,
-                                    int *width, int *height, int *xoff, int *yoff);
+                                    int *width, int *height, int *xoff, int *yoff,
+                                    float dx = 0.0f, float dy = 0.0f);
 
 void FreeBitmap(unsigned char *bitmap);
 

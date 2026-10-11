@@ -1,0 +1,126 @@
+{
+ "kind": "render",
+ "aggregate": {
+  "rmse": 0.04962700625,
+  "diff_frac": 0.009280373949874562
+ },
+ "files": [
+  {
+   "file": "test/pdf_fixtures/bullets_cm.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0552727,
+   "diff_frac": 0.013114189278404964,
+   "worst": [
+    {
+     "rmse": 0.0552727,
+     "diff_frac": 0.013114189278404964,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/cid_unicode.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0230136,
+   "diff_frac": 0.003231353568363372,
+   "worst": [
+    {
+     "rmse": 0.0230136,
+     "diff_frac": 0.003231353568363372,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/display_math.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0553648,
+   "diff_frac": 0.01196039232191193,
+   "worst": [
+    {
+     "rmse": 0.0553648,
+     "diff_frac": 0.01196039232191193,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/inline_math.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0508615,
+   "diff_frac": 0.011726228791179771,
+   "worst": [
+    {
+     "rmse": 0.0508615,
+     "diff_frac": 0.011726228791179771,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/ligatures_hyphen.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0398484,
+   "diff_frac": 0.007164166171519113,
+   "worst": [
+    {
+     "rmse": 0.0398484,
+     "diff_frac": 0.007164166171519113,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/rotated.pdf",
+   "n_pages_measured": 2,
+   "rmse": 0.02533115,
+   "diff_frac": 0.0024899216841618803,
+   "worst": [
+    {
+     "rmse": 0.0300476,
+     "diff_frac": 0.003466548656499637,
+     "page": 0
+    },
+    {
+     "rmse": 0.0206147,
+     "diff_frac": 0.0015132947118241236,
+     "page": 1
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/twocolumn_header.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0593394,
+   "diff_frac": 0.015943751237868883,
+   "worst": [
+    {
+     "rmse": 0.0593394,
+     "diff_frac": 0.015943751237868883,
+     "page": 0
+    }
+   ],
+   "pages": null
+  },
+  {
+   "file": "test/pdf_fixtures/type3_bitmap.pdf",
+   "n_pages_measured": 1,
+   "rmse": 0.0879845,
+   "diff_frac": 0.008612988545586585,
+   "worst": [
+    {
+     "rmse": 0.0879845,
+     "diff_frac": 0.008612988545586585,
+     "page": 0
+    }
+   ],
+   "pages": null
+  }
+ ]
+}

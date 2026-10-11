@@ -4,8 +4,9 @@
 // PDFIUM_REMOVAL_PLAN.md Phase 6. Factored out of gfx/truetype.cpp's
 // glyph-fill code (STB_TRUETYPE_REMOVAL_PLAN.md Phase 4's own writeup
 // covers the algorithm choice: horizontal coverage computed exactly from
-// real edge x-intersections, vertical antialiasing via a fixed 4x
-// supersample per pixel row) so PDF content-stream path filling (Phase 7
+// real edge x-intersections, vertical antialiasing via a fixed
+// supersample per pixel row -- see kSupersample in the .cpp for how many
+// and why) so PDF content-stream path filling (Phase 7
 // onward) can reuse the exact same tested rasterizer instead of a second
 // implementation. truetype.cpp itself is unchanged in behavior -- this
 // is a pure extraction, verified by exact-output comparison before any
@@ -98,7 +99,8 @@ struct OutlineContour {
 // *xoff/*yoff are the bitmap's top-left offset from the glyph origin in
 // device pixels (the same contract as gfx::tt::GetGlyphBitmap).
 unsigned char *RasterizeOutline(const std::vector<OutlineContour> &contours, float a, float b, float c, float d,
-                                int *width, int *height, int *xoff, int *yoff);
+                                int *width, int *height, int *xoff, int *yoff,
+                                float dx = 0.0f, float dy = 0.0f);
 
 }  // namespace raster
 }  // namespace gfx

@@ -378,7 +378,7 @@ test: build-native
     # otherwise mean this check never ran at all.
     echo "== check_help"
     python3 scripts/check_help.py {{native_build_dir}}/mep --strict
-    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-office-rtf-test mep-workspace-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-office-rtf-test mep-workspace-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then
@@ -399,14 +399,41 @@ test: build-native
 bench: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    cmake --build {{native_build_dir}} -j --target mep-crdt-bench mep-buffer-bench mep-lua-frame-hook-bench mep-vterm-bench
+    cmake --build {{native_build_dir}} -j --target mep-crdt-bench mep-buffer-bench mep-lua-frame-hook-bench mep-vterm-bench mep-pdf-bench
     mkdir -p bench_results
     for t in mep-crdt-bench mep-buffer-bench mep-lua-frame-hook-bench mep-vterm-bench; do
         echo "== $t"
         "./{{native_build_dir}}/$t"
     done
+    # mep-pdf-bench needs the generated fixtures, which are gitignored
+    # (see pdf-fixtures below). Without them it exits 2 and says so,
+    # which must not take the rest of the bench run down with it.
+    echo "== mep-pdf-bench"
+    "./{{native_build_dir}}/mep-pdf-bench" || echo "   (skipped: run 'just pdf-fixtures' first)"
     echo
     python3 tools/bench_report.py
+
+# Generate the real-world PDF fixtures the PDF tests and benches use.
+# They are deliberately not committed: .gitignore ignores both `test/`
+# and `*.pdf`, and the repo's convention (src/pdf_text_test.cpp's own
+# top comment) is a local-only test/pdf_fixtures/ with `pdftotext`'s
+# independent extraction stored beside each as an oracle. Needs
+# pdflatex; xelatex adds the CID-font case.
+pdf-fixtures:
+    tools/pdf_make_fixtures.sh
+
+# Measure PDF text extraction and page rendering against poppler, over
+# the generated fixtures (or, with --corpus DIR, a real library). Prints
+# a word-level F1 per file plus `missing_rate`, the share of ground-truth
+# words mep never produced -- the number that catches a glyph whose font
+# gives no usable Unicode being dropped from the text layer. Pass
+# `--baseline f.json` to record and `--compare f.json` to diff.
+pdf-accuracy *args: build-native
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmake --build {{native_build_dir}} -j --target mep-pdf-probe
+    if [ ! -d test/pdf_fixtures ]; then echo "no fixtures; run 'just pdf-fixtures'" >&2; exit 2; fi
+    python3 tools/pdf_accuracy.py text --build-dir {{native_build_dir}} {{args}} test/pdf_fixtures/*.pdf
 
 # plans/MEPML_PERFORMANCE_PLAN.md: every mepml path, timed. The headless
 # half (mep-mepml-bench: parser, highlight spans, exporters, importers,
@@ -468,6 +495,18 @@ test-gui: build-native
     "./{{native_build_dir}}/mep-viewer-live-test" "./{{native_build_dir}}/mep"
     echo "== mcp/server_test.ts"
     MEP_BINARY="$(realpath {{native_build_dir}}/mep)" deno test --allow-all mcp/server_test.ts
+    # PDF selection end to end: annotate mode's caret, `v`, `y`, and the
+    # passage mep.pdf_selection() hands an AI prompt. That layer is only
+    # reachable from a running editor -- the AI client is Lua embedded in
+    # main.cpp -- so it cannot live in `just test`. Needs the generated
+    # fixtures; skipped with a note if they are absent rather than
+    # failing the run.
+    echo "== pdf live check"
+    if [ -d test/pdf_fixtures ]; then
+        python3 tools/pdf_live_check.py --build-dir {{native_build_dir}}
+    else
+        echo "   (skipped: run 'just pdf-fixtures' first)"
+    fi
 
 # Part G.7: the mesher measured against Gmsh, on geometry carried across
 # as STEP written by mep's own writer. Separate from `test` because it

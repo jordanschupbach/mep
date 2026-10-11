@@ -2755,6 +2755,19 @@ struct PdfSession {
     // reinterpreting across a *page* change, never across a rescale.
     float zoom = 1.0f;
     float rendered_scale = 0.0f;  // px per PDF point every cached raster below shares
+    // When to fold `zoom` into `rendered_scale` and re-render, as
+    // MonotonicSeconds(); 0 = nothing pending.
+    //
+    // The band `zoom` is allowed to drift inside is now a few percent
+    // rather than [0.5, 2.0], so a page is a real render at the size it
+    // is shown rather than a bilinear magnification of a fixed-144dpi
+    // raster -- which on a high-density display was costing roughly half
+    // the available detail, and blurred thin horizontal strokes
+    // (fraction bars, radical overbars) worst of all. The re-render is
+    // debounced through this deadline instead of happening per zoom
+    // step, so holding +/- or spinning a wheel still scales cheaply on
+    // the GPU while it is happening and renders once at the end.
+    double zoom_settle_deadline = 0.0;
     // If false, pages render with PDFium's own colors (the PDF's actual
     // content); if true (the default), every rendered page is recolored to
     // match the editor's color scheme (ResolveHlGroup("Normal")/
@@ -2899,11 +2912,17 @@ struct PdfSession {
     // glyph is the caret on" -- the caret's own drawing in main.cpp,
     // ResolveAnnotTargetAtCaret -- is unaffected by any of this.
     //
-    // Rows PageTextRows marked as dedicated equation lines are left out
-    // of caret_rows entirely: their glyphs sit on several baselines at
-    // once, so a caret stepping through them lurches up and down the
-    // page. Inline maths inside a line of prose is untouched -- that is
-    // ordinary text and stays navigable.
+    // Every non-empty visual row is navigable, displayed equations
+    // included. They were once left out -- their glyphs sit on several
+    // baselines, so a caret stepping through one in raw left-to-right
+    // order lurched up and down the page -- but that made an equation
+    // unreachable altogether: unselectable, unyankable, and a click on one
+    // snapped to the nearest line of prose. The lurching is now fixed
+    // in the row's own glyph order instead (PageGlyphRows puts the
+    // dominant baseline first and attaches each sub/superscript cluster
+    // to the glyph it belongs to), so an equation reads left to right
+    // like any other line. PdfTextRow::display_math still marks them,
+    // for callers that want to treat them differently.
     int caret_page = -1;
     int caret_glyph = -1;
     std::vector<PdfGlyphBox> caret_glyphs;      // point-space glyphs for caret_page (loaded on demand)
@@ -2911,6 +2930,17 @@ struct PdfSession {
     int caret_row = -1, caret_col = -1;         // position within caret_rows
     bool visual_active = false;
     int visual_anchor_row = -1, visual_anchor_col = -1;
+    // The page the visual selection was started on. A selection may run
+    // across a page break -- a paragraph continuing overleaf is one
+    // passage, and asking a model about half of it is not useful -- so
+    // the anchor has to remember where it was while the caret moves on.
+    int visual_anchor_page = -1;
+    // The selection's quads per page, for a selection that spans more
+    // than one. Empty for a mouse drag, which is single-page by nature
+    // (the pointer is over one page at a time) and keeps using
+    // sel_page/sel_quads below; the draw code prefers this when it has
+    // anything in it.
+    std::map<int, std::vector<pdfannots::Quad>> sel_quads_pages;
     // Mode-local leader: in annotate mode, <space> starts this (a which-key
     // style prefix); the next key is an annotation action (h/n/d/c/1-5/q).
     // Keeps annotate self-contained -- the global <space> leader stays for
@@ -11190,11 +11220,38 @@ public:
      */
     const std::string &OrgSettingsPending() const { return org_settings_pending_; }
     /**
+     * @brief The caret's byte offset within the staged value of a text row being edited.
+     * @return The offset; always within OrgSettingsPending()'s bounds.
+     */
+    size_t OrgSettingsPendingCursor() const { return org_settings_pending_cursor_; }
+    /**
+     * @brief Which choice the open drop-down's highlight is on.
+     * @return The index into the focused row's `choices`; -1 when no list is open, and also
+     *         when one is open but its filter matches nothing.
+     */
+    int OrgSettingsListIndex() const { return org_settings_list_index_; }
+    /**
+     * @brief The text narrowing the open drop-down's list.
+     * @return The filter; "" when nothing has been typed (or no list is open).
+     */
+    const std::string &OrgSettingsListFilter() const { return org_settings_list_filter_; }
+    /**
+     * @brief Whether a drop-down list is open over the panel.
+     * @return True while one is open, which is the state the renderer draws a second float for.
+     */
+    bool OrgSettingsListOpen() const { return org_settings_list_open_; }
+    /**
      * @brief Moves the popup's cursor to a row (the mouse path; the keyboard goes through j/k).
      * @param index The row to focus; out-of-range values are ignored.
      * @param begin_edit True to start editing that row as well, as a click on its value does.
      */
     void OrgSettingsSelect(int index, bool begin_edit);
+    /**
+     * @brief Commits one choice of the open drop-down and closes it (the mouse path for a list entry).
+     * @param choice_index The index into the focused row's `choices` to commit; out-of-range closes
+     *        the list unchanged, restoring a previewed value.
+     */
+    void OrgSettingsListChoose(int choice_index);
     /**
      * @brief Closes the settings popup, committing whatever value was being edited.
      */
@@ -12969,6 +13026,36 @@ private:
     // rereads every row from the block afterwards, so the popup always
     // shows what the file now says.
     void OrgSettingsApply(int index, const std::string &value);
+    // Applies `value` for row `index` WITHOUT persisting it and without
+    // moving the row off what it still holds: the drop-down's live
+    // preview, so moving the highlight over 20 colour schemes re-tints
+    // the UI 20 times but writes settings.json none. Only the Settings
+    // panel has anywhere to send this (the Lua callback's third
+    // argument); for an org block there is nothing to preview into, so
+    // it is a no-op there.
+    void OrgSettingsPreview(int index, const std::string &value);
+    // Opens the focused row's drop-down, highlighting whatever it
+    // currently holds. A no-op on a row that isn't a list_popup one.
+    void OrgSettingsListOpenAtFocus();
+    // Closes the open drop-down. `commit` writes the highlighted choice
+    // (or, with allow_custom and a filter matching nothing, the filter
+    // text); otherwise the row keeps the value it had and a previewed
+    // one is put back.
+    void OrgSettingsListClose(bool commit);
+    // Moves the open drop-down's highlight by `direction` over the
+    // choices the filter leaves visible, previewing each as it lands.
+    void OrgSettingsListStep(int direction);
+    // Pulls the open drop-down's highlight onto the first visible choice
+    // when the filter has just hidden the one it was on, and leaves it
+    // alone when it has not -- so typing narrows the list without the
+    // highlight jumping off a choice that is still there. Previews
+    // wherever it lands. With nothing matching at all the highlight goes
+    // to -1, which is the state allow_custom commits the filter from.
+    void OrgSettingsListClampToFilter();
+    // The choices the open drop-down's filter leaves visible, as indices
+    // into the focused row's `choices`. The whole list when no filter has
+    // been typed.
+    std::vector<int> OrgSettingsListMatches() const;
     // Rebuilds org_settings_rows_ from the block the popup was opened
     // on, keeping the focused row. Closes the popup if the block is gone
     // (the buffer was edited underneath it).
@@ -13300,6 +13387,7 @@ private:
     // settle_zoom lambda, same reasoning as RebasePdfScroll's own
     // extraction above.
     void SettlePdfZoom(PdfSession &sess);
+    void ApplyPdfRescale(PdfSession &sess);
     // Center-anchored zoom (same shape as ApplyImageZoom, centered on
     // (pan_x, scroll_y) instead of (pan_x, pan_y) since a PDF pane
     // scrolls vertically through scroll_y rather than a separate pan_y)
@@ -14914,6 +15002,21 @@ private:
     int org_settings_buffer_ = -1;
     int org_settings_begin_row_ = -1;
     int org_settings_index_ = 0;
+    // --- The open drop-down (a list_popup row entered with Enter) ------
+    // Which choice the highlight is on, and the typed text narrowing the
+    // list. -1 means no list is open, which is what distinguishes a
+    // list_popup row being edited from every other kind of row being
+    // edited -- the two states share org_settings_editing_.
+    int org_settings_list_index_ = -1;
+    // Whether a list is up at all, which is NOT "index >= 0": a filter
+    // that matches nothing leaves an open list with no highlight (the
+    // state allow_custom commits from), and that list still has to own
+    // Escape and Enter.
+    bool org_settings_list_open_ = false;
+    std::string org_settings_list_filter_;
+    // What the row held when the list opened, so cancelling can put back
+    // a value that live_preview already applied to the whole UI.
+    std::string org_settings_list_before_;
     // Editing the focused row's value rather than just sitting on it:
     // j/k then step a number or cycle a dropdown instead of moving, and
     // typing goes into the field.
@@ -14922,6 +15025,10 @@ private:
     // the edit is committed (Enter/Escape), so one option changed is one
     // undo entry rather than one per keystroke.
     std::string org_settings_pending_;
+    // The caret within org_settings_pending_, in bytes, for a text row.
+    // Text rows used to only append and backspace from the end, which a
+    // one-word filename survives and a paragraph of prompt does not.
+    size_t org_settings_pending_cursor_ = 0;
     // The block's whole `:results` value as last read, which the four
     // facet rows share: each of them owns one word of it, so writing one
     // means recomposing the value the other three are still reading

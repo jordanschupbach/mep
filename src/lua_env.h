@@ -109,6 +109,18 @@ public:
      */
     void CallRefWith2Strings(int ref, const std::string &a, const std::string &b);
     /**
+     * @brief Calls a stored Lua function with two strings and a boolean.
+     *
+     * The Settings panel's on_change(key, value, commit) callback. `commit` false means
+     * "apply this but do not save it" -- a drop-down's live preview, where the value is
+     * being tried on rather than chosen.
+     * @param ref Lua registry ref of the function; LUA_NOREF/LUA_REFNIL is a no-op.
+     * @param a First string argument.
+     * @param b Second string argument.
+     * @param c Third, boolean argument.
+     */
+    void CallRefWith2StringsAndBool(int ref, const std::string &a, const std::string &b, bool c);
+    /**
      * @brief Calls a stored Lua function with one number argument.
      * @param ref Registry reference from a `mep.*` binding that took a function.
      * @param arg The number to pass.

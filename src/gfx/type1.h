@@ -71,7 +71,8 @@ double GetGlyphAdvance(const FontInfo *info, int gid);
 // (matrix = font units -> device pixels, rx = a*x + c*y, ry = b*x + d*y;
 // caller frees via FreeBitmap; nullptr for an empty outline).
 unsigned char *GetGlyphBitmapMatrix(const FontInfo *info, float a, float b, float c, float d, int gid, int *width,
-                                    int *height, int *xoff, int *yoff);
+                                    int *height, int *xoff, int *yoff,
+                                    float dx = 0.0f, float dy = 0.0f);
 unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int gid, int *width, int *height,
                                int *xoff, int *yoff);
 void FreeBitmap(unsigned char *bitmap);

@@ -38,6 +38,10 @@ whole set on screen -- and shows up under =<leader>a= for anyone pressing
 | =<leader>ak=    | change the command that prints your key     |
 | =:MepAiKey=     | the same, by name                           |
 
+=<leader>ak= lasts the session. It is deliberately not remembered -- a key
+command belongs in =init.lua=, not in a file a settings panel rewrites --
+so set =mep.ai_api_key_cmd= there for it to survive a restart.
+
 With the API off, nothing here makes a paid call or even runs your key
 command. Most routes *fall back to* [[file:ai-terminal.html][Claude Code]] rather than refusing --
 the same text, answered in a pane instead -- and say so when they do:
@@ -69,7 +73,9 @@ mep.ai_api_key_cmd = {'pass', 'show', 'anthropic/api'}
 #+end_src
 
 The command runs once, on the first request of the session, and its first
-line of output is the key. Prefer it to the environment variable: mep's
+line of output is the key. It is not in the [[file:settings.html][Settings]] panel: that panel is
+for preferences, and a row about where a secret comes from read as though
+mep handled the secret itself. Prefer it to the environment variable: mep's
 =:terminal= exports its whole environment to child shells, so a key
 exported for the editor is also readable by every terminal pane, language
 server and job mep starts -- and by anything else of yours that can read

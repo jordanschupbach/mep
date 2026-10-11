@@ -91,6 +91,16 @@ struct GlyphBox {
     double left = 0, top = 0, right = 0, bottom = 0;
     std::string text;
     std::string actual_text;
+    // Whether this glyph is page furniture rather than content: inside
+    // an /Artifact marked-content sequence (spec 14.8.2.2), which is how
+    // a tagged PDF labels its own running heads, folios and rules.
+    //
+    // pdfrender::TextGlyph has carried this all along; it stopped here,
+    // so the selection and AI paths were structure-blind while the
+    // accessibility path (a11y_pdf.cpp) already filtered on it. A reader
+    // dragging over two paragraphs has no use for the running head that
+    // happens to sit between them in the file.
+    bool artifact = false;
 };
 
 // Every glyph box on `page`, in reading order (point space) -- the raw
@@ -120,6 +130,26 @@ bool EndsWithLetterHyphen(const std::string &s);
 // search and selection already agree a line and a word are.
 std::string JoinGlyphText(const std::vector<GlyphBox> &glyphs, const std::vector<int> &indices);
 
+// One visual row as one line of text: word gaps from the horizontal
+// geometry, and no line breaks at all, because a row is one line of
+// type however many baselines its glyphs sit on.
+//
+// This is the piece JoinGlyphText cannot get right on its own. Handed a
+// bare run of indices, it has to infer line breaks from vertical steps,
+// and inside a formula every step between baselines looks like one --
+// which extracted a real thesis page's limit as "\u2206 / li / t / m /
+// \u21920" instead of "lim \u2206t\u21920". A caller that knows where
+// the rows are should not pay for that guess.
+std::string JoinGlyphRowText(const std::vector<GlyphBox> &glyphs, const std::vector<int> &indices,
+                             int rotate = 0);
+
+// Whole visual rows as readable text: each row joined by
+// JoinGlyphRowText, exactly one newline between rows, and a word broken
+// over a row end put back together. What PageText and a multi-row
+// selection want.
+std::string JoinGlyphRows(const std::vector<GlyphBox> &glyphs, const std::vector<std::vector<int>> &rows,
+                          int rotate = 0);
+
 // One visual line of a page's glyphs -- what a keyboard caret steps
 // between, as opposed to the raw reading order PageGlyphBoxes returns.
 //
@@ -146,21 +176,40 @@ struct GlyphRow {
     // whose internal structure is what makes caret motion erratic in the
     // first place. Running text with an inline subscript is NOT this: one
     // dominant baseline with a stray glyph off it stays ordinary text.
-    // The caller decides what to do with the flag; a caret skips these.
+    //
+    // Purely informational: these rows are navigable and selectable like
+    // any other. The caret used to skip them, which made a displayed
+    // equation impossible to select or yank at all; a row's glyphs are
+    // now ordered so that walking one is monotonic (see the ordering
+    // note above), so there is nothing to skip. The flag remains for a
+    // caller that wants to treat an equation differently.
     bool display_math = false;
 };
 
 // Groups a page's glyph boxes into visual lines. See GlyphRow. Every
 // glyph index appears in exactly one row, so a caller that ignores
 // `display_math` loses nothing.
-std::vector<GlyphRow> PageGlyphRows(const std::vector<GlyphBox> &glyphs);
+// `rotate` is the page's own /Rotate (0/90/180/270, already normalized
+// by pdf_document.h). It matters because glyph boxes are in the page's
+// unrotated point space -- which they must stay in, since annotation
+// quads round-trip through it -- so on a landscape page the axis text
+// advances along is the one this grouper would otherwise take for the
+// line-advance axis, and the page comes back one character per line.
+// Defaults to 0 so a caller measuring an upright page need not say so.
+std::vector<GlyphRow> PageGlyphRows(const std::vector<GlyphBox> &glyphs, int rotate = 0);
 
 // The glyph indices a click-drag between two point-space positions
-// covers: the contiguous run between the glyph nearest the anchor and
-// the one nearest the head, in reading order. What SelectionRects draws
+// covers: everything between the glyph nearest the anchor and the one
+// nearest the head, in VISUAL order -- the same order the keyboard
+// caret moves in, so a drag and a keyboard selection cannot disagree
+// about what is selected. (This used to be the contiguous run in
+// content-stream order, which on a page that emits its running header
+// after the body put the header inside a selection of two body
+// paragraphs.) What SelectionRects draws
 // around, and what JoinGlyphText turns into copyable text -- shared so
 // the two can never disagree about what is selected.
-std::vector<int> SelectionGlyphRange(const std::vector<GlyphBox> &glyphs, double ax, double ay, double bx, double by);
+std::vector<int> SelectionGlyphRange(const std::vector<GlyphBox> &glyphs, double ax, double ay, double bx, double by,
+                                     int rotate = 0);
 
 // Given a page's glyph boxes (reading order) and two point-space points
 // (a selection's anchor and head, in either order), returns the selection
@@ -169,6 +218,6 @@ std::vector<int> SelectionGlyphRange(const std::vector<GlyphBox> &glyphs, double
 // head. Uses the same vertical-center line-break heuristic as Search.
 // Empty if `glyphs` is empty.
 std::vector<PdfTextRectPt> SelectionRects(const std::vector<GlyphBox> &glyphs, double ax, double ay, double bx,
-                                          double by);
+                                          double by, int rotate = 0);
 
 }  // namespace pdftext

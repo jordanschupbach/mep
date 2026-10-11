@@ -17,8 +17,9 @@ and remembered, so you set them once.
 | the gear        | the panel strip, right of the tabs     |
 | *Settings* menu | the menu bar (=<leader>um= shows it)   |
 
-Inside, rows are typed. A dropdown cycles with =Ctrl-N= / =Ctrl-P=, a number
-steps with =j= / =k= once you are in it, and a text field just takes typing:
+Inside, rows are typed. A short list cycles in place with =Ctrl-N= / =Ctrl-P=,
+a number steps with =j= / =k= once you are in it, a text field just takes
+typing, and a long list opens as a dropdown you can type into:
 
 | Key               | Does                                |
 |-------------------+-------------------------------------|
@@ -28,6 +29,42 @@ steps with =j= / =k= once you are in it, and a text field just takes typing:
 | =d=               | clear it, back to mep's own default |
 | =Enter= =Esc=     | done editing, keeping what is there |
 | =q=               | close                               |
+
+** The dropdown rows
+
+Two rows have too many values to step through one at a time -- the colour
+scheme has 63 -- so they open a list instead. The field shows =v= rather
+than =< >= to say so. =Enter= opens it:
+
+| Key               | Does                                      |
+|-------------------+-------------------------------------------|
+| =Ctrl-N= =Ctrl-P= | move the highlight                        |
+| arrows            | the same                                  |
+| typing            | narrows the list                          |
+| =Enter=           | choose what is highlighted                |
+| =Esc=             | *cancel*, keeping the value you came with |
+
+Typing filters rather than moving, so =j= and =k= are letters here -- which
+is why the highlight moves with =Ctrl-N= / =Ctrl-P= and the arrows, the same
+keys the file picker uses. A =✓= marks the value the row actually holds, as
+opposed to the one you are looking at.
+
+=Esc= cancelling is the one place in this panel where it does not keep what
+you did, and the colour scheme is why: the list re-tints the whole interface
+as the highlight moves over it, so backing out has to put the old one back.
+Choose with =Enter=; leave with =Esc=.
+
+*OpenAI model* additionally takes a name its list does not have. Type one and
+=Enter= uses it as typed -- which is how a local OpenAI-compatible server
+behind *OpenAI base URL* is reachable, since no list here could know what it
+calls its models.
+
+** The prompt box
+
+*Default prompt* under *Quick ask* is a paragraph, not a word, so it is drawn
+as a box across the panel with its label above it rather than squeezed into
+the value column. =Enter= puts a cursor in it; the arrows, =Home= and =End=
+move within the text and =Esc= is done. =d= puts mep's own wording back.
 
 The line under the list explains whatever row you are on. A value shown as
 =--= is one you have not set, so mep's own default applies.
@@ -57,15 +94,16 @@ That is a note, not a problem -- but if you want =init.lua= to be the
 authority for an option, clear the row with =d= and the stored value goes
 away.
 
-Secrets are deliberately not stored. The panel offers *API key command* -- a
-command that prints your key -- rather than the key itself, which mep keeps
-in memory for the session and never writes down.
+Secrets are deliberately not stored, and nothing about your API key is in
+this panel at all. The key lives in your environment, or behind
+=mep.ai_api_key_cmd= in =init.lua= -- a command that prints it, so it stays
+wherever you already keep secrets. See [[file:ai-commands.html][Ask the model]].
 
-To change where the key comes from in a hurry, =<leader>ak= (=:MepAiKey=)
-prompts for that command prefilled with the current one, so editing a path
-is a few keystrokes. It also clears the key mep cached for this session --
-without that, the old key would keep being used and the change would look
-like it had silently failed.
+=<leader>ak= (=:MepAiKey=) changes that command for the current session,
+prefilled with what is in force, and clears the key mep had cached -- without
+that, the old key would keep being used and the change would look like it had
+silently failed. It is deliberately *not* remembered: =init.lua= is where a
+key command belongs.
 
 * The settings
 
@@ -86,22 +124,37 @@ speech-to-text, which transcribes rather than chats.
 
 =<leader>ax= toggles it without opening this panel.
 
-Two more things are easy to confuse, so they are two separate rows.
+The two things under it used to sit in one flat list and were easy to
+confuse, so they are now two sections.
 
-*API provider* is what =K= and =:MepAiSend= call over HTTP: =anthropic= or
-=openai=. An OpenAI-compatible server (a local model, say) is =openai= plus
-its own base URL.
+** Quick ask (=K=)
 
-*Agent in a pane* is the command =:aiterminal= runs -- =claude= or =codex=.
-This is the only way to use Codex: it has no HTTP API in mep, only a
-terminal agent.
+=K= over a passage in a PDF asks the model about it and shows the answer in a
+popup -- a short lookup that answers and gets out of the way, over HTTP, on
+your own key. Everything that shapes it is here.
 
-See [[file:ai-commands.html][Ask the model]] and [[file:ai-terminal.html][Claude Code in a pane]].
+*API provider* is =anthropic= or =openai=, and it decides which of the two
+model rows below applies. An OpenAI-compatible server (a local model, say) is
+=openai= plus its own base URL.
 
-** PDF lookup
+*Anthropic model* and *OpenAI model* are dropdowns rather than text fields,
+because a mistyped model name does not look like a mis-set option -- it
+arrives as a 404 from a request you never see. Neither list is exhaustive;
+the OpenAI one takes a typed name for exactly that reason.
 
-*Context sent with a passage* is what goes to the model alongside the
-passage when you press =K= on a PDF:
+*Default prompt* is what mep actually asks:
+
+#+begin_example
+Keep this short and concise. Explain this concept in simpler terms, or
+define it. Answer in at most 6 short lines of plain prose: no preamble,
+no restating the question, no headings and no bullet lists.
+#+end_example
+
+Your passage is quoted underneath it. Rewrite it for the kind of reading you
+do -- ask for notation expanded, or an answer in your field's terms, or more
+than six lines -- and =d= puts mep's wording back.
+
+*Context sent with a passage* is what goes alongside the passage:
 
 | Mode                            | Sends                                      |
 |---------------------------------+--------------------------------------------|
@@ -114,6 +167,20 @@ and counterproductive for a sentence: with a short quote and a whole page
 behind it, the model tends to summarise the page instead of answering about
 the quote. See [[file:pdf.html][PDF]].
 
+*Longest answer* caps the reply in tokens, which for a popup meant to be
+short is also the ceiling on what one costs. *Wrap the answer at* is the
+column the reply is wrapped to -- the popup box does not wrap on its own, so
+this is what keeps an answer inside it.
+
+** Agent in a pane
+
+*Agent command* is what =:aiterminal= runs -- =claude= or =codex=. A separate
+section because it is a separate thing: a CLI agent in a terminal pane,
+bringing its own credentials, unaffected by the API switch above. This is the
+only way to use Codex, which has no HTTP API in mep.
+
+See [[file:ai-commands.html][Ask the model]] and [[file:ai-terminal.html][Claude Code in a pane]].
+
 ** Project layout
 
 *Reopen a project with its saved layout* decides what you get when you open a
@@ -125,9 +192,23 @@ effect on a bare =mep=, which never restores a layout at all. See
 
 ** Appearance
 
-The colour scheme, line numbers, cursor line, soft wrap and text width. The
-colour scheme is worth noting: =:colorscheme= alone lasts the session, but
-set here it is remembered.
+The colour scheme, the interface font size, line numbers, cursor line, soft
+wrap and text width.
+
+*Colour scheme* is the dropdown row described above: it re-tints the whole
+interface as you move through the 63 palettes, so you are choosing by looking
+rather than by name. =:colorscheme= alone lasts the session; set here it is
+remembered.
+
+*Interface font size* is the global zoom =Ctrl+Shift+== / =Ctrl+Shift+-= also
+changes -- the size everything else is measured in. It was already remembered
+between runs; this is the row that shows you what it is.
+
+** Completion
+
+*GitHub Copilot suggestions* is off by default and needs =:CopilotLogin= once
+before it can do anything. Equivalent to =:Copilot on= / =:Copilot off=, but
+remembered. See [[file:copilot.html][Copilot]].
 
 * See also
 

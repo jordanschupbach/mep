@@ -1,5 +1,9 @@
 #include "pdf_text.h"
 
+#include "pdf_encodings.h"
+
+#include <cstring>
+
 #include "pdf_content.h"
 
 #include <algorithm>
@@ -35,18 +39,37 @@ struct PageTextBuild {
     std::vector<bool> glyph_new_line;  // parallel to `glyphs`: true if this glyph starts a new line-group (both text-separator and rect-merge boundary)
 };
 
-PageTextBuild BuildPageText(const std::vector<pdfrender::TextGlyph> &glyphs) {
+// One glyph's box in the orientation the page is read in. Glyph boxes
+// are in the page's own unrotated point space, so on a /Rotate 90 page
+// the axis text advances along is not the one the line/word heuristics
+// below assume -- without this, searching a landscape page for a word
+// finds nothing, because a synthetic separator lands between every pair
+// of its letters. Same mapping as RotateForReading further down; see its
+// comment for where the axes come from.
+struct ReadBox {
+    double left, right, top, bottom;
+};
+ReadBox ReadingBox(const pdfrender::TextGlyph &g, int rotate) {
+    switch (rotate) {
+        case 90: return ReadBox{g.bottom, g.top, -g.left, -g.right};
+        case 180: return ReadBox{-g.right, -g.left, -g.bottom, -g.top};
+        case 270: return ReadBox{-g.top, -g.bottom, g.right, g.left};
+        default: return ReadBox{g.left, g.right, g.top, g.bottom};
+    }
+}
+
+PageTextBuild BuildPageText(const std::vector<pdfrender::TextGlyph> &glyphs, int rotate) {
     PageTextBuild b;
     b.glyph_new_line.assign(glyphs.size(), false);
     if (glyphs.empty()) return b;
     b.glyph_new_line[0] = true;
 
     for (size_t i = 0; i < glyphs.size(); ++i) {
-        const pdfrender::TextGlyph &g = glyphs[i];
+        const ReadBox g = ReadingBox(glyphs[i], rotate);
         double height = std::max(g.top - g.bottom, 1e-6);
 
         if (i > 0) {
-            const pdfrender::TextGlyph &prev = glyphs[i - 1];
+            const ReadBox prev = ReadingBox(glyphs[i - 1], rotate);
             double prev_height = std::max(prev.top - prev.bottom, 1e-6);
             double center = (g.top + g.bottom) / 2.0;
             double prev_center = (prev.top + prev.bottom) / 2.0;
@@ -55,7 +78,7 @@ PageTextBuild BuildPageText(const std::vector<pdfrender::TextGlyph> &glyphs) {
             bool word_gap = false;
             if (!new_line) {
                 double gap = g.left - prev.right;
-                double word_thresh = 0.25 * std::max(height, prev_height);
+                double word_thresh = 0.20 * std::max(height, prev_height);
                 word_gap = gap > word_thresh;
             }
             b.glyph_new_line[i] = new_line;
@@ -65,7 +88,7 @@ PageTextBuild BuildPageText(const std::vector<pdfrender::TextGlyph> &glyphs) {
             }
         }
 
-        for (char c : g.utf8_text) {
+        for (char c : glyphs[i].utf8_text) {
             b.text.push_back(c);
             b.char_glyph.push_back(static_cast<int>(i));
         }
@@ -80,7 +103,7 @@ PageTextBuild ExtractPageBuild(const unsigned char *doc_data, size_t doc_len, co
     pdfrender::Canvas canvas = pdfrender::Canvas::MakeWhite(1, 1);
     pdfrender::ExtractContentStreamText(content, canvas, pdfrender::Mat2D{}, page.resources, doc_data, doc_len,
                                          table, out_glyphs);
-    return BuildPageText(*out_glyphs);
+    return BuildPageText(*out_glyphs, page.rotate);
 }
 
 }  // namespace
@@ -155,7 +178,7 @@ std::vector<GlyphBox> PageGlyphBoxes(const unsigned char *doc_data, size_t doc_l
                                          &glyphs);
     out.reserve(glyphs.size());
     for (const pdfrender::TextGlyph &g : glyphs)
-        out.push_back(GlyphBox{g.left, g.top, g.right, g.bottom, g.utf8_text, g.actual_text});
+        out.push_back(GlyphBox{g.left, g.top, g.right, g.bottom, g.utf8_text, g.actual_text, g.artifact});
     return out;
 }
 
@@ -180,19 +203,328 @@ bool EndsWithLetterHyphen(const std::string &s) {
     return s.size() >= 2 && s.back() == '-' && std::isalpha(static_cast<unsigned char>(s[s.size() - 2])) != 0;
 }
 
-std::string JoinGlyphText(const std::vector<GlyphBox> &glyphs, const std::vector<int> &indices) {
+namespace {
+
+// The same glyph boxes seen from the orientation the page is actually
+// read in.
+//
+// Glyph boxes are, and must stay, in the page's own unrotated point
+// space: annotation quads round-trip through that space losslessly, so
+// changing it would change what a saved highlight means. But a
+// /Rotate 90 page's text runs *vertically* in that space -- the content
+// is laid out so that rotating the page for display makes it read
+// across -- and the row grouper buckets glyphs by `bottom`, which on
+// such a page is the axis text advances along rather than the one it
+// steps down. The result was a landscape page extracted one character
+// per line.
+//
+// So grouping happens on a rotated view of the geometry, chosen to
+// satisfy what the grouper assumes: reading runs left to right by
+// increasing `left`, lines step down the page by decreasing `top`, and
+// `top >= bottom`. Indices are untouched, so every row still refers to
+// the caller's own array, and each row's reported top/bottom is
+// recomputed in the original space afterwards.
+//
+// Derived from pdf_content.cpp's PageToDeviceMatrix for each /Rotate
+// value: that maps (x,y) to (device_x, device_y), and these are the
+// axes it puts reading and line advance on.
+std::vector<GlyphBox> RotateForReading(const std::vector<GlyphBox> &glyphs, int rotate) {
+    std::vector<GlyphBox> out;
+    out.reserve(glyphs.size());
+    for (const GlyphBox &g : glyphs) {
+        GlyphBox r = g;
+        switch (rotate) {
+            case 90:
+                // device_x = y, device_y = x: read along +y, step along +x.
+                r.left = g.bottom;
+                r.right = g.top;
+                r.top = -g.left;
+                r.bottom = -g.right;
+                break;
+            case 180:
+                // device_x = -x, device_y = y: read along -x, step along +y.
+                r.left = -g.right;
+                r.right = -g.left;
+                r.top = -g.bottom;
+                r.bottom = -g.top;
+                break;
+            case 270:
+                // device_x = -y, device_y = -x: read along -y, step along -x.
+                r.left = -g.top;
+                r.right = -g.bottom;
+                r.top = g.right;
+                r.bottom = g.left;
+                break;
+            default:
+                break;
+        }
+        out.push_back(r);
+    }
+    return out;
+}
+
+}  // namespace
+
+namespace {
+
+// Whether an /ActualText span should be taken at its word.
+//
+// Spec 14.9.4 makes /ActualText the text a span really is, and both this
+// code and poppler honour it by emitting it once for the whole span
+// instead of the glyphs' own text. That is right for what it is for --
+// an "fi" ligature, a dropped cap, a decorative glyph standing in for a
+// word.
+//
+// Real producers also do something else with it: a tagged list wraps a
+// whole item, marker and body together, in one marked-content sequence
+// whose /ActualText is just the bullet. Honouring that erases the item.
+// It is where "I highlighted a bulleted item and the model only knew it
+// was bulleted" comes from -- the passage genuinely was one bullet
+// character and nothing else.
+//
+// So a span is honoured only when its replacement is a plausible
+// stand-in for what it replaces: at most a handful of glyphs, or a
+// replacement long enough to be standing in for them rather than
+// labelling them. A two-character /ActualText across forty glyphs is a
+// marker, not a transcription.
+//
+// Span identity here is "a consecutive run of glyphs carrying the same
+// /ActualText", which is what the geometry gives us -- GlyphBox does not
+// carry the marked-content id that would make it exact.
+// Decided once per span, not per glyph: a span is a consecutive run of
+// indices carrying the same /ActualText, and the whole run shares one
+// answer. Deciding per glyph would look only at the glyphs still ahead,
+// so the tail of a long span would look short and be honoured -- which
+// turned the last word of a wrongly-tagged list item into the bullet.
+std::vector<char> HonourActualTextPerIndex(const std::vector<GlyphBox> &glyphs, const std::vector<int> &indices) {
+    std::vector<char> out(indices.size(), 0);
+    size_t i = 0;
+    while (i < indices.size()) {
+        const int gi = indices[i];
+        if (gi < 0 || gi >= static_cast<int>(glyphs.size())) {
+            ++i;
+            continue;
+        }
+        const std::string &actual = glyphs[static_cast<size_t>(gi)].actual_text;
+        if (actual.empty()) {
+            ++i;
+            continue;
+        }
+        // The run's extent, and how much text its glyphs carry of their own.
+        size_t j = i;
+        size_t own_text = 0;
+        while (j < indices.size()) {
+            const int g = indices[j];
+            if (g < 0 || g >= static_cast<int>(glyphs.size())) break;
+            if (glyphs[static_cast<size_t>(g)].actual_text != actual) break;
+            own_text += glyphs[static_cast<size_t>(g)].text.size();
+            ++j;
+        }
+        const size_t span = j - i;
+        const bool honour = (span <= 4) || (actual.size() * 2 >= own_text);
+        for (size_t k = i; k < j; ++k) out[k] = honour ? 1 : 0;
+        i = j;
+    }
+    return out;
+}
+
+}  // namespace
+
+namespace {
+
+// Minimal UTF-8, local to the accent composition below -- the rest of
+// this file only ever concatenates already-encoded pieces.
+int DecodeSingleUtf8(const std::string &s) {
+    if (s.empty()) return -1;
+    const unsigned char c0 = static_cast<unsigned char>(s[0]);
+    size_t len = 1;
+    int cp = c0;
+    if (c0 >= 0xF0) { len = 4; cp = c0 & 0x07; }
+    else if (c0 >= 0xE0) { len = 3; cp = c0 & 0x0F; }
+    else if (c0 >= 0xC0) { len = 2; cp = c0 & 0x1F; }
+    else if (c0 >= 0x80) return -1;
+    if (s.size() != len) return -1;  // exactly one character, or not interesting
+    for (size_t i = 1; i < len; ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if ((c & 0xC0) != 0x80) return -1;
+        cp = (cp << 6) | (c & 0x3F);
+    }
+    return cp;
+}
+
+void AppendUtf8(std::string *out, int cp) {
+    if (cp < 0x80) {
+        out->push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        out->push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out->push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out->push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out->push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
+// The last whole character of `text`, and where it starts.
+int LastCodepoint(const std::string &text, size_t *start) {
+    if (text.empty()) return -1;
+    size_t i = text.size() - 1;
+    while (i > 0 && (static_cast<unsigned char>(text[i]) & 0xC0) == 0x80) --i;
+    *start = i;
+    return DecodeSingleUtf8(text.substr(i));
+}
+
+// Whether `g` is an accent drawn *over* `prev` rather than beside it:
+// its ink sits inside the other glyph's horizontal span and higher up.
+// That is how a font without precomposed letters builds an accented
+// one, and it is the only way to tell such a pair from a real
+// apostrophe or prime that merely follows a letter.
+bool SitsOver(const GlyphBox &accent, const GlyphBox &base) {
+    const double base_w = base.right - base.left;
+    if (base_w <= 0) return false;
+    const double overlap = std::min(accent.right, base.right) - std::max(accent.left, base.left);
+    if (overlap < 0.5 * (accent.right - accent.left)) return false;  // mostly inside
+    return accent.top > base.top - 0.25 * (base.top - base.bottom);  // and riding high
+}
+
+}  // namespace
+
+// One visual row as one line of text: word gaps inserted from the
+// horizontal geometry, but no line breaks, because a row is by
+// definition one line however many baselines its glyphs sit on.
+std::string JoinGlyphRowText(const std::vector<GlyphBox> &glyphs, const std::vector<int> &indices, int rotate) {
+    // The gap and baseline-step tests below are about the direction
+    // text reads, so on a rotated page they need the rotated view of
+    // the geometry -- otherwise they test the line-advance axis for
+    // word gaps and a landscape page comes out as "T his page".
+    const std::vector<GlyphBox> rot = (rotate == 0) ? std::vector<GlyphBox>{} : RotateForReading(glyphs, rotate);
+    const std::vector<GlyphBox> &geo = (rotate == 0) ? glyphs : rot;
+    const std::vector<char> honour = HonourActualTextPerIndex(glyphs, indices);
     std::string text;
     bool have_prev = false;
     GlyphBox prev;
     std::string last_actual;
-    for (int gi : indices) {
+    bool have_actual = false;
+    for (size_t ii = 0; ii < indices.size(); ++ii) {
+        const int gi = indices[ii];
+        if (gi < 0 || gi >= static_cast<int>(glyphs.size())) continue;
+        const GlyphBox &g = glyphs[static_cast<size_t>(gi)];
+        // An /ActualText span replaces its glyphs' own text, but only
+        // when it is a plausible replacement for them -- see
+        // HonourActualText.
+        const bool use_actual = honour[ii] != 0;
+        const std::string piece = ExpandLigatures(use_actual ? g.actual_text : g.text);
+        const bool repeat = use_actual && have_actual && g.actual_text == last_actual;
+        last_actual = use_actual ? g.actual_text : std::string();
+        have_actual = true;
+        const GlyphBox &gg = geo[static_cast<size_t>(gi)];
+        // An accent drawn over the letter before it becomes one
+        // character with it. Fonts without precomposed glyphs build
+        // "\u00e9" as "e" plus a floating acute, which extracted as
+        // "FRE\u00b4DE\u00b4RIC" -- not a word any search finds, and not
+        // what a reader copying the name wants.
+        const bool over_previous =
+            have_prev && !repeat && !piece.empty() && !text.empty() && SitsOver(gg, prev);
+        if (over_previous) {
+            const int accent = DecodeSingleUtf8(piece);
+            size_t at = 0;
+            const int base = LastCodepoint(text, &at);
+            if (accent > 0 && base > 0) {
+                const int composed = pdfenc::ComposeAccented(base, accent);
+                if (composed > 0) {
+                    text.resize(at);
+                    AppendUtf8(&text, composed);
+                    // prev stays the letter: the accent is part of it
+                    // now, and the next glyph's gap should be measured
+                    // from the letter's own box.
+                    continue;
+                }
+            }
+            // No single-character form for this pair (an accent over a
+            // letter that has none, or something else drawn on top).
+            // The two still belong together, so the separator logic
+            // below is skipped: a mark sitting on a letter is not a new
+            // word, and the baseline-step rule would otherwise put a
+            // space inside it.
+            text += piece;
+            prev = gg;
+            have_prev = true;
+            continue;
+        }
+        if (have_prev && !repeat) {
+            const double height = std::max(gg.top - gg.bottom, 1e-6);
+            const double prev_height = std::max(prev.top - prev.bottom, 1e-6);
+            // A gap wide enough to be a word break, measured against
+            // the taller of the two glyphs -- the same unit the rest of
+            // this header's heuristics use. Measuring against the
+            // shorter one instead sets the bar so low that the ordinary
+            // letter spacing beside a capital reads as a word break
+            // ("T his page carries a /R otate entry").
+            //
+            // 0.20 of a glyph box, not the 0.25 this started at: a glyph
+            // box is 0.95em tall (0.75 ascent + 0.2 descent), so 0.25 of
+            // it is 0.2375em -- and TeX shrinks the spaces in a
+            // justified line below that. A real justified line in
+            // test/pdf_fixtures/cid_unicode.pdf has 0.232em spaces, so
+            // every word on it ran together ("Thispageistypesetby").
+            // Letter spacing within a word in the same fixture is
+            // exactly 0, and kerning generally stays under 0.05em, so
+            // there is a wide margin below a shrunk space to aim at.
+            const double unit = std::max(height, prev_height);
+            const bool gap = gg.left - prev.right > 0.20 * unit;
+            // Stepping onto a different baseline within the row, onto
+            // something that is a separate structure rather than a
+            // sub- or superscript of what precedes it.
+            //
+            // The telling difference is horizontal, not vertical. By
+            // offset alone the two cases are indistinguishable: in real
+            // pdflatex output an inline superscript sits 0.60 of its own
+            // height off the baseline and a displayed limit 0.645, so no
+            // threshold separates them. But a displayed limit is
+            // *centred under its operator* and so overlaps it in x,
+            // while a sub/superscript sits beside its base and does not.
+            // Since a row is ordered main-baseline-first, that overlap
+            // shows up as x stepping backwards.
+            //
+            // Getting this right is what turns "lim" and its own limit
+            // from the single run-together word "lim\u2206t" into the two
+            // words a reader (or a model being handed the passage) needs,
+            // while leaving "x_i" as the word "xi" -- which is how
+            // poppler reads it too.
+            const bool off_baseline = std::fabs(gg.bottom - prev.bottom) > 0.3 * unit;
+            const bool steps_back = gg.left < prev.right - 0.05 * unit;
+            const bool step = off_baseline && steps_back;
+            if ((gap || step) && !text.empty() && text.back() != ' ') text += ' ';
+        }
+        if (!repeat) text += piece;
+        prev = gg;
+        have_prev = true;
+    }
+    return text;
+}
+
+std::string JoinGlyphText(const std::vector<GlyphBox> &glyphs, const std::vector<int> &indices) {
+    const std::vector<char> honour = HonourActualTextPerIndex(glyphs, indices);
+    std::string text;
+    bool have_prev = false;
+    GlyphBox prev;
+    std::string last_actual;
+    for (size_t ii = 0; ii < indices.size(); ++ii) {
+        const int gi = indices[ii];
         if (gi < 0 || gi >= static_cast<int>(glyphs.size())) continue;
         const GlyphBox &g = glyphs[static_cast<size_t>(gi)];
         // A sequence with /ActualText reads as that text, once -- every
-        // glyph in the sequence carries the same string.
-        const std::string piece = ExpandLigatures(g.actual_text.empty() ? g.text : g.actual_text);
-        const bool repeat = !g.actual_text.empty() && have_prev && g.actual_text == last_actual;
-        last_actual = g.actual_text;
+        // glyph in the sequence carries the same string -- but only when
+        // it is a plausible replacement for them (HonourActualText).
+        const bool use_actual = honour[ii] != 0;
+        const std::string piece = ExpandLigatures(use_actual ? g.actual_text : g.text);
+        const bool repeat = use_actual && have_prev && g.actual_text == last_actual;
+        last_actual = use_actual ? g.actual_text : std::string();
         if (have_prev) {
             const double height = std::max(g.top - g.bottom, 1e-6);
             const double prev_height = std::max(prev.top - prev.bottom, 1e-6);
@@ -216,7 +548,227 @@ std::string JoinGlyphText(const std::vector<GlyphBox> &glyphs, const std::vector
     return text;
 }
 
-std::vector<GlyphRow> PageGlyphRows(const std::vector<GlyphBox> &glyphs) {
+namespace {
+
+// Order one visual row's glyphs the way the row reads, rather than
+// purely left to right.
+//
+// Sorting a row by `left` alone is right for prose and wrong for
+// anything with a subscript. A row holding more than one baseline --
+// `\lim` with its limit beneath, a summation with its indices, a
+// fraction's numerator over its denominator -- interleaves the two
+// baselines when sorted by x, and the text assembled from that order
+// comes out shredded: the limit row of a real thesis page extracted as
+// "\u2206 / li / t / m / \u21920" rather than "lim \u2206t\u21920",
+// because every hop between the two baselines reads as a line break.
+//
+// So: the glyphs on the row's dominant baseline are the main sequence,
+// and everything off it is a satellite. Satellites are clustered by
+// their own baseline and adjacency, and each cluster is emitted
+// immediately after the main glyph it belongs to -- the last one that
+// starts at or before the cluster ends, which is the base a sub- or
+// superscript is attached to, and for a centred limit is the operator
+// it sits under. Clusters sharing an anchor come out top to bottom, so
+// a superscript precedes a subscript.
+void OrderRowGlyphs(const std::vector<GlyphBox> &glyphs, double h_med, std::vector<int> *row) {
+    const auto left_of = [&](int i) { return glyphs[static_cast<size_t>(i)].left; };
+    const auto right_of = [&](int i) { return glyphs[static_cast<size_t>(i)].right; };
+    const auto base_of = [&](int i) { return glyphs[static_cast<size_t>(i)].bottom; };
+
+    std::sort(row->begin(), row->end(), [&](int l, int r) { return left_of(l) < left_of(r); });
+    if (row->size() < 2) return;
+
+    // The row's dominant baseline: the one the most glyphs share, to
+    // within a tolerance tight enough that a superscript's own baseline
+    // cannot merge with it.
+    const double tol = 0.15 * h_med;
+    std::vector<double> bases;
+    bases.reserve(row->size());
+    for (int gi : *row) bases.push_back(base_of(gi));
+    std::vector<double> sorted = bases;
+    std::sort(sorted.begin(), sorted.end());
+    double dom = sorted.front();
+    size_t best = 0;
+    for (size_t i = 0; i < sorted.size();) {
+        size_t j = i;
+        while (j < sorted.size() && sorted[j] - sorted[i] <= tol) ++j;
+        if (j - i > best) {
+            best = j - i;
+            dom = sorted[i];
+        }
+        i = j;
+    }
+
+    std::vector<int> main_seq;
+    std::vector<int> satellites;
+    for (int gi : *row) {
+        if (std::fabs(base_of(gi) - dom) <= tol)
+            main_seq.push_back(gi);
+        else
+            satellites.push_back(gi);
+    }
+    // Nothing off the baseline, or nothing on it: the x order already is
+    // the reading order.
+    if (satellites.empty() || main_seq.empty()) return;
+
+    // Cluster the satellites: same baseline and horizontally adjacent
+    // (no main-sequence-sized gap between them) means one run of
+    // sub/superscript text, e.g. the three glyphs of "i=1".
+    struct Cluster {
+        std::vector<int> glyphs;
+        double base = 0, right = 0, top = 0;
+    };
+    std::vector<Cluster> clusters;
+    for (int gi : satellites) {
+        Cluster *into = nullptr;
+        for (Cluster &c : clusters) {
+            if (std::fabs(c.base - base_of(gi)) <= tol && left_of(gi) - c.right <= 0.6 * h_med) {
+                into = &c;
+                break;
+            }
+        }
+        if (into == nullptr) {
+            clusters.push_back(Cluster{});
+            into = &clusters.back();
+            into->base = base_of(gi);
+            into->top = glyphs[static_cast<size_t>(gi)].top;
+        }
+        into->glyphs.push_back(gi);
+        into->right = std::max(into->right, right_of(gi));
+        into->top = std::max(into->top, glyphs[static_cast<size_t>(gi)].top);
+    }
+
+    // Anchor each cluster to a main glyph, then emit the row.
+    std::vector<std::vector<const Cluster *>> attached(main_seq.size());
+    for (const Cluster &c : clusters) {
+        size_t anchor_at = 0;
+        for (size_t i = 0; i < main_seq.size(); ++i)
+            if (left_of(main_seq[i]) <= c.right) anchor_at = i;
+        attached[anchor_at].push_back(&c);
+    }
+    std::vector<int> out;
+    out.reserve(row->size());
+    for (size_t i = 0; i < main_seq.size(); ++i) {
+        out.push_back(main_seq[i]);
+        std::vector<const Cluster *> &here = attached[i];
+        std::sort(here.begin(), here.end(), [](const Cluster *l, const Cluster *r) {
+            if (l->top != r->top) return l->top > r->top;  // superscript before subscript
+            return l->right < r->right;
+        });
+        for (const Cluster *c : here) out.insert(out.end(), c->glyphs.begin(), c->glyphs.end());
+    }
+    *row = std::move(out);
+}
+
+}  // namespace
+
+// Join whole visual rows: exactly one newline between rows, and never
+// one inside a row.
+//
+// JoinGlyphText has to infer line breaks from geometry, because it is
+// handed a bare run of glyph indices with no structure. That inference
+// is what shreds an equation: every step between a formula's baselines
+// looks like a new line. A caller that already knows where the rows are
+// should not pay for the guess, so this takes the rows and uses them.
+namespace {
+
+// Whether a row begins with a list marker -- a bullet of some kind, or
+// a number or letter followed by a dot or bracket.
+//
+// Used only to decide whether that row's indentation is worth keeping.
+// A paragraph's first line is indented too, and reproducing that would
+// put stray spaces through ordinary prose; a list's indentation is the
+// only thing that says which item is nested under which.
+bool StartsWithListMarker(const std::string &line) {
+    static const char *const kBullets[] = {"\u2022", "\u2013", "\u2014", "\u2023", "\u25e6",
+                                           "\u00b7", "\u25aa", "\u2043", "*"};
+    for (const char *b : kBullets)
+        if (line.compare(0, std::strlen(b), b) == 0) return true;
+    // "1." / "12)" / "a." / "iv)" -- a short run of alphanumerics then a
+    // dot or bracket, then a space.
+    size_t i = 0;
+    while (i < line.size() && i < 5 && std::isalnum(static_cast<unsigned char>(line[i])) != 0) ++i;
+    return i > 0 && i < line.size() && (line[i] == '.' || line[i] == ')');
+}
+
+}  // namespace
+
+std::string JoinGlyphRows(const std::vector<GlyphBox> &glyphs, const std::vector<std::vector<int>> &rows,
+                          int rotate) {
+    // The leftmost edge of any row that starts with a list marker: the
+    // outermost list level on this page, which deeper ones are measured
+    // against.
+    double base_indent = 0;
+    bool have_base = false;
+    for (const std::vector<int> &row : rows) {
+        if (row.empty()) continue;
+        const std::string line = JoinGlyphRowText(glyphs, row, rotate);
+        if (line.empty() || !StartsWithListMarker(line)) continue;
+        const double left = glyphs[static_cast<size_t>(row.front())].left;
+        if (!have_base || left < base_indent) {
+            base_indent = left;
+            have_base = true;
+        }
+    }
+    // One indent step, in points. Derived from the text size rather than
+    // fixed, so it travels between a 9pt paper and a 14pt one.
+    double step = 18.0;
+    {
+        std::vector<double> h;
+        h.reserve(glyphs.size());
+        for (const GlyphBox &g : glyphs) h.push_back(std::max(g.top - g.bottom, 1e-6));
+        if (!h.empty()) {
+            std::nth_element(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(h.size() / 2), h.end());
+            step = std::max(6.0, h[h.size() / 2] * 1.5);
+        }
+    }
+
+    std::string text;
+    for (const std::vector<int> &row : rows) {
+        std::string line = JoinGlyphRowText(glyphs, row, rotate);
+        if (line.empty()) continue;
+        // A nested list item keeps its indentation, so which item sits
+        // under which survives being copied out. Only list rows: a
+        // paragraph's own first-line indent is not structure, and
+        // reproducing it would scatter spaces through prose.
+        if (have_base && !row.empty() && StartsWithListMarker(line)) {
+            const double left = glyphs[static_cast<size_t>(row.front())].left;
+            const int depth = static_cast<int>((left - base_indent) / step + 0.5);
+            if (depth > 0) line.insert(0, static_cast<size_t>(std::min(depth, 8)) * 2, ' ');
+        }
+        if (!text.empty()) {
+            // A word broken over a row end is one word, same rule
+            // JoinGlyphText applies between lines.
+            if (EndsWithLetterHyphen(text) && std::islower(static_cast<unsigned char>(line[0]))) {
+                text.pop_back();
+            } else {
+                text += '\n';
+            }
+        }
+        text += line;
+    }
+    return text;
+}
+
+std::vector<GlyphRow> PageGlyphRows(const std::vector<GlyphBox> &glyphs, int rotate) {
+    // 90/270 swap the reading and line-advance axes; 180 flips both.
+    // Either way the grouping below wants the read orientation, and the
+    // caller wants row extents back in its own space.
+    if (rotate == 90 || rotate == 180 || rotate == 270) {
+        const std::vector<GlyphBox> rotated = RotateForReading(glyphs, rotate);
+        std::vector<GlyphRow> rows = PageGlyphRows(rotated, 0);
+        for (GlyphRow &row : rows) {
+            if (row.glyphs.empty()) continue;
+            row.top = glyphs[static_cast<size_t>(row.glyphs.front())].top;
+            row.bottom = glyphs[static_cast<size_t>(row.glyphs.front())].bottom;
+            for (int gi : row.glyphs) {
+                row.top = std::max(row.top, glyphs[static_cast<size_t>(gi)].top);
+                row.bottom = std::min(row.bottom, glyphs[static_cast<size_t>(gi)].bottom);
+            }
+        }
+        return rows;
+    }
+
     std::vector<GlyphRow> rows;
     if (glyphs.empty()) return rows;
 
@@ -306,8 +858,7 @@ std::vector<GlyphRow> PageGlyphRows(const std::vector<GlyphBox> &glyphs) {
     // Step 3: order, and classify.
     rows.reserve(groups.size());
     for (Group &g : groups) {
-        std::sort(g.glyphs.begin(), g.glyphs.end(),
-                  [&](int l, int r) { return glyphs[static_cast<size_t>(l)].left < glyphs[static_cast<size_t>(r)].left; });
+        OrderRowGlyphs(glyphs, h_med, &g.glyphs);
         GlyphRow row;
         row.glyphs = std::move(g.glyphs);
         row.top = glyphs[static_cast<size_t>(row.glyphs.front())].top;
@@ -392,7 +943,7 @@ std::vector<GlyphRow> PageGlyphRows(const std::vector<GlyphBox> &glyphs) {
 }
 
 std::vector<int> SelectionGlyphRange(const std::vector<GlyphBox> &glyphs, double ax, double ay, double bx,
-                                     double by) {
+                                     double by, int rotate) {
     std::vector<int> out;
     if (glyphs.empty()) return out;
     // Distance^2 from a point to a glyph box (0 if inside), y-up boxes.
@@ -413,17 +964,62 @@ std::vector<int> SelectionGlyphRange(const std::vector<GlyphBox> &glyphs, double
         }
         return best;
     };
-    size_t ai = nearest(ax, ay), bi = nearest(bx, by);
-    size_t lo = std::min(ai, bi), hi = std::max(ai, bi);
-    out.reserve(hi - lo + 1);
-    for (size_t i = lo; i <= hi; ++i) out.push_back(static_cast<int>(i));
+    const size_t ai = nearest(ax, ay), bi = nearest(bx, by);
+
+    // The run between the two ends in VISUAL order, not in the order the
+    // content stream happened to emit its glyphs.
+    //
+    // Taking the contiguous range of glyph *indices* is what this did,
+    // and it is wrong on most real pages: a typeset page routinely emits
+    // the body, then the running header, then the footnotes, so the
+    // indices between two points in the body can include the header
+    // (451 of the 485 pages of one real book jump back up the page at
+    // least once -- see PageGlyphRows). A reader dragging over two
+    // paragraphs got the page furniture in between as well.
+    //
+    // So the ends are located in the row structure and everything
+    // between them, row by row, is taken. That is the same order the
+    // keyboard caret moves in, so the two selection paths can no longer
+    // disagree about what is selected.
+    const std::vector<GlyphRow> rows = PageGlyphRows(glyphs, rotate);
+    // Where each glyph sits visually: which row, and how far along it.
+    std::vector<int> row_of(glyphs.size(), -1), col_of(glyphs.size(), -1);
+    for (size_t r = 0; r < rows.size(); ++r) {
+        const std::vector<int> &row = rows[r].glyphs;
+        for (size_t c = 0; c < row.size(); ++c) {
+            const size_t gi = static_cast<size_t>(row[c]);
+            if (gi < row_of.size()) {
+                row_of[gi] = static_cast<int>(r);
+                col_of[gi] = static_cast<int>(c);
+            }
+        }
+    }
+    // A glyph PageGlyphRows somehow left out (it puts every glyph in
+    // exactly one row, so this is belt and braces) falls back to the old
+    // index-range behaviour rather than vanishing.
+    if (row_of[ai] < 0 || row_of[bi] < 0) {
+        const size_t lo = std::min(ai, bi), hi = std::max(ai, bi);
+        out.reserve(hi - lo + 1);
+        for (size_t i = lo; i <= hi; ++i) out.push_back(static_cast<int>(i));
+        return out;
+    }
+
+    std::pair<int, int> start{row_of[ai], col_of[ai]}, end{row_of[bi], col_of[bi]};
+    if (end < start) std::swap(start, end);
+    for (int r = start.first; r <= end.first && r < static_cast<int>(rows.size()); ++r) {
+        const std::vector<int> &row = rows[static_cast<size_t>(r)].glyphs;
+        const int from = (r == start.first) ? start.second : 0;
+        const int to = (r == end.first) ? end.second : static_cast<int>(row.size()) - 1;
+        for (int c = from; c <= to && c < static_cast<int>(row.size()); ++c)
+            if (c >= 0) out.push_back(row[static_cast<size_t>(c)]);
+    }
     return out;
 }
 
 std::vector<PdfTextRectPt> SelectionRects(const std::vector<GlyphBox> &glyphs, double ax, double ay, double bx,
-                                          double by) {
+                                          double by, int rotate) {
     std::vector<PdfTextRectPt> out;
-    const std::vector<int> range = SelectionGlyphRange(glyphs, ax, ay, bx, by);
+    const std::vector<int> range = SelectionGlyphRange(glyphs, ax, ay, bx, by, rotate);
     if (range.empty()) return out;
     const size_t lo = static_cast<size_t>(range.front()), hi = static_cast<size_t>(range.back());
 

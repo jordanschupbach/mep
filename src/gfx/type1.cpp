@@ -614,12 +614,12 @@ double GetGlyphAdvance(const FontInfo *info, int gid) {
 }
 
 unsigned char *GetGlyphBitmapMatrix(const FontInfo *info, float a, float b, float c, float d, int gid, int *width,
-                                    int *height, int *xoff, int *yoff) {
+                                    int *height, int *xoff, int *yoff, float dx, float dy) {
     *width = *height = *xoff = *yoff = 0;
     if (gid < 0 || gid >= info->num_glyphs) return nullptr;
     std::vector<OutlineContour> contours;
     BuildGlyphContours(info, gid, &contours, 0, 0, nullptr, 0);
-    return raster::RasterizeOutline(contours, a, b, c, d, width, height, xoff, yoff);
+    return raster::RasterizeOutline(contours, a, b, c, d, width, height, xoff, yoff, dx, dy);
 }
 
 unsigned char *GetGlyphBitmap(const FontInfo *info, float scale_x, float scale_y, int gid, int *width, int *height,

@@ -8,12 +8,21 @@
 Open a =.pdf= and it renders in a pane. Scrolling, zoom and the usual pane
 keys work.
 
+Zooming re-renders the page at the size it is shown at, rather than
+scaling up the pixels it was already drawn with, so text and mathematics
+stay sharp as you magnify. The re-render waits until you stop zooming,
+so holding =+= or spinning the wheel stays smooth and renders once at
+the end. Past roughly 400dpi the view does go back to magnifying --
+beyond that a page raster costs more memory than it is worth, and at
+that magnification you are looking at a detail rather than reading.
+
 | From Lua                     | Does                      |
 |------------------------------+---------------------------|
 | =mep.pdf_goto_page(n)=       | jump to a page            |
 | =mep.pdf_current_page()=     | which page is showing     |
 | =mep.pdf_outline()=          | the document's outline    |
 | =mep.pdf_reload()=           | re-read the file          |
+| =mep.pdf_page_png(n)=        | a page as a PNG, base64   |
 | =mep.is_pdf_buffer(buf)=     | is this a PDF?            |
 
 * The outline
@@ -27,11 +36,27 @@ Internal links jump within the document; external ones open in the browser.
 
 * Text
 
+Accents are put back together: a font that draws an acute as its own
+glyph over an "e" still yields /é/, not /e´/, so the word is one a
+search can find. Nested lists keep their indentation, so which item sits
+under which survives being copied out.
+
 Text is extracted, not just rasterised, so search finds real words -- and
 what you select is real text, not a picture of it: words and lines are
 reconstructed from the glyphs, ligatures are written out as the letters
 they stand for, and a word broken over a line end is put back together.
 So a quoted passage reads as prose rather than as /investiga- tor/.
+
+Some PDFs cannot be read as text at all. A scanned book is one big
+image, with no words in it to find. Others are worse than empty: a page
+whose fonts carry no character information extracts as plausible-looking
+nonsense -- real typeset text that comes out as =D D C D DD D= -- and
+quoting that to a model is worse than quoting nothing. Asking about
+either kind of page (=K=) sends the page itself as a picture instead --
+and if the page will not even render, because it uses an image format
+mep does not decode, it says so rather than sending a blank sheet. =mep.pdf_ask_image_prompt= is the question asked
+in that case and =mep.pdf_ask_image_scale= how finely the page is
+rendered for it.
 
 * Annotating
 
@@ -42,22 +67,40 @@ So a quoted passage reads as prose rather than as /investiga- tor/.
 | =hjkl=          | move the caret a character or a line    |
 | =w= =b= =e=     | by word                                 |
 | =0= =$=         | to the ends of the line                 |
+| =gg= =G=        | to the first or last line of the page   |
+| =3w=            | any motion takes a count                |
 | click           | place the caret                         |
 | =v=             | start or stop a selection               |
 | =y=             | copy the selection                      |
 | =K=             | ask about the selection                 |
 | =Esc=           | clear the selection; again to leave     |
 
+Motions take counts, as they do everywhere else: =3w= moves three
+words, =5j= five lines. =gg= and =G= go to the first and last line of
+the page -- in annotate mode the page is the buffer; the first- and
+last-*page* jumps are still on those keys in the other two PDF modes,
+one =Esc= away.
+
 The caret moves down the page, not through the file: a content stream
 emits a page in whatever order it likes -- body text, then the running
 header, then the footnotes -- and following that order would send the
 caret back to the top of the page mid-paragraph.
 
-Displayed equations are stepped over. Their glyphs sit on several
-baselines at once -- a summation, its indices, the main line -- so a
-caret walking through one lurches up and down rather than along.
-Mathematics *inside* a line of prose is ordinary text and stays
-selectable.
+Displayed equations are selectable like any other line. Their glyphs
+sit on several baselines at once -- a summation, its indices, the main
+line -- so within an equation the caret follows the main baseline first
+and then each subscript or limit, rather than hopping between baselines
+in bare left-to-right order. Yanking one gives the operator and its
+limits as separate words, so a quoted equation reads as mathematics
+rather than as one run-together string.
+
+A selection can run across a page break, so a paragraph that continues
+overleaf is one passage to copy or ask about rather than two.
+
+Dragging with the mouse selects the same thing the keyboard would: both
+resolve the run between their two ends in reading order down the page,
+so a drag across two paragraphs no longer picks up the running header
+that the file happened to emit between them.
 
 =Esc= unwinds one layer at a time, as it does in Visual mode: with a
 passage selected it drops the selection and keeps you in annotate mode, and
@@ -173,6 +216,11 @@ Like other rendered documents, a PDF is re-tinted to your theme by default
 -- a white page in a dark editor is jarring. The header reads
 =[theme, Ctrl-R]=; =Ctrl-R= shows the document's real colours, which is what
 you want when checking how something will print.
+
+The re-tint keeps the text's weight: a half-covered glyph edge carries
+half the light after re-tinting as it did before, so stems and fraction
+bars read as thick in a dark theme as in a light one. In a light theme it
+does nothing at all -- black text on white paper maps to exactly itself.
 
 * See also
 

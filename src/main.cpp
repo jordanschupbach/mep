@@ -11,6 +11,7 @@
 #include "gfx/text.h"
 #include "gfx/vecmath.h"
 #include "editor.h"
+#include "theme_recolor.h"
 #include "platform_compat.h"
 #include "fem_movie.h"
 #include "formula.h"
@@ -758,8 +759,15 @@ std::map<std::pair<int, int>, PdfTextureCacheEntry> g_pdf_page_textures;
  * @param luminance Source pixel luminance in [0,1] used as the interpolation factor.
  * @return The interpolated channel value.
  */
-unsigned char ThemedPdfChannel(unsigned char fg, unsigned char bg, float luminance) {
-    return static_cast<unsigned char>(fg + (static_cast<float>(bg) - static_cast<float>(fg)) * luminance);
+// The recolour a PDF pane (and a themed image, and a themed slide)
+// applies to put a rendered page on the editor's own two colours. The
+// arithmetic, and the two properties it has to satisfy, live in
+// theme_recolor.h so they can be tested -- main.cpp has no test of its
+// own. See that header for why this is not the obvious lerp.
+using ThemedPdfRamp = theme::Ramp;
+
+ThemedPdfRamp MakeThemedPdfRamp(gfx::Color fg, gfx::Color bg) {
+    return theme::Ramp::Make(fg.r, fg.g, fg.b, bg.r, bg.g, bg.b);
 }
 
 struct MenuItem {
@@ -30068,6 +30076,17 @@ const char *kBuiltinAi =
     "          input = mep_ai_json_decode(tc['function'].arguments) or {}}\n"
     "      end\n"
     "      out[#out + 1] = {role = 'assistant', content = blocks}\n"
+    "    elseif m.images then\n"
+    // An image-carrying turn becomes a block array. Images first: both
+    // APIs read better with the picture ahead of the question about it,
+    // and it is what their own docs show.
+    "      local blocks = {}\n"
+    "      for _, im in ipairs(m.images) do\n"
+    "        blocks[#blocks + 1] = {type = 'image',\n"
+    "          source = {type = 'base64', media_type = im.media_type or 'image/png', data = im.data}}\n"
+    "      end\n"
+    "      if m.content and m.content ~= '' then blocks[#blocks + 1] = {type = 'text', text = m.content} end\n"
+    "      out[#out + 1] = {role = m.role, content = blocks}\n"
     "    else\n"
     "      out[#out + 1] = {role = m.role, content = m.content or ''}\n"
     "    end\n"
@@ -30086,6 +30105,19 @@ const char *kBuiltinAi =
     "  local out = {}\n"
     "  for i, m in ipairs(messages) do\n"
     "    out[i] = {role = m.role, content = m.content, tool_calls = m.tool_calls, tool_call_id = m.tool_call_id}\n"
+    // An image-carrying turn becomes a content *parts* array with a
+    // data: URI, which is this API's own spelling of the same thing the
+    // Anthropic branch builds as an image block. `images` itself is
+    // mep's field, not the API's, so it never reaches the wire.
+    "    if m.images then\n"
+    "      local parts = {}\n"
+    "      for _, im in ipairs(m.images) do\n"
+    "        parts[#parts + 1] = {type = 'image_url',\n"
+    "          image_url = {url = 'data:' .. (im.media_type or 'image/png') .. ';base64,' .. im.data}}\n"
+    "      end\n"
+    "      if m.content and m.content ~= '' then parts[#parts + 1] = {type = 'text', text = m.content} end\n"
+    "      out[i].content = parts\n"
+    "    end\n"
     "  end\n"
     "  return out\n"
     "end\n"
@@ -30203,7 +30235,13 @@ const char *kBuiltinAi =
     "    end\n"
     "    mep.ai_api_key_cmd = argv\n"
     "    mep.ai_api_key = nil\n"
-    "    if mep.settings_set then mep.settings_set('ai_api_key_cmd', text) end\n"
+    // Deliberately not persisted. The Settings panel used to carry an
+    // "API key command" row and this wrote through it; the row is gone --
+    // it was the one row about where a secret comes from rather than a
+    // preference, and reading it in a list of preferences suggested the
+    // panel handled the key itself. So this lasts the session, and
+    // mep.ai_api_key_cmd in init.lua is the durable way to set it (see
+    // help/ai-commands.org). mep_ai_get_key is unchanged either way.
     "    mep.notify(argv and ('API key command set to: ' .. text) or 'API key command cleared')\n"
     "  end)\n"
     "end\n"
@@ -31897,6 +31935,12 @@ const char *kBuiltinPdfAi =
     "    if ok and page and page ~= '' then\n"
     "      s = s .. '\\n\\nThe rest of that page, as background only -- explain the passage above, not this:\\n\"\"\"\\n' ..\n"
     "          page .. '\\n\"\"\"'\n"
+    "    else\n"
+    // Said rather than silently omitted. A page whose text will not
+    // extract used to drop out of here with no trace, so a model got a
+    // bare two-word passage and no hint that the surrounding page was
+    // missing -- and neither did the reader.
+    "      s = s .. '\\n\\n(The rest of that page could not be read as text, so it is not included.)'\n"
     "    end\n"
     "  end\n"
     "  return s\n"
@@ -31922,20 +31966,70 @@ const char *kBuiltinPdfAi =
     "  mep.ai_cancel()\n"
     "  mep.claude_send(l.passage, l.where)\n"
     "end\n"
+    // Prompt for a page that has to be sent as a picture. Deliberately
+    // different wording from mep.pdf_ask_prompt: there is no quoted
+    // passage to explain, so the model is asked what the page says.
+    "mep.pdf_ask_image_prompt = mep.pdf_ask_image_prompt or\n"
+    "  'This page of a PDF has no extractable text, so it is attached as an image. '\n"
+    "  .. 'Read it and say concisely what it covers. At most 8 short lines of plain prose: '\n"
+    "  .. 'no preamble, no headings, no bullet lists.'\n"
+    // Scale the attached page is rendered at, in pixels per point. 2.0
+    // is the viewer's own baseline and enough for a model to read body
+    // text; higher costs tokens for no gain on a page of prose.
+    "mep.pdf_ask_image_scale = mep.pdf_ask_image_scale or 2.0\n"
+    // One page as a base64 PNG, or nil. Separate so the Claude Code
+    // route can report that it cannot take one.
+    "local function mep_pdf_ai_page_image(page_no)\n"
+    "  local ok, b64, why = pcall(mep.pdf_page_png, tonumber(page_no), mep.pdf_ask_image_scale)\n"
+    "  if ok and b64 and b64 ~= '' then return b64 end\n"
+    // mep.pdf_page_png returns nil plus a reason for a page that
+    // rendered blank, which is what an unsupported image format gives.
+    "  return nil, (ok and why) or 'the page could not be rendered'\n"
+    "end\n"
     "function mep_pdf_ai_popup(passage, where, page_no)\n"
-    "  if passage == nil or passage == '' then return end\n"
+    // An empty passage is no longer a refusal: it is how the editor
+    // signals a page with no text layer at all (a scan, Type 3 bitmap
+    // fonts, an image mep cannot decode). Such a page is sent as a
+    // picture instead -- the only thing that can work for those files,
+    // and what used to produce a prompt quoting nothing.
+    "  local image = nil\n"
+    "  if passage == nil or passage:gsub('%s', '') == '' then\n"
+    "    local why\n"
+    "    image, why = mep_pdf_ai_page_image(page_no)\n"
+    "    if not image then\n"
+    "      mep.notify('This page has no text to read, and ' .. (why or 'it could not be sent'), 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    passage = ''\n"
+    "  end\n"
     // With the API off, K sends the passage to Claude Code rather than
     // refusing: it is the same passage and the same question, just
     // answered in a pane instead of a box over the page.
-    "  if mep.ai_http_redirect(passage, where, 'Asking about a passage') then return end\n"
-    "  local quoted = mep_pdf_ai_passage(passage, where, page_no)\n"
+    // The Claude Code route is a terminal: it takes text, not an image.
+    // Redirecting a picture there would silently send an empty passage,
+    // so that case says so instead.
+    "  if image then\n"
+    "    if mep.ai_http_blocked == nil or mep.ai_http_blocked('The model') then\n"
+    "      mep.notify('This page has no text, so it can only be asked about with the model API on', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "  elseif mep.ai_http_redirect(passage, where, 'Asking about a passage') then\n"
+    "    return\n"
+    "  end\n"
+    "  local quoted = image and ('From ' .. ((where and where ~= '') and where or 'a PDF') .. '.')\n"
+    "    or mep_pdf_ai_passage(passage, where, page_no)\n"
+    // Declared here, with `quoted`, because mep_pdf_ai_last below
+    // records it: a later `local` would leave that reading a nil global.
+    "  local question = image and mep.pdf_ask_image_prompt or mep.pdf_ask_prompt\n"
     "  local title = (where and where ~= '') and where or 'PDF'\n"
     "  local answer = ''\n"
     "  local opened = false\n"
-    "  mep_pdf_ai_last = {quoted = quoted, question = mep.pdf_ask_prompt, answer = '',\n"
-    "                     passage = passage, where = where}\n"
+    "  mep_pdf_ai_last = {quoted = quoted, question = question, answer = '',\n"
+    "                     passage = passage, where = where, image = image ~= nil}\n"
     "  mep.notify('Asking about ' .. title .. '...')\n"
-    "  mep.ai_request({{role = 'user', content = mep.pdf_ask_prompt .. '\\n\\n' .. quoted}}, nil,\n"
+    "  local msg = {role = 'user', content = question .. '\\n\\n' .. quoted}\n"
+    "  if image then msg.images = {{media_type = 'image/png', data = image}} end\n"
+    "  mep.ai_request({msg}, nil,\n"
     "    function(delta)\n"
     "      answer = answer .. delta\n"
     "      mep_pdf_ai_last.answer = answer\n"
@@ -35460,6 +35554,57 @@ const char *kBuiltinSettings =
     "\n"
     "local MEP_ON_OFF = {'on', 'off'}\n"
     "\n"
+    // mep's own wording for the Quick ask prompt, captured here because
+    // the row below can overwrite mep.pdf_ask_prompt and `d` (clear) has
+    // to be able to put it back. Safe to read at load time: kBuiltinPdfAi
+    // runs before this chunk (see the DoString sequence in main), so the
+    // value is already there -- and this is the only copy, so there is no
+    // second spelling of the prompt to drift out of step with it.
+    "local MEP_PDF_ASK_PROMPT_DEFAULT = mep.pdf_ask_prompt or ''\n"
+    "\n"
+    // The models offered for each provider, as (id, label) pairs: the id
+    // is what the API wants and the label is what a person recognises it
+    // by, which is why the drop-down carries both. Picked from a list
+    // rather than typed because a typo here does not look like a
+    // mis-set option -- it looks like the provider is broken, arriving as
+    // a 404 from a request you cannot see.
+    //
+    // Neither list can be exhaustive, and they are not meant to be. The
+    // Anthropic row covers the current family; the OpenAI row is
+    // allow_custom (see below) precisely because any OpenAI-compatible
+    // server -- a local model behind mep.ai_base_url -- brings its own
+    // names that no list here could know.
+    "local MEP_ANTHROPIC_MODELS = {\n"
+    "  {'claude-opus-5', 'Claude Opus 5'},\n"
+    "  {'claude-opus-4-8', 'Claude Opus 4.8'},\n"
+    "  {'claude-opus-4-7', 'Claude Opus 4.7'},\n"
+    "  {'claude-opus-4-6', 'Claude Opus 4.6'},\n"
+    "  {'claude-sonnet-5', 'Claude Sonnet 5'},\n"
+    "  {'claude-sonnet-4-6', 'Claude Sonnet 4.6'},\n"
+    "  {'claude-haiku-4-5', 'Claude Haiku 4.5'},\n"
+    "  {'claude-fable-5', 'Claude Fable 5'},\n"
+    "}\n"
+    "local MEP_OPENAI_MODELS = {\n"
+    "  {'gpt-4o-mini', 'GPT-4o mini'},\n"
+    "  {'gpt-4o', 'GPT-4o'},\n"
+    "  {'gpt-4.1', 'GPT-4.1'},\n"
+    "  {'gpt-4.1-mini', 'GPT-4.1 mini'},\n"
+    "  {'o4-mini', 'o4-mini'},\n"
+    "}\n"
+    // Splits a pair list into the two parallel arrays settings_open wants
+    // (`choices` and `labels` are positional), so each model is written
+    // once above instead of twice in two lists that could drift apart.
+    "local function mep_settings_ids(pairs_)\n"
+    "  local out = {}\n"
+    "  for _, p in ipairs(pairs_) do out[#out + 1] = p[1] end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_settings_labels(pairs_)\n"
+    "  local out = {}\n"
+    "  for _, p in ipairs(pairs_) do out[#out + 1] = p[2] end\n"
+    "  return out\n"
+    "end\n"
+    "\n"
     "-- argv-valued options (a command plus its flags) are shown and typed as\n"
     "-- one space-separated string; mep itself wants a list.\n"
     "local function mep_settings_argv_get(t)\n"
@@ -35491,20 +35636,37 @@ const char *kBuiltinSettings =
     "   get = function() return (mep.ai_http_enabled == false) and 'off' or 'on' end,\n"
     "   set = function(v) if v ~= '' then mep.ai_http_enabled = (v == 'on') end end},\n"
     "\n"
-    "  {section = '', key = 'ai_provider', label = 'API provider', kind = 'choice',\n"
+    "\n"
+    // --- Quick ask (K) ---------------------------------------------------
+    // Its own section, because these rows are one feature: the answer
+    // popup K opens over a PDF passage (mep_pdf_ai_popup, kBuiltinPdfAi)
+    // -- a short, non-interactive lookup that answers and gets out of the
+    // way. They used to sit in a flat "AI" list beside the terminal-agent
+    // command, which is a different feature on a different credential
+    // path, and nothing named the feature at all.
+    "  {section = 'Quick ask (K)', key = 'ai_provider', label = 'API provider', kind = 'choice',\n"
     "   choices = {'anthropic', 'openai'},\n"
-    "   hint = 'Which API K and :MepAiSend call.',\n"
+    "   hint = 'Which API K and :MepAiSend call. Picks which model row below applies.',\n"
     "   get = function() return mep.ai_provider or '' end,\n"
     "   set = function(v) mep.ai_provider = (v ~= '' and v) or nil end},\n"
     "\n"
-    "  {section = '', key = 'ai_anthropic_model', label = 'Anthropic model', kind = 'text',\n"
-    "   choices = {'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'},\n"
-    "   hint = 'Used when the provider is anthropic.',\n"
+    "  {section = '', key = 'ai_anthropic_model', label = 'Anthropic model', kind = 'choice',\n"
+    "   list = true,\n"
+    "   choices = mep_settings_ids(MEP_ANTHROPIC_MODELS),\n"
+    "   labels = mep_settings_labels(MEP_ANTHROPIC_MODELS),\n"
+    "   hint = 'Used when the provider is anthropic. Enter opens the list; type to filter.',\n"
     "   get = function() return mep.ai_anthropic_model or '' end,\n"
     "   set = function(v) mep.ai_anthropic_model = (v ~= '' and v) or nil end},\n"
     "\n"
-    "  {section = '', key = 'ai_model', label = 'OpenAI model', kind = 'text',\n"
-    "   hint = 'Used when the provider is openai.',\n"
+    // allow_custom: the list is a convenience, not a closed set. Anything
+    // speaking the OpenAI chat-completions API will do (help/ai-commands
+    // .org), and those models are named whatever their server calls them,
+    // so a filter matching nothing commits as typed.
+    "  {section = '', key = 'ai_model', label = 'OpenAI model', kind = 'choice',\n"
+    "   list = true, allow_custom = true,\n"
+    "   choices = mep_settings_ids(MEP_OPENAI_MODELS),\n"
+    "   labels = mep_settings_labels(MEP_OPENAI_MODELS),\n"
+    "   hint = 'Used when the provider is openai. Type a name the list does not have to use it.',\n"
     "   get = function() return mep.ai_model or '' end,\n"
     "   set = function(v) mep.ai_model = (v ~= '' and v) or nil end},\n"
     "\n"
@@ -35513,19 +35675,19 @@ const char *kBuiltinSettings =
     "   get = function() return mep.ai_base_url or '' end,\n"
     "   set = function(v) mep.ai_base_url = (v ~= '' and v) or nil end},\n"
     "\n"
-    "  {section = '', key = 'ai_api_key_cmd', label = 'API key command', kind = 'text',\n"
-    "   hint = 'Prints your key. <leader>ak changes it quickly.',\n"
-    "   get = function() return mep_settings_argv_get(mep.ai_api_key_cmd) end,\n"
-    "   set = function(v) mep.ai_api_key_cmd = mep_settings_argv_set(v) end},\n"
+    // The prompt itself, as a row rather than a Lua global nobody finds.
+    // `wide` because it is a paragraph: a 200-character prompt in the
+    // 14-character value column is not something you can read, let alone
+    // edit. Clearing the row (d) restores mep's own wording -- see
+    // MEP_PDF_ASK_PROMPT_DEFAULT below for why that needs capturing.
+    "  {section = '', key = 'pdf_ask_prompt', label = 'Default prompt', kind = 'text', wide = true,\n"
+    "   hint = 'What K asks about a passage. d restores mep\\'s own wording.',\n"
+    "   get = function() return mep.pdf_ask_prompt or '' end,\n"
+    "   set = function(v)\n"
+    "     mep.pdf_ask_prompt = (v ~= '' and v) or MEP_PDF_ASK_PROMPT_DEFAULT\n"
+    "   end},\n"
     "\n"
-    "  {section = '', key = 'ai_terminal_cmd', label = 'Agent in a pane', kind = 'text',\n"
-    "   choices = {'claude', 'codex'},\n"
-    "   hint = 'The CLI agent :aiterminal runs. Codex has no API.',\n"
-    "   get = function() return mep_settings_argv_get(mep.opt.ai_terminal_cmd) end,\n"
-    "   set = function(v) mep.opt.ai_terminal_cmd = mep_settings_argv_set(v) end},\n"
-    "\n"
-    "  -- --- PDF lookup -------------------------------------------------------\n"
-    "  {section = 'PDF lookup', key = 'pdf_ask_context', label = 'Context sent with a passage', kind = 'choice',\n"
+    "  {section = '', key = 'pdf_ask_context', label = 'Context sent with a passage', kind = 'choice',\n"
     "   choices = {'highlight only', 'add page for short selections', 'always add the page'},\n"
     "   hint = 'The page can crowd out a short passage.',\n"
     "   get = function()\n"
@@ -35539,6 +35701,34 @@ const char *kBuiltinSettings =
     "     elseif v == 'always add the page' then mep.pdf_ask_context_under = MEP_PDF_CTX_ALWAYS\n"
     "     elseif v ~= '' then mep.pdf_ask_context_under = MEP_PDF_CTX_AUTO end\n"
     "   end},\n"
+    "\n"
+    // The ceiling on how long a reply can be, which for a popup meant to
+    // be short is also the one AI knob here with a cost attached.
+    "  {section = '', key = 'ai_max_tokens', label = 'Longest answer (tokens)', kind = 'number',\n"
+    "   min = 256, max = 8192, step = 256, default = 2048,\n"
+    "   hint = 'Caps the reply. Also the ceiling on what a reply can cost.',\n"
+    "   get = function() return tostring(mep.ai_max_tokens or 2048) end,\n"
+    "   set = function(v) if v ~= '' then mep.ai_max_tokens = tonumber(v) or 2048 end end},\n"
+    "\n"
+    // The popup box neither wraps nor scrolls, so this column is what
+    // keeps a reply inside it -- which is why it sits next to the prompt
+    // that decides the reply's shape rather than under Appearance.
+    "  {section = '', key = 'pdf_ask_wrap', label = 'Wrap the answer at', kind = 'number',\n"
+    "   min = 40, max = 200, step = 4, default = 72,\n"
+    "   hint = 'Columns. The popup does not wrap on its own.',\n"
+    "   get = function() return tostring(mep.pdf_ask_wrap or 72) end,\n"
+    "   set = function(v) if v ~= '' then mep.pdf_ask_wrap = tonumber(v) or 72 end end},\n"
+    "\n"
+    // --- Agent in a pane -------------------------------------------------
+    // Split out of "AI" because it is genuinely a different thing: a CLI
+    // agent in a terminal pane, bringing its own credentials, unaffected
+    // by the API switch above. Two rows that were easy to confuse while
+    // they sat next to each other under one heading.
+    "  {section = 'Agent in a pane', key = 'ai_terminal_cmd', label = 'Agent command', kind = 'text',\n"
+    "   choices = {'claude', 'codex'},\n"
+    "   hint = 'The CLI agent :aiterminal runs. Codex has no API, only this.',\n"
+    "   get = function() return mep_settings_argv_get(mep.opt.ai_terminal_cmd) end,\n"
+    "   set = function(v) mep.opt.ai_terminal_cmd = mep_settings_argv_set(v) end},\n"
     "\n"
     "  -- --- Project layout ---------------------------------------------------\n"
     "  {section = 'Project layout', key = 'restore_layouts', label = 'Reopen a project with its saved layout',\n"
@@ -35559,11 +35749,27 @@ const char *kBuiltinSettings =
     "   set = function(v) mep.opt.worktree_dir = v end},\n"
     "\n"
     "  -- --- Appearance -------------------------------------------------------\n"
+    // `list` + `preview`: 63 palettes stepped one at a time with Ctrl-N
+    // is a search by exhaustion, and a colour scheme is the one setting
+    // whose whole value is how it looks -- so the list applies each as
+    // the highlight lands on it and puts the original back on Escape.
+    // The same shape mep.themes() (the :MepTheme picker) already uses.
     "  {section = 'Appearance', key = 'colorscheme', label = 'Colour scheme', kind = 'choice',\n"
+    "   list = true, preview = true,\n"
     "   choices = mep.theme_names and mep.theme_names() or {},\n"
-    "   hint = 'Set here it is remembered across restarts.',\n"
+    "   hint = 'Changes as you move through the list. Esc keeps the old one.',\n"
     "   get = function() return (mep.current_theme and mep.current_theme()) or '' end,\n"
     "   set = function(v) if v ~= '' then mep.colorscheme(v) end end},\n"
+    "\n"
+    // The global zoom Ctrl+Shift+=/- drives. Already persisted in
+    // window.json, so this row shows and sets a value that survived a
+    // restart anyway but was otherwise invisible and keystroke-only.
+    // settings.json is applied after window.json, so the panel still wins.
+    "  {section = '', key = 'font_size', label = 'Interface font size', kind = 'number',\n"
+    "   min = 6, max = 72, step = 1, default = 18,\n"
+    "   hint = 'The size everything is measured in. Ctrl+Shift+=/- too.',\n"
+    "   get = function() return tostring(math.floor((mep.font_size() or 0) + 0.5)) end,\n"
+    "   set = function(v) if v ~= '' then mep.font_size(tonumber(v)) end end},\n"
     "\n"
     "  {section = '', key = 'set_number', label = 'Line numbers', kind = 'choice', choices = MEP_ON_OFF,\n"
     "   hint = ':set number',\n"
@@ -35596,6 +35802,19 @@ const char *kBuiltinSettings =
     "   choices = MEP_ON_OFF, hint = 'Change marks beside the line numbers.',\n"
     "   get = function() return mep_settings_bool_get(mep.git_gutter_auto) end,\n"
     "   set = function(v) if v ~= '' then mep.git_gutter_enable(v == 'on', true) end end},\n"
+    "\n"
+    "  -- --- Completion -------------------------------------------------------\n"
+    // The other AI feature with a master switch, and until now the only
+    // way to find it was :CopilotLogin in the manual. Goes through
+    // :Copilot rather than setting the flag, the same way the rows above
+    // go through :set -- the command is what starts and stops the
+    // language server, and a flag flipped behind its back would leave the
+    // two disagreeing.
+    "  {section = 'Completion', key = 'copilot_enabled', label = 'GitHub Copilot suggestions', kind = 'choice',\n"
+    "   choices = MEP_ON_OFF,\n"
+    "   hint = 'Needs :CopilotLogin once. Off by default.',\n"
+    "   get = function() return mep_settings_bool_get(mep.copilot_enabled) end,\n"
+    "   set = function(v) if v ~= '' then mep.cmd(v == 'on' and 'Copilot on' or 'Copilot off') end end},\n"
     "}\n"
     "\n"
     "-- The window's own title bar, only where it can be hidden (macOS, where\n"
@@ -35681,10 +35900,22 @@ const char *kBuiltinSettings =
     "    specs[#specs + 1] = {\n"
     "      key = s.key, section = s.section, label = s.label, kind = s.kind,\n"
     "      choices = s.choices, min = s.min, max = s.max, step = s.step, default = s.default,\n"
+    "      list = s.list, labels = s.labels, groups = s.groups,\n"
+    "      preview = s.preview, allow_custom = s.allow_custom, wide = s.wide,\n"
     "      hint = hint, value = (ok and value) or '',\n"
     "    }\n"
     "  end\n"
-    "  mep.settings_open(specs, function(key, value)\n"
+    "  mep.settings_open(specs, function(key, value, commit)\n"
+    // commit == false is a drop-down's live preview: apply it so the user
+    // can see it, but write nothing -- walking 63 colour schemes must not
+    // be 63 writes to settings.json, and backing out with Escape has to
+    // leave no trace. The row still holds its committed value, so the
+    // cancel path simply previews that one back.
+    "    if commit == false then\n"
+    "      local s = mep_settings_by_key(key)\n"
+    "      if s then pcall(s.set, value) end\n"
+    "      return\n"
+    "    end\n"
     "    if not mep.settings_set(key, value) then\n"
     "      mep.notify('Could not apply or save ' .. key .. ' (' .. mep.settings_path() .. ')', 'error')\n"
     "    end\n"
@@ -36368,11 +36599,233 @@ std::string OrgSettingValueText(const OrgBlockSettingRow &row, const std::string
     // the same as one set to "no", and reads differently here for
     // exactly that reason.
     if (value.empty()) return "--";
+    // A row whose choices carry display labels shows the label, not the
+    // value: `claude-opus-5` is what the API wants and `Claude Opus 5` is
+    // what the person picking it reads. Falls through to the value for a
+    // choice with no label, and for one typed in through allow_custom
+    // (which by definition is not in the list).
+    for (size_t i = 0; i < row.spec.choices.size() && i < row.spec.choice_labels.size(); i++) {
+        if (row.spec.choices[i] == value && !row.spec.choice_labels[i].empty()) {
+            return row.spec.choice_labels[i];
+        }
+    }
     return value;
 }
 
+// Wraps `text` to `cols` columns as a set of byte ranges that partition it
+// exactly -- no character is dropped and none is added.
+//
+// LspDiagWrap, the wrapper already in the tree, is the wrong tool here: it
+// re-flows on whitespace, so it collapses runs of spaces, drops leading and
+// trailing ones, and returns text that is not the text. For a read-only
+// diagnostic that is right. For a field being typed into it is not: the
+// space you just typed vanishes (trailing), the caret stops moving, and
+// every dropped byte shifts the caret one further from the character it is
+// supposed to sit before.
 /**
- * @brief Draws the org block settings popup for the block Editor::BeginOrgBlockSettings opened.
+ * @brief Wraps text into line ranges that exactly partition it, so a caret offset maps to a position.
+ * @param text The text to wrap.
+ * @param cols Target width in characters; a word longer than this is hard-broken rather than overflowing.
+ * @return (start, length) byte ranges, in order, covering every byte of `text`. Always at least one
+ *         range (empty, for empty input), so callers can draw a box with a caret in it.
+ */
+std::vector<std::pair<size_t, size_t>> WrapSettingsText(const std::string &text, size_t cols) {
+    std::vector<std::pair<size_t, size_t>> out;
+    const size_t n = text.size();
+    size_t start = 0;
+    while (start < n) {
+        size_t end = std::min(n, start + cols);
+        if (end < n) {
+            // Break after the last space that fits, so the space stays on
+            // the line it ended -- which is what makes the ranges contiguous.
+            const size_t brk = text.rfind(' ', end);
+            if (brk != std::string::npos && brk >= start) end = brk + 1;
+        }
+        if (end <= start) end = std::min(n, start + cols);  // one word longer than the box
+        out.emplace_back(start, end - start);
+        start = end;
+    }
+    if (out.empty()) out.emplace_back(size_t{0}, size_t{0});
+    return out;
+}
+
+// One entry of an open drop-down, as the list draws it: either a group
+// heading or a choice. Built by the renderer and by the hit-test from the
+// same function, so a click can never land on a different entry than the
+// one drawn under the pointer.
+struct SettingsListEntry {
+    bool heading = false;
+    int choice = -1;  // index into the row's `choices`; -1 for a heading
+    std::string text;
+};
+
+/**
+ * @brief Builds the visible entries of a settings row's open drop-down, headings included.
+ * @param spec The focused row's spec, whose `choices`/`choice_labels`/`choice_groups` drive it.
+ * @param filter The typed text narrowing the list; "" shows everything.
+ * @return The entries in display order. A group heading is emitted only when at least one of
+ *         its choices survived the filter, so narrowing never leaves a heading over nothing.
+ */
+std::vector<SettingsListEntry> BuildSettingsListEntries(const OrgHeaderArgSpec &spec, const std::string &filter) {
+    std::vector<SettingsListEntry> out;
+    out.reserve(spec.choices.size() + 4);
+    std::string shown_group;   // the heading already emitted
+    std::string current_group; // the group the walk is in, filtered or not
+    for (size_t i = 0; i < spec.choices.size(); i++) {
+        const std::string &value = spec.choices[i];
+        const std::string label =
+            (i < spec.choice_labels.size() && !spec.choice_labels[i].empty()) ? spec.choice_labels[i]
+                                                                              : (value.empty() ? "--" : value);
+        if (i < spec.choice_groups.size() && !spec.choice_groups[i].empty()) current_group = spec.choice_groups[i];
+        if (!OrgSettingsFilterMatch(value, filter) && !OrgSettingsFilterMatch(label, filter)) continue;
+        if (current_group != shown_group) {
+            if (!current_group.empty()) out.push_back({true, -1, current_group});
+            shown_group = current_group;
+        }
+        out.push_back({false, static_cast<int>(i), label});
+    }
+    return out;
+}
+
+// One settings row's open drop-down: the choices, with their group
+// headings, in a box anchored under the row's own value field.
+//
+// A box of its own rather than a mode of its own. Editor::
+// RestoreFromOverlay is `mode_ = overlay_previous_mode_` -- one slot, no
+// stack -- so reaching for the existing picker (Mode::Picker) from inside
+// Mode::OrgBlockSettings would overwrite the panel's own saved mode and
+// leave Escape re-entering the panel forever. Drawing the list here keeps
+// the panel in one mode, and is also what lets an entry carry a group
+// heading and a display label, neither of which mep.picker_open's flat
+// list of strings can express.
+/**
+ * @brief Draws the open drop-down for a settings row, and hit-tests clicks on its entries.
+ * @param row The focused row, whose spec supplies the choices and whose value gets the checkmark.
+ * @param f The panel's own frame, used to align the list with the value column.
+ * @param anchor_y Screen y immediately below the focused row; the list opens there, or flips above
+ *        when there is no room below.
+ * @param field_w Width of the row's value field, the list's minimum width so it reads as attached to it.
+ * @param line_h Height of one entry.
+ * @param font_size Entry text size.
+ * @param hint_size Size of the "no match" note.
+ * @param armed False on the frame the list opened, so the click that opened it isn't also a choice.
+ */
+void DrawSettingsRowDropdown(const OrgBlockSettingRow &row, const FloatFrame &f, float anchor_y, float field_w,
+                             int line_h, float font_size, float hint_size, bool armed) {
+    const std::string filter = g_editor.OrgSettingsListFilter();
+    const std::vector<SettingsListEntry> entries = BuildSettingsListEntries(row.spec, filter);
+    const int highlight = g_editor.OrgSettingsListIndex();
+
+    // Wide enough for the longest entry it will show (plus the checkmark
+    // column), never narrower than the field it hangs off.
+    float list_w = field_w;
+    for (const SettingsListEntry &entry : entries) {
+        list_w = std::max(list_w, gfx::MeasureTextEx(g_font, entry.text.c_str(), font_size, 0).x + 4.0f * g_char_width);
+    }
+    // The filter is shown in the box's own top line, so it has to fit too.
+    const std::string note = entries.empty()
+                                 ? (row.spec.allow_custom && !filter.empty() ? "Enter uses \"" + filter + "\" as typed"
+                                                                             : "no match")
+                                 : std::string();
+    if (!note.empty()) {
+        list_w = std::max(list_w, gfx::MeasureTextEx(g_font, note.c_str(), hint_size, 0).x + 2.0f * g_char_width);
+    }
+    if (!filter.empty()) {
+        const std::string shown_filter = "/" + filter;
+        list_w = std::max(list_w, gfx::MeasureTextEx(g_font, shown_filter.c_str(), hint_size, 0).x + 2.0f * g_char_width);
+    }
+    list_w = std::min(list_w, static_cast<float>(gfx::GetScreenWidth() - 40));
+
+    const int header_h = filter.empty() ? 0 : static_cast<int>(hint_size) + 6;
+    const int note_h = note.empty() ? 0 : static_cast<int>(hint_size) + 6;
+    const int screen_h = gfx::GetScreenHeight();
+    // Room below the row, else above it: the same flip DrawPaneHeaderMenu
+    // does, for the same reason -- a list that ran off the bottom of the
+    // screen would simply be unreachable.
+    const int pad = 10;
+    const int chrome = header_h + note_h + 2 * pad;
+    const int room_below = screen_h - static_cast<int>(anchor_y) - 20;
+    const int rows_below = std::max(0, (room_below - chrome) / line_h);
+    const int row_top = static_cast<int>(anchor_y) - line_h;  // the focused row's own top edge
+    const int rows_above = std::max(0, (row_top - 20 - chrome) / line_h);
+    const bool below = rows_below >= static_cast<int>(entries.size()) || rows_below >= rows_above;
+    const int visible = std::max(1, std::min(static_cast<int>(entries.size()), below ? rows_below : rows_above));
+    const int list_h = visible * line_h + chrome;
+    // Right-aligned with the value column, so the list visibly belongs to
+    // the field it opened from rather than floating mid-panel.
+    const float right = static_cast<float>(f.box_x + f.box_w) - 20.0f;
+    int list_x = static_cast<int>(right - list_w);
+    list_x = std::max(10, std::min(list_x, gfx::GetScreenWidth() - static_cast<int>(list_w) - 10));
+    const int list_y = below ? static_cast<int>(anchor_y) : row_top - list_h;
+
+    gfx::DrawRectangle(list_x, list_y, static_cast<int>(list_w), list_h, ResolveHlGroup("FloatBg"));
+    gfx::DrawRectangleLines(list_x, list_y, static_cast<int>(list_w), list_h, ResolveHlGroup("Accent"));
+
+    float y = static_cast<float>(list_y + pad);
+    if (!filter.empty()) {
+        gfx::DrawTextEx(g_font, ("/" + filter).c_str(), gfx::Vector2{static_cast<float>(list_x) + g_char_width, y},
+                        hint_size, 0, ResolveHlGroup("Accent"));
+        y += hint_size + 6.0f;
+    }
+
+    // Scrolled to keep the highlight visible, derived from it each frame
+    // rather than stored -- the highlight is the only thing that moves
+    // this view, exactly as in the panel's own row list.
+    int highlight_entry = 0;
+    for (size_t i = 0; i < entries.size(); i++) {
+        if (!entries[i].heading && entries[i].choice == highlight) {
+            highlight_entry = static_cast<int>(i);
+            break;
+        }
+    }
+    int first = 0;
+    if (highlight_entry >= visible) first = highlight_entry - visible + 1;
+
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    const bool clicked = armed && gfx::IsMouseButtonPressed(gfx::MouseButton::Left);
+    for (int i = first; i < static_cast<int>(entries.size()) && i < first + visible; i++) {
+        const SettingsListEntry &entry = entries[static_cast<size_t>(i)];
+        const gfx::Rectangle entry_rect{static_cast<float>(list_x) + 2.0f, y - 1.0f, list_w - 4.0f,
+                                        static_cast<float>(line_h)};
+        if (entry.heading) {
+            // Indented less than the choices under it, and in the same
+            // group the panel's own section headings use, so "Anthropic"
+            // over a run of models reads as a heading and not a choice
+            // you could pick.
+            gfx::DrawTextEx(g_font, entry.text.c_str(), gfx::Vector2{static_cast<float>(list_x) + g_char_width, y},
+                            font_size, 0, ResolveHlGroup("Comment"));
+            y += static_cast<float>(line_h);
+            continue;
+        }
+        if (entry.choice == highlight) {
+            gfx::DrawRectangle(static_cast<int>(entry_rect.x), static_cast<int>(entry_rect.y),
+                               static_cast<int>(entry_rect.width), static_cast<int>(entry_rect.height),
+                               ResolveHlGroup("PickerSelected"));
+        }
+        // A marker on what the row actually holds, which while a list is
+        // being walked is not what the highlight is on -- that
+        // distinction is the whole point of showing it.
+        //
+        // "*" rather than a check mark: g_font is baked from a glyph set
+        // that does not include U+2713, which draws as a literal "?" --
+        // worse than no marker, since it reads as "unknown" next to the
+        // value in force. The Accent colour below carries most of the
+        // signal anyway.
+        const bool is_current = row.spec.choices[static_cast<size_t>(entry.choice)] == row.value;
+        const std::string text = (is_current ? std::string("* ") : std::string("  ")) + entry.text;
+        gfx::DrawTextEx(g_font, text.c_str(), gfx::Vector2{static_cast<float>(list_x) + 2.0f * g_char_width, y},
+                        font_size, 0, ResolveHlGroup(is_current ? "Accent" : "Normal"));
+        if (clicked && PointInRect(mouse, entry_rect)) g_editor.OrgSettingsListChoose(entry.choice);
+        y += static_cast<float>(line_h);
+    }
+    if (!note.empty()) {
+        gfx::DrawTextEx(g_font, note.c_str(), gfx::Vector2{static_cast<float>(list_x) + g_char_width, y + 2.0f},
+                        hint_size, 0, ResolveHlGroup("MutedFg"));
+    }
+}
+
+/**
+ * @brief Draws the settings popup -- org block header args, or mep's own preferences.
  */
 void DrawOrgBlockSettingsOverlay() {
     const bool armed = g_org_settings_overlay_armed;
@@ -36384,23 +36837,33 @@ void DrawOrgBlockSettingsOverlay() {
     const int sel = std::max(0, std::min(g_editor.OrgSettingsIndex(), static_cast<int>(rows.size()) - 1));
     const bool editing = g_editor.OrgSettingsEditing();
     const std::string pending = g_editor.OrgSettingsPending();
+    const bool list_open = g_editor.OrgSettingsListOpen();
 
     // The list, with each section's heading as a row of its own that the
     // selection skips over (Editor's own index counts options, not
     // lines) -- forty header arguments in one flat column is a wall.
+    //
+    // `lines` is how many line_h's tall the entry is. Every entry is one
+    // line except a wide_text row, which is its label plus a wrapped box
+    // of prose -- so the layout below sums heights instead of multiplying
+    // an index by line_h.
     struct SettingsEntry {
         bool heading = false;
         int row = -1;  // index into `rows`, -1 for a heading
         std::string text;
+        int lines = 1;
     };
     std::vector<SettingsEntry> entries;
     entries.reserve(rows.size() + 8);
     float label_w = 0.0f;
     float value_w = 0.0f;
     for (size_t i = 0; i < rows.size(); i++) {
-        if (!rows[i].spec.section.empty()) entries.push_back({true, -1, rows[i].spec.section});
-        entries.push_back({false, static_cast<int>(i), rows[i].spec.label});
+        if (!rows[i].spec.section.empty()) entries.push_back({true, -1, rows[i].spec.section, 1});
+        entries.push_back({false, static_cast<int>(i), rows[i].spec.label, 1});
         label_w = std::max(label_w, gfx::MeasureTextEx(g_font, rows[i].spec.label.c_str(), font_size, 0).x);
+        // A wide row's value never sits in the value column, so it must
+        // not set the column's width either.
+        if (rows[i].spec.wide_text) continue;
         const std::string value_text = OrgSettingValueText(rows[i], rows[i].value);
         value_w = std::max(value_w, gfx::MeasureTextEx(g_font, value_text.c_str(), font_size, 0).x);
     }
@@ -36414,7 +36877,14 @@ void DrawOrgBlockSettingsOverlay() {
     // and every row jump sideways, on entering and leaving a field.
     const std::string nav_keys = "j/k move   Enter/i edit   Ctrl-N/Ctrl-P change   d clear   q close";
     std::string keys;
-    if (!editing) {
+    if (list_open) {
+        // Escape means something different here than anywhere else in
+        // this popup, so the footer says so outright rather than leaving
+        // it to be discovered.
+        keys = rows[static_cast<size_t>(sel)].spec.allow_custom
+                   ? "Ctrl-N/P move   type to filter or name   Enter choose   Esc cancel"
+                   : "Ctrl-N/P move   type to filter   Enter choose   Esc cancel";
+    } else if (!editing) {
         keys = nav_keys;
     } else {
         switch (rows[static_cast<size_t>(sel)].spec.kind) {
@@ -36422,7 +36892,7 @@ void DrawOrgBlockSettingsOverlay() {
                 keys = "j/k -/+   digits type a value   Enter/Esc done";
                 break;
             case OrgHeaderArgKind::kText:
-                keys = "type to edit   Enter/Esc done";
+                keys = "type to edit   arrows/Home/End move   Enter/Esc done";
                 break;
             default:
                 keys = "j/k or Ctrl-N/Ctrl-P cycle   Enter/Esc done";
@@ -36435,6 +36905,12 @@ void DrawOrgBlockSettingsOverlay() {
     // under the cursor mid-cycle), and a reasonable minimum for an empty
     // text field.
     for (const OrgBlockSettingRow &row : rows) {
+        // A list_popup row's choices are deliberately excluded: they are
+        // never drawn in this column (they live in the list that opens
+        // over the panel), and 63 colour-scheme names would otherwise
+        // widen the whole panel to fit text it never shows. Same for a
+        // wide row, whose value is not in the column at all.
+        if (row.spec.list_popup || row.spec.wide_text) continue;
         for (const std::string &choice : row.spec.choices) {
             value_w = std::max(value_w, gfx::MeasureTextEx(g_font, choice.c_str(), font_size, 0).x);
         }
@@ -36448,15 +36924,39 @@ void DrawOrgBlockSettingsOverlay() {
     // runs into the box's border.
     box_w = std::max(box_w, gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x + 72.0f);
     box_w = std::max(box_w, gfx::MeasureTextEx(g_font, nav_keys.c_str(), hint_size, 0).x + 72.0f);
+    box_w = std::max(box_w, gfx::MeasureTextEx(g_font, keys.c_str(), hint_size, 0).x + 72.0f);
     box_w = std::min(box_w, static_cast<float>(gfx::GetScreenWidth() - 80));
+
+    // A wide row's prose, wrapped to the width it will actually be drawn
+    // at -- which is why this is a second pass: the wrap needs box_w, and
+    // box_w needed the label and value columns first. Wrapped per row and
+    // kept, so the draw loop below doesn't re-wrap the same text.
+    const float wide_text_w = box_w - 72.0f;
+    const int wide_cols = std::max(16, static_cast<int>(wide_text_w / std::max(1.0f, g_char_width)));
+    std::vector<std::vector<std::pair<size_t, size_t>>> wide_wrapped(rows.size());
+    std::vector<std::string> wide_source(rows.size());
+    for (SettingsEntry &entry : entries) {
+        if (entry.heading || entry.row < 0) continue;
+        const OrgBlockSettingRow &row = rows[static_cast<size_t>(entry.row)];
+        if (!row.spec.wide_text) continue;
+        const bool active = entry.row == sel && editing;
+        // Wrapped from what is on screen, so the box grows and shrinks
+        // with the text as it is edited, the way a text area does.
+        wide_source[static_cast<size_t>(entry.row)] = active ? pending : row.value;
+        wide_wrapped[static_cast<size_t>(entry.row)] =
+            WrapSettingsText(wide_source[static_cast<size_t>(entry.row)], static_cast<size_t>(wide_cols));
+        // label + box border + at least two lines of room, so an empty
+        // prompt still reads as a box to type into rather than a gap.
+        const int body = std::max(2, static_cast<int>(wide_wrapped[static_cast<size_t>(entry.row)].size()));
+        entry.lines = 1 + body + 1;
+    }
 
     const int title_h = static_cast<int>(MenuFontSize()) + 8;
     const int footer_h = 2 * static_cast<int>(hint_size) + 14;
-    const int total_rows = static_cast<int>(entries.size());
-    const int max_rows = std::max(1, (gfx::GetScreenHeight() - 80 - 60 - title_h - footer_h) / line_h);
-    const int visible_rows = std::min(total_rows, max_rows);
-    const int box_h = visible_rows * line_h + 60 + title_h + footer_h;
-    FloatFrame f = DrawFloatFrame(static_cast<int>(box_w), box_h, g_editor.OrgSettingsTitle());
+    int total_lines = 0;
+    for (const SettingsEntry &entry : entries) total_lines += entry.lines;
+    const int max_lines = std::max(1, (gfx::GetScreenHeight() - 80 - 60 - title_h - footer_h) / line_h);
+    const int budget_lines = std::min(total_lines, max_lines);
 
     // Scrolled to keep the focused option on screen, recomputed from the
     // selection each frame rather than kept as state -- the selection is
@@ -36468,18 +36968,63 @@ void DrawOrgBlockSettingsOverlay() {
             break;
         }
     }
-    // The focused option is the last visible line when the list has
-    // scrolled to reach it; a heading right above it is then still on
-    // screen (any window taller than one line holds both), so the
-    // section it belongs to stays readable without a special case.
+    // The smallest `first` that leaves the focused entry fully visible.
+    // Counted in lines rather than entries because a wide row is several
+    // of them: scrolling by entry would cut a prompt box in half at the
+    // bottom edge and call it visible.
     int first = 0;
-    if (sel_entry >= visible_rows) first = sel_entry - visible_rows + 1;
+    for (;;) {
+        int used = 0;
+        for (int i = first; i <= sel_entry; i++) used += entries[static_cast<size_t>(i)].lines;
+        if (used <= budget_lines || first >= sel_entry) break;
+        first++;
+    }
+    // How many lines will actually be drawn from `first`, which is not the
+    // budget: the next entry after the last one that fits may be a wide row
+    // several lines tall, and stopping before it would otherwise leave a
+    // band of empty box between the last row and the footer. The box is
+    // sized to what it shows.
+    //
+    // A heading is only counted if the row it introduces fits under it: a
+    // section heading alone on the last visible line is a heading over
+    // nothing, which reads as a row that failed to draw. (The drop-down's
+    // group headings are suppressed the same way, for the same reason.)
+    /**
+     * @brief Whether entry `i` can be drawn with `used` lines already spent.
+     * @param i Index into `entries`.
+     * @param used Lines already committed to the view.
+     * @return True when it fits -- and, for a heading, when its first row fits too.
+     */
+    auto entry_fits = [&](int i, int used) {
+        int need = entries[static_cast<size_t>(i)].lines;
+        if (entries[static_cast<size_t>(i)].heading && i + 1 < static_cast<int>(entries.size())) {
+            need += entries[static_cast<size_t>(i + 1)].lines;
+        }
+        return used == 0 || used + need <= budget_lines;
+    };
+    int fitted_lines = 0;
+    for (int i = first; i < static_cast<int>(entries.size()); i++) {
+        if (!entry_fits(i, fitted_lines)) break;
+        fitted_lines += entries[static_cast<size_t>(i)].lines;
+    }
+    const int visible_lines = std::max(1, fitted_lines);
+    const int box_h = visible_lines * line_h + 60 + title_h + footer_h;
+    FloatFrame f = DrawFloatFrame(static_cast<int>(box_w), box_h, g_editor.OrgSettingsTitle());
 
     const gfx::Vector2 mouse = gfx::GetMousePosition();
     const bool clicked = armed && gfx::IsMouseButtonPressed(gfx::MouseButton::Left);
-    for (int i = first; i < total_rows && i < first + visible_rows; i++) {
+    // Where the focused row was drawn, so an open drop-down can be
+    // anchored under it after this loop has run.
+    float focused_row_y = f.content_y;
+    float focused_row_h = static_cast<float>(line_h);
+    int drawn_lines = 0;
+    for (int i = first; i < static_cast<int>(entries.size()); i++) {
         const SettingsEntry &entry = entries[static_cast<size_t>(i)];
-        const float y = f.content_y + static_cast<float>(i - first) * static_cast<float>(line_h);
+        // The same rule the height was computed with, so the box never
+        // reserves a line the loop then declines to draw into.
+        if (!entry_fits(i, drawn_lines)) break;
+        const float y = f.content_y + static_cast<float>(drawn_lines) * static_cast<float>(line_h);
+        drawn_lines += entry.lines;
         if (entry.heading) {
             gfx::DrawTextEx(g_font, entry.text.c_str(), gfx::Vector2{f.content_x, y}, font_size, 0,
                             ResolveHlGroup("Comment"));
@@ -36488,7 +37033,67 @@ void DrawOrgBlockSettingsOverlay() {
         const OrgBlockSettingRow &row = rows[static_cast<size_t>(entry.row)];
         const bool focused = entry.row == sel;
         const gfx::Rectangle row_rect{static_cast<float>(f.box_x) + 6.0f, y - 1.0f, static_cast<float>(f.box_w) - 12.0f,
-                                      static_cast<float>(line_h)};
+                                      static_cast<float>(entry.lines * line_h)};
+        if (focused) {
+            focused_row_y = y;
+            focused_row_h = static_cast<float>(entry.lines * line_h);
+        }
+        const gfx::Color accent = ResolveHlGroup("Accent");
+        const bool active = focused && editing;
+        if (row.spec.wide_text) {
+            // Label above, then the prose in a box across the panel. The
+            // selection bar is not drawn over the whole thing -- at four
+            // or five lines tall it would read as a block of colour
+            // rather than a cursor -- so the label alone is highlighted.
+            const gfx::Rectangle label_rect{row_rect.x, y - 1.0f, row_rect.width, static_cast<float>(line_h)};
+            if (focused) {
+                gfx::DrawRectangle(static_cast<int>(label_rect.x), static_cast<int>(label_rect.y),
+                                   static_cast<int>(label_rect.width), static_cast<int>(label_rect.height),
+                                   ResolveHlGroup("PickerSelected"));
+            }
+            gfx::DrawTextEx(g_font, row.spec.label.c_str(), gfx::Vector2{f.content_x, y}, font_size, 0,
+                            ResolveHlGroup("Normal"));
+            const std::vector<std::pair<size_t, size_t>> &wrapped = wide_wrapped[static_cast<size_t>(entry.row)];
+            const std::string &src = wide_source[static_cast<size_t>(entry.row)];
+            const int body_lines = std::max(2, static_cast<int>(wrapped.size()));
+            const gfx::Rectangle box{f.content_x - 6.0f, y + static_cast<float>(line_h) - 1.0f, wide_text_w + 12.0f,
+                                     static_cast<float>(body_lines * line_h) + 4.0f};
+            gfx::DrawRectangleRounded(box, 0.08f, 6, gfx::Fade(accent, active ? 0.18f : 0.07f));
+            gfx::DrawRectangleRoundedLinesEx(box, 0.08f, 6, 1.0f,
+                                             gfx::Fade(active ? accent : ResolveHlGroup("Border"),
+                                                       active ? 0.9f : 0.5f));
+            const bool unset = src.empty();
+            // The ranges partition `src` exactly, so the caret's byte offset
+            // lands on whichever line contains it with no running correction
+            // -- and `upto` is a real prefix of that line, so measuring it
+            // gives the caret's true x even in a proportional font.
+            const size_t caret = std::min(g_editor.OrgSettingsPendingCursor(), src.size());
+            int caret_line = 0;
+            float caret_x = 0.0f;
+            for (size_t w = 0; w < wrapped.size(); w++) {
+                const auto [wstart, wlen] = wrapped[w];
+                const std::string wl = src.substr(wstart, wlen);
+                gfx::DrawTextEx(g_font, wl.c_str(),
+                                gfx::Vector2{f.content_x, box.y + 3.0f + static_cast<float>(w) * static_cast<float>(line_h)},
+                                font_size, 0, ResolveHlGroup(unset ? "MutedFg" : "Normal"));
+                // `<=` on the end so a caret at the very end of the text
+                // lands on the last line rather than nowhere; later lines
+                // overwrite it, which is what puts it after a trailing
+                // space on the line that space actually ended.
+                if (active && caret >= wstart && caret <= wstart + wlen) {
+                    caret_line = static_cast<int>(w);
+                    caret_x = gfx::MeasureTextEx(g_font, src.substr(wstart, caret - wstart).c_str(), font_size, 0).x;
+                }
+            }
+            if (active) {
+                gfx::DrawRectangle(static_cast<int>(f.content_x + caret_x),
+                                   static_cast<int>(box.y + 3.0f + static_cast<float>(caret_line) *
+                                                                       static_cast<float>(line_h)),
+                                   2, static_cast<int>(font_size), accent);
+            }
+            if (clicked && PointInRect(mouse, row_rect)) g_editor.OrgSettingsSelect(entry.row, true);
+            continue;
+        }
         if (focused) {
             gfx::DrawRectangle(static_cast<int>(row_rect.x), static_cast<int>(row_rect.y),
                                static_cast<int>(row_rect.width), static_cast<int>(row_rect.height),
@@ -36500,12 +37105,15 @@ void DrawOrgBlockSettingsOverlay() {
         // reads as two columns rather than a ragged run of values.
         const float field_x = static_cast<float>(f.box_x + f.box_w) - field_w - 20.0f;
         const gfx::Rectangle field{field_x, y - 1.0f, field_w, static_cast<float>(line_h) - 2.0f};
-        const bool active = focused && editing;
-        const gfx::Color accent = ResolveHlGroup("Accent");
         gfx::DrawRectangleRounded(field, 0.35f, 6, gfx::Fade(accent, active ? 0.18f : 0.07f));
         gfx::DrawRectangleRoundedLinesEx(field, 0.35f, 6, 1.0f,
                                          gfx::Fade(active ? accent : ResolveHlGroup("Border"), active ? 0.9f : 0.5f));
-        const std::string shown = OrgSettingValueText(row, active ? pending : row.value);
+        // While a drop-down is open the field keeps showing the committed
+        // value: what the highlight is on is visible in the list itself,
+        // and a field that tracked the highlight would make the panel
+        // flicker under a list being walked.
+        const std::string shown =
+            OrgSettingValueText(row, (active && !row.spec.list_popup) ? pending : row.value);
         const bool unset = shown == "--";
         gfx::DrawTextEx(g_font, shown.c_str(), gfx::Vector2{field.x + arrow_w + 8.0f, y}, font_size, 0,
                         ResolveHlGroup(unset ? "MutedFg" : "Normal"));
@@ -36513,12 +37121,19 @@ void DrawOrgBlockSettingsOverlay() {
         // two keys that work on it; a text/number field being edited
         // shows a cursor instead.
         const bool cycles = row.spec.kind == OrgHeaderArgKind::kChoice || row.spec.kind == OrgHeaderArgKind::kSwitch;
-        if (cycles) {
+        if (row.spec.list_popup) {
+            // One arrow, pointing down: this row does not step through
+            // its values in place, it opens a list, and two side arrows
+            // would promise the wrong gesture.
+            const gfx::Color arrow = gfx::Fade(ResolveHlGroup("MutedFg"), focused ? 1.0f : 0.6f);
+            gfx::DrawTextEx(g_font, "v", gfx::Vector2{field.x + field.width - arrow_w - 4.0f, y}, font_size, 0, arrow);
+        } else if (cycles) {
             const gfx::Color arrow = gfx::Fade(ResolveHlGroup("MutedFg"), focused ? 1.0f : 0.6f);
             gfx::DrawTextEx(g_font, "<", gfx::Vector2{field.x + 6.0f, y}, font_size, 0, arrow);
             gfx::DrawTextEx(g_font, ">", gfx::Vector2{field.x + field.width - arrow_w - 4.0f, y}, font_size, 0, arrow);
         } else if (active) {
-            const float cx = field.x + arrow_w + 8.0f + gfx::MeasureTextEx(g_font, shown.c_str(), font_size, 0).x + 1.0f;
+            const std::string upto = pending.substr(0, std::min(pending.size(), g_editor.OrgSettingsPendingCursor()));
+            const float cx = field.x + arrow_w + 8.0f + gfx::MeasureTextEx(g_font, upto.c_str(), font_size, 0).x + 1.0f;
             gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(y), 2, static_cast<int>(font_size), accent);
         }
         // Mouse: a click on the row focuses it, a click on its value
@@ -36530,10 +37145,15 @@ void DrawOrgBlockSettingsOverlay() {
             g_editor.OrgSettingsSelect(entry.row, PointInRect(mouse, field));
         }
     }
-    const float footer_y = f.content_y + static_cast<float>(visible_rows) * static_cast<float>(line_h) + 6.0f;
+    const float footer_y = f.content_y + static_cast<float>(visible_lines) * static_cast<float>(line_h) + 6.0f;
     gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{f.content_x, footer_y}, hint_size, 0, ResolveHlGroup("Comment"));
     gfx::DrawTextEx(g_font, keys.c_str(), gfx::Vector2{f.content_x, footer_y + hint_size + 4.0f}, hint_size, 0,
                     ResolveHlGroup("MutedFg"));
+
+    if (list_open) {
+        DrawSettingsRowDropdown(rows[static_cast<size_t>(sel)], f, focused_row_y + focused_row_h, field_w, line_h,
+                                font_size, hint_size, armed);
+    }
 }
 
 // Read-only informational float (Phase 17 gap: git-gutter's "preview
@@ -38647,7 +39267,7 @@ void DrawTerminalGrid(const TerminalSession &sess, float x, float y, [[maybe_unu
 // check exists for the same-path-reopen exception.
 /**
  * @brief Lazily uploads an ImageSession's decoded RGBA8 pixels as a GPU texture -- recolored
- * through ThemedPdfChannel first when sess.theme_colors is set, same as a themed PDF page or
+ * through the ThemedPdfRamp first when sess.theme_colors is set, same as a themed PDF page or
  * HTML <img> -- caching the result per buffer id (and decode_generation/theme_colors/theme
  * epoch) in g_image_textures.
  * @param buffer_id Id of the buffer the image session belongs to, used as the cache key.
@@ -38667,16 +39287,14 @@ gfx::Texture2D GetOrLoadImageTexture(int buffer_id, const ImageSession &sess) {
     if (sess.theme_colors) {
         gfx::Color fg = ResolveHlGroup("Normal");
         gfx::Color bg = ResolveHlGroup("NormalBg");
+        const ThemedPdfRamp ramp = MakeThemedPdfRamp(fg, bg);
         int iw = sess.doc->Width(), ih = sess.doc->Height();
         themed.resize(static_cast<size_t>(iw) * static_cast<size_t>(ih) * 4);
         size_t n = static_cast<size_t>(iw) * static_cast<size_t>(ih);
         for (size_t i = 0; i < n; i++) {
             const unsigned char *src = &pixels[i * 4];
-            float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
             unsigned char *dst = &themed[i * 4];
-            dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
-            dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
-            dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
+            ramp.Apply(src, dst);
             dst[3] = src[3];
         }
         pixels = themed.data();
@@ -38977,16 +39595,14 @@ gfx::Texture2D *GetOrLoadThemedDataUriImageTexture(const std::string &uri) {
     int iw = doc.Width(), ih = doc.Height();
     gfx::Color fg = ResolveHlGroup("Normal");
     gfx::Color bg = ResolveHlGroup("NormalBg");
+    const ThemedPdfRamp ramp = MakeThemedPdfRamp(fg, bg);
     std::vector<unsigned char> themed(static_cast<size_t>(iw) * static_cast<size_t>(ih) * 4);
     const unsigned char *src_pixels = doc.Pixels();
     size_t n = static_cast<size_t>(iw) * static_cast<size_t>(ih);
     for (size_t i = 0; i < n; i++) {
         const unsigned char *src = &src_pixels[i * 4];
-        float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
         unsigned char *dst = &themed[i * 4];
-        dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
-        dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
-        dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
+        ramp.Apply(src, dst);
         dst[3] = src[3];  // alpha untouched -- only color channels ride the theme gradient
     }
 
@@ -39060,7 +39676,7 @@ struct ThemedHtmlImageCacheEntry {
 };
 std::unordered_map<std::string, ThemedHtmlImageCacheEntry> g_themed_html_image_textures;
 
-// Lazily loads, luminance-recolors (ThemedPdfChannel -- same "PDF page
+// Lazily loads, luminance-recolors (ThemedPdfRamp -- same "PDF page
 // recoloring" transform, reused verbatim here), and GPU-uploads a local
 // <img> for HtmlSession::theme_colors mode. Returns nullptr on the same
 // conditions GetOrLoadOrgInlineImageTexture does (missing/unreadable/
@@ -39097,16 +39713,14 @@ gfx::Texture2D *GetOrLoadThemedHtmlImageTexture(const std::string &path) {
     int iw = doc.Width(), ih = doc.Height();
     gfx::Color fg = ResolveHlGroup("Normal");
     gfx::Color bg = ResolveHlGroup("NormalBg");
+    const ThemedPdfRamp ramp = MakeThemedPdfRamp(fg, bg);
     std::vector<unsigned char> themed(static_cast<size_t>(iw) * static_cast<size_t>(ih) * 4);
     const unsigned char *src_pixels = doc.Pixels();
     size_t n = static_cast<size_t>(iw) * static_cast<size_t>(ih);
     for (size_t i = 0; i < n; i++) {
         const unsigned char *src = &src_pixels[i * 4];
-        float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
         unsigned char *dst = &themed[i * 4];
-        dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
-        dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
-        dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
+        ramp.Apply(src, dst);
         dst[3] = src[3];  // alpha untouched -- only color channels ride the theme gradient
     }
 
@@ -39190,16 +39804,24 @@ gfx::Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
         unsigned char *dst = &themed[i * 4];
         // Every pixel is the editor's foreground color; the page's own
         // paper white becomes *transparent* rather than the editor's
-        // background color. Alpha-blended over the Normal background
-        // that is pixel-for-pixel what interpolating to NormalBg used to
-        // produce (ThemedPdfChannel is a straight lerp, which is exactly
-        // what the blend does) -- but over anything tinted it is the
-        // difference between a formula sitting in its row and a
-        // formula-shaped hole punched through the row's background. The
-        // whole-row previews sit on the cursorline and a Visual
-        // selection; an inline one sits on those plus an org table's
-        // cell wash, where a pdftoppm PNG's opaque white page came out
-        // as a dark rectangle around the maths.
+        // background color. Over anything tinted that is the difference
+        // between a formula sitting in its row and a formula-shaped hole
+        // punched through the row's background: the whole-row previews
+        // sit on the cursorline and a Visual selection, and an inline
+        // one also sits on an org table's cell wash, where a pdftoppm
+        // PNG's opaque white page came out as a dark rectangle around
+        // the maths.
+        //
+        // Deliberately NOT routed through ThemedPdfRamp, and deliberately
+        // still a gamma-encoded coverage. The ramp is gamma-correct
+        // because it produces final pixels; this produces an alpha the
+        // GPU then blends, and that blend happens in sRGB space (there
+        // is no sRGB framebuffer here), so no choice of alpha can
+        // reproduce a linear-light composite. Keeping it in the same
+        // space the blend uses is also what makes a preview weigh the
+        // same as the editor's own text beside it, which is blended the
+        // same way. The two therefore agree on shape but not exactly on
+        // weight; matching them properly needs an sRGB-aware target.
         dst[0] = fg.r;
         dst[1] = fg.g;
         dst[2] = fg.b;
@@ -39231,14 +39853,14 @@ gfx::Texture2D *GetOrLoadOrgLatexTexture(const std::string &path) {
 // Editor::EnsurePdfPagesRastered) -- and re-uploaded whenever that page's
 // raster or the session's theme_colors flag has moved on (see the cache
 // entry struct's comment). When theme_colors is set, the raw RGBA raster
-// is recolored through ThemedPdfChannel into a scratch buffer before
+// is recolored through ThemedPdfRamp into a scratch buffer before
 // upload; the raw raster itself is never mutated, so toggling back to
 // standard colors doesn't need a re-render, just a re-upload.
 /**
  * @brief Returns the GPU texture for one rasterized PDF page, uploading or re-uploading it
  * (updating in place when the size is unchanged, else replacing the texture) whenever the
  * raster's generation, the theme_colors flag, or the theme epoch has moved on since the last
- * upload; optionally recolors the raw RGBA raster through ThemedPdfChannel first.
+ * upload; optionally recolors the raw RGBA raster through ThemedPdfRamp first.
  * @param pane_id Id of the pane the PDF page is drawn in, used with page_index as the cache key
  *        (per pane, not per buffer -- two panes on the same file can show different pages/scales).
  * @param page_index Index of the page within that buffer's document.
@@ -39261,15 +39883,13 @@ gfx::Texture2D GetOrUpdatePdfPageTexture(int pane_id, int page_index, const PdfS
     if (theme_colors) {
         gfx::Color fg = ResolveHlGroup("Normal");
         gfx::Color bg = ResolveHlGroup("NormalBg");
+        const ThemedPdfRamp ramp = MakeThemedPdfRamp(fg, bg);
         themed.resize(raster.rgba.size());
         size_t n = static_cast<size_t>(raster.w) * static_cast<size_t>(raster.h);
         for (size_t i = 0; i < n; i++) {
             const unsigned char *src = &raster.rgba[i * 4];
-            float luminance = (0.299f * src[0] + 0.587f * src[1] + 0.114f * src[2]) / 255.0f;
             unsigned char *dst = &themed[i * 4];
-            dst[0] = ThemedPdfChannel(fg.r, bg.r, luminance);
-            dst[1] = ThemedPdfChannel(fg.g, bg.g, luminance);
-            dst[2] = ThemedPdfChannel(fg.b, bg.b, luminance);
+            ramp.Apply(src, dst);
             dst[3] = 255;
         }
         pixels = themed.data();
@@ -49155,9 +49775,15 @@ gfx::Color g_pres_theme_fg{}, g_pres_theme_bg{};
 
 gfx::Color PresTheme(gfx::Color c) {
     if (!g_pres_themed) return c;
-    const float lum = (0.299f * c.r + 0.587f * c.g + 0.114f * c.b) / 255.0f;
-    return gfx::Color{ThemedPdfChannel(g_pres_theme_fg.r, g_pres_theme_bg.r, lum), ThemedPdfChannel(g_pres_theme_fg.g, g_pres_theme_bg.g, lum),
-                      ThemedPdfChannel(g_pres_theme_fg.b, g_pres_theme_bg.b, lum), c.a};
+    // Built per call rather than cached: this maps single colours (a
+    // slide's text/accent), not megapixels, so the 256-entry build is
+    // already far more work than the one lookup it serves -- but sharing
+    // the ramp keeps a themed slide and a themed PDF page agreeing about
+    // what a given lightness looks like.
+    const unsigned char rgb[3] = {c.r, c.g, c.b};
+    unsigned char out[3] = {0, 0, 0};
+    MakeThemedPdfRamp(g_pres_theme_fg, g_pres_theme_bg).Apply(rgb, out);
+    return gfx::Color{out[0], out[1], out[2], c.a};
 }
 
 // A file's RRGGBB as drawn (not themed: the toolbar's swatches).
@@ -51327,9 +51953,19 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             drawn_pdf_pages.push_back({idx, pos, static_cast<float>(pr.w) * pdf_sess->zoom,
                                        static_cast<float>(pr.h) * pdf_sess->zoom});
             // Live text selection on this page (drawn under annotations/links).
-            if (idx == pdf_sess->sel_page && !pdf_sess->sel_quads.empty() && pdf_sess->doc) {
+            // A keyboard selection may run across a page break, in
+            // which case each page carries its own quads; a mouse drag
+            // is over one page and uses sel_page/sel_quads.
+            const std::vector<pdfannots::Quad> *page_quads = nullptr;
+            if (!pdf_sess->sel_quads_pages.empty()) {
+                auto qit = pdf_sess->sel_quads_pages.find(idx);
+                if (qit != pdf_sess->sel_quads_pages.end()) page_quads = &qit->second;
+            } else if (idx == pdf_sess->sel_page) {
+                page_quads = &pdf_sess->sel_quads;
+            }
+            if (page_quads && !page_quads->empty() && pdf_sess->doc) {
                 for (const PdfAnnotRect &sr :
-                     pdf_sess->doc->QuadsToDeviceRects(idx, pdf_sess->rendered_scale, pdf_sess->sel_quads)) {
+                     pdf_sess->doc->QuadsToDeviceRects(idx, pdf_sess->rendered_scale, *page_quads)) {
                     gfx::DrawRectangle(static_cast<int>(pos.x + sr.x0 * pdf_sess->zoom),
                                        static_cast<int>(pos.y + sr.y0 * pdf_sess->zoom),
                                        static_cast<int>((sr.x1 - sr.x0) * pdf_sess->zoom),
@@ -51596,6 +52232,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     sel->sel_head_dx = ddx;
                     sel->sel_head_dy = ddy;
                     sel->sel_quads.clear();
+                    // A fresh drag replaces any cross-page keyboard
+                    // selection; a drag is over one page by nature.
+                    sel->sel_quads_pages.clear();
                     // In annotate mode a click also places the keyboard caret.
                     if (g_editor.CurrentMode() == Mode::PdfAnnotate)
                         g_editor.PdfCaretPlaceAtDevice(pane.id, over, ddx, ddy);

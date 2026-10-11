@@ -49,8 +49,20 @@ struct PdfDoc::Impl {
     // Point-space glyph boxes for the page a text selection is currently
     // being dragged on, extracted once and reused across the drag (mutable
     // so the const SelectionQuads can populate it on demand).
+    // Decoded font programs and rasterized glyphs, shared by every
+    // render of this document. Thread-safe, which matters because
+    // RenderPage runs on a worker thread and several panes can hold the
+    // same document. Mutable so a const render path can populate it.
+    mutable pdfrender::RenderCache render_cache_;
+
     mutable int glyph_cache_page_ = -1;
     mutable std::vector<pdftext::GlyphBox> glyph_cache_;
+    // The cached page's own /Rotate. Glyph boxes are in the page's
+    // unrotated point space (annotation quads round-trip through it), so
+    // on a landscape page the axis text advances along is not the one
+    // row grouping and word-gap detection would assume -- they need to
+    // be told. See pdftext::PageGlyphRows.
+    mutable int glyph_cache_rotate_ = 0;
     // Fills glyph_cache_ for `page_index` if it holds another page, and
     // says whether there is a page there at all -- every glyph-space
     // method below opens with this.
@@ -60,8 +72,12 @@ struct PdfDoc::Impl {
         if (!page) return false;
         glyph_cache_ = pdftext::PageGlyphBoxes(file_data_.data(), file_data_.size(), document_.Xref(), *page);
         glyph_cache_page_ = page_index;
+        glyph_cache_rotate_ = page->rotate;
         return true;
     }
+    // Joins a run of glyph indices using the cached page's own visual
+    // rows to place the line breaks -- see the definition below.
+    std::string JoinIndicesByRows(const std::vector<int> &indices) const;
     // The structure tree and the accessibility document made from it, each
     // read the first time it is asked for.
     mutable std::unique_ptr<pdfstruct::Tree> struct_tree_;
@@ -114,9 +130,24 @@ bool PdfDoc::RenderPage(int page_index, float px_per_pt, std::vector<unsigned ch
     const pdfdoc::Page *page = impl_->document_.GetPage(page_index);
     if (!page) return false;
 
+    // A hard ceiling on raster dimensions, enforced by reducing the
+    // scale rather than by clamping the pixel counts. Clamping them
+    // independently of the scale (which is what this did) silently
+    // *cropped* the page: the matrix below still placed content for the
+    // full requested size, so everything past 8192px simply fell off.
+    // Unreachable while rendered_scale was pinned near 2.0, and very
+    // reachable now that it follows the zoom.
+    constexpr int kMaxRasterPx = 8192;
+    const double page_w_pt = impl_->document_.PageWidthPt(page_index);
+    const double page_h_pt = impl_->document_.PageHeightPt(page_index);
     double scale = static_cast<double>(px_per_pt);
-    int w = std::max(1, std::min(8192, static_cast<int>(std::lround(impl_->document_.PageWidthPt(page_index) * scale))));
-    int h = std::max(1, std::min(8192, static_cast<int>(std::lround(impl_->document_.PageHeightPt(page_index) * scale))));
+    if (page_w_pt > 0 && page_h_pt > 0) {
+        const double max_scale = std::min(static_cast<double>(kMaxRasterPx) / page_w_pt,
+                                          static_cast<double>(kMaxRasterPx) / page_h_pt);
+        if (scale > max_scale) scale = max_scale;
+    }
+    int w = std::max(1, std::min(kMaxRasterPx, static_cast<int>(std::lround(page_w_pt * scale))));
+    int h = std::max(1, std::min(kMaxRasterPx, static_cast<int>(std::lround(page_h_pt * scale))));
 
     pdfrender::Canvas canvas = pdfrender::Canvas::MakeWhite(w, h);
     pdfrender::Mat2D ctm = pdfrender::PageToDeviceMatrix(page->effective_box[0], page->effective_box[1],
@@ -126,7 +157,7 @@ bool PdfDoc::RenderPage(int page_index, float px_per_pt, std::vector<unsigned ch
     std::string content = pdfrender::GetPageContent(impl_->file_data_.data(), impl_->file_data_.size(),
                                                       impl_->document_.Xref(), *page, &status);
     pdfrender::RenderContentStream(content, canvas, ctm, page->resources, impl_->file_data_.data(),
-                                    impl_->file_data_.size(), impl_->document_.Xref());
+                                    impl_->file_data_.size(), impl_->document_.Xref(), &impl_->render_cache_);
 
     // A page whose /Contents stream(s) couldn't be resolved/decoded rendered
     // blank (all failed) or partial (some failed) with no other signal --
@@ -327,7 +358,8 @@ std::vector<pdfannots::Quad> PdfDoc::SelectionQuads(int page_index, float px_per
     if (!DevicePxToPoint(page_index, px_per_pt, dax, day, &ax, &ay)) return out;
     if (!DevicePxToPoint(page_index, px_per_pt, dbx, dby, &bx, &by)) return out;
     if (!impl_->EnsureGlyphCache(page_index)) return out;
-    for (const pdftext::PdfTextRectPt &r : pdftext::SelectionRects(impl_->glyph_cache_, ax, ay, bx, by)) {
+    for (const pdftext::PdfTextRectPt &r :
+         pdftext::SelectionRects(impl_->glyph_cache_, ax, ay, bx, by, impl_->glyph_cache_rotate_)) {
         pdfannots::Quad q;
         q.x1 = r.left;  q.y1 = r.top;    q.x2 = r.right; q.y2 = r.top;
         q.x3 = r.left;  q.y3 = r.bottom; q.x4 = r.right; q.y4 = r.bottom;
@@ -349,7 +381,7 @@ std::vector<PdfTextRow> PdfDoc::PageTextRows(int page_index) const {
     std::vector<PdfTextRow> out;
     if (!impl_) return out;
     if (!impl_->EnsureGlyphCache(page_index)) return out;
-    for (pdftext::GlyphRow &r : pdftext::PageGlyphRows(impl_->glyph_cache_)) {
+    for (pdftext::GlyphRow &r : pdftext::PageGlyphRows(impl_->glyph_cache_, impl_->glyph_cache_rotate_)) {
         PdfTextRow row;
         row.glyphs = std::move(r.glyphs);
         row.display_math = r.display_math;
@@ -371,7 +403,7 @@ std::vector<pdfannots::Quad> PdfDoc::SelectionQuadsForGlyphs(int page_index, int
     double ay = (g[static_cast<size_t>(lo)].top + g[static_cast<size_t>(lo)].bottom) / 2.0;
     double bx = (g[static_cast<size_t>(hi)].left + g[static_cast<size_t>(hi)].right) / 2.0;
     double by = (g[static_cast<size_t>(hi)].top + g[static_cast<size_t>(hi)].bottom) / 2.0;
-    for (const pdftext::PdfTextRectPt &r : pdftext::SelectionRects(g, ax, ay, bx, by)) {
+    for (const pdftext::PdfTextRectPt &r : pdftext::SelectionRects(g, ax, ay, bx, by, impl_->glyph_cache_rotate_)) {
         pdfannots::Quad q;
         q.x1 = r.left;  q.y1 = r.top;    q.x2 = r.right; q.y2 = r.top;
         q.x3 = r.left;  q.y3 = r.bottom; q.x4 = r.right; q.y4 = r.bottom;
@@ -380,9 +412,45 @@ std::vector<pdfannots::Quad> PdfDoc::SelectionQuadsForGlyphs(int page_index, int
     return out;
 }
 
+// A run of glyph indices turned into readable text, with the page's own
+// visual rows deciding where the lines are.
+//
+// Both selection paths hand over a flat list of glyph indices that may
+// span several rows -- the keyboard's one is caret_rows flattened, the
+// mouse's is a contiguous range. Joining such a list glyph by glyph
+// means inferring the line breaks from vertical steps, and inside a
+// formula every step between baselines reads as one, which shredded a
+// selected equation into a fragment per line. The rows are already
+// known here, so they are used instead of guessed: indices are grouped
+// by the row they fall in, rows come out in page order, and each row
+// becomes one line.
+std::string PdfDoc::Impl::JoinIndicesByRows(const std::vector<int> &indices) const {
+    std::vector<pdftext::GlyphRow> page_rows = pdftext::PageGlyphRows(glyph_cache_, glyph_cache_rotate_);
+    std::vector<int> row_of(glyph_cache_.size(), -1);
+    for (size_t r = 0; r < page_rows.size(); ++r)
+        for (int gi : page_rows[r].glyphs)
+            if (gi >= 0 && gi < static_cast<int>(row_of.size())) row_of[static_cast<size_t>(gi)] = static_cast<int>(r);
+
+    // Keep each row's glyphs in the row's own left-to-right (and
+    // baseline-aware) order rather than the order the caller listed
+    // them, so a selection reads the way the page does.
+    std::vector<std::vector<int>> picked(page_rows.size());
+    std::vector<bool> want(glyph_cache_.size(), false);
+    for (int gi : indices)
+        if (gi >= 0 && gi < static_cast<int>(want.size())) want[static_cast<size_t>(gi)] = true;
+    for (size_t r = 0; r < page_rows.size(); ++r)
+        for (int gi : page_rows[r].glyphs)
+            if (want[static_cast<size_t>(gi)]) picked[r].push_back(gi);
+
+    std::vector<std::vector<int>> rows;
+    for (std::vector<int> &row : picked)
+        if (!row.empty()) rows.push_back(std::move(row));
+    return pdftext::JoinGlyphRows(glyph_cache_, rows, glyph_cache_rotate_);
+}
+
 std::string PdfDoc::TextForGlyphs(int page_index, const std::vector<int> &glyph_indices) const {
     if (!impl_ || !impl_->EnsureGlyphCache(page_index)) return std::string();
-    return pdftext::JoinGlyphText(impl_->glyph_cache_, glyph_indices);
+    return impl_->JoinIndicesByRows(glyph_indices);
 }
 
 std::string PdfDoc::SelectionText(int page_index, float px_per_pt, double dax, double day, double dbx,
@@ -395,8 +463,8 @@ std::string PdfDoc::SelectionText(int page_index, float px_per_pt, double dax, d
     // The same nearest-glyph-to-each-end resolution SelectionQuads does,
     // so what gets copied is exactly what was drawn as selected.
     std::vector<int> indices;
-    for (int gi : pdftext::SelectionGlyphRange(impl_->glyph_cache_, ax, ay, bx, by)) indices.push_back(gi);
-    return pdftext::JoinGlyphText(impl_->glyph_cache_, indices);
+    for (int gi : pdftext::SelectionGlyphRange(impl_->glyph_cache_, ax, ay, bx, by, impl_->glyph_cache_rotate_)) indices.push_back(gi);
+    return impl_->JoinIndicesByRows(indices);
 }
 
 std::string PdfDoc::PageText(int page_index) const {
@@ -406,11 +474,15 @@ std::string PdfDoc::PageText(int page_index) const {
     // it back in that order gives a reader (or a model being handed the
     // page as context) the furniture spliced into the middle of a
     // sentence. PageGlyphRows already sorts this out for the caret.
-    std::vector<int> order;
-    order.reserve(impl_->glyph_cache_.size());
-    for (const pdftext::GlyphRow &r : pdftext::PageGlyphRows(impl_->glyph_cache_))
-        order.insert(order.end(), r.glyphs.begin(), r.glyphs.end());
-    return pdftext::JoinGlyphText(impl_->glyph_cache_, order);
+    // Joined row by row rather than as one flat run of indices:
+    // JoinGlyphText has to infer line breaks from vertical steps, and
+    // inside a formula every step between baselines looks like one, so a
+    // displayed equation came back shredded a fragment per line. Handing
+    // the rows over means the breaks are known rather than guessed.
+    std::vector<std::vector<int>> rows;
+    for (pdftext::GlyphRow &r : pdftext::PageGlyphRows(impl_->glyph_cache_, impl_->glyph_cache_rotate_))
+        rows.push_back(std::move(r.glyphs));
+    return pdftext::JoinGlyphRows(impl_->glyph_cache_, rows, impl_->glyph_cache_rotate_);
 }
 
 std::vector<PdfAnnotRect> PdfDoc::QuadsToDeviceRects(int page_index, float px_per_pt,

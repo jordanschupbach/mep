@@ -65,6 +65,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -265,6 +267,8 @@ public:
             known_.insert(w.id);
     }
     std::unique_ptr<EmbeddedWindow> Adopt(const std::vector<int> &pids, bool allow_unowned) override;
+    std::unique_ptr<EmbeddedWindow> AdoptHandoff(const std::vector<std::string> &executables, const std::vector<int> &own_pids) override;
+    std::string ResolveApplication(const std::string &name) const override;
     void Pump() override {}
     void Flush() override {}
 
@@ -290,6 +294,10 @@ public:
     }
 
 private:
+    // The largest ordinary on-screen window `wanted` accepts that is not a
+    // dialog, as an Accessibility element. `shared`: see MacWindow.
+    std::unique_ptr<EmbeddedWindow> AdoptWhere(const std::function<bool(const WindowInfo &)> &wanted, bool shared);
+
     NSWindow *host_;
     pid_t self_pid_;
     std::set<CGWindowID> known_;
@@ -311,8 +319,13 @@ struct CaptureState {
 
 class MacWindow final : public EmbeddedWindow {
 public:
-    MacWindow(MacBackend &be, const WindowInfo &info, AXUIElementRef ax_app, AXUIElementRef ax_win)
-        : be_(be), pid_(info.pid), wid_(info.id), ax_app_(ax_app), ax_win_(ax_win), capture_(std::make_shared<CaptureState>()) {
+    // `shared`: the window belongs to a program that has other windows the
+    // user is working in (a handed-off one, MacBackend::AdoptHandoff), so
+    // nothing here may hide or unhide the program as a whole -- hiding is
+    // putting mep's window over this one instead.
+    MacWindow(MacBackend &be, const WindowInfo &info, AXUIElementRef ax_app, AXUIElementRef ax_win, bool shared)
+        : be_(be), pid_(info.pid), wid_(info.id), ax_app_(ax_app), ax_win_(ax_win), shared_(shared),
+          capture_(std::make_shared<CaptureState>()) {
         app_ = [NSRunningApplication runningApplicationWithProcessIdentifier:pid_];
         adopted_at_ = Now();
         // A program that brought itself to the front on starting (Tk does)
@@ -323,14 +336,16 @@ public:
         // Off the screen until the document places it (as a window just
         // reparented into X11's unmapped container is): wherever its
         // program first opened it is not where it belongs.
-        if (app_) {
+        if (shared_) {
+            [be_.host() orderWindow:NSWindowAbove relativeTo:static_cast<NSInteger>(wid_)];
+        } else if (app_) {
             [app_ hide];
             hidden_ = true;
         }
     }
     ~MacWindow() override {
         be_.Forget(this);
-        if (!dead_) {
+        if (!dead_ && !shared_) {
             if (focused_ && IsFront()) [NSApp activateIgnoringOtherApps:YES];
             // Still running, and hidden by this backend (its program is
             // being stopped, or has lost it): back on the screen, so a
@@ -392,6 +407,11 @@ public:
     void Hide() override {
         if (!shown_) return;
         shown_ = false;
+        if (shared_) {
+            if (focused_ && IsFront()) [NSApp activateIgnoringOtherApps:YES];
+            [be_.host() orderWindow:NSWindowAbove relativeTo:static_cast<NSInteger>(wid_)];
+            return;
+        }
         if (app_ && !hidden_) {
             // Hiding the active app hands activation to whichever app is
             // next: mep takes it first, so it is mep.
@@ -529,7 +549,7 @@ private:
         if (t - last_lift_ < 0.5) return;
         last_lift_ = t;
         Log("lift", wid_, lifts_, [NSApp isActive]);
-        if (lifts_ < 2 && app_) {
+        if (lifts_ < 2 && app_ && !shared_) {
             [app_ hide];
             [app_ unhide];
         } else if (lifts_ < 4 && app_ && [NSApp isActive]) {
@@ -609,6 +629,7 @@ private:
     pid_t pid_;
     CGWindowID wid_;
     AXUIElementRef ax_app_, ax_win_;
+    bool shared_ = false;
     NSRunningApplication *app_ = nil;
     std::shared_ptr<CaptureState> capture_;
     CGRect frame_ = CGRectZero;  // where it was last put (screen coordinates)
@@ -640,10 +661,56 @@ std::unique_ptr<EmbeddedWindow> MacBackend::Adopt(const std::vector<int> &pids, 
     // (Every macOS window names its process: allow_unowned has nothing to
     // allow.)
     (void)allow_unowned;
+    return AdoptWhere([&](const WindowInfo &w) { return std::find(pids.begin(), pids.end(), static_cast<int>(w.pid)) != pids.end(); },
+                      false);
+}
+
+std::unique_ptr<EmbeddedWindow> MacBackend::AdoptHandoff(const std::vector<std::string> &executables, const std::vector<int> &own_pids) {
+    if (executables.empty()) return nullptr;
+    // (Looked up once per process per call: a handful of windows.)
+    std::map<pid_t, bool> runs_it;
+    return AdoptWhere(
+        [&](const WindowInfo &w) {
+            if (known_.count(w.id) || std::find(own_pids.begin(), own_pids.end(), static_cast<int>(w.pid)) != own_pids.end()) return false;
+            auto it = runs_it.find(w.pid);
+            if (it == runs_it.end()) {
+                const std::string exe = ProcessExecutable(static_cast<int>(w.pid));
+                it = runs_it.emplace(w.pid, std::find(executables.begin(), executables.end(), exe) != executables.end()).first;
+            }
+            return it->second;
+        },
+        true);
+}
+
+std::string MacBackend::ResolveApplication(const std::string &name) const {
+    if (name.empty() || name.find('/') != std::string::npos) return "";
+    @autoreleasepool {
+        NSString *want = [[NSString stringWithUTF8String:name.c_str()] lowercaseString];
+        if (![want hasSuffix:@".app"]) want = [want stringByAppendingString:@".app"];
+        NSMutableArray<NSString *> *dirs = [NSMutableArray arrayWithArray:@[
+            @"/Applications", @"/Applications/Utilities", @"/System/Applications", @"/System/Applications/Utilities",
+            @"/Applications/Nix Apps"
+        ]];
+        [dirs addObject:[NSHomeDirectory() stringByAppendingPathComponent:@"Applications"]];
+        [dirs addObject:[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Home Manager Apps"]];
+        NSFileManager *fm = [NSFileManager defaultManager];
+        for (NSString *dir in dirs) {
+            for (NSString *entry in [fm contentsOfDirectoryAtPath:dir error:nil]) {
+                if (![[entry lowercaseString] isEqualToString:want]) continue;
+                NSBundle *bundle = [NSBundle bundleWithPath:[dir stringByAppendingPathComponent:entry]];
+                NSString *exe = bundle.executablePath;
+                if (exe.length) return [[exe stringByResolvingSymlinksInPath] UTF8String];
+            }
+        }
+    }
+    return "";
+}
+
+std::unique_ptr<EmbeddedWindow> MacBackend::AdoptWhere(const std::function<bool(const WindowInfo &)> &wanted, bool shared) {
     std::vector<WindowInfo> candidates;
     for (const WindowInfo &w : ListWindows(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID)) {
         if (w.layer != 0 || w.pid == self_pid_ || w.bounds.size.width < 2 || w.bounds.size.height < 2) continue;
-        if (std::find(pids.begin(), pids.end(), static_cast<int>(w.pid)) == pids.end()) continue;
+        if (!wanted(w)) continue;
         candidates.push_back(w);
     }
     std::stable_sort(candidates.begin(), candidates.end(), [](const WindowInfo &a, const WindowInfo &b) {
@@ -675,7 +742,7 @@ std::unique_ptr<EmbeddedWindow> MacBackend::Adopt(const std::vector<int> &pids, 
         if (windows) CFRelease(windows);
         if (found) {
             AXUIElementSetMessagingTimeout(found, 0.5f);
-            return std::make_unique<MacWindow>(*this, cand, app, found);
+            return std::make_unique<MacWindow>(*this, cand, app, found, shared);
         }
         CFRelease(app);
     }

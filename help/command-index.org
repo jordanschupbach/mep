@@ -5,7 +5,7 @@
 
 * Every command
 
-All 393 ex commands mep defines: 123 built in and 271 registered from Lua.
+All 394 ex commands mep defines: 124 built in and 271 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -20,28 +20,28 @@ bindings instead. A dash means no page covers that command yet.
 | =:aiagents= | [[file:ai-agents.html][The AI Agents sidebar]] |
 | =:aiterm= | [[file:ai-terminal.html][Claude Code in a pane]] |
 | =:aiterminal= | [[file:ai-terminal.html][Claude Code in a pane]] |
-| =:bd= | [[file:collab-server.html][Running a relay]] |
+| =:bd= | [[file:exec.html][Programs in a pane]] |
 | =:bd!= | [[file:files.html][Files and buffers]] |
 | =:bdelete= | [[file:command-line.html][The command line]] |
 | =:bdelete!= | -- |
 | =:bN= | [[file:mepml.html][mepml]] |
-| =:bn= | [[file:command-line.html][The command line]] |
+| =:bn= | [[file:files.html][Files and buffers]] |
 | =:bNext= | [[file:mepml.html][mepml]] |
 | =:bnext= | [[file:command-line.html][The command line]] |
-| =:bp= | [[file:command-line.html][The command line]] |
+| =:bp= | [[file:files.html][Files and buffers]] |
 | =:bprev= | [[file:command-line.html][The command line]] |
 | =:bprevious= | [[file:command-line.html][The command line]] |
-| =:Browse= | [[file:browser.html][The browser pane]] |
+| =:Browse= | [[file:files.html][Files and buffers]] |
 | =:BrowseExternal= | [[file:browser.html][The browser pane]] |
 | =:CadExport= | -- |
 | =:CadNew= | -- |
-| =:close= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:close= | [[file:command-line.html][The command line]] |
 | =:CollabJoin= | [[file:collab.html][Collaborative editing]] |
 | =:CollabLeave= | [[file:collab.html][Collaborative editing]] |
 | =:CollabStatus= | [[file:collab.html][Collaborative editing]] |
 | =:colo= | [[file:cad-fem.html][CAD and finite elements]] |
-| =:colorscheme= | [[file:config.html][Configuration]] |
-| =:Copilot= | [[file:ai-commands.html][Ask the model]] |
+| =:colorscheme= | [[file:settings.html][Settings]] |
+| =:Copilot= | [[file:copilot.html][GitHub Copilot]] |
 | =:CopilotDisable= | -- |
 | =:CopilotEnable= | -- |
 | =:CopilotLogin= | [[file:copilot.html][GitHub Copilot]] |
@@ -49,18 +49,19 @@ bindings instead. A dash means no page covers that command yet.
 | =:CopilotPanel= | [[file:copilot.html][GitHub Copilot]] |
 | =:CopilotStatus= | [[file:copilot.html][GitHub Copilot]] |
 | =:DocViewToggle= | [[file:mepml.html][mepml]] |
-| =:e= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:e= | [[file:audio-svg.html][Audio and vector]] |
 | =:e!= | [[file:files.html][Files and buffers]] |
 | =:edit= | [[file:ai-commands.html][Ask the model]] |
 | =:edit!= | -- |
+| =:exec= | [[file:exec.html][Programs in a pane]] |
 | =:Gantt= | -- |
 | =:help= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:HtmlViewToggle= | [[file:mepml.html][mepml]] |
 | =:Kanban= | -- |
-| =:Learn= | [[file:architecture.html][How mep is put together]] |
-| =:lua= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:Learn= | [[file:learn-games.html][Playing]] |
+| =:lua= | [[file:notifications.html][Notifications]] |
 | =:MarkdownViewToggle= | [[file:mepml.html][mepml]] |
-| =:Menu= | [[file:highlight-groups.html][Highlight groups]] |
+| =:Menu= | [[file:mod1-keys.html][The mod1 layer]] |
 | =:MepActivityBar= | -- |
 | =:MepActivityTestPanel= | [[file:tests.html][Tests]] |
 | =:MepActivityTestRun= | [[file:tests.html][Tests]] |
@@ -293,7 +294,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepStructureSplit= | [[file:structure-symbols.html][Structure and symbols]] |
 | =:MepSttToggle= | -- |
 | =:MepSymbols= | [[file:sidebars.html][Sidebars]] |
-| =:MepSyntax= | [[file:folding.html][Folds]] |
+| =:MepSyntax= | [[file:syntax.html][Syntax highlighting]] |
 | =:MepSyntaxFold= | [[file:folding.html][Folds]] |
 | =:MepTabTerminal= | [[file:terminals.html][Terminals]] |
 | =:MepTermJump= | [[file:repl.html][REPL and send-to-terminal]] |
@@ -309,12 +310,12 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepZen= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
 | =:Model3DNew= | [[file:model3d.html][The 3D modeler]] |
 | =:music= | -- |
-| =:norm= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:norm= | [[file:command-line.html][The command line]] |
 | =:norm!= | -- |
-| =:normal= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:normal= | [[file:command-line.html][The command line]] |
 | =:normal!= | -- |
 | =:NotebookNew= | [[file:notebooks.html][Jupyter notebooks]] |
-| =:Org= | [[file:architecture.html][How mep is put together]] |
+| =:Org= | [[file:org-basics.html][Org files in mep]] |
 | =:OrgViewToggle= | [[file:mepml.html][mepml]] |
 | =:PresBackground= | [[file:presentations.html][Presentations]] |
 | =:PresExport= | [[file:presentations.html][Presentations]] |
@@ -330,8 +331,8 @@ bindings instead. A dash means no page covers that command yet.
 | =:projectp= | [[file:projects.html][Projects]] |
 | =:projectprev= | [[file:projects.html][Projects]] |
 | =:projectprevious= | [[file:projects.html][Projects]] |
-| =:projects= | [[file:architecture.html][How mep is put together]] |
-| =:q= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:projects= | [[file:projects.html][Projects]] |
+| =:q= | [[file:command-line.html][The command line]] |
 | =:q!= | [[file:command-line.html][The command line]] |
 | =:qa= | [[file:command-line.html][The command line]] |
 | =:qa!= | [[file:command-line.html][The command line]] |
@@ -339,17 +340,17 @@ bindings instead. A dash means no page covers that command yet.
 | =:qall!= | -- |
 | =:quit= | [[file:command-line.html][The command line]] |
 | =:quit!= | -- |
-| =:Runner= | [[file:glossary.html][Glossary]] |
+| =:Runner= | [[file:runners.html][The command runner]] |
 | =:RunnerVariables= | -- |
 | =:RunnerWorkspaces= | -- |
 | =:Serve= | [[file:local-server.html][Serving a directory]] |
 | =:Servers= | [[file:local-server.html][Serving a directory]] |
 | =:ServeStop= | [[file:local-server.html][Serving a directory]] |
-| =:set= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:set= | [[file:command-line.html][The command line]] |
 | =:SketchNew= | [[file:sketch.html][The 2D sketcher]] |
-| =:source= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:source= | [[file:installing.html][Installing and running]] |
 | =:sp= | [[file:agent-api.html][Driving mep from an agent]] |
-| =:split= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:split= | [[file:command-line.html][The command line]] |
 | =:tabclose= | -- |
 | =:tabdelete= | [[file:command-line.html][The command line]] |
 | =:tabN= | -- |
@@ -360,17 +361,17 @@ bindings instead. A dash means no page covers that command yet.
 | =:tabprevious= | [[file:panes-tabs.html][Panes and tabs]] |
 | =:tabterm= | [[file:terminals.html][Terminals]] |
 | =:tabterminal= | [[file:terminals.html][Terminals]] |
-| =:term= | [[file:agent-api.html][Driving mep from an agent]] |
-| =:terminal= | [[file:agent-api.html][Driving mep from an agent]] |
-| =:Text= | [[file:command-line.html][The command line]] |
-| =:Viewer= | [[file:filetypes.html][Filetypes]] |
+| =:term= | [[file:terminals.html][Terminals]] |
+| =:terminal= | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =:Text= | [[file:org-basics.html][Org files in mep]] |
+| =:Viewer= | [[file:viewer.html][The viewer]] |
 | =:ViewerBind= | [[file:viewer.html][The viewer]] |
 | =:ViewerRun= | [[file:viewer.html][The viewer]] |
 | =:vs= | [[file:command-line.html][The command line]] |
 | =:vsplit= | [[file:command-line.html][The command line]] |
-| =:w= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:w= | [[file:editing.html][Editing basics]] |
 | =:w!= | [[file:files.html][Files and buffers]] |
-| =:wa= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:wa= | [[file:command-line.html][The command line]] |
 | =:wall= | [[file:cad-fem.html][CAD and finite elements]] |
 | =:WebLadder= | [[file:web-ladder.html][Measuring the engine]] |
 | =:WebLadderRun= | [[file:web-ladder.html][Measuring the engine]] |
@@ -386,25 +387,25 @@ bindings instead. A dash means no page covers that command yet.
 | =:wsadopt= | [[file:workspaces.html][Workspaces]] |
 | =:wsclose= | -- |
 | =:wsclose!= | -- |
-| =:wsdelete= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsdelete= | [[file:workspaces.html][Workspaces]] |
 | =:wsdelete!= | [[file:troubleshooting.html][Troubleshooting]] |
 | =:wslist= | [[file:workspaces.html][Workspaces]] |
-| =:wsn= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsn= | [[file:workspaces.html][Workspaces]] |
 | =:wsnew= | [[file:git-workspaces.html][Branch-per-workspace]] |
 | =:wsnew!= | [[file:git-workspaces.html][Branch-per-workspace]] |
 | =:wsnext= | [[file:workspaces.html][Workspaces]] |
-| =:wsp= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsp= | [[file:workspaces.html][Workspaces]] |
 | =:wsprevious= | [[file:workspaces.html][Workspaces]] |
 | =:wsprune= | [[file:git-workspaces.html][Branch-per-workspace]] |
 | =:wsrename= | [[file:workspaces.html][Workspaces]] |
 | =:wsrestore= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
 | =:wssave= | [[file:layouts-zen.html][Layouts, zoom and zen]] |
-| =:x= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:x= | [[file:command-line.html][The command line]] |
 | =:x!= | -- |
-| =:xa= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:xa= | [[file:command-line.html][The command line]] |
 | =:xall= | -- |
 | =:youtube= | [[file:youtube.html][YouTube player]] |
-| =:yt= | [[file:ai-commands.html][Ask the model]] |
+| =:yt= | [[file:youtube.html][YouTube player]] |
 
 * See also
 

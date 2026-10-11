@@ -1,0 +1,92 @@
+#+TITLE: Programs in a pane
+#+HTML_HEAD: <meta name="help-section" content="Running code">
+#+HTML_HEAD: <meta name="help-order" content="60">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Run a program as a pane
+
+=:exec= starts a program and shows its window as the current pane, the way
+=:terminal= shows a shell:
+
+#+begin_example
+:exec firefox
+:exec firefox --private-window https://example.org
+:exec xclock -update 1
+:exec Visual Studio Code
+#+end_example
+
+The window fills the pane's text area and follows the pane: split it, resize
+it or move it with =mod1=, and the program's window goes with it. Switch the
+pane to another buffer and the window is hidden until you come back. The
+pane's tab is named after the command.
+
+When the window first appears, the program gets the keyboard. Type into it as
+usual, and use =Ctrl-\= (or click anywhere outside its window) to get back to
+mep.
+
+| Key                     | Does                                            |
+|-------------------------+-------------------------------------------------|
+| =Enter=, =i= or a click | send the keyboard and mouse to the program      |
+| =Ctrl-\=                | give them back to mep                           |
+| a click outside it      | the same                                        |
+| =r=                     | start the program again, once it has closed     |
+| =:= and the leader      | mep's, while the program does not have the keyboard |
+| =:bd=                   | close the program and the pane's buffer         |
+
+=:bd= asks the program to close the way its own close button would, so it can
+ask about unsaved work. If it is still running a few seconds later, it is
+stopped.
+
+* What it runs
+
+A plain command line is run directly, from the workspace's directory. One that
+uses the shell (pipes, redirections, =$VARIABLES=, globs, =~=) is run by
+=/bin/sh=:
+
+#+begin_example
+:exec env GDK_SCALE=2 gimp
+:exec zathura ~/papers/notes.pdf
+#+end_example
+
+A name that is not a command on =PATH= may be an application. On macOS,
+=:exec firefox= finds /Firefox.app/ in =/Applications=, =~/Applications=,
+=/System/Applications= or their =Utilities= folders (the name is not
+case-sensitive), and runs the program inside it. Anything after the name is
+passed to it as arguments. If the whole line names an application, as in
+=:exec Visual Studio Code=, that application is run.
+
+* Programs that are already open
+
+Many programs (browsers, editors, office suites), when started while a copy
+is already running, ask that copy to open a new window and then exit. =:exec=
+waits for that: the new window that copy opens becomes the pane's. Its other
+windows are left alone.
+
+Such a window belongs to your running copy, not to mep. So =:bd= only ever
+asks that one window to close (a second =:bd=, or a window that will not
+close, leaves it as it is), and mep never stops the program. The pane shows
+that the program has closed once that window is gone, and =r= opens another.
+
+* Where it works
+
+| Platform       | How                                                         |
+|----------------+-------------------------------------------------------------|
+| Linux (X11)    | the window is taken into mep's own window and clipped to the pane |
+| macOS          | the window stays the program's, kept over the pane and just above mep's window |
+| anything else  | =:exec= says that it cannot show a program's window there   |
+
+On macOS this needs the Accessibility permission (System Settings > Privacy &
+Security > Accessibility), for mep or for the terminal it was started from.
+macOS asks for it the first time. Until it is given, =:exec= says so and opens
+nothing. Because the window is the program's own and not part of mep's, mep's
+popups (the command line, which-key, pickers) are drawn underneath it while it
+shows.
+
+=:exec= uses the same machinery as a mepml =exec-gui= block, which shows a
+program's window inside a document instead of as a pane. See
+[[file:mepml.html][mepml]] for that.
+
+* See also
+
+- [[file:mepml.html][mepml]] -- =exec-gui= blocks: a program's window inside a document.
+- [[file:mod1-keys.html][The mod1 layer]] -- moving and resizing panes, an =:exec= pane among them.

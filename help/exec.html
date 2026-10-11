@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Programs in a pane</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Running code">
+<meta name="help-order" content="60">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Programs in a pane</h1>
+<h1>Run a program as a pane</h1>
+<p><code>:exec</code> starts a program and shows its window as the current pane, the way
+<code>:terminal</code> shows a shell:</p>
+<pre>:exec firefox
+:exec firefox --private-window https://example.org
+:exec xclock -update 1
+:exec Visual Studio Code</pre>
+<p>The window fills the pane's text area and follows the pane: split it, resize
+it or move it with <code>mod1</code>, and the program's window goes with it. Switch the
+pane to another buffer and the window is hidden until you come back. The
+pane's tab is named after the command.</p>
+<p>When the window first appears, the program gets the keyboard. Type into it as
+usual, and use <code>Ctrl-\</code> (or click anywhere outside its window) to get back to
+mep.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Enter</code>, <code>i</code> or a click</td><td>send the keyboard and mouse to the program</td></tr>
+<tr><td><code>Ctrl-\</code></td><td>give them back to mep</td></tr>
+<tr><td>a click outside it</td><td>the same</td></tr>
+<tr><td><code>r</code></td><td>start the program again, once it has closed</td></tr>
+<tr><td><code>:</code> and the leader</td><td>mep's, while the program does not have the keyboard</td></tr>
+<tr><td><code>:bd</code></td><td>close the program and the pane's buffer</td></tr>
+</table>
+<p><code>:bd</code> asks the program to close the way its own close button would, so it can
+ask about unsaved work. If it is still running a few seconds later, it is
+stopped.</p>
+<h1>What it runs</h1>
+<p>A plain command line is run directly, from the workspace's directory. One that
+uses the shell (pipes, redirections, <code>$VARIABLES</code>, globs, <code>~</code>) is run by
+<code>/bin/sh</code>:</p>
+<pre>:exec env GDK_SCALE=2 gimp
+:exec zathura ~/papers/notes.pdf</pre>
+<p>A name that is not a command on <code>PATH</code> may be an application. On macOS,
+<code>:exec firefox</code> finds <i>Firefox.app</i> in <code>/Applications</code>, <code>~/Applications</code>,
+<code>/System/Applications</code> or their <code>Utilities</code> folders (the name is not
+case-sensitive), and runs the program inside it. Anything after the name is
+passed to it as arguments. If the whole line names an application, as in
+<code>:exec Visual Studio Code</code>, that application is run.</p>
+<h1>Programs that are already open</h1>
+<p>Many programs (browsers, editors, office suites), when started while a copy
+is already running, ask that copy to open a new window and then exit. <code>:exec</code>
+waits for that: the new window that copy opens becomes the pane's. Its other
+windows are left alone.</p>
+<p>Such a window belongs to your running copy, not to mep. So <code>:bd</code> only ever
+asks that one window to close (a second <code>:bd</code>, or a window that will not
+close, leaves it as it is), and mep never stops the program. The pane shows
+that the program has closed once that window is gone, and <code>r</code> opens another.</p>
+<h1>Where it works</h1>
+<table>
+<tr><th>Platform</th><th>How</th></tr>
+<tr><td>Linux (X11)</td><td>the window is taken into mep's own window and clipped to the pane</td></tr>
+<tr><td>macOS</td><td>the window stays the program's, kept over the pane and just above mep's window</td></tr>
+<tr><td>anything else</td><td><code>:exec</code> says that it cannot show a program's window there</td></tr>
+</table>
+<p>On macOS this needs the Accessibility permission (System Settings &gt; Privacy &amp;
+Security &gt; Accessibility), for mep or for the terminal it was started from.
+macOS asks for it the first time. Until it is given, <code>:exec</code> says so and opens
+nothing. Because the window is the program's own and not part of mep's, mep's
+popups (the command line, which-key, pickers) are drawn underneath it while it
+shows.</p>
+<p><code>:exec</code> uses the same machinery as a mepml <code>exec-gui</code> block, which shows a
+program's window inside a document instead of as a pane. See
+<a href="mepml.html">mepml</a> for that.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="mepml.html">mepml</a> -- <code>exec-gui</code> blocks: a program's window inside a document.</li>
+<li><a href="mod1-keys.html">The mod1 layer</a> -- moving and resizing panes, an <code>:exec</code> pane among them.</li>
+</ul>
+</body>
+</html>

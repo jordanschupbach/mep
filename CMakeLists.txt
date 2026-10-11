@@ -817,6 +817,7 @@ add_library(mep_core STATIC
     src/http_server.cpp
     src/editor.cpp
     src/editor_mepml.cpp
+    src/editor_exec.cpp
     src/editor_pres.cpp
     # Another program's window inside the document (mepml exec-gui):
     # gui_embed.cpp is the platform-free half, gui_embed_x11.cpp the X11

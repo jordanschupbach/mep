@@ -124,6 +124,28 @@ public:
     // all (old toolkits set no _NET_WM_PID) -- only safe while a single
     // program is waiting for its window.
     virtual std::unique_ptr<EmbeddedWindow> Adopt(const std::vector<int> &pids, bool allow_unowned) = 0;
+    // Adopts a window a program *handed off*: most browsers, editors and
+    // office suites, started while a copy is already running, ask that copy
+    // for a new window and exit. A window that was not there when
+    // NoteExistingWindows ran, owned by a process (none of `own_pids`)
+    // running one of `executables` (absolute, canonical paths: what was
+    // started, and what it ran -- a launcher script's real program). That process is
+    // not mep's: the window must be hidden and closed on its own, never by
+    // anything that touches the rest of the program (its other windows are
+    // the user's). Null when there is none (yet), or the backend cannot.
+    virtual std::unique_ptr<EmbeddedWindow> AdoptHandoff(const std::vector<std::string> &executables, const std::vector<int> &own_pids) {
+        (void)executables;
+        (void)own_pids;
+        return nullptr;
+    }
+    // The program to run for an application known by name rather than as a
+    // command on PATH -- "firefox" or "Visual Studio Code" on macOS, whose
+    // applications are bundles: the bundle's executable. "" when there is
+    // no such application (or the platform has none of that kind).
+    virtual std::string ResolveApplication(const std::string &name) const {
+        (void)name;
+        return "";
+    }
     // Once per frame: drains the windowing system's events.
     virtual void Pump() = 0;
     // Once per frame, after every Place/Hide: pushes the changes out.
@@ -166,6 +188,26 @@ std::unique_ptr<Backend> CreateMacOSBackend(void *native_window_handle, std::str
  * @param pid The root process.
  */
 std::vector<int> ProcessTree(int pid);
+
+/**
+ * @brief Splits a plain command line into words the way the shell would ('...' and "..." quoting, backslash escapes).
+ * @param line The command line.
+ * @param words Set to its words.
+ * @return False (words empty) when the line uses more of the shell than that -- pipes, redirections, variables, globs, ~ -- and so is /bin/sh's to run.
+ */
+bool SplitCommandLine(const std::string &line, std::vector<std::string> *words);
+
+/**
+ * @brief The program a command names, as a canonical path: `name` itself when it has a '/', else the first match on PATH; "" when there is none.
+ * @param name The command's first word.
+ */
+std::string FindProgram(const std::string &name);
+
+/**
+ * @brief The canonical path of the program a process runs (Linux: /proc/<pid>/exe; macOS: proc_pidpath), "" when unknown.
+ * @param pid The process.
+ */
+std::string ProcessExecutable(int pid);
 
 // --- Abstraction ------------------------------------------------------------
 
@@ -215,6 +257,16 @@ public:
     bool TakeFocusLost();
     // See EmbeddedWindow::SetPointerThrough; kept for a window adopted later.
     void SetPointerThrough(bool on);
+    // Before Start: the canonical path of the program being started, so a
+    // window it hands off to an already-running copy of itself is adopted
+    // instead (Backend::AdoptHandoff). From then on the window *is* the
+    // program: it ends when the window closes, and stopping it only ever
+    // asks the window to close -- the process belongs to the user.
+    void SetHandoff(const std::string &executable) { handoff_exes_ = {executable}; }
+    bool HandedOff() const { return handed_off_; }
+    // Whether to keep pictures of it (LastSnapshot) -- a document's block
+    // keeps its last frame; a pane showing the program itself needs none.
+    void SetSnapshots(bool on) { snapshots_ = on; }
     // True once each time the program took the keyboard by itself (a click
     // into a pointer-through window): the editor then treats it as focused.
     bool TakeFocusGained();
@@ -256,6 +308,10 @@ private:
     bool shown_ = false;        // placed during the last frame drawn
     bool focused_ = false;
     bool focus_lost_ = false;
+    bool snapshots_ = true;
+    std::vector<std::string> handoff_exes_;  // SetHandoff, plus what its processes ran while it waited
+    bool handed_off_ = false;   // its window is a handed-off one
+    double exited_at_ = -1.0;   // when the process ended (a hand-off is looked for a while after)
     std::string title_;
     Snapshot snapshot_;
     std::vector<std::string> out_, err_;

@@ -4242,17 +4242,19 @@ void Editor::MepmlGuisEndFrame() {
             status_message_ = "Back in the document";
         }
     }
+    ExecAppsEndFrame();
     if (gui_backend_) gui_backend_->Flush();
 }
 
 void Editor::MepmlGuisTick() {
-    if (mepml_guis_.empty() || !gui_backend_) return;
+    if ((mepml_guis_.empty() && exec_apps_.empty() && exec_apps_closing_.empty()) || !gui_backend_) return;
     using State = mep::gui_embed::EmbeddedApp::State;
     gui_backend_->Pump();
     // A window that names no process is only taken as a program's own
     // while exactly one program is waiting for its window.
     int waiting = 0;
     for (const auto &kv : mepml_guis_) waiting += kv.second.app->GetState() == State::Starting ? 1 : 0;
+    waiting += ExecAppsWaiting();
     for (auto it = mepml_guis_.begin(); it != mepml_guis_.end();) {
         MepmlGuiRun &run = it->second;
         if (run.buffer_id < 0 || run.buffer_id >= static_cast<int>(buffers_.size())) {
@@ -4337,6 +4339,9 @@ void Editor::MepmlGuisTick() {
         RemoveTempFiles(run.temp_files);
         it = mepml_guis_.erase(it);
     }
+    // The :exec panes share the backend (one Pump, above) and the rule
+    // about ownerless windows.
+    ExecAppsTick(waiting == 1);
 }
 
 // --- The presentation view ---------------------------------------------------

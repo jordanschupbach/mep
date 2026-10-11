@@ -6,6 +6,7 @@
 #include <dirent.h>  // ProcessTree's /proc walk, below -- Linux only
 #endif
 #if defined(__APPLE__)
+#include <libproc.h>  // ProcessExecutable
 #include <sys/sysctl.h>
 #endif
 #if defined(_WIN32)
@@ -15,6 +16,10 @@
 #include <windows.h>
 #include <tlhelp32.h>  // ProcessTree's process-table snapshot
 #endif
+#if !defined(_WIN32)
+#include <unistd.h>  // FindProgram's access()
+#endif
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -84,6 +89,107 @@ std::unique_ptr<Backend> CreateBackend(void *native_window_handle) {
 #else
     return CreateUnsupportedBackend("embedding a program's window is not implemented on this platform yet (only X11 and macOS are)");
 #endif
+}
+
+bool SplitCommandLine(const std::string &line, std::vector<std::string> *words) {
+    words->clear();
+    std::string word;
+    bool in_word = false;
+    char quote = 0;
+    auto shell = [&] {
+        words->clear();
+        return false;
+    };
+    for (size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (quote == '\'') {
+            if (c == '\'') quote = 0;
+            else word += c;
+            continue;
+        }
+        if (quote == '"') {
+            if (c == '"') {
+                quote = 0;
+            } else if (c == '$' || c == '`') {
+                return shell();
+            } else if (c == '\\' && i + 1 < line.size() && std::string("\"\\$`").find(line[i + 1]) != std::string::npos) {
+                word += line[++i];
+            } else {
+                word += c;
+            }
+            continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\n') {
+            if (in_word) words->push_back(word);
+            word.clear();
+            in_word = false;
+            continue;
+        }
+        if (std::string("|&;<>()$`*?[]{}!#").find(c) != std::string::npos) return shell();
+        if (c == '~' && !in_word) return shell();
+        in_word = true;
+        if (c == '\'' || c == '"') {
+            quote = c;
+        } else if (c == '\\' && i + 1 < line.size()) {
+            word += line[++i];
+        } else {
+            word += c;
+        }
+    }
+    if (quote) return shell();
+    if (in_word) words->push_back(word);
+    return !words->empty();
+}
+
+namespace {
+std::string CanonicalPath(const std::filesystem::path &p) {
+    std::error_code ec;
+    const std::filesystem::path c = std::filesystem::canonical(p, ec);
+    return ec ? std::string() : c.string();
+}
+}  // namespace
+
+std::string FindProgram(const std::string &name) {
+    if (name.empty()) return "";
+    if (name.find('/') != std::string::npos) return CanonicalPath(name);
+    const char *path = std::getenv("PATH");
+    if (!path) return "";
+    const std::string dirs = path;
+    size_t start = 0;
+    while (start <= dirs.size()) {
+        size_t end = dirs.find(':', start);
+        if (end == std::string::npos) end = dirs.size();
+        const std::string dir = dirs.substr(start, end - start);
+        start = end + 1;
+        if (dir.empty()) continue;
+        const std::filesystem::path candidate = std::filesystem::path(dir) / name;
+        std::error_code ec;
+#if defined(_WIN32)
+        if (std::filesystem::is_regular_file(candidate, ec)) return CanonicalPath(candidate);
+#else
+        if (std::filesystem::is_regular_file(candidate, ec) && access(candidate.c_str(), X_OK) == 0) return CanonicalPath(candidate);
+#endif
+    }
+    return "";
+}
+
+std::string ProcessExecutable(int pid) {
+    if (pid <= 0) return "";
+    std::string path;
+#if defined(__linux__)
+    std::error_code ec;
+    path = std::filesystem::read_symlink("/proc/" + std::to_string(pid) + "/exe", ec).string();
+    if (ec) return "";
+#elif defined(__APPLE__)
+    char buf[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(pid, buf, sizeof buf) <= 0) return "";
+    path = buf;
+#else
+    return "";
+#endif
+    std::error_code canon_ec;
+    const std::filesystem::path canon = std::filesystem::canonical(path, canon_ec);
+    return canon_ec ? path : canon.string();
 }
 
 std::vector<int> ProcessTree(int pid) {
@@ -230,14 +336,49 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
             exit_code_ = job_state_->exit_code;
         }
     }
-    if (exited_) {
+    if (exited_ && !handed_off_) {
+        if (exited_at_ < 0) exited_at_ = now;
+        // Started while a copy of it was already running, it asked that
+        // copy for a window and exited: the window is looked for a while
+        // yet, among the copy's (SetHandoff).
+        if (!handoff_exes_.empty() && !window_ && now - exited_at_ < kWindowWaitSec) {
+            window_ = backend_.AdoptHandoff(handoff_exes_, {pid_});
+            if (window_) {
+                handed_off_ = true;
+                window_->SetPointerThrough(pointer_through_);
+                state_ = State::Shown;
+                title_ = window_->Title();
+                last_snapshot_ = -1.0;
+            } else {
+                state_ = State::Starting;
+            }
+            return;
+        }
+        window_.reset();
+        focused_ = false;
+        state_ = State::Exited;
+        return;
+    }
+    // A handed-off window is the program: once it is gone (closed, or let
+    // go of by Stop), so is the program.
+    if (handed_off_ && (!window_ || !window_->Alive())) {
         window_.reset();
         focused_ = false;
         state_ = State::Exited;
         return;
     }
     if (!window_) {
-        if (pid_ > 0) window_ = backend_.Adopt(ProcessTree(pid_), allow_unowned);
+        const std::vector<int> tree = ProcessTree(pid_);
+        if (pid_ > 0) window_ = backend_.Adopt(tree, allow_unowned);
+        // What its processes run, for a hand-off once it exits: a launcher
+        // script's real program is what an already-running copy runs too.
+        if (!window_ && !handoff_exes_.empty()) {
+            for (int p : tree) {
+                const std::string exe = ProcessExecutable(p);
+                if (!exe.empty() && std::find(handoff_exes_.begin(), handoff_exes_.end(), exe) == handoff_exes_.end())
+                    handoff_exes_.push_back(exe);
+            }
+        }
         if (window_) {
             window_->SetPointerThrough(pointer_through_);
             state_ = State::Shown;
@@ -272,14 +413,14 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
     // (What was on screen -- a window clipped by the pane's edge captures
     // as the part that showed, which TakeSnapshot keeps only while it has
     // nothing whole.)
-    if (shown_ && (last_snapshot_ < 0 || now - last_snapshot_ >= kSnapshotEverySec)) {
+    if (snapshots_ && shown_ && (last_snapshot_ < 0 || now - last_snapshot_ >= kSnapshotEverySec)) {
         TakeSnapshot();
         last_snapshot_ = now;
     }
 }
 
 void EmbeddedApp::TakeSnapshot() {
-    if (!window_) return;
+    if (!window_ || !snapshots_) return;
     Snapshot s = window_->Capture();
     // A window the pane's edge cuts off captures as a piece of itself. That
     // piece may be all there is to show, but it must not replace a whole
@@ -341,6 +482,19 @@ bool EmbeddedApp::TakeFocusLost() {
 }
 
 void EmbeddedApp::Stop() {
+    if (handed_off_) {
+        // Not mep's process (the user's own copy of the program): its window
+        // is asked to close, and only let go of -- left as it is -- when it
+        // will not, or on a second stop. Nothing is ever signalled.
+        ++stops_;
+        if (window_ && (stops_ > 1 || !window_->RequestClose())) {
+            if (focused_) window_->Focus(false);
+            window_.reset();
+        }
+        return;
+    }
+    // Still waiting for a handed-off window: stop waiting.
+    handoff_exes_.clear();
     if (exited_ || job_id_ <= 0) return;
     if (stops_++ == 0) {
         // Its picture as it was when stopped, then a close request (the

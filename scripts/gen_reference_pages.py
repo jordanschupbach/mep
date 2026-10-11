@@ -163,6 +163,13 @@ def documented_in():
 
 def page_for(token, where, leader=False):
     needle = f"<leader>{token}" if leader else token
+    # A page naming the command as such (=:exec=) explains it; one that
+    # merely contains the word somewhere ("exec" in a C example) is only
+    # the fallback.
+    if not leader:
+        for stem, (title, body) in sorted(where.items()):
+            if f"=:{token}=" in body:
+                return f"[[file:{stem}.html][{title}]]"
     for stem, (title, body) in sorted(where.items()):
         if needle in body:
             return f"[[file:{stem}.html][{title}]]"

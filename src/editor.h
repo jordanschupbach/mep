@@ -236,6 +236,13 @@ enum class Mode {
     // or plays, Backspace/h goes up, Space play/pause, n/p next/prev, +/-
     // volume. See Editor::HandleMusicInput.
     Music,
+    // A focused :exec pane (an ExecAppSession buffer, opened by :exec):
+    // another program's own window fills the pane's text area, the way a
+    // mepml exec-gui block's fills its results. Enter or i hands the program
+    // the keyboard (Ctrl-\ or a click outside its window takes it back);
+    // ':' and the leader stay mep's; r starts it again once it has ended.
+    // See Editor::HandleExecAppInput.
+    ExecApp,
     // A focused YouTube-player pane (a YoutubeSession buffer -- see below,
     // opened by the :youtube command or the tab bar's YouTube button).
     // Searches via yt-dlp, decodes the chosen video with ffmpeg into raw
@@ -10664,6 +10671,46 @@ public:
      * @brief Once per frame (from MepmlTerminalsTick): finds windows, takes the keyboard back when asked, and writes each ended program's results.
      */
     void MepmlGuisTick();
+
+    // --- :exec panes (editor_exec.cpp) ----------------------------------
+    // `:exec firefox` runs a program and shows its window as a pane, the
+    // way an exec-gui block shows one in a document (gui_embed.h does the
+    // windowing). The command is run directly when it is a plain command
+    // line, through /bin/sh when it uses the shell; a name that is not on
+    // PATH may be an application (Backend::ResolveApplication: "firefox" on
+    // macOS is Firefox.app). A program that hands its window to a copy of
+    // itself already running (a browser usually does) gets that window.
+    /**
+     * @brief Runs a program and shows its window in the current pane.
+     * @param args The command line as typed after :exec.
+     */
+    void OpenExecInPlace(const std::string &args);
+    /** @brief True if the buffer is an :exec pane. */
+    bool IsExecAppBuffer(int buffer_id) const;
+    struct ExecAppView {
+        std::string status;  // what to draw while there is no window
+        bool shown = false;  // its window is adopted (the draw leaves the area to it)
+        bool focused = false;
+    };
+    /** @brief What DrawPane needs to know about an :exec pane; false when the buffer is not one. */
+    bool ExecAppViewOf(int buffer_id, ExecAppView *out) const;
+    /** @brief Where DrawPane shows the program's window this frame (see EmbeddedWindow::Place). */
+    void ExecAppPlace(int buffer_id, const mep::gui_embed::Rect &full, const mep::gui_embed::Rect &clip);
+    /** @brief Hands an :exec pane's program the keyboard (a click on it, Enter, i). */
+    void ExecAppFocus(int buffer_id);
+    /** @brief Starts an :exec pane's program again once it has ended (r). */
+    void ExecAppRestart(int buffer_id);
+    /** @brief Stops the program of an :exec pane whose buffer is being deleted (it finishes closing in the background). */
+    void ExecAppClose(int buffer_id);
+    // Enter/i focus, r restart, ':' and the leader -- see Mode::ExecApp.
+    void HandleExecAppInput();
+    // Once per frame, from MepmlGuisTick (the same backend Pump) and
+    // MepmlGuisEndFrame (before its Flush).
+    void ExecAppsTick(bool allow_unowned);
+    void ExecAppsEndFrame();
+    // How many :exec programs are still waiting for their window (the
+    // unowned-window rule in MepmlGuisTick counts these too).
+    int ExecAppsWaiting() const;
     /**
      * @brief Rebuilds provider="mepml" folds (heading sections, code blocks, citations, comment runs), keeping each fold's open/closed state.
      */
@@ -14451,6 +14498,21 @@ private:
         mep::gui_embed::Rect placed;  // this frame's area (a click outside it takes the keyboard back)
     };
     std::map<int, MepmlGuiRun> mepml_guis_;
+    // :exec panes, keyed by buffer id (editor_exec.cpp).
+    struct ExecAppSession {
+        std::unique_ptr<mep::gui_embed::EmbeddedApp> app;
+        std::string label;              // the command as typed, for the pane and its tab
+        std::vector<std::string> argv;  // what is run (r runs it again)
+        std::string handoff_exe;        // the program, for a handed-off window ("" = run through the shell)
+        std::string cwd;
+        mep::gui_embed::Rect placed;    // this frame's area (a click outside it takes the keyboard back)
+        bool focus_when_shown = true;   // hands it the keyboard the first time its window shows
+    };
+    std::map<int, ExecAppSession> exec_apps_;
+    int exec_app_focus_ = -1;  // the :exec buffer whose program holds the keyboard, or -1
+    // Programs of deleted :exec buffers, asked to close and given until the
+    // deadline to do it (one may ask about unsaved work) before they go.
+    std::vector<std::pair<std::unique_ptr<mep::gui_embed::EmbeddedApp>, double>> exec_apps_closing_;
     int mepml_gui_focus_ = -1;  // the GUI run holding the keyboard, or -1
     int mepml_term_focus_ = -1;  // the run the keyboard goes to while mode_ is Terminal
     // Keyed by buffer_id -- one entry per open image-viewer pane. Unlike

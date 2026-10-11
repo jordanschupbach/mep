@@ -105,6 +105,9 @@ public:
         for (Window w : ClientWindows()) known_.insert(w);
     }
     std::unique_ptr<EmbeddedWindow> Adopt(const std::vector<int> &pids, bool allow_unowned) override;
+    // (Reparenting and unmapping act on the one window, so a handed-off
+    // window is held exactly like a program's own.)
+    std::unique_ptr<EmbeddedWindow> AdoptHandoff(const std::vector<std::string> &executables, const std::vector<int> &own_pids) override;
     void Pump() override;
     void Flush() override { XFlush(dpy_); }
 
@@ -583,6 +586,35 @@ std::unique_ptr<EmbeddedWindow> X11Backend::Adopt(const std::vector<int> &pids, 
         if (!mine) continue;
         Window transient_for = 0;
         if (XGetTransientForHint(dpy_, w, &transient_for) && transient_for != 0) continue;  // a dialog, not its main window
+        XWindowAttributes a;
+        if (!XGetWindowAttributes(dpy_, w, &a) || a.width <= 1 || a.height <= 1) continue;
+        const long area = static_cast<long>(a.width) * a.height;
+        if (area > best_area) {
+            best = w;
+            best_area = area;
+        }
+    }
+    if (!best) return nullptr;
+    return std::make_unique<X11Window>(*this, best);
+}
+
+std::unique_ptr<EmbeddedWindow> X11Backend::AdoptHandoff(const std::vector<std::string> &executables, const std::vector<int> &own_pids) {
+    if (executables.empty()) return nullptr;
+    Window best = 0;
+    long best_area = -1;
+    std::map<int, bool> runs_it;  // pid -> runs `executable`
+    for (Window w : ClientWindows()) {
+        if (known_.count(w)) continue;
+        const int pid = PidOf(w);
+        if (pid <= 0 || std::find(own_pids.begin(), own_pids.end(), pid) != own_pids.end()) continue;
+        auto it = runs_it.find(pid);
+        if (it == runs_it.end()) {
+            const std::string exe = ProcessExecutable(pid);
+            it = runs_it.emplace(pid, std::find(executables.begin(), executables.end(), exe) != executables.end()).first;
+        }
+        if (!it->second) continue;
+        Window transient_for = 0;
+        if (XGetTransientForHint(dpy_, w, &transient_for) && transient_for != 0) continue;
         XWindowAttributes a;
         if (!XGetWindowAttributes(dpy_, w, &a) || a.width <= 1 || a.height <= 1) continue;
         const long area = static_cast<long>(a.width) * a.height;

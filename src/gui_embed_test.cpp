@@ -6,6 +6,7 @@
 // The X11 implementor itself is exercised live (help/mepml.org's exec-gui
 // section describes what to try).
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -106,11 +107,23 @@ public:
         window_ready = false;
         return std::make_unique<FakeWindow>(log);
     }
+    std::unique_ptr<EmbeddedWindow> AdoptHandoff(const std::vector<std::string> &executables, const std::vector<int> &own_pids) override {
+        ++handoff_asks;
+        handoff_exes = executables;
+        handoff_own = own_pids;
+        if (!handoff_ready) return nullptr;
+        handoff_ready = false;
+        return std::make_unique<FakeWindow>(log);
+    }
     void Pump() override {}
     void Flush() override {}
 
     std::shared_ptr<WindowLog> log = std::make_shared<WindowLog>();
     bool window_ready = false;
+    bool handoff_ready = false;  // a copy already running opens the window instead
+    int handoff_asks = 0;
+    std::vector<std::string> handoff_exes;
+    std::vector<int> handoff_own;
     int noted = 0;
     std::vector<int> last_pids;
     bool last_allow_unowned = false;
@@ -324,6 +337,121 @@ void TestClippedSnapshotWhenNothingWholeSeen() {
     RunUntil(app, now, [&] { return app.GetState() == EmbeddedApp::State::Exited; });
 }
 
+// A program that hands its window to a copy of itself already running and
+// exits (a browser): that window is looked for after the exit, and is then
+// the program -- it ends when the window closes, and stopping it only ever
+// asks the window to close.
+void TestHandoff() {
+    const std::string sh = mep::gui_embed::FindProgram("sh");
+    CHECK(!sh.empty());
+    {
+        FakeBackend be;
+        EmbeddedApp app(be);
+        app.SetSnapshots(false);
+        app.SetHandoff(sh);
+        std::string error;
+        // While it runs, what its children run joins what a hand-off may run.
+        CHECK(app.Start({"/bin/sh", "-c", "sleep 0.3; exit 0"}, ".", &error));
+        double now = 0.0;
+        RunUntil(app, now, [&] { return be.handoff_asks > 0; });
+        CHECK(be.handoff_asks > 0);
+        CHECK(app.GetState() == EmbeddedApp::State::Starting);  // exited, still waiting
+        CHECK(!be.handoff_exes.empty() && be.handoff_exes.front() == sh);
+        CHECK(std::find(be.handoff_exes.begin(), be.handoff_exes.end(), mep::gui_embed::FindProgram("sleep")) != be.handoff_exes.end());
+        CHECK(!be.handoff_own.empty());
+        be.handoff_ready = true;
+        RunUntil(app, now, [&] { return app.GetState() == EmbeddedApp::State::Shown; });
+        CHECK(app.GetState() == EmbeddedApp::State::Shown);
+        CHECK(app.HandedOff());
+        // Shown, but no pictures: they were turned off.
+        app.Place(Rect{0, 0, 100, 100}, Rect{0, 0, 100, 100});
+        app.EndFrame();
+        now += 5.0;
+        app.Tick(now, false);
+        CHECK(be.log->captures == 0);
+        // Stopping asks the window to close, and the process is not ours to signal.
+        app.Stop();
+        CHECK(be.log->close_requests == 1);
+        CHECK(app.GetState() == EmbeddedApp::State::Shown);
+        be.log->alive = false;  // the user's program closed it
+        app.Tick(now, false);
+        CHECK(app.GetState() == EmbeddedApp::State::Exited);
+    }
+    {
+        // A handed-off window that will not close is let go of on the second stop.
+        FakeBackend be;
+        be.handoff_ready = true;
+        be.log->takes_close = false;
+        EmbeddedApp app(be);
+        app.SetHandoff(sh);
+        std::string error;
+        CHECK(app.Start({"/bin/sh", "-c", "exit 0"}, ".", &error));
+        double now = 0.0;
+        RunUntil(app, now, [&] { return app.GetState() == EmbeddedApp::State::Shown; });
+        CHECK(app.HandedOff());
+        app.Stop();  // refused: let go of at once
+        app.Tick(now, false);
+        CHECK(app.GetState() == EmbeddedApp::State::Exited);
+        CHECK(be.log->close_requests == 1);
+    }
+    {
+        // No hand-off ever comes: given up on, and the program has ended.
+        FakeBackend be;
+        EmbeddedApp app(be);
+        app.SetHandoff(sh);
+        std::string error;
+        CHECK(app.Start({"/bin/sh", "-c", "exit 3"}, ".", &error));
+        double now = 0.0;
+        RunUntil(app, now, [&] { return be.handoff_asks > 0; });
+        CHECK(app.GetState() == EmbeddedApp::State::Starting);
+        now += 60.0;
+        app.Tick(now, false);
+        CHECK(app.GetState() == EmbeddedApp::State::Exited);
+        CHECK(app.ExitCode() == 3);
+    }
+    {
+        // Without SetHandoff, an exit is the end at once.
+        FakeBackend be;
+        be.handoff_ready = true;
+        EmbeddedApp app(be);
+        std::string error;
+        CHECK(app.Start({"/bin/sh", "-c", "exit 0"}, ".", &error));
+        double now = 0.0;
+        RunUntil(app, now, [&] { return app.GetState() == EmbeddedApp::State::Exited; });
+        CHECK(app.GetState() == EmbeddedApp::State::Exited);
+        CHECK(be.handoff_asks == 0 && !app.HandedOff());
+    }
+}
+
+void TestSplitCommandLine() {
+    using mep::gui_embed::SplitCommandLine;
+    std::vector<std::string> w;
+    CHECK(SplitCommandLine("firefox", &w) && w == std::vector<std::string>{"firefox"});
+    CHECK(SplitCommandLine("  firefox   --private-window  https://x.org/a  ", &w) &&
+          w == (std::vector<std::string>{"firefox", "--private-window", "https://x.org/a"}));
+    CHECK(SplitCommandLine("open 'two words' \"and \\\"three\\\"\" a\\ b ''", &w) &&
+          w == (std::vector<std::string>{"open", "two words", "and \"three\"", "a b", ""}));
+    CHECK(SplitCommandLine("Visual Studio Code", &w) && w.size() == 3);
+    // The shell's: run by /bin/sh instead.
+    for (const char *line : {"a | b", "a > out", "a; b", "a && b", "echo $HOME", "echo \"$HOME\"", "ls *.txt", "cd ~", "a `b`",
+                             "unterminated 'quote"}) {
+        CHECK(!SplitCommandLine(line, &w));
+        CHECK(w.empty());
+    }
+    CHECK(SplitCommandLine("a~b", &w) && w == std::vector<std::string>{"a~b"});  // ~ only expands at a word's start
+    CHECK(!SplitCommandLine("   ", &w));
+}
+
+void TestFindProgram() {
+    using mep::gui_embed::FindProgram;
+    const std::string sh = FindProgram("sh");
+    CHECK(!sh.empty() && sh.front() == '/');
+    CHECK(FindProgram("/bin/sh") == sh || !FindProgram("/bin/sh").empty());
+    CHECK(FindProgram("mep-no-such-program-anywhere").empty());
+    CHECK(FindProgram("").empty());
+    CHECK(mep::gui_embed::ProcessExecutable(-1).empty());
+}
+
 void TestProcessTree() {
     // A shell with a child: both are in the tree, the shell first.
     const int id = JobManager::Instance().Spawn({"/bin/sh", "-c", "sleep 30 & wait"}, ".", {});
@@ -348,6 +476,9 @@ int main() {
     TestExitStatus();
     TestClippedSnapshotKeepsWholePicture();
     TestClippedSnapshotWhenNothingWholeSeen();
+    TestHandoff();
+    TestSplitCommandLine();
+    TestFindProgram();
     TestProcessTree();
     JobManager::Instance().ShutdownAll(200);
     if (g_failures) {

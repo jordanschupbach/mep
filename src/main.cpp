@@ -48573,6 +48573,44 @@ void DrawMepmlGui(int run_id, float x, float y, float w, float h, const gfx::Rec
 }
 
 /**
+ * @brief Draws an :exec pane (Editor::OpenExecInPlace): the program's own window over its text area, or what is happening while there is none.
+ * @param pane The pane.
+ * @param view What the editor says about it (Editor::ExecAppViewOf).
+ * @param x The content area's left edge.
+ * @param y The content area's top.
+ * @param w The content area's width.
+ * @param h The content area's height.
+ */
+void DrawExecAppPane(const Pane &pane, const Editor::ExecAppView &view, float x, float y, float w, float h) {
+    const gfx::Rectangle rect{x, y, w, h};
+    gfx::DrawRectangle(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
+                       ResolveHlGroup("NormalBg"));
+    gfx::DrawRectangle(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
+                       gfx::Fade(ResolveHlGroup("Comment"), 0.08f));
+    if (!view.status.empty()) {
+        const gfx::Vector2 ts = gfx::MeasureTextEx(g_font, view.status.c_str(), g_font_size, 0.0f);
+        gfx::DrawTextEx(g_font, view.status.c_str(),
+                        gfx::Vector2{rect.x + std::max(8.0f, (rect.width - ts.x) / 2.0f), rect.y + (rect.height - ts.y) / 2.0f},
+                        g_font_size, 0.0f, ResolveHlGroup("MutedFg"));
+    }
+    // The program's window covers the whole area, inside a one-pixel frame
+    // that shows whether it has the keyboard.
+    const mep::gui_embed::Rect full{static_cast<int>(x) + 1, static_cast<int>(y) + 1, static_cast<int>(w) - 2, static_cast<int>(h) - 2};
+    g_editor.ExecAppPlace(pane.buffer_id, full, full);
+    gfx::DrawRectangleLines(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
+                            view.focused ? ResolveHlGroup("Accent") : gfx::Fade(ResolveHlGroup("Border"), 0.6f));
+    // A click on it (mep sees clicks there until the program has the
+    // keyboard) focuses the pane and hands the program the keyboard.
+    if (view.shown && !view.focused) {
+        const int pane_id = pane.id, buffer_id = pane.buffer_id;
+        RegisterClickRegionOnTop(rect, [pane_id, buffer_id] {
+            g_editor.FocusPaneById(pane_id);
+            g_editor.ExecAppFocus(buffer_id);
+        });
+    }
+}
+
+/**
  * @brief Rows a mepml html result takes when rendered (Editor::SetHtmlMeasureHook).
  * @param html The result's markup.
  * @param base_dir Directory its relative paths resolve against.
@@ -50774,6 +50812,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     if (CadSketchSession *sketch_sess = g_editor.GetCadSketchMutable(pane.buffer_id); sketch_sess != nullptr) {
         DrawCadSketchPane(pane, *sketch_sess, x, content_y, w, content_h, is_active);
+        DrawPaneBorder(x, y, w, h, is_active);
+        return;
+    }
+
+    if (Editor::ExecAppView exec_view; g_editor.ExecAppViewOf(pane.buffer_id, &exec_view)) {
+        DrawExecAppPane(pane, exec_view, x, content_y, w, content_h);
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }

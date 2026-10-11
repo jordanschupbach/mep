@@ -680,7 +680,8 @@ root.mainloop()
 ```</pre>
 <p>The window keeps to the block: it scrolls with the document, is cut off at
 the pane's edges, and is hidden while its block is off screen or another
-buffer is shown. <code>rows</code> sets its height (20 rows by default) and <code>cols</code> its
+buffer is shown. (To show a program as a pane of its own instead, use
+<code>:exec</code>: see <a href="exec.html">Programs in a pane</a>.) <code>rows</code> sets its height (20 rows by default) and <code>cols</code> its
 width (the text width by default).</p>
 <p>On macOS the program's window is its own still (nothing can be drawn inside
 another program's window there): mep moves and sizes it over the block,

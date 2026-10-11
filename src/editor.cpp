@@ -4997,6 +4997,9 @@ void Editor::HandleInput() {
         case Mode::Music:
             HandleMusicInput();
             break;
+        case Mode::ExecApp:
+            HandleExecAppInput();
+            break;
         case Mode::Youtube:
             HandleYoutubeInput();
             break;
@@ -5997,6 +6000,7 @@ Mode Editor::WheelModeForBuffer(int buffer_id) const {
     if (IsPdfBuffer(buffer_id)) return Mode::Pdf;
     if (IsVideoBuffer(buffer_id)) return Mode::Video;
     if (IsMusicBuffer(buffer_id)) return Mode::Music;
+    if (IsExecAppBuffer(buffer_id)) return Mode::ExecApp;
     if (IsYoutubeBuffer(buffer_id)) return Mode::Youtube;
     if (IsHtmlBuffer(buffer_id)) return Mode::Html;
     if (IsSidebarPaneBuffer(buffer_id)) return Mode::SidebarPane;
@@ -6781,7 +6785,7 @@ bool Editor::BufferIsPristine(int buffer_id) const {
     // of the buffer lists entirely.
     if (IsTerminalBuffer(buffer_id) || GetImageEditor(buffer_id) || IsModel3DBuffer(buffer_id) ||
         IsCadSketchBuffer(buffer_id) || IsCadBuffer(buffer_id) || IsViewerBuffer(buffer_id) || IsMusicBuffer(buffer_id) ||
-        IsYoutubeBuffer(buffer_id)) {
+        IsYoutubeBuffer(buffer_id) || IsExecAppBuffer(buffer_id)) {
         return false;
     }
     return true;
@@ -7615,6 +7619,8 @@ void Editor::SyncModeToActivePaneBuffer() {
         mode_ = Mode::Video;
     } else if (IsMusicBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Music;
+    } else if (IsExecAppBuffer(CurPane().buffer_id)) {
+        mode_ = Mode::ExecApp;
     } else if (IsYoutubeBuffer(CurPane().buffer_id)) {
         mode_ = Mode::Youtube;
     } else if (IsHtmlBuffer(CurPane().buffer_id)) {
@@ -7654,7 +7660,7 @@ void Editor::SyncModeToActivePaneBuffer() {
         mode_ = Mode::GanttNormal;
     } else if (mode_ == Mode::Terminal || mode_ == Mode::Image || mode_ == Mode::ImageEditor || mode_ == Mode::Model3D ||
                mode_ == Mode::Pdf || mode_ == Mode::PdfNav || mode_ == Mode::PdfAnnotate || mode_ == Mode::Video ||
-               mode_ == Mode::Music || mode_ == Mode::Youtube || mode_ == Mode::Html ||
+               mode_ == Mode::Music || mode_ == Mode::ExecApp || mode_ == Mode::Youtube || mode_ == Mode::Html ||
                mode_ == Mode::OfficeNormal || mode_ == Mode::OfficeInsert || mode_ == Mode::OfficeVisual ||
                mode_ == Mode::SheetNormal || mode_ == Mode::SheetInsert || mode_ == Mode::SheetVisual ||
                mode_ == Mode::PresNormal || mode_ == Mode::PresInsert ||
@@ -13674,6 +13680,8 @@ bool Editor::IsYoutubeBuffer(int buffer_id) const { return youtube_sessions_.fin
 
 std::string Editor::SpecialBufferName(int buffer_id) const {
     if (IsYoutubeBuffer(buffer_id)) return "YT";
+    // An :exec pane goes by its command.
+    if (auto it = exec_apps_.find(buffer_id); it != exec_apps_.end()) return it->second.label;
     return "";
 }
 
@@ -18529,6 +18537,9 @@ void Editor::BufferDeleteById(int target, bool force) {
         if (mit->second.sound_loaded) gfx::UnloadSound(mit->second.sound);
         music_sessions_.erase(mit);
     }
+    // An :exec pane: its program is asked to close (it may ask about
+    // unsaved work first), and stopped if it has not within a few seconds.
+    ExecAppClose(target);
     // Likewise a YouTube pane: kill its decoder/search jobs and close its
     // audio stream so :bd actually stops the video.
     if (auto yit = youtube_sessions_.find(target); yit != youtube_sessions_.end()) {
@@ -28953,6 +28964,7 @@ const char *ModeName(Mode m, bool replace_mode, bool settings_panel) {
         case Mode::PdfAnnotate: return "PDF-ANNOT";
         case Mode::Video: return "VIDEO";
         case Mode::Music: return "MUSIC";
+        case Mode::ExecApp: return "APP";
         case Mode::Youtube: return "YOUTUBE";
         case Mode::Html: return "HTML";
         case Mode::SidebarPane: return "SIDEBAR";
@@ -29020,7 +29032,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "w", "write", "w!", "write!", "wa", "wall", "q", "quit", "q!", "quit!", "qa", "qall", "qa!", "qall!",
         "wq", "x", "wq!", "x!", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!", "split", "sp", "vsplit", "vs",
         "terminal", "term",
-        "music", "youtube", "yt", "MepYoutube",
+        "music", "exec", "youtube", "yt", "MepYoutube",
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
         "wsnew", "wsnew!", "wsdelete", "wsdelete!", "wsclose", "wsclose!", "wsnext", "wsn", "wsprevious", "wsp",
         "wsrename", "ws", "workspace", "wslist", "workspaces", "wsadopt", "wsprune", "wssave", "wsrestore",
@@ -31577,6 +31589,10 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         OpenTerminalInPlace(args);
     } else if (name == "music") {
         OpenMusicInPlace(args);
+        SyncModeToActivePaneBuffer();
+    } else if (name == "exec") {
+        // Another program's window as this pane (editor_exec.cpp).
+        OpenExecInPlace(args);
         SyncModeToActivePaneBuffer();
     } else if (name == "youtube" || name == "yt") {
         OpenYoutubeInPlace(args);
@@ -34945,7 +34961,7 @@ bool Editor::BufferHasFileText(int buffer_id) const {
     return !(IsImageBuffer(buffer_id) || IsPdfBuffer(buffer_id) || IsVideoBuffer(buffer_id) ||
              IsMusicBuffer(buffer_id) || IsYoutubeBuffer(buffer_id) || IsModel3DBuffer(buffer_id) ||
              IsCadBuffer(buffer_id) || IsCadSketchBuffer(buffer_id) || IsOfficeBuffer(buffer_id) ||
-             IsSheetBuffer(buffer_id) || IsHtmlBuffer(buffer_id) || IsTerminalBuffer(buffer_id));
+             IsSheetBuffer(buffer_id) || IsHtmlBuffer(buffer_id) || IsTerminalBuffer(buffer_id) || IsExecAppBuffer(buffer_id));
 }
 
 void Editor::GitGutterRefreshBuffer(int buffer_id, const std::string &base) {

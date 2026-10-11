@@ -36,15 +36,15 @@ through the project for every test suite it knows how to run and lists
 each one as its own group, so a repository with a CMake build, a Python
 package and two npm packages shows all four:
 
-| Suite       | Found when a directory has                                    | One row per        |
-|-------------+---------------------------------------------------------------+--------------------|
-| ctest       | a configured build directory (see below), at the project root | ctest test         |
-| pytest      | a Python project marker and tests, with pytest importable     | test (node id)     |
-| unittest    | the same, without pytest                                       | test method        |
-| testthat    | =tests/testthat=                                               | =test-*.R= file    |
-| jest        | a =package.json= naming jest                                   | test file          |
-| vitest      | a =package.json= naming vitest                                 | test file          |
-| node:test   | a =package.json= whose test script runs =node --test=          | test file          |
+| Suite       | Found when a directory has                                    | One row per         | Grouped by                 |
+|-------------+---------------------------------------------------------------+---------------------+----------------------------|
+| ctest       | a configured build directory (see below), at the project root | ctest test          | label                      |
+| pytest      | a Python project marker and tests, with pytest importable     | test (node id)      | file, then class           |
+| unittest    | the same, without pytest                                       | test method         | module, then class         |
+| testthat    | =tests/testthat=                                               | =test_that()= block | file, then =describe()=    |
+| jest        | a =package.json= naming jest                                   | test file           | directory                  |
+| vitest      | a =package.json= naming vitest                                 | test file           | directory                  |
+| node:test   | a =package.json= whose test script runs =node --test=          | test file           | directory                  |
 
 A Python project marker is =pyproject.toml=, =setup.py=, =setup.cfg=,
 =pytest.ini=, =tox.ini= or =conftest.py=, alongside a =tests/= or =test/=
@@ -66,24 +66,30 @@ Each row has a mark for where it stands:
 | ✗    | failed, timed out, or its build failed      |
 | -    | skipped                                     |
 
-Press Enter on a test to run just that test, or on a suite's heading to
-run that suite. Enter on the =all= row at the top runs every suite, one
-after another. The marks update live as each runner reports.
+Within a suite, tests sit in groups, nested the way the runner nests them
+(see the table above). Each group's row counts what is under it -- =✗2 ✓5
+○1= -- leaving out what is zero.
+
+Press Enter on a test to run just that test, on a group to run everything
+in it, or on a suite's heading to run that suite. Enter on the =all= row at
+the top runs every suite, one after another. The marks update live as each
+runner reports.
 
 | Key   | Does                                                       |
 |-------+------------------------------------------------------------|
-| Enter | run the test, suite or (top row) everything under the cursor |
+| Enter | run the test, group, suite or (top row) everything under the cursor |
 | =a=   | run every suite                                            |
 | =f=   | re-run only the tests that failed, in every suite          |
-| =o=   | show the output of the test or suite under the cursor      |
-| =c=   | fold or unfold the suite under the cursor                  |
+| =o=   | show the output of the test, group or suite under the cursor |
+| =c=   | fold or unfold the group (or suite) under the cursor       |
 | =x=   | stop the run                                               |
 | =R=   | look for suites again and re-list their tests              |
 
 =o= on a failed test shows its traceback, testthat's failure summary, or
 Jest/Vitest/Node's message for that file. For a ctest test whose build
 failed, it shows the build log, compiler error included. On a suite's
-heading it shows that suite's last run; on the top row, every suite's. The
+heading it shows that suite's last run; on a group, the output of every test
+in it that failed; on the top row, every suite's. The
 popout (=mod1+m=) shows the same output beside the list as you move
 through it.
 
@@ -95,6 +101,12 @@ through it.
 | pytest    | the project's =.venv=, =venv= or =env= Python if it has one, else =python3= |
 | unittest  | the same interpreter, with the standard library's =unittest=      |
 | testthat  | =Rscript=. A package is loaded once with =pkgload::load_all= |
+
+testthat's tests are found by reading the files, so a =test_that()= whose
+description is computed (=paste("case", i)=) is not listed until a run reports
+it. It then joins its file's group. Running one test runs just that block,
+through =test_file(desc = ...)=, which needs testthat 3.2 or later. Running a
+whole file runs it once.
 | jest, vitest | the project's =node_modules/.bin= (or a parent's), else =npx=  |
 | node:test | =node --test=                                                     |
 
@@ -124,7 +136,16 @@ mep.opt.activity_test_jobs = 8
 #+end_src
 
 Tests come from ordinary CMake: =enable_testing()= and one =add_test()=
-per test. Before running a test, mep builds the target its executable comes
+per test. A test's group is its first label that not every test carries:
+mep's own tests are all labelled =unit=, plus the area they cover (=cad=,
+=pdf=, =mepml=, =lsp=, ...), so they group by area, and =ctest -L cad= runs
+one area from the shell.
+
+#+begin_src cmake
+set_tests_properties(my-test PROPERTIES LABELS "unit;parser")
+#+end_src
+
+ Before running a test, mep builds the target its executable comes
 from. For a target nobody has built yet, it builds the target named after the
 test. mep's own windowless test binaries are registered this way, so
 =ctest --test-dir build/native= runs the same suite.
@@ -146,6 +167,11 @@ mep.test_provider_register({
   -- done({{name = ...}, ...}) or done(nil, 'why not').
   list = function(suite, done)
     done({{name = 'all'}})
+  end,
+  -- Optional: the test's group path and a shorter label for its row.
+  -- 'crate::module::test' -> {'crate', 'module'}, 'test'.
+  group = function(suite, test)
+    return nil
   end,
   -- argv (run in the suite's directory) for `names`, nil meaning every test.
   command = function(suite, names)

@@ -37,14 +37,14 @@ through the project for every test suite it knows how to run and lists
 each one as its own group, so a repository with a CMake build, a Python
 package and two npm packages shows all four:</p>
 <table>
-<tr><th>Suite</th><th>Found when a directory has</th><th>One row per</th></tr>
-<tr><td>ctest</td><td>a configured build directory (see below), at the project root</td><td>ctest test</td></tr>
-<tr><td>pytest</td><td>a Python project marker and tests, with pytest importable</td><td>test (node id)</td></tr>
-<tr><td>unittest</td><td>the same, without pytest</td><td>test method</td></tr>
-<tr><td>testthat</td><td><code>tests/testthat</code></td><td><code>test-*.R</code> file</td></tr>
-<tr><td>jest</td><td>a <code>package.json</code> naming jest</td><td>test file</td></tr>
-<tr><td>vitest</td><td>a <code>package.json</code> naming vitest</td><td>test file</td></tr>
-<tr><td>node:test</td><td>a <code>package.json</code> whose test script runs <code>node --test</code></td><td>test file</td></tr>
+<tr><th>Suite</th><th>Found when a directory has</th><th>One row per</th><th>Grouped by</th></tr>
+<tr><td>ctest</td><td>a configured build directory (see below), at the project root</td><td>ctest test</td><td>label</td></tr>
+<tr><td>pytest</td><td>a Python project marker and tests, with pytest importable</td><td>test (node id)</td><td>file, then class</td></tr>
+<tr><td>unittest</td><td>the same, without pytest</td><td>test method</td><td>module, then class</td></tr>
+<tr><td>testthat</td><td><code>tests/testthat</code></td><td><code>test_that()</code> block</td><td>file, then <code>describe()</code></td></tr>
+<tr><td>jest</td><td>a <code>package.json</code> naming jest</td><td>test file</td><td>directory</td></tr>
+<tr><td>vitest</td><td>a <code>package.json</code> naming vitest</td><td>test file</td><td>directory</td></tr>
+<tr><td>node:test</td><td>a <code>package.json</code> whose test script runs <code>node --test</code></td><td>test file</td><td>directory</td></tr>
 </table>
 <p>A Python project marker is <code>pyproject.toml</code>, <code>setup.py</code>, <code>setup.cfg</code>,
 <code>pytest.ini</code>, <code>tox.ini</code> or <code>conftest.py</code>, alongside a <code>tests/</code> or <code>test/</code>
@@ -64,23 +64,28 @@ are listed as suites of their own.</p>
 <tr><td>✗</td><td>failed, timed out, or its build failed</td></tr>
 <tr><td>-</td><td>skipped</td></tr>
 </table>
-<p>Press Enter on a test to run just that test, or on a suite's heading to
-run that suite. Enter on the <code>all</code> row at the top runs every suite, one
-after another. The marks update live as each runner reports.</p>
+<p>Within a suite, tests sit in groups, nested the way the runner nests them
+(see the table above). Each group's row counts what is under it -- =✗2 ✓5
+○1= -- leaving out what is zero.</p>
+<p>Press Enter on a test to run just that test, on a group to run everything
+in it, or on a suite's heading to run that suite. Enter on the <code>all</code> row at
+the top runs every suite, one after another. The marks update live as each
+runner reports.</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
-<tr><td>Enter</td><td>run the test, suite or (top row) everything under the cursor</td></tr>
+<tr><td>Enter</td><td>run the test, group, suite or (top row) everything under the cursor</td></tr>
 <tr><td><code>a</code></td><td>run every suite</td></tr>
 <tr><td><code>f</code></td><td>re-run only the tests that failed, in every suite</td></tr>
-<tr><td><code>o</code></td><td>show the output of the test or suite under the cursor</td></tr>
-<tr><td><code>c</code></td><td>fold or unfold the suite under the cursor</td></tr>
+<tr><td><code>o</code></td><td>show the output of the test, group or suite under the cursor</td></tr>
+<tr><td><code>c</code></td><td>fold or unfold the group (or suite) under the cursor</td></tr>
 <tr><td><code>x</code></td><td>stop the run</td></tr>
 <tr><td><code>R</code></td><td>look for suites again and re-list their tests</td></tr>
 </table>
 <p><code>o</code> on a failed test shows its traceback, testthat's failure summary, or
 Jest/Vitest/Node's message for that file. For a ctest test whose build
 failed, it shows the build log, compiler error included. On a suite's
-heading it shows that suite's last run; on the top row, every suite's. The
+heading it shows that suite's last run; on a group, the output of every test
+in it that failed; on the top row, every suite's. The
 popout (<code>mod1+m</code>) shows the same output beside the list as you move
 through it.</p>
 <h2>What runs each suite</h2>
@@ -90,6 +95,13 @@ through it.</p>
 <tr><td>pytest</td><td>the project's <code>.venv</code>, <code>venv</code> or <code>env</code> Python if it has one, else <code>python3</code></td></tr>
 <tr><td>unittest</td><td>the same interpreter, with the standard library's <code>unittest</code></td></tr>
 <tr><td>testthat</td><td><code>Rscript</code>. A package is loaded once with <code>pkgload::load_all</code></td></tr>
+</table>
+<p>testthat's tests are found by reading the files, so a <code>test_that()</code> whose
+description is computed (<code>paste("case", i)</code>) is not listed until a run reports
+it. It then joins its file's group. Running one test runs just that block,
+through <code>test_file(desc = ...)</code>, which needs testthat 3.2 or later. Running a
+whole file runs it once.</p>
+<table>
 <tr><td>jest, vitest</td><td>the project's <code>node_modules/.bin</code> (or a parent's), else <code>npx</code></td></tr>
 <tr><td>node:test</td><td><code>node --test</code></td></tr>
 </table>
@@ -110,7 +122,12 @@ mep.opt.activity_test_scan_depth = <span class="tok-cyan">2</span></code></pre><
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.activity_test_build_dir = <span class="tok-green">'build/native-dev'</span>
 mep.opt.activity_test_jobs = <span class="tok-cyan">8</span></code></pre></div>
 <p>Tests come from ordinary CMake: <code>enable_testing()</code> and one <code>add_test()</code>
-per test. Before running a test, mep builds the target its executable comes
+per test. A test's group is its first label that not every test carries:
+mep's own tests are all labelled <code>unit</code>, plus the area they cover (<code>cad</code>,
+<code>pdf</code>, <code>mepml</code>, <code>lsp</code>, ...), so they group by area, and <code>ctest -L cad</code> runs
+one area from the shell.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cmake</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cmake">set_tests_properties(my-test PROPERTIES LABELS "unit;parser")</code></pre></div>
+<p> Before running a test, mep builds the target its executable comes
 from. For a target nobody has built yet, it builds the target named after the
 test. mep's own windowless test binaries are registered this way, so
 <code>ctest --test-dir build/native</code> runs the same suite.</p>
@@ -128,6 +145,11 @@ the built-in ones. One registered under an existing <code>id</code> replaces it,
   <span class="tok-comment">-- done({{name = ...}, ...}) or done(nil, 'why not').</span>
   list = <span class="tok-purple">function</span>(<span class="tok-red">suite</span>, <span class="tok-red">done</span>)
     <span class="tok-blue">done</span>({<span class="tok-blue">{</span>name = <span class="tok-green">'all'</span><span class="tok-blue">}</span>})
+  <span class="tok-purple">end</span>,
+  <span class="tok-comment">-- Optional: the test's group path and a shorter label for its row.</span>
+  <span class="tok-comment">-- 'crate::module::test' -&gt; {'crate', 'module'}, 'test'.</span>
+  <span class="tok-blue">group</span> = <span class="tok-purple">function</span>(<span class="tok-red">suite</span>, <span class="tok-red">test</span>)
+    <span class="tok-purple">return</span> <span class="tok-cyan">nil</span>
   <span class="tok-purple">end</span>,
   <span class="tok-comment">-- argv (run in the suite's directory) for `names`, nil meaning every test.</span>
   <span class="tok-blue">command</span> = <span class="tok-purple">function</span>(<span class="tok-red">suite</span>, names)

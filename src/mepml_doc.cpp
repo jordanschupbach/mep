@@ -5746,14 +5746,35 @@ std::string HtmlLangAttr(const Document &doc) {
     const std::string lang = DocumentLanguage(doc);
     return lang.empty() ? "" : " lang=\"" + lang + "\"";
 }
+
+// HtmlOptions::source_lines: gives the first element `b` wrote (the markup
+// from `from` on) ` data-line="N"`, plus ` data-line-end="M"` when the block
+// spans several lines, both 1-based. A block from an \import is left alone:
+// its lines are the imported file's.
+void TagSourceLines(std::string *out, size_t from, const Block &b) {
+    if (!b.origin.empty() || b.line_start < 0) return;
+    for (size_t i = out->find('<', from); i != std::string::npos; i = out->find('<', i + 1)) {
+        if (i + 1 >= out->size() || !std::isalpha(static_cast<unsigned char>((*out)[i + 1]))) continue;
+        size_t end = i + 1;
+        while (end < out->size() && (std::isalnum(static_cast<unsigned char>((*out)[end])) || (*out)[end] == '-')) ++end;
+        std::string attr = " data-line=\"" + std::to_string(b.line_start + 1) + "\"";
+        if (b.line_end > b.line_start) attr += " data-line-end=\"" + std::to_string(b.line_end + 1) + "\"";
+        out->insert(end, attr);
+        return;
+    }
+}
 }  // namespace
 
 std::string ToHtml(const Document &doc, const HtmlOptions &opts) {
     HtmlWriter w(doc, opts);
     const std::vector<std::string> labels = BlockLabels(doc);
     const std::vector<bool> export_hidden = ExportHidden(doc);
-    for (size_t i = 0; i < doc.blocks.size(); ++i)
-        if (!export_hidden[i]) w.Block_(doc.blocks[i], labels[i]);
+    for (size_t i = 0; i < doc.blocks.size(); ++i) {
+        if (export_hidden[i]) continue;
+        const size_t at = w.out.size();
+        w.Block_(doc.blocks[i], labels[i]);
+        if (opts.source_lines) TagSourceLines(&w.out, at, doc.blocks[i]);
+    }
     w.EndSlide();
     if (!w.footnotes.empty()) {
         w.out += "<section class=\"footnotes\"><ol>";

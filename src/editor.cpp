@@ -11804,6 +11804,38 @@ std::string Editor::HtmlTitle(int buffer_id) const {
     return it == htmldocs_.end() ? std::string() : it->second.doc.title;
 }
 
+std::vector<Editor::HtmlSourceLine> Editor::HtmlSourceLines(int buffer_id) const {
+    std::vector<HtmlSourceLine> out;
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || !it->second.doc.root) return out;
+    std::function<void(const DomNode *)> walk = [&](const DomNode *n) {
+        if (n->type != DomNodeType::Element) return;
+        auto at = n->attrs.find("data-line");
+        if (at != n->attrs.end() && n->layout_h > 0.0f) {
+            HtmlSourceLine s;
+            s.line = std::atoi(at->second.c_str());
+            auto end = n->attrs.find("data-line-end");
+            s.line_end = end != n->attrs.end() ? std::atoi(end->second.c_str()) : s.line;
+            s.y = n->layout_y;
+            s.h = n->layout_h;
+            if (s.line > 0) out.push_back(s);
+        }
+        for (const auto &child : n->children) walk(child.get());
+    };
+    walk(it->second.doc.root.get());
+    std::stable_sort(out.begin(), out.end(), [](const HtmlSourceLine &a, const HtmlSourceLine &b) { return a.line < b.line; });
+    return out;
+}
+
+void Editor::ScrollHtmlTo(int buffer_id, float y) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    // A jump, not scrollIntoView's glide: that only advances on frames mep
+    // actually draws, and an idle editor stops drawing partway there.
+    it->second.scroll_y = std::max(0.0f, y);
+    it->second.scroll_anim_target = -1.0f;
+}
+
 bool Editor::NavigateHtmlHistory(int buffer_id, int direction) {
     auto it = htmldocs_.find(buffer_id);
     if (it == htmldocs_.end() || direction == 0 || it->second.history.empty()) return false;
@@ -12218,6 +12250,16 @@ void Editor::HandleHtmlInput() {
             } else if (cp == '-') {
                 sess->zoom = std::max(0.3f, sess->zoom - 0.1f);
             } else if (cp == '=') {
+                // A mepml export's page (its elements carry source-line
+                // tags) lines its source buffer up with the middle of the
+                // pane instead (MepmlSyncFromHtml, kBuiltinMepml) -- the
+                // other half of `=` in the mepml buffer. Elsewhere `=`
+                // resets the zoom.
+                auto sync = lua_commands_.find("MepmlSyncFromHtml");
+                if (sync != lua_commands_.end() && lua_ && !HtmlSourceLines(CurPane().buffer_id).empty()) {
+                    lua_->CallRefWithString(sync->second, "");
+                    return;  // the sync may have moved focus
+                }
                 sess->zoom = 1.0f;
             } else if (cp == 'r') {
                 auto it = lua_commands_.find("MepBrowseReload");
@@ -13651,10 +13693,10 @@ void Editor::MusicPollPlayback(int buffer_id) {
 
 namespace {
 
-// Whether `program` resolves to an executable on PATH -- the player's
-// two external tools (yt-dlp, ffmpeg) are looked up this way once at
-// open time so a missing one is reported as a readable notification
-// rather than a silent spawn failure per attempt.
+// Whether `program` resolves to an executable on PATH -- the player's one
+// external tool (curl, for HTTPS) is looked up this way once at open time
+// so a missing one is reported as a readable notification rather than a
+// silent spawn failure per attempt.
 bool YoutubeToolOnPath(const char *program) {
     // The PATH walk this used to do inline lives in platform_compat now:
     // the separator, what counts as executable, and whether the name needs
@@ -13669,10 +13711,9 @@ bool YoutubeLooksLikeUrl(const std::string &s) {
     return yt::CanonicalVideoUrl(s) != s;  // a bare 11-char id canonicalises to a watch URL
 }
 
-constexpr int kYoutubeSearchResults = 20;
-constexpr int kYoutubeMaxQueuedFrames = 6;
-constexpr double kYoutubeAudioAheadSec = 1.0;    // keep this much queued on the device
-constexpr double kYoutubeAudioPendingSec = 2.0;  // stop draining the decoder pipe past this
+constexpr size_t kYoutubeSearchResults = 20;
+constexpr double kYoutubeAudioAheadSec = 1.0;  // keep this much queued on the device
+constexpr int kYoutubeMaxHeight = 480;          // the tallest adaptive video a resolve picks
 
 }  // namespace
 
@@ -13719,9 +13760,9 @@ void Editor::OpenYoutubeInPlace(const std::string &arg) {
         YoutubeSession sess;
         sess.buffer_id = buffer_id;
         youtube_sessions_[buffer_id] = std::move(sess);
-        if (!YoutubeToolOnPath("yt-dlp") || !YoutubeToolOnPath("ffmpeg")) {
-            Notify("YouTube player needs `yt-dlp` and `ffmpeg` on PATH", NotifyLevel::Error);
-            youtube_sessions_[buffer_id].status = "yt-dlp and ffmpeg must be installed";
+        if (!YoutubeToolOnPath("curl")) {
+            Notify("YouTube player needs `curl` on PATH", NotifyLevel::Error);
+            youtube_sessions_[buffer_id].status = "curl must be installed";
         }
     }
     // Same tab-strip bookkeeping as LoadFile's own in-place open (see its
@@ -13777,31 +13818,24 @@ void Editor::ToggleYoutube() {
 
 void Editor::YoutubeTeardown(YoutubeSession &sess) {
     sess.generation++;
-    JobManager &jm = JobManager::Instance();
-    // SIGKILL, not SIGTERM: ffmpeg has nothing of ours to flush (its only
-    // outputs are these pipes), and a SIGTERM'd ffmpeg mid-stream was
-    // observed to linger for seconds to minutes still decoding at full
-    // speed (its graceful-shutdown path waits on the blocked pipe write)
-    // -- see the live test notes in YOUTUBE_PLAYER.md.
-    if (sess.video_job > 0) jm.KillHard(sess.video_job);
-    if (sess.audio_job > 0) jm.KillHard(sess.audio_job);
-    if (sess.resolve_job > 0) jm.Kill(sess.resolve_job);
-    sess.video_job = sess.audio_job = sess.resolve_job = 0;
+    if (sess.player) sess.player->Stop();
+    if (sess.resolve_job > 0) JobManager::Instance().Kill(sess.resolve_job);
+    sess.resolve_job = 0;
     sess.resolving = false;
     if (sess.audio_open) {
         gfx::CloseAudioStream(sess.audio);
         sess.audio = gfx::AudioStream{};
         sess.audio_open = false;
     }
-    sess.audio_pending.clear();
-    sess.frames.Reset(0);
-    sess.video_eof = sess.audio_eof = false;
-    sess.frames_consumed = 0;
+    sess.audio_scratch.clear();
+    sess.frames_shown = 0;
     sess.buffering = false;
 }
 
 void Editor::YoutubeStop(YoutubeSession &sess) {
     YoutubeTeardown(sess);
+    sess.resolve_client = 0;
+    sess.resolve_err.clear();
     sess.playing = false;
     sess.paused = false;
     sess.ended = false;
@@ -13839,37 +13873,32 @@ void Editor::YoutubeSearch(YoutubeSession &sess, const std::string &query) {
 
     int buffer_id = sess.buffer_id;
     int gen = ++sess.thumb_generation;
+    auto body = std::make_shared<std::string>();
     JobManager::Callbacks cb;
-    cb.on_stdout = [this, buffer_id, gen](const std::string &line) {
-        YoutubeSession *s = GetYoutubeMutable(buffer_id);
-        if (!s || s->thumb_generation != gen) return;
-        yt::SearchResult r;
-        if (!yt::ParseSearchLine(line, &r)) return;
-        s->results.push_back(std::move(r));
-        if (s->thumb_job == 0) YoutubeFetchNextThumb(*s);
+    cb.on_stdout = [body](const std::string &line) {
+        *body += line;
+        *body += '\n';
     };
-    cb.on_stderr = [this, buffer_id, gen](const std::string &line) {
-        YoutubeSession *s = GetYoutubeMutable(buffer_id);
-        if (!s || s->thumb_generation != gen) return;
-        if (line.rfind("ERROR", 0) == 0) s->search_error = line;
-    };
-    cb.on_exit = [this, buffer_id, gen](int code) {
+    cb.on_exit = [this, buffer_id, gen, body](int code) {
         YoutubeSession *s = GetYoutubeMutable(buffer_id);
         if (!s || s->thumb_generation != gen) return;
         s->searching = false;
         s->search_job = 0;
+        s->results = yt::ParseSearchResponse(*body);
+        if (s->results.size() > kYoutubeSearchResults) s->results.resize(kYoutubeSearchResults);
         if (s->results.empty()) {
-            s->status = !s->search_error.empty() ? s->search_error
-                        : (code == 0 ? "No results for \"" + s->query + "\"" : "yt-dlp search failed (exit " + std::to_string(code) + ")");
+            s->status = code == 0 ? "No results for \"" + s->query + "\"" : "Search failed (curl exit " + std::to_string(code) + ")";
         } else {
             s->status = std::to_string(s->results.size()) + " results for \"" + s->query + "\"";
+            YoutubeFetchNextThumb(*s);
         }
         mep::NoteActivity();
     };
-    sess.search_job = jm.Spawn(yt::SearchArgv(query, kYoutubeSearchResults), "", std::move(cb));
+    sess.search_job = jm.Spawn(yt::InnertubeArgv(yt::kSearchEndpoint, yt::SearchClient(), yt::SearchRequestBody(query)), "",
+                               std::move(cb));
     if (sess.search_job == 0) {
         sess.searching = false;
-        sess.status = "could not run yt-dlp";
+        sess.status = "could not run curl";
     }
 }
 
@@ -13921,7 +13950,7 @@ void Editor::YoutubeFetchNextThumb(YoutubeSession &sess) {
         YoutubeFetchNextThumb(*s);
         mep::NoteActivity();
     };
-    sess.thumb_job = JobManager::Instance().Spawn({"curl", "-sL", "--max-time", "15", url}, "", std::move(cb));
+    sess.thumb_job = JobManager::Instance().Spawn(yt::FetchArgv(url), "", std::move(cb));
     if (sess.thumb_job == 0) {
         // No curl: mark every row failed so this isn't retried per result.
         for (int i = 0; i < static_cast<int>(sess.results.size()); i++) {
@@ -13984,9 +14013,18 @@ void Editor::YoutubeStepTo(YoutubeSession &sess, int index) {
 }
 
 void Editor::YoutubeStartResolve(YoutubeSession &sess) {
+    const std::string id = yt::VideoId(sess.now_url);
+    if (id.empty()) {
+        sess.resolving = false;
+        sess.playing = false;
+        sess.status = "Not a YouTube video: " + sess.now_url;
+        return;
+    }
+    const std::vector<yt::Client> &clients = yt::PlayerClients();
+    if (sess.resolve_client >= clients.size()) sess.resolve_client = 0;
+    const yt::Client client = clients[sess.resolve_client];
     sess.resolving = true;
     sess.resolve_out.clear();
-    sess.resolve_err.clear();
     sess.status = "Resolving stream...";
     int buffer_id = sess.buffer_id;
     int gen = sess.generation;
@@ -13997,20 +14035,29 @@ void Editor::YoutubeStartResolve(YoutubeSession &sess) {
         s->resolve_out += line;
         s->resolve_out += '\n';
     };
-    cb.on_stderr = [this, buffer_id, gen](const std::string &line) {
-        YoutubeSession *s = GetYoutubeMutable(buffer_id);
-        if (!s || s->generation != gen) return;
-        if (line.rfind("ERROR", 0) == 0 || s->resolve_err.empty()) s->resolve_err = line;
-    };
-    cb.on_exit = [this, buffer_id, gen](int code) {
+    cb.on_exit = [this, buffer_id, gen, client](int code) {
         YoutubeSession *s = GetYoutubeMutable(buffer_id);
         if (!s || s->generation != gen) return;
         s->resolving = false;
         s->resolve_job = 0;
         yt::StreamInfo info;
         std::string err;
-        if (code != 0 || !yt::ParseStreamInfo(s->resolve_out, &info, &err)) {
-            s->status = !s->resolve_err.empty() ? s->resolve_err : (err.empty() ? "yt-dlp failed" : err);
+        const bool ok = code == 0 && yt::ParsePlayerResponse(s->resolve_out, client, kYoutubeMaxHeight, &info, &err);
+        if (!ok) {
+            if (code != 0) err = "YouTube could not be reached (curl exit " + std::to_string(code) + ")";
+            // If every client refuses, show the first refusal from a client
+            // that can play everything (the later ones are fallbacks); a
+            // muxed-only client's only when no such client got to answer.
+            const std::vector<yt::Client> &all = yt::PlayerClients();
+            bool earlier_muxed_only = true;
+            for (size_t i = 0; i < s->resolve_client && i < all.size(); i++) earlier_muxed_only = earlier_muxed_only && all[i].muxed_only;
+            if (s->resolve_err.empty() || (!client.muxed_only && earlier_muxed_only)) s->resolve_err = err;
+            if (s->resolve_client + 1 < yt::PlayerClients().size()) {
+                s->resolve_client++;
+                YoutubeStartResolve(*s);
+                return;
+            }
+            s->status = s->resolve_err.empty() ? err : s->resolve_err;
             s->playing = false;
             Notify("YouTube: " + s->status, NotifyLevel::Error);
             mep::NoteActivity();
@@ -14023,119 +14070,47 @@ void Editor::YoutubeStartResolve(YoutubeSession &sess) {
         YoutubeStartDecoders(*s, 0.0);
         mep::NoteActivity();
     };
-    // player_client=android: its URLs are fetchable by ffmpeg's plain GET.
-    sess.resolve_job = JobManager::Instance().Spawn(yt::ResolveArgv(sess.now_url, "android", 480), "", std::move(cb));
+    sess.resolve_job = JobManager::Instance().Spawn(
+        yt::InnertubeArgv(yt::kPlayerEndpoint, client, yt::PlayerRequestBody(client, id)), "", std::move(cb));
     if (sess.resolve_job == 0) {
         sess.resolving = false;
         sess.playing = false;
-        sess.status = "could not run yt-dlp";
+        sess.status = "could not run curl";
     }
 }
 
 void Editor::YoutubeStartDecoders(YoutubeSession &sess, double start_sec) {
-    JobManager &jm = JobManager::Instance();
-    // Keep the resolved info and transport state; replace the pipeline.
+    // Keep the resolved info and transport state; replace the playback.
     sess.generation++;
-    if (sess.video_job > 0) jm.KillHard(sess.video_job);  // see YoutubeTeardown
-    if (sess.audio_job > 0) jm.KillHard(sess.audio_job);
-    sess.video_job = sess.audio_job = 0;
     if (sess.audio_open) {
         gfx::CloseAudioStream(sess.audio);
         sess.audio = gfx::AudioStream{};
         sess.audio_open = false;
     }
-    sess.audio_pending.clear();
-    sess.video_eof = sess.audio_eof = false;
-    sess.frames_consumed = 0;
+    sess.audio_scratch.clear();
+    sess.frames_shown = 0;
     sess.start_sec = std::max(0.0, start_sec);
     sess.position_sec = sess.start_sec;
     sess.wall_started_at = gfx::GetTime();
     sess.wall_elapsed = 0.0;
     sess.ended = false;
     sess.buffering = true;
-
-    const int buffer_id = sess.buffer_id;
-    const int gen = sess.generation;
-
-    if (sess.info.has_video) {
+    if (sess.info.has_video && sess.frame_rgba.empty()) {
         sess.frame_w = sess.info.width;
         sess.frame_h = sess.info.height;
-        sess.frames.Reset(static_cast<size_t>(sess.frame_w) * static_cast<size_t>(sess.frame_h) * 4u);
-        JobManager::Callbacks cb;
-        cb.on_stdout_raw = [this, buffer_id, gen](const std::string &chunk) {
-            YoutubeSession *s = GetYoutubeMutable(buffer_id);
-            if (!s || s->generation != gen) return;
-            s->frames.Push(chunk.data(), chunk.size());
-        };
-        cb.should_poll_raw = [this, buffer_id, gen]() {
-            YoutubeSession *s = GetYoutubeMutable(buffer_id);
-            if (!s || s->generation != gen) return true;  // drain (and discard) a stale job
-            return !s->paused && s->frames.Ready() < static_cast<size_t>(kYoutubeMaxQueuedFrames);
-        };
-        cb.on_stderr = [this, buffer_id, gen](const std::string &line) {
-            YoutubeSession *s = GetYoutubeMutable(buffer_id);
-            if (!s || s->generation != gen) return;
-            if (s->status.empty()) s->status = "ffmpeg: " + line;
-        };
-        cb.on_exit = [this, buffer_id, gen](int) {
-            YoutubeSession *s = GetYoutubeMutable(buffer_id);
-            if (!s || s->generation != gen) return;
-            s->video_eof = true;
-            s->video_job = 0;
-            mep::NoteActivity();
-        };
-        sess.video_job = jm.Spawn(yt::VideoDecodeArgv(sess.info, sess.start_sec, sess.frame_w, sess.frame_h, sess.info.fps),
-                                  "", std::move(cb), false, {}, /*die_with_parent=*/true);
-        if (sess.video_job == 0) sess.video_eof = true;
-    } else {
-        sess.video_eof = true;
-        sess.frames.Reset(0);
     }
-
-    if (sess.info.has_audio) {
-        if (!gfx::IsAudioDeviceReady()) gfx::InitAudioDevice();
-        if (gfx::IsAudioDeviceReady()) {
-            sess.audio = gfx::OpenAudioStream(sess.audio_channels, sess.audio_rate);
-            sess.audio_open = sess.audio.backend_handle != nullptr;
-            if (sess.audio_open) {
-                gfx::SetAudioStreamVolume(sess.audio, sess.muted ? 0.0f : sess.volume);
-                gfx::SetAudioStreamPaused(sess.audio, sess.paused);
-            }
-        }
-        JobManager::Callbacks cb;
-        cb.on_stdout_raw = [this, buffer_id, gen](const std::string &chunk) {
-            YoutubeSession *s = GetYoutubeMutable(buffer_id);
-            if (!s || s->generation != gen) return;
-            s->audio_pending += chunk;
-        };
-        cb.should_poll_raw = [this, buffer_id, gen]() {
-            YoutubeSession *s = GetYoutubeMutable(buffer_id);
-            if (!s || s->generation != gen) return true;
-            size_t cap = static_cast<size_t>(kYoutubeAudioPendingSec * s->audio_rate) * static_cast<size_t>(s->audio_channels) * 2u;
-            return !s->paused && s->audio_pending.size() < cap;
-        };
-        cb.on_stderr = [this, buffer_id, gen](const std::string &line) {
-            YoutubeSession *s = GetYoutubeMutable(buffer_id);
-            if (!s || s->generation != gen) return;
-            if (s->status.empty()) s->status = "ffmpeg: " + line;
-        };
-        cb.on_exit = [this, buffer_id, gen](int) {
-            YoutubeSession *s = GetYoutubeMutable(buffer_id);
-            if (!s || s->generation != gen) return;
-            s->audio_eof = true;
-            s->audio_job = 0;
-            mep::NoteActivity();
-        };
-        sess.audio_job = jm.Spawn(yt::AudioDecodeArgv(sess.info, sess.start_sec, sess.audio_channels, sess.audio_rate), "",
-                                  std::move(cb), false, {}, /*die_with_parent=*/true);
-        if (sess.audio_job == 0) sess.audio_eof = true;
-    } else {
-        sess.audio_eof = true;
-    }
+    if (!sess.player) sess.player = std::make_unique<mp4::Player>();
+    mp4::PlayerSource video, audio;
+    if (sess.info.has_video) video = {sess.info.video_url, sess.info.video_user_agent};
+    if (sess.info.has_audio) audio = {sess.info.audio_url, sess.info.audio_user_agent};
+    sess.player->Start(video, audio, sess.start_sec);
 }
 
 double Editor::YoutubeClock(YoutubeSession &sess) {
-    if (sess.audio_open && sess.info.has_audio) return sess.start_sec + gfx::AudioStreamPlayedSeconds(sess.audio);
+    if (sess.audio_open) return sess.start_sec + gfx::AudioStreamPlayedSeconds(sess.audio);
+    // Audio still to come (its format isn't known yet): the clock waits
+    // for it rather than run ahead on wall time and jump back.
+    if (sess.info.has_audio && !sess.audio_unavailable) return sess.start_sec;
     double elapsed = sess.wall_elapsed;
     if (!sess.paused) elapsed += gfx::GetTime() - sess.wall_started_at;
     return sess.start_sec + elapsed;
@@ -14145,22 +14120,50 @@ void Editor::YoutubePoll(int buffer_id) {
     auto it = youtube_sessions_.find(buffer_id);
     if (it == youtube_sessions_.end()) return;
     YoutubeSession &sess = it->second;
-    if (!sess.playing || sess.resolving || !sess.info_valid) return;
+    if (!sess.playing || sess.resolving || !sess.info_valid || !sess.player) return;
+    mp4::Player &player = *sess.player;
 
-    // Audio: hand the device up to ~a second of what the decoder produced.
-    if (sess.audio_open) {
-        const size_t frame_bytes = static_cast<size_t>(sess.audio_channels) * 2u;
-        const size_t want_frames = static_cast<size_t>(kYoutubeAudioAheadSec * sess.audio_rate);
-        size_t queued = gfx::AudioStreamQueuedFrames(sess.audio);
-        if (queued < want_frames && !sess.audio_pending.empty()) {
-            size_t take_frames = std::min(want_frames - queued, sess.audio_pending.size() / frame_bytes);
-            size_t take_bytes = take_frames * frame_bytes;
-            if (take_bytes > 0) {
-                gfx::PushAudioStream(sess.audio, reinterpret_cast<const int16_t *>(sess.audio_pending.data()),
-                                     take_bytes / 2u);
-                sess.audio_pending.erase(0, take_bytes);
-            }
+    std::string error;
+    if (player.Failed(&error)) {
+        YoutubeTeardown(sess);
+        sess.playing = false;
+        sess.status = error;
+        Notify("YouTube: " + error, NotifyLevel::Error);
+        return;
+    }
+
+    // The audio device opens once the player knows the stream's format.
+    if (sess.info.has_audio && !sess.audio_open && !sess.audio_unavailable && player.AudioRate() > 0) {
+        sess.audio_rate = player.AudioRate();
+        sess.audio_channels = player.AudioChannels();
+        if (!gfx::IsAudioDeviceReady()) gfx::InitAudioDevice();
+        if (gfx::IsAudioDeviceReady()) {
+            sess.audio = gfx::OpenAudioStream(sess.audio_channels, sess.audio_rate);
+            sess.audio_open = sess.audio.backend_handle != nullptr;
         }
+        if (sess.audio_open) {
+            gfx::SetAudioStreamVolume(sess.audio, sess.muted ? 0.0f : sess.volume);
+            gfx::SetAudioStreamPaused(sess.audio, sess.paused);
+        } else {
+            sess.audio_unavailable = true;
+            sess.wall_started_at = gfx::GetTime();
+            sess.wall_elapsed = 0.0;
+        }
+    }
+
+    // Audio: hand the device up to ~a second of what the player decoded
+    // (or, with no device, take it anyway so the decoding keeps moving).
+    if (sess.audio_open) {
+        const size_t want_frames = static_cast<size_t>(kYoutubeAudioAheadSec * sess.audio_rate);
+        const size_t queued = gfx::AudioStreamQueuedFrames(sess.audio);
+        if (queued < want_frames) {
+            sess.audio_scratch.clear();
+            if (player.TakeAudio(&sess.audio_scratch, want_frames - queued) > 0)
+                gfx::PushAudioStream(sess.audio, sess.audio_scratch.data(), sess.audio_scratch.size());
+        }
+    } else if (sess.audio_unavailable && !sess.paused) {
+        sess.audio_scratch.clear();
+        player.TakeAudio(&sess.audio_scratch, SIZE_MAX);
     }
 
     const double clock = YoutubeClock(sess);
@@ -14168,50 +14171,45 @@ void Editor::YoutubePoll(int buffer_id) {
 
     // Video: show the newest frame whose pts the clock has reached.
     if (sess.info.has_video && !sess.paused) {
-        const double fps = sess.info.fps > 0.0 ? sess.info.fps : 30.0;
+        double pts = 0.0;
         bool took = false;
         std::vector<uint8_t> frame;
-        while (sess.frames.Ready() > 0) {
-            double pts = sess.start_sec + static_cast<double>(sess.frames_consumed) / fps;
-            if (pts > clock + 0.002) break;
-            sess.frames.Pop(&frame);
-            sess.frames_consumed++;
+        int w = 0, h = 0;
+        while (player.PeekFrame(&pts) && pts <= clock + 0.002) {
+            player.PopFrame(&frame, &w, &h, &pts);
+            sess.frames_shown++;
             took = true;
         }
         if (took) {
             sess.frame_rgba = std::move(frame);
+            sess.frame_w = w;
+            sess.frame_h = h;
             sess.frame_serial++;
         }
     }
 
     // Buffering readout: the clock is standing still for lack of data.
-    if (sess.audio_open && sess.info.has_audio) {
-        sess.buffering = !sess.paused && !sess.audio_eof && gfx::AudioStreamQueuedFrames(sess.audio) == 0 &&
-                         sess.audio_pending.empty();
+    if (sess.audio_open) {
+        sess.buffering = !sess.paused && !player.AudioDone() && gfx::AudioStreamQueuedFrames(sess.audio) == 0;
+    } else if (sess.info.has_audio && !sess.audio_unavailable) {
+        sess.buffering = !sess.paused;  // waiting for the audio's format
     } else {
-        sess.buffering = !sess.paused && !sess.video_eof && sess.frames.Ready() == 0 && sess.frame_rgba.empty();
+        sess.buffering = !sess.paused && !player.VideoDone() && player.QueuedFrames() == 0 && sess.frame_rgba.empty();
     }
 
-    // End of stream: both decoders gone and everything they produced shown/heard.
-    bool video_done = sess.video_eof && sess.frames.Ready() == 0;
-    bool audio_done = sess.audio_eof && sess.audio_pending.empty() &&
-                      (!sess.audio_open || gfx::AudioStreamQueuedFrames(sess.audio) == 0);
+    // End of stream: everything decoded has been shown and heard.
+    const bool video_done = player.VideoDone();
+    const bool audio_done = player.AudioDone() && (!sess.audio_open || gfx::AudioStreamQueuedFrames(sess.audio) == 0);
     if (video_done && audio_done && !sess.ended) {
-        // Give the device's own output buffer a moment to drain before
-        // judging "ended" by the clock alone.
-        double dur = YoutubeDuration(sess);
-        bool at_end = dur <= 0.0 || clock >= dur - 1.0 || sess.frames_consumed > 0 || !sess.info.has_video;
-        if (at_end) {
-            sess.ended = true;
-            sess.buffering = false;
-            if (sess.now_result >= 0 && sess.now_result + 1 < static_cast<int>(sess.results.size())) {
-                YoutubePlayResult(sess, sess.now_result + 1);  // playlist-style auto-advance
-                YoutubeNotifyTrack(sess);
-            } else {
-                YoutubeTeardown(sess);
-                sess.playing = false;
-                sess.status = "Finished";
-            }
+        sess.ended = true;
+        sess.buffering = false;
+        if (sess.now_result >= 0 && sess.now_result + 1 < static_cast<int>(sess.results.size())) {
+            YoutubePlayResult(sess, sess.now_result + 1);  // playlist-style auto-advance
+            YoutubeNotifyTrack(sess);
+        } else {
+            YoutubeTeardown(sess);
+            sess.playing = false;
+            sess.status = "Finished";
         }
     }
 }
@@ -14258,12 +14256,9 @@ void Editor::YoutubeSeekTo(YoutubeSession &sess, double sec) {
     sess.frame_rgba.clear();  // the old picture is wrong for the new position
     sess.frame_serial++;
     YoutubeStartDecoders(sess, sec);
-    if (sess.paused) {
-        // Stay paused at the new position; the decoders pre-roll until the
-        // pipes fill (should_poll_raw returns false while paused).
-        sess.wall_elapsed = 0.0;
-        if (sess.audio_open) gfx::SetAudioStreamPaused(sess.audio, true);
-    }
+    // Paused, it stays paused at the new position: the player pre-rolls
+    // until its queues fill, and the audio stream opens paused.
+    if (sess.paused) sess.wall_elapsed = 0.0;
 }
 
 void Editor::YoutubeSeekBy(YoutubeSession &sess, double delta) { YoutubeSeekTo(sess, sess.position_sec + delta); }
@@ -22536,8 +22531,10 @@ bool Editor::TryLuaMapping(Mode mode, const std::string &key) {
     }
     auto it = map->find(key);
     if (it == map->end()) return false;
-    lua_->CallRef(it->second);
-    return true;
+    // A callback returning exactly `false` passes the key on to the
+    // builtin (a mapping that only applies in some buffers); anything
+    // else, nil included, consumes it.
+    return lua_->CallRefForHandled(it->second);
 }
 
 bool Editor::DispatchNormalKey(int cp) {

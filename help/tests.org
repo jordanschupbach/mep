@@ -38,7 +38,7 @@ package and two npm packages shows all four:
 
 | Suite       | Found when a directory has                                    | One row per         | Grouped by                 |
 |-------------+---------------------------------------------------------------+---------------------+----------------------------|
-| ctest       | a configured build directory (see below), at the project root | ctest test          | label                      |
+| ctest       | a configured build directory (see below)                      | ctest test          | label                      |
 | pytest      | a Python project marker and tests, with pytest importable     | test (node id)      | file, then class           |
 | unittest    | the same, without pytest                                       | test method         | module, then class         |
 | testthat    | =tests/testthat=                                               | =test_that()= block | file, then =describe()=    |
@@ -126,7 +126,13 @@ mep.opt.activity_test_scan_depth = 2
 ** ctest
 
 The CMake build directory is the first entry of
-=mep.opt.lang_test_build_dirs= that holds a configured ctest tree. Set
+=mep.opt.lang_test_build_dirs= that holds a configured ctest tree, looked
+for at the project root and in any subdirectory with its own
+=CMakeLists.txt=. The tree's =CTestTestfile.cmake= need not be at the top
+of the build directory: a project that only calls =enable_testing()= in
+=tests/CMakeLists.txt= gets one in =build/tests=, so mep looks up to three
+levels down and lists each one it finds as its own suite
+(=build/debug/test/cpp= and =build/debug/test/cpp-focused= are two). Set
 =mep.activity_test_build_dir= to pick one yourself, and
 =mep.opt.activity_test_jobs= to run tests in parallel:
 

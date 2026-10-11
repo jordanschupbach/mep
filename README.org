@@ -111,7 +111,7 @@ ported, and *compiled out* rather than failing at runtime:
 
 - *Everything that spawns a child process.* The ~:terminal~ pane, LSP
   servers, ~:!~ commands, the Jupyter/notebook kernels and the YouTube
-  pane's ~yt-dlp~/~ffmpeg~ all go through ~job.cpp~, which is
+  pane's ~curl~ downloads all go through ~job.cpp~, which is
   ~fork~/~forkpty~ on POSIX. Windows has no ~fork~; the equivalent is
   ~CreateProcess~ plus ConPTY (~CreatePseudoConsole~) for the terminal.
   This is the single largest remaining piece.

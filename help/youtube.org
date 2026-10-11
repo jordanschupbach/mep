@@ -7,10 +7,12 @@
 
 A pane that searches YouTube, lists what it finds and plays the video you
 pick -- picture and sound, drawn by mep itself, beside whatever you are
-editing. Nothing is embedded: =yt-dlp= resolves the video to its stream
-URLs and =ffmpeg= decodes them into raw frames and samples over a pipe, and
-the pane paints those. Both tools must be on =PATH=; the pane says so if
-one is missing.
+editing. Nothing is embedded and nothing extra needs installing: mep asks
+YouTube's own API for the video's stream URLs, downloads the stream with
+=curl= (the same way it fetches every https page), and demuxes and decodes
+it itself -- its own MP4 reader, H.264 decoder and AAC decoder -- then
+paints the frames and plays the sound. Only =curl= must be on =PATH=,
+which it is on macOS and nearly every Linux; the pane says so if not.
 
 * Opening it
 
@@ -27,8 +29,9 @@ one is missing.
   or a bare 11-character video id and it plays that directly.
 - =:MepYoutube= is the command behind the toggle, for a keybinding of
   your own. From Lua: =mep.youtube_toggle()=, =mep.youtube_search(query)=,
-  =mep.youtube_play(url)= and =mep.youtube_state()= (whose =visible= field
-  is false while the player is hidden).
+  =mep.youtube_play(url)=, =mep.youtube_seek(seconds)= and
+  =mep.youtube_state()= (whose =visible= field is false while the player
+  is hidden).
 
 There is one player per workspace; opening it again brings the existing
 one back instead of starting a second. To actually stop playback, press
@@ -99,10 +102,16 @@ is capped at 480p, which is what fits a pane and keeps the decoder cheap.
 
 * When it does not work
 
-- /yt-dlp and ffmpeg must be installed/: the tools are looked up on =PATH=
-  when the pane opens.
-- A 403 or a blank search usually means =yt-dlp= is out of date; YouTube
-  changes often and =yt-dlp= follows. Update it and try again.
-- The player asks =yt-dlp= for the =android= client's stream URLs, which
-  =ffmpeg= can fetch directly; other clients hand out URLs that only
-  =yt-dlp= itself may fetch.
+- /curl must be installed/: it is looked up on =PATH= when the pane opens.
+- /Sign in to confirm you're not a bot/: YouTube refused the request. The
+  player asks as YouTube's Android app first and its Android VR app second
+  (their stream URLs need no signature or token to fetch); when both are
+  refused for a video there is nothing more it can do for that one.
+- /YouTube refused the stream download/: the video resolved, but
+  googlevideo would not serve the file -- usually a URL that wants a
+  proof-of-origin token, which this player does not generate. Playing the
+  video again fetches fresh URLs.
+- It plays H.264 video with AAC sound in an MP4: the 360p file that has both
+  in one, or, when a video lacks that, a separate H.264 video (up to 480p)
+  and AAC sound. A video offered only in other codecs (VP9, AV1, Opus) says
+  so instead of playing. Live streams are not supported yet.

@@ -44,6 +44,7 @@ restyles all of them.
 |-----------------------+-----------------------------------------------------------|
 | play button, =gr=     | export the document and open the result beside it         |
 | =<leader>rr=          | the same                                                  |
+| ~=~                   | line the HTML export beside it up with the cursor's line  |
 | =C-c C-c=             | run the code block under the cursor                       |
 | =<leader>kx=          | the same                                                  |
 | =C-c C-k=             | stop the block running under the cursor (a terminal)      |
@@ -1465,6 +1466,23 @@ Any format the table below lists works (=html=, =pdf=, =beamer=, =docx=, =odt=,
 is a different key, choosing which parts of each code block the exports
 show. =beamer= is the =\slide= blocks as a Beamer PDF whatever the
 document's =Type=, and a slide-deck PDF opens sized to show a whole slide.
+
+** Lining the page up with the document
+
+With the HTML export open beside the document, ~=~ lines the two up. In
+the document it puts the cursor's line in the middle of its pane and
+scrolls the page so the same place is in the middle of the page's. In the
+page it does the reverse: whatever is in the middle of the page brings its
+source line to the middle of the document's pane, with the cursor on it,
+and the page keeps focus. Anywhere else ~=~ is Vim's own (~==~ indents a
+line; in the browser pane it resets the zoom).
+
+This works from marks the export leaves in the page: each block's first
+element names the lines it came from (=data-line=, and =data-line-end=
+for a block over several lines), which change nothing about how the page
+looks. A line between two blocks, or partway through a long one, is placed
+in proportion. A page exported before marks existed has none; run the
+export again.
 
 =<leader>ke= (or =:MepmlExport=) exports the document into its build
 directory, =notes.mepml= becoming =build/notes.docx= and so on. It opens

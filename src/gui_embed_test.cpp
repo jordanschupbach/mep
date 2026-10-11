@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -452,6 +454,28 @@ void TestFindProgram() {
     CHECK(mep::gui_embed::ProcessExecutable(-1).empty());
 }
 
+void TestLauncherTargets() {
+    using mep::gui_embed::LauncherTargets;
+    // Homebrew's cask wrappers: `exec '<the app's program>' "$@"`.
+    const std::string sh = mep::gui_embed::FindProgram("sh");
+    const std::string dir = std::filesystem::temp_directory_path().string();
+    const std::string script = dir + "/mep-gui-embed-launcher-test.sh";
+    {
+        std::ofstream f(script);
+        f << "#!/bin/bash\n# exec /not/this/one\nexec '" << sh << "' \"$@\"\nnotexec /bin/ls\nexec /no/such/program\n";
+    }
+    const std::vector<std::string> targets = LauncherTargets(script);
+    CHECK(targets.size() == 1 && targets[0] == sh);
+    {
+        std::ofstream f(script);
+        f << "#!/bin/sh\nfoo && exec " << sh << " -c true\n";
+    }
+    CHECK(LauncherTargets(script) == std::vector<std::string>{sh});
+    CHECK(LauncherTargets(sh).empty());  // a program, not a script
+    CHECK(LauncherTargets(dir + "/mep-no-such-launcher").empty());
+    std::remove(script.c_str());
+}
+
 void TestProcessTree() {
     // A shell with a child: both are in the tree, the shell first.
     const int id = JobManager::Instance().Spawn({"/bin/sh", "-c", "sleep 30 & wait"}, ".", {});
@@ -479,6 +503,7 @@ int main() {
     TestHandoff();
     TestSplitCommandLine();
     TestFindProgram();
+    TestLauncherTargets();
     TestProcessTree();
     JobManager::Instance().ShutdownAll(200);
     if (g_failures) {

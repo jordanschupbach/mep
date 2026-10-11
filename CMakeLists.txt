@@ -801,6 +801,16 @@ add_library(mep_core STATIC
     src/image_codec.cpp
     src/mov_container.cpp
     src/youtube_player.cpp
+    src/mp4_demux.cpp
+    src/mp4_player.cpp
+    src/aac_decoder.cpp
+    src/h264_decoder.cpp
+    src/h264_slice.cpp
+    src/h264_cabac.cpp
+    src/h264_cabac_mb.cpp
+    src/h264_mb.cpp
+    src/h264_deblock.cpp
+    src/h264_tables.cpp
     src/office_doc.cpp
     src/office_odt.cpp
     src/office_rtf.cpp
@@ -915,8 +925,9 @@ target_include_directories(mep_audiodec PUBLIC src)
 target_link_libraries(mep_core PUBLIC lua tree_sitter mep_audiodec ${TS_GRAMMAR_LIBS})
 if(NOT EMSCRIPTEN)
     if(APPLE)
-        # Cocoa: gfx/backend_native_macos.mm's windowing/input layer.
-        target_link_libraries(mep_core PUBLIC OpenGL::GL "-framework Cocoa")
+        # Cocoa: gfx/backend_native_macos.mm's windowing/input layer;
+        # AudioToolbox: gfx/backend_native_audio.cpp's CoreAudio output.
+        target_link_libraries(mep_core PUBLIC OpenGL::GL "-framework Cocoa" "-framework AudioToolbox")
     elseif(WIN32)
         # gfx/backend_native_win32.cpp's window/input/WGL-context layer:
         # user32 for the window and message pump, gdi32 for the pixel
@@ -1013,7 +1024,7 @@ function(mep_add_gfx_native_smoke name main_src)
     else()
         target_link_options(${name} PRIVATE ${MEP_SANITIZE_FLAGS})
         if(APPLE)
-            target_link_libraries(${name} PRIVATE OpenGL::GL "-framework Cocoa" Threads::Threads)
+            target_link_libraries(${name} PRIVATE OpenGL::GL "-framework Cocoa" "-framework AudioToolbox" Threads::Threads)
         elseif(WIN32)
             target_link_libraries(${name} PRIVATE OpenGL::GL user32 gdi32)
         else()
@@ -2371,13 +2382,29 @@ target_link_options(mep-mov-container-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-mov-container-test)
 
 # In-pane YouTube player (Mode::Youtube): youtube_player.h's pure helpers
-# -- yt-dlp JSON parsing, argv construction, the raw-frame assembler --
-# with no network or display, same shape as mep-mov-container-test above.
+# -- InnerTube request bodies, player/search response parsing, format
+# choice, the curl command lines -- with no network or display, same shape
+# as mep-mov-container-test above.
 add_executable(mep-youtube-player-test EXCLUDE_FROM_ALL src/youtube_player_test.cpp src/youtube_player.cpp)
 target_include_directories(mep-youtube-player-test PRIVATE src)
 target_compile_options(mep-youtube-player-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-youtube-player-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-youtube-player-test)
+
+# The YouTube player's in-house media stack (mp4_player.h): the MP4
+# demuxer (progressive and fragmented, built box by box in the test), the
+# AAC-LC decoder and the H.264 decoder (Baseline/Main/High, CAVLC and
+# CABAC). Each test is self-contained -- synthetic or embedded streams --
+# and optionally takes real files as arguments.
+add_executable(mep-mp4-demux-test EXCLUDE_FROM_ALL src/mp4_demux_test.cpp src/mp4_demux.cpp)
+add_executable(mep-aac-decoder-test EXCLUDE_FROM_ALL src/aac_decoder_test.cpp src/aac_decoder.cpp)
+add_executable(mep-h264-decoder-test EXCLUDE_FROM_ALL src/h264_decoder_test.cpp src/h264_decoder.cpp src/h264_slice.cpp src/h264_cabac.cpp src/h264_cabac_mb.cpp src/h264_mb.cpp src/h264_deblock.cpp src/h264_tables.cpp)
+foreach(t mep-mp4-demux-test mep-aac-decoder-test mep-h264-decoder-test)
+    target_include_directories(${t} PRIVATE src)
+    target_compile_options(${t} PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(${t} PRIVATE ${MEP_SANITIZE_FLAGS})
+    add_dependencies(tests ${t})
+endforeach()
 
 # NVIM_PARITY_PLAN.md Part I Phase 5: folds.h's NormalizeFoldList -- the
 # fold-set invariants (ranges inside the file, no duplicate ranges, nesting
@@ -2497,7 +2524,7 @@ if(NOT EMSCRIPTEN)
     target_sources(mep-model3d-doc-test PUBLIC FILE_SET CXX_MODULES FILES src/gfx/model_read_util.cppm)
     target_include_directories(mep-model3d-doc-test PRIVATE src)
     if(APPLE)
-        target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL "-framework Cocoa" Threads::Threads)
+        target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL "-framework Cocoa" "-framework AudioToolbox" Threads::Threads)
     elseif(WIN32)
         target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL user32 gdi32)
     else()
@@ -2708,7 +2735,7 @@ if(NOT EMSCRIPTEN)
             # target isn't actually buildable on macOS -- linked against the
             # mac frameworks anyway so configuring doesn't trip over the
             # Linux-only X11::X11 target. It's EXCLUDE_FROM_ALL either way.
-            target_link_libraries(mep-amalgam PRIVATE OpenGL::GL "-framework Cocoa" lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
+            target_link_libraries(mep-amalgam PRIVATE OpenGL::GL "-framework Cocoa" "-framework AudioToolbox" lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
         else()
             target_link_libraries(mep-amalgam PRIVATE OpenGL::GL X11::X11 lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
         endif()
@@ -2774,7 +2801,8 @@ if(NOT EMSCRIPTEN)
         mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test
         mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test
         mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test
-        mep-youtube-player-test mep-collab-crdt-test)
+        mep-youtube-player-test mep-mp4-demux-test mep-aac-decoder-test mep-h264-decoder-test
+        mep-collab-crdt-test)
     # Each test also carries the area it covers, as a second label: the
     # Tests panel groups ctest tests by label (one every test shares, like
     # `unit`, groups nothing), and `ctest -L cad` runs one area.
@@ -2793,7 +2821,7 @@ if(NOT EMSCRIPTEN)
             set(area editing)
         elseif(name MATCHES "^mep-(html-|svg-|web-|math-|org-|notebook-|office-|model3d-)")
             set(area documents)
-        elseif(name MATCHES "^mep-(image-|jpeg-|ccitt-|mov-|youtube-)")
+        elseif(name MATCHES "^mep-(image-|jpeg-|ccitt-|mov-|youtube-|mp4-|aac-|h264-)")
             set(area media)
         else()
             set(area core)

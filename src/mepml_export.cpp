@@ -2595,6 +2595,7 @@ std::string ToHtmlFor(const Document &doc, const std::string &path, const std::s
     opts.base_dir = base_dir;
     const std::string dir = std::filesystem::path(path).parent_path().string();
     opts.out_dir = dir.empty() ? std::string(".") : dir;
+    opts.source_lines = true;
     return IsPresentation(doc) ? ToSlidesHtml(doc, opts) : ToHtml(doc, opts);
 }
 

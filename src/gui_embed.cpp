@@ -1,6 +1,7 @@
 #include "gui_embed.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #if defined(__linux__)
 #include <dirent.h>  // ProcessTree's /proc walk, below -- Linux only
@@ -173,6 +174,39 @@ std::string FindProgram(const std::string &name) {
     return "";
 }
 
+std::vector<std::string> LauncherTargets(const std::string &path) {
+    std::vector<std::string> out;
+    std::ifstream f(path, std::ios::binary);
+    char head[2] = {};
+    if (!f.read(head, 2) || head[0] != '#' || head[1] != '!') return out;
+    std::string text(4096, '\0');
+    f.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<size_t>(f.gcount()));
+    for (size_t at = text.find("exec"); at != std::string::npos; at = text.find("exec", at + 4)) {
+        // A word of its own, followed by its program.
+        if (at > 0 && !std::isspace(static_cast<unsigned char>(text[at - 1])) && text[at - 1] != ';') continue;
+        size_t p = at + 4;
+        if (p >= text.size() || (text[p] != ' ' && text[p] != '\t')) continue;
+        while (p < text.size() && (text[p] == ' ' || text[p] == '\t')) ++p;
+        char quote = 0;
+        if (p < text.size() && (text[p] == '\'' || text[p] == '"')) quote = text[p++];
+        if (p >= text.size() || text[p] != '/') continue;
+        size_t end = p;
+        while (end < text.size() && text[end] != '\n' &&
+               (quote ? text[end] != quote : !std::isspace(static_cast<unsigned char>(text[end])) && text[end] != ';'))
+            ++end;
+        const std::string target = text.substr(p, end - p);
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(target, ec)) continue;
+#if !defined(_WIN32)
+        if (access(target.c_str(), X_OK) != 0) continue;
+#endif
+        const std::string canon = CanonicalPath(target);
+        if (std::find(out.begin(), out.end(), canon) == out.end()) out.push_back(canon);
+    }
+    return out;
+}
+
 std::string ProcessExecutable(int pid) {
     if (pid <= 0) return "";
     std::string path;
@@ -281,6 +315,12 @@ struct EmbeddedApp::JobState {
     int exit_code = 0;
     std::vector<std::string> out, err;
 };
+
+void EmbeddedApp::SetHandoff(const std::string &executable) {
+    handoff_exes_ = {executable};
+    for (const std::string &target : LauncherTargets(executable))
+        if (std::find(handoff_exes_.begin(), handoff_exes_.end(), target) == handoff_exes_.end()) handoff_exes_.push_back(target);
+}
 
 EmbeddedApp::~EmbeddedApp() {
     window_.reset();

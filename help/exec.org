@@ -60,7 +60,11 @@ passed to it as arguments. If the whole line names an application, as in
 Many programs (browsers, editors, office suites), when started while a copy
 is already running, ask that copy to open a new window and then exit. =:exec=
 waits for that: the new window that copy opens becomes the pane's. Its other
-windows are left alone.
+windows are left alone. A launcher script counts as the program it starts:
+Homebrew's =firefox= is a script that runs
+=/Applications/Firefox.app/Contents/MacOS/firefox=, so the window your open
+Firefox makes is the one taken, and on macOS any window of the same
+application bundle qualifies.
 
 Such a window belongs to your running copy, not to mep. So =:bd= only ever
 asks that one window to close (a second =:bd=, or a window that will not
@@ -78,7 +82,10 @@ that the program has closed once that window is gone, and =r= opens another.
 On macOS this needs the Accessibility permission (System Settings > Privacy &
 Security > Accessibility), for mep or for the terminal it was started from.
 macOS asks for it the first time. Until it is given, =:exec= says so and opens
-nothing. Because the window is the program's own and not part of mep's, mep's
+nothing. There is no way round it: macOS gives no program another's window,
+so mep can only move and size it, and moving another program's window is what
+that permission allows. A mepml =exec-gui= block needs it just the same -- if
+those show, =:exec= has what it needs. Because the window is the program's own and not part of mep's, mep's
 popups (the command line, which-key, pickers) are drawn underneath it while it
 shows.
 

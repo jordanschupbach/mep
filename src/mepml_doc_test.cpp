@@ -720,6 +720,20 @@ int main() {
             CHECK(ToHtml(r).find("<img src=\"assets/logo.png\"") != std::string::npos);
             CHECK(ToHtml(r).find("href=\"docs/web.org#intro\"") != std::string::npos);
         }
+        // Source lines (HtmlOptions::source_lines, what `=` lines the page up
+        // by): each block's first element names its 1-based lines, a
+        // one-line block without an end; off by default.
+        {
+            const Document r = Parse({"> Title", "", "A paragraph", "over two lines.", "", "- one", "- two", "- three"});
+            HtmlOptions o;
+            o.standalone = false;
+            CHECK(ToHtml(r, o).find("data-line") == std::string::npos);
+            o.source_lines = true;
+            const std::string page = ToHtml(r, o);
+            CHECK(page.find("<h1 data-line=\"1\" id=") != std::string::npos);
+            CHECK(page.find("<p data-line=\"3\" data-line-end=\"4\">") != std::string::npos);
+            CHECK(page.find("<ul data-line=\"6\" data-line-end=\"8\">") != std::string::npos);
+        }
         // Several plots from one block: one figure, every figure closed.
         const Document two = Parse({"```r", "x", "```", "// result_begin:", "// @image{a.png}", "// @image{b.png}", "// result_end",
                                     "@caption{Two}"});

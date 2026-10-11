@@ -689,6 +689,12 @@ struct HtmlOptions {
     // path is kept as the document writes it (the editor's own views).
     std::string base_dir;
     std::string out_dir;
+    // Tag each block's first element with the source lines it came from
+    // (data-line, data-line-end; 1-based), so a viewer can line the page up
+    // with the document (mep's `=` in a mepml buffer and in its HTML
+    // export). On for the files mep writes (ToHtmlFor with a path); the
+    // slideshow ignores it.
+    bool source_lines = false;
 };
 std::string ToHtml(const Document &doc, const HtmlOptions &opts = HtmlOptions());
 // A presentation as a self-contained HTML slideshow: a title slide and one

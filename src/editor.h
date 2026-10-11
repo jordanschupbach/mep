@@ -22,6 +22,7 @@
 #include "cad_sketch.h"
 #include "model3d_doc.h"
 #include "mov_container.h"
+#include "mp4_player.h"
 #include "youtube_player.h"
 #include "folds.h"
 #include "vterm.h"
@@ -245,8 +246,9 @@ enum class Mode {
     ExecApp,
     // A focused YouTube-player pane (a YoutubeSession buffer -- see below,
     // opened by the :youtube command or the tab bar's YouTube button).
-    // Searches via yt-dlp, decodes the chosen video with ffmpeg into raw
-    // frames/PCM over JobManager pipes and draws them itself (no browser,
+    // Searches and resolves through YouTube's InnerTube API, then downloads
+    // and decodes the chosen video in-process (mp4_player.h: mep's own
+    // MP4 demuxer, H.264 and AAC decoders) and draws it itself (no browser,
     // no embedded window). Same "':'/leader forwarded, own keys otherwise"
     // shape as Mode::Music: / or s search, o open a URL, j/k pick a
     // result, Enter play, Space pause, h/l seek, n/p next/prev result,
@@ -3034,14 +3036,16 @@ struct MusicSession {
 };
 
 // One YouTube-player pane's state, keyed by buffer id like MusicSession.
-// Three asynchronous stages, all JobManager jobs whose callbacks run on
-// the main thread: a search (`yt-dlp ytsearchN: --flat-playlist -j`, one
-// result per stdout line), a resolve (`yt-dlp -j URL` -> yt::StreamInfo),
-// and two decoders (`ffmpeg` -> raw RGBA frames on one pipe, PCM16 on
-// another). Video is paced by the audio stream's played-seconds clock
-// (gfx::AudioStreamPlayedSeconds), falling back to wall time when there
-// is no audio device or track. `generation` bumps on every stop/start so
-// a callback from a killed job can recognise itself as stale.
+// A search and a resolve are InnerTube requests -- `curl` POSTs run as
+// JobManager jobs whose callbacks run on the main thread (youtube_player.h);
+// a resolve tries each of yt::PlayerClients() in turn until one hands out
+// a playable format. Playback is an mp4::Player (mp4_player.h): its
+// threads download and decode with mep's own demuxer and decoders, and
+// YoutubePoll takes frames and PCM from its queues. Video is paced by the
+// audio stream's played-seconds clock (gfx::AudioStreamPlayedSeconds),
+// falling back to wall time when there is no audio device or track.
+// `generation` bumps on every stop/start so a callback from a killed job
+// can recognise itself as stale.
 struct YoutubeSession {
     int buffer_id = 0;
 
@@ -3076,23 +3080,23 @@ struct YoutubeSession {
     int now_result = -1;  // index into `results`, -1 when opened by URL
     bool resolving = false;
     int resolve_job = 0;
+    size_t resolve_client = 0;  // index into yt::PlayerClients() being asked
     std::string resolve_out, resolve_err;
     std::string status;  // transient readout: "Resolving...", an error, ...
     int generation = 0;
 
-    // --- Decoders ---
-    int video_job = 0, audio_job = 0;
-    bool video_eof = false, audio_eof = false;
-    yt::FrameAssembler frames;
+    // --- Playback ---
+    std::unique_ptr<mp4::Player> player;  // null until the first video plays
     std::vector<uint8_t> frame_rgba;  // the frame on screen (frame_w x frame_h RGBA)
     int frame_w = 0, frame_h = 0;
     int frame_serial = 0;  // bumps whenever frame_rgba changes (main.cpp re-uploads on change)
-    long frames_consumed = 0;  // frames popped since start_sec: next frame's pts = start_sec + n/fps
-    std::string audio_pending;  // decoded PCM16 bytes not yet pushed to the device
+    long frames_shown = 0;  // frames taken since start_sec
+    std::vector<int16_t> audio_scratch;  // PCM on its way from the player to the device
     gfx::AudioStream audio{};
     bool audio_open = false;
-    int audio_rate = 48000, audio_channels = 2;
-    double start_sec = 0.0;  // the -ss both decoders were started at
+    bool audio_unavailable = false;  // no audio device: the clock runs on wall time
+    int audio_rate = 0, audio_channels = 0;
+    double start_sec = 0.0;  // where the player was started
     // Wall-clock fallback (no audio): media time = start_sec + wall_elapsed.
     double wall_started_at = 0.0;
     double wall_elapsed = 0.0;
@@ -4025,14 +4029,14 @@ public:
 
     /**
      * @brief Stops every media pane this editor owns -- each music pane's
-     * ALSA playback thread and each YouTube session's decoder jobs plus its
-     * audio stream. Idempotent.
+     * ALSA playback thread and each YouTube session's player threads and
+     * jobs plus its audio stream. Idempotent.
      *
      * main() calls this on the way out instead of leaving it to ~Editor:
      * g_editor is a global, so its destructor runs during static
      * destruction, by which point JobManager's own function-local-static
-     * singleton (which YoutubeTeardown has to reach to kill the ffmpeg
-     * jobs) may already be gone. Quitting with a video playing also has no
+     * singleton (which YoutubeTeardown has to reach to kill its resolve
+     * job) may already be gone. Quitting with a video playing also has no
      * business keeping the sound going while mep saves its state and reaps
      * its children.
      */
@@ -6637,6 +6641,27 @@ public:
     void BeginHtmlOmnibarEdit(int buffer_id);
     /** @brief The html session's page title, or "" when `buffer_id` isn't an html buffer. */
     std::string HtmlTitle(int buffer_id) const;
+    // A mepml export's source-line tags (mepml::HtmlOptions::source_lines):
+    // each element carrying data-line, with the 1-based lines it came from
+    // and where the last layout put it (page px, the same space as
+    // HtmlSession::scroll_y). Sorted by line; elements not laid out (hidden)
+    // are left out. Empty for any other page.
+    struct HtmlSourceLine {
+        int line = 0, line_end = 0;
+        float y = 0.0f, h = 0.0f;
+    };
+    /**
+     * @brief The laid-out elements of an html pane that carry mepml source-line tags (data-line), sorted by line.
+     * @param buffer_id The html buffer.
+     * @return One entry per tagged, laid-out element; empty when `buffer_id` isn't an html buffer or the page has no tags.
+     */
+    std::vector<HtmlSourceLine> HtmlSourceLines(int buffer_id) const;
+    /**
+     * @brief Scrolls an html pane straight to page-space `y` (clamped to the page by the next frame's layout).
+     * @param buffer_id The html buffer; no-op for any other buffer.
+     * @param y Target scroll offset in page px.
+     */
+    void ScrollHtmlTo(int buffer_id, float y);
     // Re-decodes `bytes` INTO the existing PdfSession at `buffer_id` --
     // unlike OpenPdfInPlace, never creates a new buffer/session and never
     // does a dedup-by-filename lookup; a hard in-place overwrite (fresh

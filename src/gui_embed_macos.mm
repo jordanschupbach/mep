@@ -665,8 +665,20 @@ std::unique_ptr<EmbeddedWindow> MacBackend::Adopt(const std::vector<int> &pids, 
                       false);
 }
 
+// The application bundle a program lives in (".../Firefox.app"), "" for a
+// program outside one.
+std::string BundleOf(const std::string &exe) {
+    const size_t at = exe.find(".app/");
+    return at == std::string::npos ? std::string() : exe.substr(0, at + 4);
+}
+
 std::unique_ptr<EmbeddedWindow> MacBackend::AdoptHandoff(const std::vector<std::string> &executables, const std::vector<int> &own_pids) {
     if (executables.empty()) return nullptr;
+    // An app's windows can belong to any program in its bundle (a helper,
+    // a renamed main executable), so the bundle is what has to match.
+    std::set<std::string> bundles;
+    for (const std::string &e : executables)
+        if (!BundleOf(e).empty()) bundles.insert(BundleOf(e));
     // (Looked up once per process per call: a handful of windows.)
     std::map<pid_t, bool> runs_it;
     return AdoptWhere(
@@ -675,7 +687,9 @@ std::unique_ptr<EmbeddedWindow> MacBackend::AdoptHandoff(const std::vector<std::
             auto it = runs_it.find(w.pid);
             if (it == runs_it.end()) {
                 const std::string exe = ProcessExecutable(static_cast<int>(w.pid));
-                it = runs_it.emplace(w.pid, std::find(executables.begin(), executables.end(), exe) != executables.end()).first;
+                const bool match = std::find(executables.begin(), executables.end(), exe) != executables.end() ||
+                                   (!BundleOf(exe).empty() && bundles.count(BundleOf(exe)) != 0);
+                it = runs_it.emplace(w.pid, match).first;
             }
             return it->second;
         },

@@ -48,6 +48,7 @@ restyles all of them.</p>
 <tr><th>Key / command</th><th>Does</th></tr>
 <tr><td>play button, <code>gr</code></td><td>export the document and open the result beside it</td></tr>
 <tr><td><code>&lt;leader&gt;rr</code></td><td>the same</td></tr>
+<tr><td><code>=</code></td><td>line the HTML export beside it up with the cursor's line</td></tr>
 <tr><td><code>C-c C-c</code></td><td>run the code block under the cursor</td></tr>
 <tr><td><code>&lt;leader&gt;kx</code></td><td>the same</td></tr>
 <tr><td><code>C-c C-k</code></td><td>stop the block running under the cursor (a terminal)</td></tr>
@@ -1143,6 +1144,20 @@ format:</p>
 is a different key, choosing which parts of each code block the exports
 show. <code>beamer</code> is the <code>\slide</code> blocks as a Beamer PDF whatever the
 document's <code>Type</code>, and a slide-deck PDF opens sized to show a whole slide.</p>
+<h2>Lining the page up with the document</h2>
+<p>With the HTML export open beside the document, <code>=</code> lines the two up. In
+the document it puts the cursor's line in the middle of its pane and
+scrolls the page so the same place is in the middle of the page's. In the
+page it does the reverse: whatever is in the middle of the page brings its
+source line to the middle of the document's pane, with the cursor on it,
+and the page keeps focus. Anywhere else <code>=</code> is Vim's own (<code>==</code> indents a
+line; in the browser pane it resets the zoom).</p>
+<p>This works from marks the export leaves in the page: each block's first
+element names the lines it came from (<code>data-line</code>, and <code>data-line-end</code>
+for a block over several lines), which change nothing about how the page
+looks. A line between two blocks, or partway through a long one, is placed
+in proportion. A page exported before marks existed has none; run the
+export again.</p>
 <p><code>&lt;leader&gt;ke</code> (or <code>:MepmlExport</code>) exports the document into its build
 directory, <code>notes.mepml</code> becoming <code>build/notes.docx</code> and so on. It opens
 the fuzzy picker over the formats, so typing <code>docx</code> or <code>word</code> narrows to

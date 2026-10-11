@@ -38,7 +38,7 @@ each one as its own group, so a repository with a CMake build, a Python
 package and two npm packages shows all four:</p>
 <table>
 <tr><th>Suite</th><th>Found when a directory has</th><th>One row per</th><th>Grouped by</th></tr>
-<tr><td>ctest</td><td>a configured build directory (see below), at the project root</td><td>ctest test</td><td>label</td></tr>
+<tr><td>ctest</td><td>a configured build directory (see below)</td><td>ctest test</td><td>label</td></tr>
 <tr><td>pytest</td><td>a Python project marker and tests, with pytest importable</td><td>test (node id)</td><td>file, then class</td></tr>
 <tr><td>unittest</td><td>the same, without pytest</td><td>test method</td><td>module, then class</td></tr>
 <tr><td>testthat</td><td><code>tests/testthat</code></td><td><code>test_that()</code> block</td><td>file, then <code>describe()</code></td></tr>
@@ -116,7 +116,13 @@ mep.opt.activity_test_node = <span class="tok-green">'node'</span>
 mep.opt.activity_test_scan_depth = <span class="tok-cyan">2</span></code></pre></div>
 <h2>ctest</h2>
 <p>The CMake build directory is the first entry of
-<code>mep.opt.lang_test_build_dirs</code> that holds a configured ctest tree. Set
+<code>mep.opt.lang_test_build_dirs</code> that holds a configured ctest tree, looked
+for at the project root and in any subdirectory with its own
+<code>CMakeLists.txt</code>. The tree's <code>CTestTestfile.cmake</code> need not be at the top
+of the build directory: a project that only calls <code>enable_testing()</code> in
+<code>tests/CMakeLists.txt</code> gets one in <code>build/tests</code>, so mep looks up to three
+levels down and lists each one it finds as its own suite
+(<code>build/debug/test/cpp</code> and <code>build/debug/test/cpp-focused</code> are two). Set
 <code>mep.activity_test_build_dir</code> to pick one yourself, and
 <code>mep.opt.activity_test_jobs</code> to run tests in parallel:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.activity_test_build_dir = <span class="tok-green">'build/native-dev'</span>

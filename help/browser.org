@@ -32,6 +32,7 @@ title.
 | =r=        | reload                                 |
 | =f=        | label every link, type a letter to follow |
 | =Ctrl-E=   | show the page source                   |
+| ~=~        | reset the zoom; on a mepml document's HTML export, line the document up with the page instead ([[file:mepml.html][mepml]]) |
 
 =localhost:8000=, =:8000/app=, =example.com= and plain file paths all work
 in the URL bar.

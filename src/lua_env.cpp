@@ -787,7 +787,9 @@ int l_command(lua_State *L) {
 
 // mep.map(mode, key, fn, opts): binds a single key in normal ("n") or
 // visual ("v"/"V") mode to a Lua function. Overrides the builtin for that
-// key. `opts` is optional: {desc = "..."} records a human-readable
+// key -- unless fn returns exactly `false`, which hands that keypress back
+// to the builtin (a binding that only means something in some buffers,
+// like mepml's `=`). `opts` is optional: {desc = "..."} records a human-readable
 // description (Editor::AllMappingDescriptions()) for the help picker's
 // keybinding introspection (NVIM_PARITY_PLAN.md Phase 25) -- mirrors
 // mep.leader_map's own (positional, not opts-table) description arg;
@@ -1932,6 +1934,15 @@ int l_youtube_play(lua_State *L) {
     GetEditor(L)->OpenYoutubeInPlace(yt::CanonicalVideoUrl(u));
     return 0;
 }
+// mep.youtube_seek(seconds): jumps the playing video to that position
+// (clamped to the video), like clicking the progress bar.
+int l_youtube_seek(lua_State *L) {
+    const double sec = luaL_checknumber(L, 1);
+    Editor *ed = GetEditor(L);
+    int id = ed->YoutubeBufferId();
+    if (YoutubeSession *s = id >= 0 ? ed->GetYoutubeMutable(id) : nullptr) ed->YoutubeSeekTo(*s, sec);
+    return 0;
+}
 // mep.youtube_state() -> table or nil: {query, results = {{id, title,
 // channel, duration}}, selected (1-based), playing, paused, buffering,
 // position, duration, title, url, volume, muted, status} for the
@@ -2002,16 +2013,16 @@ int l_youtube_state(lua_State *L) {
     lua_setfield(L, -2, "audio_played");
     lua_pushinteger(L, s->audio_open ? static_cast<lua_Integer>(gfx::AudioStreamQueuedFrames(s->audio)) : 0);
     lua_setfield(L, -2, "audio_queued_frames");
-    lua_pushinteger(L, static_cast<lua_Integer>(s->audio_pending.size()));
-    lua_setfield(L, -2, "audio_pending_bytes");
-    lua_pushinteger(L, static_cast<lua_Integer>(s->frames.Ready()));
+    lua_pushinteger(L, s->player ? static_cast<lua_Integer>(s->player->QueuedAudioFrames()) : 0);
+    lua_setfield(L, -2, "audio_pending_frames");
+    lua_pushinteger(L, s->player ? static_cast<lua_Integer>(s->player->QueuedFrames()) : 0);
     lua_setfield(L, -2, "video_frames_ready");
-    lua_pushinteger(L, static_cast<lua_Integer>(s->frames_consumed));
-    lua_setfield(L, -2, "video_frames_consumed");
-    lua_pushboolean(L, s->video_eof);
-    lua_setfield(L, -2, "video_eof");
-    lua_pushboolean(L, s->audio_eof);
-    lua_setfield(L, -2, "audio_eof");
+    lua_pushinteger(L, static_cast<lua_Integer>(s->frames_shown));
+    lua_setfield(L, -2, "video_frames_shown");
+    lua_pushboolean(L, s->player ? s->player->VideoDone() : true);
+    lua_setfield(L, -2, "video_done");
+    lua_pushboolean(L, s->player ? s->player->AudioDone() : true);
+    lua_setfield(L, -2, "audio_done");
     lua_pushboolean(L, s->ended);
     lua_setfield(L, -2, "ended");
     lua_pushnumber(L, s->start_sec);
@@ -11525,6 +11536,60 @@ int l_html_title(lua_State *L) {
     return 1;
 }
 
+// mep.html_source_lines([buf]) -> {scroll =, view_h =, lines = {{line =,
+// line_end =, y =, h =}, ...}} | nil: a mepml export's source-line tags
+// (data-line) in html pane `buf` (default: the current buffer) -- each
+// tagged element's 1-based source lines and where it was last laid out,
+// in page px like `scroll` (the pane's scroll offset) and `view_h` (its
+// visible height). Sorted by line. nil when `buf` isn't an html pane.
+/**
+ * @brief Implements mep.html_source_lines([buf]): an html pane's mepml source-line tags with their laid-out positions, plus its scroll offset and visible height.
+ * @param L Lua state; optional arg 1 is the html buffer id (default: the current buffer).
+ * @return Number of values pushed (1: the table, or nil when the buffer isn't an html pane).
+ */
+int l_html_source_lines(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int buffer_id = static_cast<int>(luaL_optinteger(L, 1, ed->CurrentBufferId()));
+    const HtmlSession *sess = ed->GetHtml(buffer_id);
+    if (!sess) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushnumber(L, static_cast<lua_Number>(sess->scroll_y));
+    lua_setfield(L, -2, "scroll");
+    lua_pushnumber(L, static_cast<lua_Number>(sess->doc.view_h > 0.0f ? sess->doc.view_h : static_cast<float>(sess->viewport_h)));
+    lua_setfield(L, -2, "view_h");
+    lua_newtable(L);
+    int n = 0;
+    for (const Editor::HtmlSourceLine &s : ed->HtmlSourceLines(buffer_id)) {
+        lua_newtable(L);
+        lua_pushinteger(L, s.line);
+        lua_setfield(L, -2, "line");
+        lua_pushinteger(L, s.line_end);
+        lua_setfield(L, -2, "line_end");
+        lua_pushnumber(L, static_cast<lua_Number>(s.y));
+        lua_setfield(L, -2, "y");
+        lua_pushnumber(L, static_cast<lua_Number>(s.h));
+        lua_setfield(L, -2, "h");
+        lua_rawseti(L, -2, ++n);
+    }
+    lua_setfield(L, -2, "lines");
+    return 1;
+}
+
+// mep.html_scroll_to(buf, y): scrolls html pane `buf` to page-space scroll
+// offset `y` (the units mep.html_source_lines reports), clamped to the page.
+/**
+ * @brief Implements mep.html_scroll_to(buf, y): scrolls an html pane straight to a page-space offset.
+ * @param L Lua state; arg 1 is the html buffer id, arg 2 the target scroll offset in page px.
+ * @return Number of values pushed (0).
+ */
+int l_html_scroll_to(lua_State *L) {
+    GetEditor(L)->ScrollHtmlTo(static_cast<int>(luaL_checkinteger(L, 1)), static_cast<float>(luaL_checknumber(L, 2)));
+    return 0;
+}
+
 /**
  * @brief Implements mep.html_omnibar_edit(): puts the focused html pane's omnibar into edit mode.
  * @param L Lua state.
@@ -14501,6 +14566,7 @@ const luaL_Reg kMepFuncs[] = {
     {"youtube_toggle", l_youtube_toggle},
     {"youtube_search", l_youtube_search},
     {"youtube_play", l_youtube_play},
+    {"youtube_seek", l_youtube_seek},
     {"youtube_state", l_youtube_state},
     {"ui_input", l_ui_input},
     {"ui_confirm", l_ui_confirm},
@@ -14928,6 +14994,8 @@ const luaL_Reg kMepFuncs[] = {
     {"url_normalize", l_url_normalize},
     {"url_resolve", l_url_resolve},
     {"html_title", l_html_title},
+    {"html_source_lines", l_html_source_lines},
+    {"html_scroll_to", l_html_scroll_to},
     {"html_settle", l_html_settle},
     {"html_omnibar_edit", l_html_omnibar_edit},
     {"html_current_origin", l_html_current_origin},
@@ -15211,6 +15279,20 @@ bool LuaEnv::DoFile(const std::string &path) {
         return false;
     }
     return true;
+}
+
+bool LuaEnv::CallRefForHandled(int ref) {
+    if (ref == LUA_NOREF || ref == LUA_REFNIL || ref == 0) return true;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    if (lua_pcall(L_, 0, 1, 0) != LUA_OK) {
+        const char *msg = lua_tostring(L_, -1);
+        if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+        lua_pop(L_, 1);
+        return true;
+    }
+    const bool declined = lua_isboolean(L_, -1) && !lua_toboolean(L_, -1);
+    lua_pop(L_, 1);
+    return !declined;
 }
 
 void LuaEnv::CallRef(int ref) {

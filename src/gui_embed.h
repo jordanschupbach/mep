@@ -209,6 +209,14 @@ std::string FindProgram(const std::string &name);
  */
 std::string ProcessExecutable(int pid);
 
+/**
+ * @brief The programs a launcher script hands over to: for a file starting with `#!`, the canonical path of every
+ * existing executable it names with an absolute path after `exec` (Homebrew's `firefox` is a bash script doing
+ * `exec '/Applications/Firefox.app/Contents/MacOS/firefox' "$@"`); empty for anything else.
+ * @param path The program as FindProgram resolved it.
+ */
+std::vector<std::string> LauncherTargets(const std::string &path);
+
 // --- Abstraction ------------------------------------------------------------
 
 // One program shown inside the document.
@@ -261,8 +269,11 @@ public:
     // window it hands off to an already-running copy of itself is adopted
     // instead (Backend::AdoptHandoff). From then on the window *is* the
     // program: it ends when the window closes, and stopping it only ever
-    // asks the window to close -- the process belongs to the user.
-    void SetHandoff(const std::string &executable) { handoff_exes_ = {executable}; }
+    // asks the window to close -- the process belongs to the user. A
+    // launcher script's targets (LauncherTargets) count as the program too:
+    // the copy already running is the real program, never the script, and
+    // the script's own process may be gone before it is seen running it.
+    void SetHandoff(const std::string &executable);
     bool HandedOff() const { return handed_off_; }
     // Whether to keep pictures of it (LastSnapshot) -- a document's block
     // keeps its last frame; a pane showing the program itself needs none.

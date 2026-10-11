@@ -1,9 +1,11 @@
-// Coverage for youtube_player.h's pure helpers: yt-dlp JSON parsing
-// (flat-playlist search rows, resolved stream info in both the muxed
-// single-format and requested_formats shapes), URL canonicalisation,
-// ffmpeg/yt-dlp argv construction, and the FrameAssembler's behaviour
-// across arbitrary chunk boundaries. No network, no display.
+// Coverage for youtube_player.h's pure helpers: InnerTube request bodies,
+// player responses (the muxed itag 18, the adaptive H.264 + AAC pair, an
+// unplayable video, a live one, ciphered formats), search responses,
+// video-id extraction, the curl command lines and the readout formatting.
+// The JSON here is trimmed from real responses. No network, no display.
 #include "youtube_player.h"
+
+#include "json.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -20,159 +22,149 @@ void Check(bool condition, const char *expression, int line) {
 }
 #define CHECK(condition) Check((condition), #condition, __LINE__)
 
-bool Has(const std::vector<std::string> &argv, const std::string &needle) {
-    for (const std::string &a : argv)
-        if (a == needle) return true;
-    return false;
-}
-
 int IndexOf(const std::vector<std::string> &argv, const std::string &needle) {
     for (size_t i = 0; i < argv.size(); i++)
         if (argv[i] == needle) return static_cast<int>(i);
     return -1;
 }
 
-void TestSearchLine() {
-    yt::SearchResult r;
-    CHECK(!yt::ParseSearchLine("", &r));
-    CHECK(!yt::ParseSearchLine("WARNING: something", &r));
-    CHECK(!yt::ParseSearchLine("{\"title\": \"no id\"}", &r));
-    const char *line =
-        "{\"_type\": \"url\", \"id\": \"aqz-KE-bpKQ\", \"url\": \"https://www.youtube.com/watch?v=aqz-KE-bpKQ\", "
-        "\"title\": \"Big Buck Bunny\", \"duration\": 635.0, \"channel\": \"Blender\", \"view_count\": 1234567, "
-        "\"live_status\": \"not_live\"}\n";
-    CHECK(yt::ParseSearchLine(line, &r));
-    CHECK(r.id == "aqz-KE-bpKQ");
-    CHECK(r.title == "Big Buck Bunny");
-    CHECK(r.channel == "Blender");
-    CHECK(r.duration_sec == 635.0);
-    CHECK(r.view_count == 1234567.0);
-    CHECK(!r.is_live);
-    CHECK(r.url == "https://www.youtube.com/watch?v=aqz-KE-bpKQ");
+const yt::Client &Android() { return yt::PlayerClients()[0]; }
+const yt::Client &Vr() { return yt::PlayerClients()[1]; }
 
-    // Live rows: null duration, is_live status, uploader instead of channel.
-    const char *live = "{\"id\": \"liveid12345\", \"title\": \"radio\", \"duration\": null, \"uploader\": \"Lofi\", "
-                       "\"live_status\": \"is_live\"}";
-    CHECK(yt::ParseSearchLine(live, &r));
-    CHECK(r.is_live);
-    CHECK(r.duration_sec == 0.0);
-    CHECK(r.channel == "Lofi");
-    CHECK(r.url == "https://www.youtube.com/watch?v=liveid12345");
+void TestClients() {
+    CHECK(yt::PlayerClients().size() >= 2);
+    CHECK(Android().name == "ANDROID" && Android().muxed_only && !Android().user_agent.empty());
+    CHECK(Vr().name == "ANDROID_VR" && !Vr().muxed_only && !Vr().user_agent.empty());
+    CHECK(yt::SearchClient().name == "WEB");
 }
 
-void TestStreamInfoMuxed() {
-    const char *json =
-        "{\"id\": \"aqz-KE-bpKQ\", \"title\": \"Big Buck Bunny\", \"duration\": 635, \"channel\": \"Blender\", "
-        "\"format_id\": \"18\", \"url\": \"https://rr5.googlevideo.com/videoplayback?itag=18\", "
-        "\"vcodec\": \"avc1.42001E\", \"acodec\": \"mp4a.40.2\", \"width\": 640, \"height\": 360, \"fps\": 30, "
-        "\"http_headers\": {\"User-Agent\": \"Mozilla/5.0 test\", \"Accept\": \"*/*\"}}";
+void TestVideoId() {
+    CHECK(yt::VideoId("dQw4w9WgXcQ") == "dQw4w9WgXcQ");
+    CHECK(yt::VideoId(" dQw4w9WgXcQ ") == "dQw4w9WgXcQ");
+    CHECK(yt::VideoId("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s") == "dQw4w9WgXcQ");
+    CHECK(yt::VideoId("https://www.youtube.com/watch?feature=share&v=dQw4w9WgXcQ") == "dQw4w9WgXcQ");
+    CHECK(yt::VideoId("https://youtu.be/dQw4w9WgXcQ?si=abc") == "dQw4w9WgXcQ");
+    CHECK(yt::VideoId("https://www.youtube.com/shorts/dQw4w9WgXcQ") == "dQw4w9WgXcQ");
+    CHECK(yt::VideoId("https://www.youtube.com/embed/dQw4w9WgXcQ") == "dQw4w9WgXcQ");
+    CHECK(yt::VideoId("https://example.com/").empty());
+    CHECK(yt::VideoId("not an id").empty());
+    CHECK(yt::CanonicalVideoUrl("dQw4w9WgXcQ") == "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    CHECK(yt::CanonicalVideoUrl("https://youtu.be/x") == "https://youtu.be/x");
+}
+
+void TestRequestBodies() {
+    Json body;
+    CHECK(Json::Parse(yt::PlayerRequestBody(Vr(), "dQw4w9WgXcQ"), &body));
+    CHECK(body.get("videoId").as_string() == "dQw4w9WgXcQ");
+    CHECK(body.get("context").get("client").get("clientName").as_string() == "ANDROID_VR");
+    CHECK(body.get("context").get("client").get("androidSdkVersion").as_int() == 32);
+    CHECK(body.get("context").get("client").get("deviceMake").as_string() == "Oculus");
+    CHECK(Json::Parse(yt::PlayerRequestBody(Android(), "dQw4w9WgXcQ"), &body));
+    CHECK(body.get("context").get("client").get("clientName").as_string() == "ANDROID");
+    CHECK(body.get("context").get("client").get("androidSdkVersion").as_int() == 30);
+    CHECK(Json::Parse(yt::SearchRequestBody("lofi \"hip\" hop"), &body));
+    CHECK(body.get("query").as_string() == "lofi \"hip\" hop");
+    CHECK(body.get("context").get("client").get("clientName").as_string() == "WEB");
+}
+
+const char *kMuxed = R"({"playabilityStatus":{"status":"OK"},
+ "streamingData":{"formats":[{"itag":18,"url":"https://rr1.googlevideo.com/videoplayback?itag=18",
+   "mimeType":"video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"","width":640,"height":360,"fps":25}],
+  "adaptiveFormats":[{"itag":137,"url":"https://x/137","mimeType":"video/mp4; codecs=\"avc1.640028\"","width":1920,"height":1080}]},
+ "videoDetails":{"videoId":"dQw4w9WgXcQ","title":"Never Gonna Give You Up","author":"Rick Astley","lengthSeconds":"213","isLive":false}})";
+
+void TestPlayerMuxed() {
     yt::StreamInfo info;
     std::string err;
-    CHECK(yt::ParseStreamInfo(json, &info, &err));
-    CHECK(info.muxed);
-    CHECK(info.has_video && info.has_audio);
-    CHECK(info.video_url == info.audio_url);
-    CHECK(info.width == 640 && info.height == 360);
-    CHECK(info.fps == 30.0);
-    CHECK(info.duration_sec == 635.0);
-    CHECK(info.video_headers == "User-Agent: Mozilla/5.0 test\r\nAccept: */*\r\n");
-    CHECK(info.audio_headers == info.video_headers);
+    CHECK(yt::ParsePlayerResponse(kMuxed, Vr(), 480, &info, &err));
+    CHECK(info.muxed && info.has_video && info.has_audio);
+    CHECK(info.video_url == "https://rr1.googlevideo.com/videoplayback?itag=18" && info.audio_url == info.video_url);
+    CHECK(info.video_user_agent == Vr().user_agent);
+    CHECK(info.width == 640 && info.height == 360 && info.fps == 25.0);
+    CHECK(info.video_codec == "avc1.42001E, mp4a.40.2");
+    CHECK(info.title == "Never Gonna Give You Up" && info.channel == "Rick Astley");
+    CHECK(info.duration_sec == 213.0 && info.id == "dQw4w9WgXcQ");
+    // A muxed-only client takes itag 18 just the same.
+    CHECK(yt::ParsePlayerResponse(kMuxed, Android(), 480, &info, &err) && info.muxed);
+    CHECK(info.video_user_agent == Android().user_agent);
 }
 
-void TestStreamInfoSplit() {
-    const char *json =
-        "{\"id\": \"x\", \"title\": \"Split\", \"duration\": 10.5, \"requested_formats\": ["
-        "{\"format_id\": \"135\", \"url\": \"https://v.example/v\", \"vcodec\": \"avc1\", \"acodec\": \"none\", "
-        "\"width\": 854, \"height\": 480, \"fps\": 24, \"http_headers\": {\"User-Agent\": \"ua\"}},"
-        "{\"format_id\": \"140\", \"url\": \"https://a.example/a\", \"vcodec\": \"none\", \"acodec\": \"mp4a\", "
-        "\"http_headers\": {\"User-Agent\": \"ua2\"}}]}";
+const char *kAdaptive = R"({"playabilityStatus":{"status":"OK"},
+ "streamingData":{"adaptiveFormats":[
+   {"itag":313,"url":"https://x/313","mimeType":"video/webm; codecs=\"vp09.00.50.08\"","width":3840,"height":2160},
+   {"itag":137,"url":"https://x/137","mimeType":"video/mp4; codecs=\"avc1.640028\"","width":1920,"height":1080,"fps":25},
+   {"itag":135,"url":"https://x/135","mimeType":"video/mp4; codecs=\"avc1.4D401E\"","width":854,"height":480,"fps":25},
+   {"itag":134,"url":"https://x/134","mimeType":"video/mp4; codecs=\"avc1.4D401E\"","width":640,"height":360,"fps":25},
+   {"itag":398,"url":"https://x/398","mimeType":"video/mp4; codecs=\"av01.0.05M.08\"","width":1280,"height":720},
+   {"itag":139,"url":"https://x/139","mimeType":"audio/mp4; codecs=\"mp4a.40.5\""},
+   {"itag":140,"url":"https://x/140","mimeType":"audio/mp4; codecs=\"mp4a.40.2\""},
+   {"itag":251,"url":"https://x/251","mimeType":"audio/webm; codecs=\"opus\""}]},
+ "videoDetails":{"videoId":"abcdefghijk","title":"t","author":"a","lengthSeconds":"60"}})";
+
+void TestPlayerAdaptive() {
     yt::StreamInfo info;
     std::string err;
-    CHECK(yt::ParseStreamInfo(json, &info, &err));
-    CHECK(!info.muxed);
-    CHECK(info.video_url == "https://v.example/v");
-    CHECK(info.audio_url == "https://a.example/a");
-    CHECK(info.audio_headers == "User-Agent: ua2\r\n");
-    CHECK(info.width == 854 && info.height == 480 && info.fps == 24.0);
-
-    CHECK(!yt::ParseStreamInfo("not json", &info, &err));
-    CHECK(!err.empty());
-    CHECK(!yt::ParseStreamInfo("{\"id\": \"nothing\"}", &info, &err));
+    CHECK(yt::ParsePlayerResponse(kAdaptive, Vr(), 480, &info, &err));
+    CHECK(!info.muxed && info.has_video && info.has_audio);
+    CHECK(info.video_url == "https://x/135" && info.height == 480);  // the tallest H.264 within the cap
+    CHECK(info.audio_url == "https://x/140");                         // AAC-LC, not HE-AAC or Opus
+    CHECK(info.video_user_agent == Vr().user_agent && info.audio_user_agent == Vr().user_agent);
+    CHECK(info.video_codec == "avc1.4D401E");
+    CHECK(yt::ParsePlayerResponse(kAdaptive, Vr(), 360, &info, &err) && info.video_url == "https://x/134");
+    // A muxed-only client's adaptive URLs are PO-token gated: refused, so the resolve moves on.
+    CHECK(!yt::ParsePlayerResponse(kAdaptive, Android(), 480, &info, &err));
+    CHECK(err.find("muxed") != std::string::npos);
 }
 
-void TestCanonicalUrl() {
-    CHECK(yt::CanonicalVideoUrl("aqz-KE-bpKQ") == "https://www.youtube.com/watch?v=aqz-KE-bpKQ");
-    CHECK(yt::CanonicalVideoUrl("  aqz-KE-bpKQ\n") == "https://www.youtube.com/watch?v=aqz-KE-bpKQ");
-    CHECK(yt::CanonicalVideoUrl("https://youtu.be/aqz-KE-bpKQ") == "https://youtu.be/aqz-KE-bpKQ");
-    CHECK(yt::CanonicalVideoUrl("https://www.youtube.com/watch?v=aqz-KE-bpKQ&t=10") ==
-          "https://www.youtube.com/watch?v=aqz-KE-bpKQ&t=10");
-    CHECK(yt::CanonicalVideoUrl("not an id!!") == "not an id!!");
+void TestPlayerRefusals() {
+    yt::StreamInfo info;
+    std::string err;
+    CHECK(!yt::ParsePlayerResponse(R"({"playabilityStatus":{"status":"LOGIN_REQUIRED","reason":"Sign in to confirm you're not a bot"}})",
+                                   Vr(), 480, &info, &err));
+    CHECK(err == "Sign in to confirm you're not a bot");
+    CHECK(!yt::ParsePlayerResponse(R"({"playabilityStatus":{"status":"ERROR"}})", Vr(), 480, &info, &err));
+    CHECK(err.find("ERROR") != std::string::npos);
+    CHECK(!yt::ParsePlayerResponse("not json", Vr(), 480, &info, &err) && !err.empty());
+    CHECK(!yt::ParsePlayerResponse(R"({"playabilityStatus":{"status":"OK"},"videoDetails":{"isLive":true}})", Vr(), 480, &info, &err));
+    CHECK(err.find("live") != std::string::npos);
+    // Only ciphered or undecodable formats.
+    CHECK(!yt::ParsePlayerResponse(R"({"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[
+        {"itag":137,"signatureCipher":"s=x","mimeType":"video/mp4; codecs=\"avc1.640028\"","height":1080},
+        {"itag":251,"url":"https://x","mimeType":"audio/webm; codecs=\"opus\""}]}})",
+                                   Vr(), 1080, &info, &err));
+    CHECK(err.find("decode") != std::string::npos);
+}
+
+const char *kSearch = R"({"contents":{"twoColumnSearchResultsRenderer":{"primaryContents":{"sectionListRenderer":{"contents":[
+ {"itemSectionRenderer":{"contents":[
+  {"videoRenderer":{"videoId":"n61ULEU7CO0","title":{"runs":[{"text":"Best of lofi"},{"text":" 2021"}]},
+    "ownerText":{"runs":[{"text":"Lofi Girl"}]},"lengthText":{"simpleText":"6:10:58"},"viewCountText":{"simpleText":"58,000,859 views"}}},
+  {"channelRenderer":{"channelId":"UCx"}},
+  {"videoRenderer":{"videoId":"rFZHOHl-L8A","title":{"simpleText":"lofi radio"},"longBylineText":{"runs":[{"text":"Lofi Girl"}]},
+    "viewCountText":{"runs":[{"text":"31K"},{"text":" watching"}]}}},
+  {"videoRenderer":{"videoId":"short"}}]}}]}}}}})";
+
+void TestSearch() {
+    const std::vector<yt::SearchResult> rows = yt::ParseSearchResponse(kSearch);
+    CHECK(rows.size() == 2);  // the channel and the malformed id are skipped
+    CHECK(rows[0].id == "n61ULEU7CO0" && rows[0].title == "Best of lofi 2021" && rows[0].channel == "Lofi Girl");
+    CHECK(rows[0].duration_sec == 6 * 3600 + 10 * 60 + 58 && rows[0].view_count == 58000859.0 && !rows[0].is_live);
+    CHECK(rows[0].url == "https://www.youtube.com/watch?v=n61ULEU7CO0");
+    CHECK(rows[1].channel == "Lofi Girl" && rows[1].duration_sec == 0.0 && rows[1].is_live);
+    CHECK(yt::ParseSearchResponse("").empty());
+    CHECK(yt::ParseSearchResponse("{}").empty());
 }
 
 void TestArgv() {
-    std::vector<std::string> s = yt::SearchArgv("lofi beats", 15);
-    CHECK(s.front() == "yt-dlp");
-    CHECK(s.back() == "ytsearch15:lofi beats");
-    CHECK(Has(s, "--flat-playlist") && Has(s, "-j"));
-    CHECK(yt::SearchArgv("x", 500).back() == "ytsearch50:x");
-
-    std::vector<std::string> r = yt::ResolveArgv("https://www.youtube.com/watch?v=abc", "android", 480);
-    CHECK(r.front() == "yt-dlp");
-    CHECK(r.back() == "https://www.youtube.com/watch?v=abc");
-    int ea = IndexOf(r, "--extractor-args");
-    CHECK(ea >= 0 && r[static_cast<size_t>(ea) + 1] == "youtube:player_client=android");
-    int f = IndexOf(r, "-f");
-    CHECK(f >= 0 && r[static_cast<size_t>(f) + 1].find("height<=480") != std::string::npos);
-    CHECK(!Has(yt::ResolveArgv("u", "", 360), "--extractor-args"));
-
-    yt::StreamInfo info;
-    info.video_url = "https://v";
-    info.audio_url = "https://a";
-    info.video_headers = "User-Agent: ua\r\n";
-    info.audio_headers = "User-Agent: ua\r\n";
-    std::vector<std::string> v = yt::VideoDecodeArgv(info, 12.5, 640, 360, 30.0);
-    CHECK(v.front() == "ffmpeg");
-    CHECK(v.back() == "pipe:1");
-    int ss = IndexOf(v, "-ss");
-    CHECK(ss >= 0 && v[static_cast<size_t>(ss) + 1] == "12.500");
-    int hdr = IndexOf(v, "-headers");
-    CHECK(hdr >= 0 && v[static_cast<size_t>(hdr) + 1] == "User-Agent: ua\r\n");
-    int i = IndexOf(v, "-i");
-    CHECK(i >= 0 && v[static_cast<size_t>(i) + 1] == "https://v");
-    CHECK(Has(v, "rgba") && Has(v, "rawvideo") && Has(v, "scale=640:360") && Has(v, "-an"));
-    // -ss must precede -i (input seeking: a byte-range request, not a decode-and-discard).
-    CHECK(ss < i);
-    CHECK(!Has(yt::VideoDecodeArgv(info, 0.0, 640, 360, 30.0), "-ss"));
-
-    std::vector<std::string> a = yt::AudioDecodeArgv(info, 0.0, 2, 48000);
-    CHECK(Has(a, "s16le") && Has(a, "-vn") && Has(a, "48000") && Has(a, "-ac"));
-    int ai = IndexOf(a, "-i");
-    CHECK(ai >= 0 && a[static_cast<size_t>(ai) + 1] == "https://a");
-}
-
-void TestFrameAssembler() {
-    yt::FrameAssembler fa(4);
-    CHECK(fa.Ready() == 0);
-    const char bytes[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
-    CHECK(fa.Push(bytes, 3) == 0);  // partial
-    CHECK(fa.Push(bytes + 3, 3) == 1);  // completes frame 1, starts frame 2
-    CHECK(fa.Push(bytes + 6, 4) == 2);  // completes frame 2, 2 bytes of frame 3
-    std::vector<uint8_t> f;
-    CHECK(fa.Pop(&f));
-    CHECK(f.size() == 4 && f[0] == 1 && f[3] == 4);
-    CHECK(fa.Pop(&f));
-    CHECK(f[0] == 5 && f[3] == 8);
-    CHECK(!fa.Pop(&f));
-    CHECK(fa.Push(bytes + 8, 2) == 1);  // 9,10 + the queued 9,10 tail -> frame 3
-    CHECK(fa.Pop(&f));
-    CHECK(f[0] == 9 && f[1] == 10 && f[2] == 9 && f[3] == 10);
-    // One huge chunk holding many frames.
-    std::vector<char> big(4 * 100, 'x');
-    CHECK(fa.Push(big.data(), big.size()) == 100);
-    fa.DropAll();
-    CHECK(fa.Ready() == 0);
-    fa.Reset(0);
-    CHECK(fa.Push(big.data(), big.size()) == 0);  // no frame size: nothing assembled
+    const std::vector<std::string> a = yt::InnertubeArgv(yt::kPlayerEndpoint, Vr(), "{\"x\":1}");
+    CHECK(a.front() == "curl" && a.back() == yt::kPlayerEndpoint);
+    const int ua = IndexOf(a, "-A");
+    CHECK(ua >= 0 && a[static_cast<size_t>(ua) + 1] == Vr().user_agent);
+    const int data = IndexOf(a, "--data-binary");
+    CHECK(data >= 0 && a[static_cast<size_t>(data) + 1] == "{\"x\":1}");
+    CHECK(IndexOf(a, "Content-Type: application/json") >= 0);
+    const std::vector<std::string> f = yt::FetchArgv("https://i.ytimg.com/vi/x/mqdefault.jpg");
+    CHECK(f.front() == "curl" && f.back() == "https://i.ytimg.com/vi/x/mqdefault.jpg");
 }
 
 void TestFormatting() {
@@ -191,12 +183,14 @@ void TestFormatting() {
 }  // namespace
 
 int main() {
-    TestSearchLine();
-    TestStreamInfoMuxed();
-    TestStreamInfoSplit();
-    TestCanonicalUrl();
+    TestClients();
+    TestVideoId();
+    TestRequestBodies();
+    TestPlayerMuxed();
+    TestPlayerAdaptive();
+    TestPlayerRefusals();
+    TestSearch();
     TestArgv();
-    TestFrameAssembler();
     TestFormatting();
     std::printf("youtube_player_test: all checks passed\n");
     return 0;

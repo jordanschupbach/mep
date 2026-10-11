@@ -26230,6 +26230,107 @@ const char *kBuiltinMepml =
     "  local visible = mep.org_conceal_toggle()\n"
     "  mep.notify('Markup concealment: ' .. (visible and 'on' or 'off'))\n"
     "  mep.mepml_render()\n"
+    "end)\n"
+    // `=` lines a mepml document up with its HTML export in a pane beside
+    // it (what alt+r / <leader>rr opens). In the mepml buffer: the cursor's
+    // line goes to the middle of the pane (zz) and the page scrolls so the
+    // same place sits in the middle of its own. In the page (HandleHtmlInput
+    // calls MepmlSyncFromHtml): whatever is in the middle of the page puts
+    // its source line in the middle of the document's pane, cursor on it,
+    // focus left on the page. The exported file carries the mapping: every
+    // block's first element names its source lines (data-line,
+    // mepml::HtmlOptions::source_lines), and mep.html_source_lines reads
+    // them back with where the page was laid out; a line between two tagged
+    // blocks (or inside a long one) is placed proportionally. Any other
+    // buffer gets the builtin `=` (the mapping returns false).
+    "local mep_mepml_sync_src = {}\n"
+    "local function mep_mepml_sync_html_pane(path)\n"
+    "  for _, id in ipairs(mep.pane_buffers()) do\n"
+    "    if mep.buffer_filename(id) == path and mep.html_source_lines(id) then return id end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_mepml_sync_y(lines, row)\n"
+    "  local a, b\n"
+    "  for _, s in ipairs(lines) do\n"
+    "    if s.line <= row then a = s else b = s break end\n"
+    "  end\n"
+    "  if a and row <= a.line_end then return a.y + a.h * (row - a.line) / (a.line_end - a.line + 1) end\n"
+    "  if a and b then\n"
+    "    local y0, l0 = a.y + a.h, a.line_end + 1\n"
+    "    return y0 + (b.y - y0) * (row - l0) / math.max(1, b.line - l0)\n"
+    "  end\n"
+    "  if b then return b.y end\n"
+    "  return a and a.y + a.h or 0\n"
+    "end\n"
+    "local function mep_mepml_sync_row(lines, y)\n"
+    "  local inside, before, after\n"
+    "  for _, s in ipairs(lines) do\n"
+    "    if y >= s.y and y < s.y + s.h and (not inside or s.h < inside.h) then inside = s end\n"
+    "    if s.y + s.h <= y and (not before or s.y + s.h > before.y + before.h) then before = s end\n"
+    "    if s.y >= y and (not after or s.y < after.y) then after = s end\n"
+    "  end\n"
+    "  if inside then\n"
+    "    return math.floor(inside.line + (inside.line_end - inside.line + 1) * (y - inside.y) / inside.h)\n"
+    "  end\n"
+    "  if before and after then\n"
+    "    local y0, l0 = before.y + before.h, before.line_end + 1\n"
+    "    return math.floor(l0 + (after.line - l0) * (y - y0) / math.max(1, after.y - y0))\n"
+    "  end\n"
+    "  if after then return after.line end\n"
+    "  return before and before.line_end or 1\n"
+    "end\n"
+    "function mep.mepml_sync_to_html()\n"
+    "  if not mep_mepml_is(mep.filename()) then return false end\n"
+    "  local path = mep.mepml_export_path('html')\n"
+    "  local html = mep_mepml_sync_html_pane(path)\n"
+    "  if not html then\n"
+    "    mep.notify('No HTML export of this document is open here (alt+r or <leader>rr shows it)', 'warn')\n"
+    "    return true\n"
+    "  end\n"
+    "  mep_mepml_sync_src[path] = mep.current_buffer()\n"
+    "  local info = mep.html_source_lines(html)\n"
+    "  if #info.lines == 0 then\n"
+    "    mep.notify('The HTML export has no line marks yet: run it again (alt+r)', 'warn')\n"
+    "    return true\n"
+    "  end\n"
+    "  local y = mep_mepml_sync_y(info.lines, (mep.cursor()))\n"
+    "  mep.cmd('normal! zz')\n"
+    "  mep.html_scroll_to(html, y - info.view_h / 2)\n"
+    "  return true\n"
+    "end\n"
+    "mep.map('n', '=', mep.mepml_sync_to_html, {desc = 'mepml: line the HTML export up with this line (= in either pane)'})\n"
+    "mep.command('MepmlSyncFromHtml', function()\n"
+    "  local html = mep.current_buffer()\n"
+    "  local path = mep.buffer_filename(html)\n"
+    "  local info = mep.html_source_lines(html)\n"
+    "  if not info or #info.lines == 0 then return end\n"
+    "  local src = mep_mepml_sync_src[path]\n"
+    "  local shown = false\n"
+    "  for _, id in ipairs(mep.pane_buffers()) do\n"
+    "    if id == src then shown = true end\n"
+    "  end\n"
+    "  if shown then\n"
+    "    mep.pane_focus_buffer(src)\n"
+    "  else\n"
+    "    src = nil\n"
+    "    for _, id in ipairs(mep.pane_buffers()) do\n"
+    "      if mep_mepml_is(mep.buffer_filename(id)) then\n"
+    "        mep.pane_focus_buffer(id)\n"
+    "        if mep.mepml_export_path('html') == path then src = id break end\n"
+    "      end\n"
+    "    end\n"
+    "    if not src then\n"
+    "      mep.pane_focus_buffer(html)\n"
+    "      mep.notify('The mepml document this page was exported from is not open here', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    mep_mepml_sync_src[path] = src\n"
+    "  end\n"
+    "  local row = mep_mepml_sync_row(info.lines, info.scroll + info.view_h / 2)\n"
+    "  mep.set_cursor(math.max(1, math.min(mep.line_count(), row)), 1)\n"
+    "  mep.cmd('normal! zz')\n"
+    "  mep.pane_focus_buffer(html)\n"
     "end)\n";
 
 const char *kBuiltinOrgNotes =
@@ -27702,9 +27803,9 @@ const char *kBuiltinActivityBar =
     //
     // A provider is a table handed to mep.test_provider_register:
     //   id, name        -- 'python' / shown in the suite's heading
-    //   detect(dir, entries, depth) -> suite table | nil
+    //   detect(dir, entries, depth) -> suite table | list of them | nil
     //                   -- called for every directory the scan visits (entries:
-    //                      name -> 'file' | 'dir'); a returned table becomes a
+    //                      name -> 'file' | 'dir'); each returned table becomes a
     //                      suite rooted at `dir`, and may set label, nested (keep
     //                      looking for more of this provider's suites below it)
     //                      and any fields of the provider's own
@@ -27844,16 +27945,18 @@ const char *kBuiltinActivityBar =
     "    local claimed = {}\n"
     "    for _, p in ipairs(mep.test_providers) do\n"
     "      if not inside[p.id] and p.enabled ~= false then\n"
-    "        local ok, s = pcall(p.detect, dir, entries, depth)\n"
+    "        local ok, found = pcall(p.detect, dir, entries, depth)\n"
     "        if not ok then\n"
-    "          mep.notify('Test provider ' .. p.id .. ': ' .. tostring(s), 'error')\n"
-    "        elseif s then\n"
-    "          s.provider = p\n"
-    "          s.root = s.root or dir\n"
-    "          s.label = s.label or ((p.name or p.id) .. (s.root ~= '.' and ' · ' .. s.root or ''))\n"
-    "          s.state, s.log = {}, {}\n"
-    "          suites[#suites + 1] = s\n"
-    "          if not s.nested then claimed[p.id] = true end\n"
+    "          mep.notify('Test provider ' .. p.id .. ': ' .. tostring(found), 'error')\n"
+    "        elseif found then\n"
+    "          for _, s in ipairs(found[1] and found or {found}) do\n"
+    "            s.provider = p\n"
+    "            s.root = s.root or dir\n"
+    "            s.label = s.label or ((p.name or p.id) .. (s.root ~= '.' and ' · ' .. s.root or ''))\n"
+    "            s.state, s.log = {}, {}\n"
+    "            suites[#suites + 1] = s\n"
+    "            if not s.nested then claimed[p.id] = true end\n"
+    "          end\n"
     "        end\n"
     "      end\n"
     "    end\n"
@@ -28423,16 +28526,52 @@ const char *kBuiltinActivityBar =
     "  })\n"
     "  mep.notify('Running tests...')\n"
     "end\n"
-    // --- ctest: the first of mep.opt.lang_test_build_dirs holding a
-    // CTestTestfile.cmake (or mep.activity_test_build_dir), as before. Enter on
-    // a test builds its CMake target, then runs it with `ctest -R ^name$`; marks
-    // update from ctest's own Start/Result lines.
-    "local function mep_at_find_build_dir()\n"
-    "  if mep.activity_test_build_dir then return mep.activity_test_build_dir end\n"
-    "  for _, d in ipairs(mep.opt.lang_test_build_dirs or {'build'}) do\n"
-    "    if mep_at_has_file(d, 'CTestTestfile.cmake') then return d end\n"
+    // --- ctest: at the project root, or in any directory with a CMakeLists.txt
+    // (a CMake project in a subdirectory), the first of
+    // mep.opt.lang_test_build_dirs (or mep.activity_test_build_dir) with a
+    // configured ctest tree in it. The CTestTestfile.cmake needn't sit at the
+    // top of the build dir: a project that only calls enable_testing() in
+    // tests/CMakeLists.txt gets one in build/tests, so the shallowest ones up
+    // to three levels down are each a suite (build/debug/test/cpp and
+    // build/debug/test/cpp-focused are two). Enter on a test builds its CMake
+    // target from the enclosing build tree (the directory with
+    // CMakeCache.txt), then runs it with `ctest -R ^name$`; marks update from
+    // ctest's own Start/Result lines.
+    "local mep_at_ctest_skip = {CMakeFiles = true, _deps = true, Testing = true}\n"
+    "local function mep_at_ctest_dirs(build)\n"
+    "  local out = {}\n"
+    "  local function walk(d, depth, cache)\n"
+    "    local entries = mep_at_entries(d)\n"
+    "    if entries['CMakeCache.txt'] == 'file' then cache = d end\n"
+    "    if entries['CTestTestfile.cmake'] == 'file' then\n"
+    "      out[#out + 1] = {test_dir = d, build_dir = cache or d}\n"
+    "      return\n"
+    "    end\n"
+    "    if depth >= 3 then return end\n"
+    "    local names = {}\n"
+    "    for name, kind in pairs(entries) do\n"
+    "      if kind == 'dir' and not mep_at_ctest_skip[name] and not mep_at_skip_dirs[name] and name:sub(1, 1) ~= '.' then\n"
+    "        names[#names + 1] = name\n"
+    "      end\n"
+    "    end\n"
+    "    table.sort(names)\n"
+    "    for _, n in ipairs(names) do walk(d .. '/' .. n, depth + 1, cache) end\n"
     "  end\n"
-    "  return nil\n"
+    "  walk(build, 0, nil)\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_at_find_ctest_dirs(dir, entries, depth)\n"
+    "  if depth == 0 and mep.activity_test_build_dir then return mep_at_ctest_dirs(mep.activity_test_build_dir) end\n"
+    "  if depth > 0 and entries['CMakeLists.txt'] ~= 'file' then return {} end\n"
+    "  for _, d in ipairs(mep.opt.lang_test_build_dirs or {'build'}) do\n"
+    "    local build = mep_at_join(dir, d)\n"
+    "    local first = d:match('^[^/]+')\n"
+    "    if entries[first] == 'dir' then\n"
+    "      local found = mep_at_ctest_dirs(build)\n"
+    "      if #found > 0 then return found end\n"
+    "    end\n"
+    "  end\n"
+    "  return {}\n"
     "end\n"
     // Every CMake target configured in the build dir, as a set: each one has a
     // CMakeFiles/<target>.dir whether or not it's ever been built (Ninja and
@@ -28456,19 +28595,25 @@ const char *kBuiltinActivityBar =
     "mep.test_provider_register({\n"
     "  id = 'ctest', name = 'ctest',\n"
     "  detect = function(dir, entries, depth)\n"
-    "    if depth > 0 then return nil end\n"
-    "    local build = mep_at_find_build_dir()\n"
-    "    if not build then return nil end\n"
-    "    return {build_dir = build, label = 'ctest · ' .. (#build > 24 and (build:match('([^/]+/[^/]+)/*$') or build) or build)}\n"
+    "    local suites = {}\n"
+    "    for _, f in ipairs(mep_at_find_ctest_dirs(dir, entries, depth)) do\n"
+    "      local t = f.test_dir\n"
+    "      f.label = 'ctest · ' .. (#t > 32 and (t:match('([^/]+/[^/]+)/*$') or t) or t)\n"
+    "      suites[#suites + 1] = f\n"
+    "    end\n"
+    "    return #suites > 0 and suites or nil\n"
     "  end,\n"
     "  list = function(suite, done)\n"
-    "    suite.targets = mep_at_scan_targets(suite.build_dir)\n"
+    "    suite.targets = mep_at_scan_targets(suite.test_dir)\n"
+    "    if suite.build_dir ~= suite.test_dir then\n"
+    "      for t in pairs(mep_at_scan_targets(suite.build_dir)) do suite.targets[t] = true end\n"
+    "    end\n"
     "    local chunks = {}\n"
-    "    mep.job_start({'ctest', '--test-dir', suite.build_dir, '--show-only=json-v1'}, {\n"
+    "    mep.job_start({'ctest', '--test-dir', suite.test_dir, '--show-only=json-v1'}, {\n"
     "      on_stdout = function(line) chunks[#chunks + 1] = line end,\n"
     "      on_exit = function(code)\n"
     "        local tests = mep.ctest_parse_list(table.concat(chunks, '\\n'))\n"
-    "        if tests then done(tests) else done(nil, 'ctest --show-only failed in ' .. suite.build_dir .. ' (exit ' .. tostring(code) .. ')') end\n"
+    "        if tests then done(tests) else done(nil, 'ctest --show-only failed in ' .. suite.test_dir .. ' (exit ' .. tostring(code) .. ')') end\n"
     "      end,\n"
     "    })\n"
     "  end,\n"
@@ -28482,8 +28627,7 @@ const char *kBuiltinActivityBar =
     "        targets[#targets + 1] = mep_at_shq(t.target)\n"
     "      end\n"
     "    end\n"
-    "    local dir = mep_at_shq(suite.build_dir)\n"
-    "    local ctest = 'ctest --test-dir ' .. dir .. ' --output-on-failure'\n"
+    "    local ctest = 'ctest --test-dir ' .. mep_at_shq(suite.test_dir) .. ' --output-on-failure'\n"
     "    if names then\n"
     "      local res = {}\n"
     "      for _, n in ipairs(names) do res[#res + 1] = mep.ctest_name_regex(n) end\n"
@@ -28494,7 +28638,7 @@ const char *kBuiltinActivityBar =
     "    end\n"
     "    local script = ctest\n"
     "    if #targets > 0 then\n"
-    "      script = 'cmake --build ' .. dir .. ' --target ' .. table.concat(targets, ' ') .. ' && ' .. ctest\n"
+    "      script = 'cmake --build ' .. mep_at_shq(suite.build_dir) .. ' --target ' .. table.concat(targets, ' ') .. ' && ' .. ctest\n"
     "    end\n"
     "    return {'sh', '-c', script}, {display = script, phase = #targets > 0 and 'building' or 'running'}\n"
     "  end,\n"
@@ -35231,6 +35375,11 @@ const char *kBuiltinPickerSources =
     "    if item then mep.cmd(item) end\n"
     "  end)\n"
     "end\n"
+    // mod1+x (Alt-x by default, like Emacs' M-x): the command palette from
+    // any mode. Bound here rather than in kDefaultMod1Bindings since that
+    // chunk runs before mep.commands exists.
+    "mep.command('MepCommands', mep.commands)\n"
+    "mep.map_mod1('x', mep.commands)\n"
     // Default winbar breadcrumb click handler (Phase 11 click-dispatch
     // gap): clicking a directory segment of the per-pane header's path
     // (main.cpp's DrawPane) navigates into it by opening a file picker

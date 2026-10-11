@@ -15,15 +15,17 @@
 <h1>What it is</h1>
 <p>A pane that searches YouTube, lists what it finds and plays the video you
 pick -- picture and sound, drawn by mep itself, beside whatever you are
-editing. Nothing is embedded: <code>yt-dlp</code> resolves the video to its stream
-URLs and <code>ffmpeg</code> decodes them into raw frames and samples over a pipe, and
-the pane paints those. Both tools must be on <code>PATH</code>; the pane says so if
-one is missing.</p>
+editing. Nothing is embedded and nothing extra needs installing: mep asks
+YouTube's own API for the video's stream URLs, downloads the stream with
+<code>curl</code> (the same way it fetches every https page), and demuxes and decodes
+it itself -- its own MP4 reader, H.264 decoder and AAC decoder -- then
+paints the frames and plays the sound. Only <code>curl</code> must be on <code>PATH</code>,
+which it is on macOS and nearly every Linux; the pane says so if not.</p>
 <h1>Opening it</h1>
 <ul>
 <li><code>&lt;leader&gt;yt</code> toggles the player: the first press opens it in a vertical split next to the current pane, the next hides it again (so does <code>i</code> inside the pane). Hiding does not stop anything -- the video plays on unseen, sound and all, and the press after that brings the same pane back mid-video. The YouTube icon at the right end of the tab bar does the same thing on a click; it is lit while the player is on screen, and its tooltip says when one is playing in the background.</li>
 <li><code>:youtube</code> (or <code>:yt</code>) opens the player in the current pane. Give it a search: <code>:youtube lofi hip hop</code>. Give it a watch URL, a <code>youtu.be</code> link or a bare 11-character video id and it plays that directly.</li>
-<li><code>:MepYoutube</code> is the command behind the toggle, for a keybinding of your own. From Lua: <code>mep.youtube_toggle()</code>, <code>mep.youtube_search(query)</code>, <code>mep.youtube_play(url)</code> and <code>mep.youtube_state()</code> (whose <code>visible</code> field is false while the player is hidden).</li>
+<li><code>:MepYoutube</code> is the command behind the toggle, for a keybinding of your own. From Lua: <code>mep.youtube_toggle()</code>, <code>mep.youtube_search(query)</code>, <code>mep.youtube_play(url)</code>, <code>mep.youtube_seek(seconds)</code> and <code>mep.youtube_state()</code> (whose <code>visible</code> field is false while the player is hidden).</li>
 </ul>
 <p>There is one player per workspace; opening it again brings the existing
 one back instead of starting a second. To actually stop playback, press
@@ -84,9 +86,10 @@ the pane says <i>Buffering...</i> while it waits for the first frame. Quality
 is capped at 480p, which is what fits a pane and keeps the decoder cheap.</p>
 <h1>When it does not work</h1>
 <ul>
-<li><i>yt-dlp and ffmpeg must be installed</i>: the tools are looked up on <code>PATH</code> when the pane opens.</li>
-<li>A 403 or a blank search usually means <code>yt-dlp</code> is out of date; YouTube changes often and <code>yt-dlp</code> follows. Update it and try again.</li>
-<li>The player asks <code>yt-dlp</code> for the <code>android</code> client's stream URLs, which <code>ffmpeg</code> can fetch directly; other clients hand out URLs that only <code>yt-dlp</code> itself may fetch.</li>
+<li><i>curl must be installed</i>: it is looked up on <code>PATH</code> when the pane opens.</li>
+<li><i>Sign in to confirm you're not a bot</i>: YouTube refused the request. The player asks as YouTube's Android app first and its Android VR app second (their stream URLs need no signature or token to fetch); when both are refused for a video there is nothing more it can do for that one.</li>
+<li><i>YouTube refused the stream download</i>: the video resolved, but googlevideo would not serve the file -- usually a URL that wants a proof-of-origin token, which this player does not generate. Playing the video again fetches fresh URLs.</li>
+<li>It plays H.264 video with AAC sound in an MP4: the 360p file that has both in one, or, when a video lacks that, a separate H.264 video (up to 480p) and AAC sound. A video offered only in other codecs (VP9, AV1, Opus) says so instead of playing. Live streams are not supported yet.</li>
 </ul>
 </body>
 </html>

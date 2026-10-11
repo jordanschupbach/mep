@@ -4,7 +4,9 @@
 // blocked -- forever, in the last two -- which is what left mep's window
 // on screen, frozen, after :qa until the process was killed by hand. They
 // are unit-testable because none of them needs an editor or a window:
-// just a Job, a child, and a stopwatch around the destructor.
+// just a Job, a child, and a stopwatch around the destructor. The last
+// case is about JobManager instead: every line a job prints reaching
+// on_stdout before its on_exit runs.
 //
 // Usage: mep-job-test
 
@@ -133,6 +135,29 @@ void TestEscapedPtyHolder() {
     Check(ms < kPromptMs, "destroying a job whose PTY stays open should not wait for EOF");
 }
 
+/**
+ * @brief A job that prints a lot and exits while the main loop is still busy with
+ * its first lines (in mep, a Lua on_stdout per line): every line must reach
+ * on_stdout before on_exit. PollAll used to check Finished() after draining, so
+ * the lines the reader queued meanwhile were dropped with the finished entry (the
+ * Tests panel's ctest listing lost its tail this way).
+ */
+void TestExitAfterAllLines() {
+    constexpr int kLines = 50000;
+    int lines = 0, seen_at_exit = -1;
+    JobManager::Callbacks cb;
+    cb.on_stdout = [&lines](const std::string &) {
+        // Slow on the first line only: long enough for seq to print the rest and exit.
+        if (lines++ == 0) std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    };
+    cb.on_exit = [&lines, &seen_at_exit](int) { seen_at_exit = lines; };
+    JobManager::Instance().Spawn({"seq", "1", std::to_string(kLines)}, "", std::move(cb));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (seen_at_exit < 0 && std::chrono::steady_clock::now() < deadline) JobManager::Instance().PollAll();
+    std::printf("  lines delivered before on_exit:       %6d/%d\n", seen_at_exit, kLines);
+    Check(seen_at_exit == kLines, "on_exit should only run once all of a job's output has been delivered");
+}
+
 }  // namespace
 
 int main() {
@@ -141,6 +166,7 @@ int main() {
     TestPtyShellHangsUp();
     TestBackloggedPtyJob();
     TestEscapedPtyHolder();
+    TestExitAfterAllLines();
     if (g_failures > 0) {
         std::fprintf(stderr, "job_test: %d check(s) failed\n", g_failures);
         return 1;

@@ -249,6 +249,7 @@ that it does nothing.
 | =mep.visual_selection= | returns the currently selected text without altering the selection or any register |
 | =mep.vsplit_right= | opens path in a new vertical split to the right of the focused pane |
 | =mep.youtube_play= | likewise, then plays that video |
+| =mep.youtube_seek= | jumps the playing video to that position |
 | =mep.youtube_search= | opens the player in the current pane (if it |
 | =mep.youtube_state= | table or nil: {query, results  {{id, title, |
 | =mep.youtube_toggle= | the tab-bar button's action (:MepYoutube, |

@@ -5,24 +5,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace yt {
 
 namespace {
-
-std::string HeadersForFfmpeg(const Json &http_headers) {
-    std::string out;
-    if (!http_headers.is_object()) return out;
-    for (const auto &kv : http_headers.fields()) {
-        if (!kv.second.is_string()) continue;
-        out += kv.first;
-        out += ": ";
-        out += kv.second.as_string();
-        out += "\r\n";
-    }
-    return out;
-}
 
 bool IsVideoId(const std::string &s) {
     if (s.size() != 11) return false;
@@ -40,93 +28,105 @@ std::string Trim(const std::string &s) {
     return s.substr(a, b - a);
 }
 
-}  // namespace
-
-bool ParseSearchLine(const std::string &json_line, SearchResult *out) {
-    if (out == nullptr) return false;
-    std::string line = Trim(json_line);
-    if (line.empty() || line[0] != '{') return false;
-    Json j;
-    if (!Json::Parse(line, &j) || !j.is_object()) return false;
-    const std::string id = j.get("id").as_string();
-    if (id.empty()) return false;
-    SearchResult r;
-    r.id = id;
-    r.url = j.get("url").as_string();
-    if (r.url.empty()) r.url = j.get("webpage_url").as_string();
-    if (r.url.empty()) r.url = "https://www.youtube.com/watch?v=" + id;
-    r.title = j.get("title").as_string();
-    if (r.title.empty()) r.title = id;
-    r.channel = j.get("channel").as_string();
-    if (r.channel.empty()) r.channel = j.get("uploader").as_string();
-    r.duration_sec = j.get("duration").as_double(0.0);
-    r.view_count = j.get("view_count").as_double(0.0);
-    const Json &live = j.get("live_status");
-    r.is_live = live.is_string() && live.as_string() == "is_live";
-    *out = std::move(r);
-    return true;
+// InnerTube's text objects: {"simpleText": "..."} or {"runs": [{"text": ...}, ...]}.
+std::string Text(const Json &t) {
+    if (t.get("simpleText").is_string()) return t.get("simpleText").as_string();
+    std::string out;
+    for (const Json &run : t.get("runs").items()) out += run.get("text").as_string();
+    return out;
 }
 
-bool ParseStreamInfo(const std::string &json, StreamInfo *out, std::string *error) {
-    auto fail = [&](const std::string &msg) {
-        if (error) *error = msg;
-        return false;
-    };
-    if (out == nullptr) return fail("no output");
-    Json j;
-    if (!Json::Parse(Trim(json), &j) || !j.is_object()) return fail("yt-dlp produced no JSON");
-    StreamInfo info;
-    info.id = j.get("id").as_string();
-    info.title = j.get("title").as_string();
-    info.channel = j.get("channel").as_string();
-    if (info.channel.empty()) info.channel = j.get("uploader").as_string();
-    info.duration_sec = j.get("duration").as_double(0.0);
-
-    auto take_video = [&](const Json &f) {
-        info.video_url = f.get("url").as_string();
-        info.video_headers = HeadersForFfmpeg(f.get("http_headers"));
-        info.width = f.get("width").as_int(0);
-        info.height = f.get("height").as_int(0);
-        double fps = f.get("fps").as_double(0.0);
-        if (fps > 0.0) info.fps = fps;
-        info.has_video = !info.video_url.empty();
-    };
-    auto take_audio = [&](const Json &f) {
-        info.audio_url = f.get("url").as_string();
-        info.audio_headers = HeadersForFfmpeg(f.get("http_headers"));
-        info.has_audio = !info.audio_url.empty();
-    };
-    auto codec_present = [](const Json &f, const char *key) {
-        const Json &c = f.get(key);
-        return c.is_string() && !c.as_string().empty() && c.as_string() != "none";
-    };
-
-    const Json &reqs = j.get("requested_formats");
-    if (reqs.is_array() && reqs.size() > 0) {
-        for (const Json &f : reqs.items()) {
-            bool v = codec_present(f, "vcodec");
-            bool a = codec_present(f, "acodec");
-            if (v && !info.has_video) take_video(f);
-            if (a && !info.has_audio) take_audio(f);
-            if (v && a && !info.muxed) info.muxed = (reqs.size() == 1);
+// "3:45" / "1:02:03" -> seconds; 0 when it isn't one.
+double ClockSeconds(const std::string &s) {
+    double total = 0.0;
+    double part = 0.0;
+    bool any = false;
+    for (char c : s) {
+        if (c >= '0' && c <= '9') {
+            part = part * 10.0 + (c - '0');
+            any = true;
+        } else if (c == ':') {
+            total = (total + part) * 60.0;
+            part = 0.0;
+        } else {
+            return 0.0;
         }
-    } else if (!j.get("url").as_string().empty()) {
-        // A single pre-muxed format (itag 18 and friends): the top-level
-        // object carries the format fields itself.
-        bool v = codec_present(j, "vcodec") || j.get("width").as_int(0) > 0;
-        bool a = codec_present(j, "acodec");
-        if (v) take_video(j);
-        if (a || !v) take_audio(j);
-        info.muxed = info.has_video && info.has_audio;
     }
-    if (!info.has_video && !info.has_audio) return fail("no playable format in yt-dlp output");
-    if (info.has_video && (info.width <= 0 || info.height <= 0)) {
-        info.width = 640;
-        info.height = 360;
+    return any ? total + part : 0.0;
+}
+
+// The digits of "14,141,464 views" as a number; 0 when there are none.
+double DigitsValue(const std::string &s) {
+    double v = 0.0;
+    bool any = false;
+    for (char c : s) {
+        if (c >= '0' && c <= '9') {
+            v = v * 10.0 + (c - '0');
+            any = true;
+        } else if (c != ',' && c != '.' && c != ' ') {
+            if (any) break;
+        }
     }
-    if (info.fps <= 0.0 || info.fps > 120.0) info.fps = 30.0;
-    *out = std::move(info);
-    return true;
+    return v;
+}
+
+// mimeType 'video/mp4; codecs="avc1.42001E, mp4a.40.2"' -> its codecs value.
+std::string Codecs(const std::string &mime) {
+    const size_t at = mime.find("codecs=\"");
+    if (at == std::string::npos) return "";
+    const size_t from = at + 8;
+    const size_t to = mime.find('"', from);
+    return mime.substr(from, to == std::string::npos ? std::string::npos : to - from);
+}
+
+bool StartsWith(const std::string &s, const char *prefix) { return s.rfind(prefix, 0) == 0; }
+
+// Every renderer object under `j` named `key`, depth first.
+void Collect(const Json &j, const char *key, std::vector<const Json *> *out) {
+    if (j.is_object()) {
+        for (const auto &kv : j.fields()) {
+            if (kv.first == key && kv.second.is_object())
+                out->push_back(&kv.second);
+            else
+                Collect(kv.second, key, out);
+        }
+    } else if (j.is_array()) {
+        for (const Json &item : j.items()) Collect(item, key, out);
+    }
+}
+
+}  // namespace
+
+const std::vector<Client> &PlayerClients() {
+    static const std::vector<Client> clients = {
+        {"ANDROID", "20.10.38", "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip", true},
+        {"ANDROID_VR", "1.62.27",
+         "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"},
+    };
+    return clients;
+}
+
+const Client &SearchClient() {
+    static const Client client = {"WEB", "2.20250101.00.00",
+                                  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                                  "Chrome/131.0.0.0 Safari/537.36"};
+    return client;
+}
+
+std::string VideoId(const std::string &url_or_id) {
+    const std::string s = Trim(url_or_id);
+    if (IsVideoId(s)) return s;
+    auto id_after = [&](const char *marker) -> std::string {
+        const size_t at = s.find(marker);
+        if (at == std::string::npos) return "";
+        const std::string id = s.substr(at + std::strlen(marker), 11);
+        return IsVideoId(id) ? id : "";
+    };
+    for (const char *marker : {"?v=", "&v=", "youtu.be/", "/shorts/", "/embed/", "/live/", "/v/"}) {
+        std::string id = id_after(marker);
+        if (!id.empty()) return id;
+    }
+    return "";
 }
 
 std::string CanonicalVideoUrl(const std::string &url_or_id) {
@@ -135,103 +135,152 @@ std::string CanonicalVideoUrl(const std::string &url_or_id) {
     return s;
 }
 
-std::vector<std::string> SearchArgv(const std::string &query, int max_results) {
-    int n = std::clamp(max_results, 1, 50);
-    return {"yt-dlp", "--no-update", "--no-warnings", "-q", "--flat-playlist", "-j",
-            "ytsearch" + std::to_string(n) + ":" + query};
-}
-
-std::vector<std::string> ResolveArgv(const std::string &url, const std::string &player_client, int max_height) {
-    int h = max_height > 0 ? max_height : 480;
-    std::string hs = std::to_string(h);
-    // Prefer one muxed mp4 (single fetch, h264 decodes cheaply), then a
-    // separate video+audio pair, then whatever is best.
-    std::string fmt = "b[height<=" + hs + "][ext=mp4]/b[height<=" + hs + "]/bv*[height<=" + hs + "][vcodec^=avc1]+ba/bv*[height<=" +
-                      hs + "]+ba/b";
-    std::vector<std::string> argv = {"yt-dlp", "--no-update", "--no-warnings", "-q", "--no-playlist", "-j", "-f", fmt};
-    if (!player_client.empty()) {
-        argv.push_back("--extractor-args");
-        argv.push_back("youtube:player_client=" + player_client);
+std::string PlayerRequestBody(const Client &client, const std::string &video_id) {
+    Json c = Json::Object();
+    c["clientName"] = client.name;
+    c["clientVersion"] = client.version;
+    c["hl"] = "en";
+    c["gl"] = "US";
+    if (client.name == "ANDROID_VR") {
+        c["deviceMake"] = "Oculus";
+        c["deviceModel"] = "Quest 3";
+        c["androidSdkVersion"] = 32;
+        c["osName"] = "Android";
+        c["osVersion"] = "12L";
+    } else if (client.name == "ANDROID") {
+        c["androidSdkVersion"] = 30;
+        c["osName"] = "Android";
+        c["osVersion"] = "11";
     }
-    argv.push_back(url);
-    return argv;
+    Json context = Json::Object();
+    context["client"] = std::move(c);
+    Json body = Json::Object();
+    body["context"] = std::move(context);
+    body["videoId"] = video_id;
+    body["contentCheckOk"] = true;
+    body["racyCheckOk"] = true;
+    return body.dump();
 }
 
-namespace {
-
-std::string SecondsArg(double s) {
-    char buf[48];
-    std::snprintf(buf, sizeof(buf), "%.3f", std::max(0.0, s));
-    return buf;
+std::string SearchRequestBody(const std::string &query) {
+    Json c = Json::Object();
+    c["clientName"] = SearchClient().name;
+    c["clientVersion"] = SearchClient().version;
+    c["hl"] = "en";
+    c["gl"] = "US";
+    Json context = Json::Object();
+    context["client"] = std::move(c);
+    Json body = Json::Object();
+    body["context"] = std::move(context);
+    body["query"] = query;
+    body["params"] = "EgIQAQ%3D%3D";  // the "Videos" filter: no channels or playlists
+    return body.dump();
 }
 
-std::vector<std::string> CommonInputArgs(const std::string &headers, double start_sec, const std::string &url) {
-    std::vector<std::string> argv = {"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-                                     "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"};
-    if (!headers.empty()) {
-        argv.push_back("-headers");
-        argv.push_back(headers);
+bool ParsePlayerResponse(const std::string &json, const Client &client, int max_height, StreamInfo *out, std::string *error) {
+    auto fail = [&](const std::string &msg) {
+        if (error) *error = msg;
+        return false;
+    };
+    if (out == nullptr) return fail("no output");
+    Json j;
+    if (!Json::Parse(Trim(json), &j) || !j.is_object()) return fail("YouTube sent no usable answer");
+    const Json &status = j.get("playabilityStatus");
+    if (status.get("status").as_string() != "OK") {
+        std::string reason = status.get("reason").as_string();
+        if (reason.empty() && status.get("messages").size() > 0) reason = status.get("messages").items()[0].as_string();
+        if (reason.empty()) reason = "this video can't be played (" + status.get("status").as_string("no status") + ")";
+        return fail(reason);
     }
-    if (start_sec > 0.0) {
-        argv.push_back("-ss");
-        argv.push_back(SecondsArg(start_sec));
+    StreamInfo info;
+    const Json &details = j.get("videoDetails");
+    info.id = details.get("videoId").as_string();
+    info.title = details.get("title").as_string();
+    info.channel = details.get("author").as_string();
+    info.duration_sec = std::atof(details.get("lengthSeconds").as_string("0").c_str());
+    if (details.get("isLive").as_bool()) return fail("live streams aren't supported yet");
+
+    const Json &streaming = j.get("streamingData");
+    // The muxed 360p mp4: one download carries both tracks.
+    for (const Json &f : streaming.get("formats").items()) {
+        if (f.get("itag").as_int() != 18 || !f.get("url").is_string()) continue;
+        info.video_url = info.audio_url = f.get("url").as_string();
+        info.video_user_agent = info.audio_user_agent = client.user_agent;
+        info.video_codec = Codecs(f.get("mimeType").as_string());
+        info.width = f.get("width").as_int(640);
+        info.height = f.get("height").as_int(360);
+        if (f.get("fps").as_double() > 0.0) info.fps = f.get("fps").as_double();
+        info.has_video = info.has_audio = info.muxed = true;
+        *out = std::move(info);
+        return true;
     }
-    argv.push_back("-i");
-    argv.push_back(url);
-    return argv;
-}
-
-}  // namespace
-
-std::vector<std::string> VideoDecodeArgv(const StreamInfo &info, double start_sec, int width, int height, double fps) {
-    std::vector<std::string> argv = CommonInputArgs(info.video_headers, start_sec, info.video_url);
-    char fps_buf[32];
-    std::snprintf(fps_buf, sizeof(fps_buf), "%.3f", fps > 0.0 ? fps : 30.0);
-    std::vector<std::string> tail = {"-an", "-sn", "-dn", "-map", "0:v:0",
-                                     "-vf", "scale=" + std::to_string(width) + ":" + std::to_string(height),
-                                     "-fps_mode", "cfr", "-r", fps_buf, "-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1"};
-    argv.insert(argv.end(), tail.begin(), tail.end());
-    return argv;
-}
-
-std::vector<std::string> AudioDecodeArgv(const StreamInfo &info, double start_sec, int channels, int rate) {
-    std::vector<std::string> argv = CommonInputArgs(info.audio_headers, start_sec, info.audio_url);
-    std::vector<std::string> tail = {"-vn", "-sn", "-dn", "-map", "0:a:0", "-ac", std::to_string(channels),
-                                     "-ar", std::to_string(rate), "-f", "s16le", "pipe:1"};
-    argv.insert(argv.end(), tail.begin(), tail.end());
-    return argv;
-}
-
-void FrameAssembler::Reset(size_t frame_bytes) {
-    frame_bytes_ = frame_bytes;
-    partial_.clear();
-    frames_.clear();
-}
-
-size_t FrameAssembler::Push(const char *data, size_t len) {
-    if (frame_bytes_ == 0 || data == nullptr) return frames_.size();
-    size_t off = 0;
-    while (off < len) {
-        size_t need = frame_bytes_ - partial_.size();
-        size_t take = std::min(need, len - off);
-        partial_.insert(partial_.end(), reinterpret_cast<const uint8_t *>(data + off),
-                        reinterpret_cast<const uint8_t *>(data + off + take));
-        off += take;
-        if (partial_.size() == frame_bytes_) {
-            frames_.push_back(std::move(partial_));
-            partial_ = std::vector<uint8_t>();
-            partial_.reserve(frame_bytes_);
+    if (client.muxed_only) return fail("no muxed 360p format for " + client.name);
+    // Otherwise a video-only H.264 mp4 and an AAC-LC audio mp4.
+    const Json *video = nullptr;
+    const Json *audio = nullptr;
+    const int cap = max_height > 0 ? max_height : 480;
+    for (const Json &f : streaming.get("adaptiveFormats").items()) {
+        if (!f.get("url").is_string()) continue;  // a ciphered URL: not for these clients
+        const std::string mime = f.get("mimeType").as_string();
+        const std::string codecs = Codecs(mime);
+        if (StartsWith(mime, "video/mp4") && StartsWith(codecs, "avc1")) {
+            const int h = f.get("height").as_int();
+            if (h <= 0 || h > cap) continue;
+            if (!video || h > video->get("height").as_int()) video = &f;
+        } else if (StartsWith(mime, "audio/mp4") && codecs == "mp4a.40.2") {
+            if (!audio || f.get("itag").as_int() == 140) audio = &f;
         }
     }
-    return frames_.size();
-}
-
-bool FrameAssembler::Pop(std::vector<uint8_t> *out) {
-    if (frames_.empty()) return false;
-    if (out) *out = std::move(frames_.front());
-    frames_.pop_front();
+    if (!video && !audio) return fail("no format this player can decode (it plays H.264 + AAC)");
+    if (video) {
+        info.video_url = video->get("url").as_string();
+        info.video_user_agent = client.user_agent;
+        info.video_codec = Codecs(video->get("mimeType").as_string());
+        info.width = video->get("width").as_int();
+        info.height = video->get("height").as_int();
+        if (video->get("fps").as_double() > 0.0) info.fps = video->get("fps").as_double();
+        info.has_video = true;
+    }
+    if (audio) {
+        info.audio_url = audio->get("url").as_string();
+        info.audio_user_agent = client.user_agent;
+        info.has_audio = true;
+    }
+    if (info.fps <= 0.0 || info.fps > 120.0) info.fps = 30.0;
+    *out = std::move(info);
     return true;
 }
+
+std::vector<SearchResult> ParseSearchResponse(const std::string &json) {
+    std::vector<SearchResult> out;
+    Json j;
+    if (!Json::Parse(Trim(json), &j)) return out;
+    std::vector<const Json *> rows;
+    Collect(j, "videoRenderer", &rows);
+    for (const Json *row : rows) {
+        SearchResult r;
+        r.id = row->get("videoId").as_string();
+        if (!IsVideoId(r.id)) continue;
+        r.url = "https://www.youtube.com/watch?v=" + r.id;
+        r.title = Text(row->get("title"));
+        if (r.title.empty()) r.title = r.id;
+        r.channel = Text(row->get("ownerText"));
+        if (r.channel.empty()) r.channel = Text(row->get("longBylineText"));
+        r.duration_sec = ClockSeconds(Text(row->get("lengthText")));
+        const std::string views = Text(row->get("viewCountText"));
+        r.view_count = DigitsValue(views);
+        r.is_live = !row->get("lengthText").is_object() && views.find("watching") != std::string::npos;
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::vector<std::string> InnertubeArgv(const char *endpoint, const Client &client, const std::string &body) {
+    return {"curl", "-s", "--max-time", "20", "-X", "POST", "-H", "Content-Type: application/json", "-A", client.user_agent,
+            "--data-binary", body, endpoint};
+}
+
+std::vector<std::string> FetchArgv(const std::string &url) { return {"curl", "-sL", "--max-time", "15", url}; }
 
 std::string FormatDuration(double seconds) {
     if (!(seconds > 0.0)) return "--:--";

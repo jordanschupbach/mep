@@ -683,6 +683,15 @@ void JobManager::PollAll() {
         double t_raw = 0, t_lines = 0, t_exit = 0;
         size_t n_lines = 0;
         std::shared_ptr<Job> job = jobs_[i].job;
+        // Read before draining, not after: the reader thread queues its
+        // last lines and only then sets finished_, so a job seen finished
+        // here has nothing more coming and the drains below take all of
+        // it. Checked after them instead, the thread could queue the tail
+        // and finish in between -- on_exit would run and the entry be
+        // erased with that tail never delivered (a 1.3MB `ctest
+        // --show-only=json-v1` listing lost its last 20k lines this way, so
+        // the Tests panel couldn't parse it).
+        const bool finished = job->Finished();
         auto on_stdout_raw = jobs_[i].callbacks.on_stdout_raw;
         if (on_stdout_raw) {
             auto should_poll_raw = jobs_[i].callbacks.should_poll_raw;
@@ -724,7 +733,7 @@ void JobManager::PollAll() {
         // every long one: ffmpeg finished while the player still held two
         // seconds of PCM in its queue, and the rest of the track vanished.)
         const bool raw_tail_pending = on_stdout_raw && job->HasPendingRaw();
-        if (job->Finished() && !jobs_[i].exit_reported && !raw_tail_pending) {
+        if (finished && !jobs_[i].exit_reported && !raw_tail_pending) {
             jobs_[i].exit_reported = true;
             mep::NoteActivity();
             auto on_exit = jobs_[i].callbacks.on_exit;

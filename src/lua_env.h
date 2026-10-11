@@ -61,6 +61,15 @@ public:
      * @param ref Registry reference of the function to call.
      */
     void CallRef(int ref);
+    /**
+     * @brief Calls a Lua callback with no arguments and reports whether it handled the call.
+     *
+     * mep.map's callbacks: returning exactly `false` hands the key back to the builtin binding; any
+     * other result (nil included, so existing mappings are unaffected) consumes it.
+     * @param ref Registry reference of the function to call.
+     * @return False only when ref returned the boolean false; true otherwise (an error included).
+     */
+    bool CallRefForHandled(int ref);
 
     /**
      * @brief Calls a global Lua function by name with two string arguments (no return value).

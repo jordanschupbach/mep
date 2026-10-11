@@ -13606,13 +13606,13 @@ const char *kBuiltinSyntax =
 // DispatchVisualKey triggers whichkey on the leader key.
 const char *kBuiltinSpell =
     "local mep_spell_ns = nil\n"
-    // Auto-squiggle prose filetypes only by default, so code buffers aren't
+    // Auto-squiggle prose filetypes only by default (eml: :Mail's drafts), so code buffers aren't
     // flooded with false positives on identifiers. <leader>zt forces it on for
     // the current buffer regardless (clears spell_prose_only). A buffer with
     // no extension (READMEs, commit messages, scratch) counts as prose.
     "mep.spell_prose_only = true\n"
     "local mep_spell_prose = {txt=true,text=true,md=true,markdown=true,mkd=true,\n"
-    "  org=true,tex=true,latex=true,rst=true,adoc=true,asciidoc=true,mepml=true,wiki=true}\n"
+    "  org=true,tex=true,latex=true,rst=true,adoc=true,asciidoc=true,mepml=true,wiki=true,eml=true}\n"
     "local function mep_spell_active_here()\n"
     "  if not mep.spell_ready() or not mep.spell_enabled() then return false end\n"
     "  local fn = mep.filename() or ''\n"
@@ -34326,6 +34326,13 @@ const char *kBuiltinWhichKeyGroups =
     "mep.leader_group('b', 'buffers/browse', 0xf0c5, 'Blue')\n"
     "mep.leader_group('c', 'code', 0xf121, 'Purple')\n"
     "mep.leader_group('d', 'debug', 0xf188, 'Red')\n"
+    // 'e' = email (the :Mail pane, editor_mail.cpp).
+    "mep.leader_group('e', 'email', 0xf0e0, 'Orange')\n"
+    "mep.leader_map('ee', 'Open mail (:Mail)', function() mep.cmd('Mail') end)\n"
+    "mep.leader_map('ec', 'Compose a message (:MailCompose)', function() mep.cmd('MailCompose') end)\n"
+    "mep.leader_map('es', 'Send this draft (:MailSend)', function() mep.cmd('MailSend') end)\n"
+    "mep.leader_map('ea', 'Attach a file to this draft (:MailAttach)', function() mep.cmd('MailAttach') end)\n"
+    "mep.leader_map('eS', 'Set up a mail account (:MailSetup)', function() mep.cmd('MailSetup') end)\n"
     "mep.leader_group('f', 'file', 0xf15b, 'Yellow')\n"
     "mep.leader_group('g', 'git', 0xe725, 'Orange')\n"
     "mep.leader_group('h', 'help', 0xf059, 'Blue')\n"
@@ -50679,7 +50686,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // default, kBuiltinPickerSources) got too noisy for a narrow
             // split's header. mep.set_winbar_click/WinbarClickRef are still
             // there for a future consumer; nothing fires them from here now.
-            std::string label = (buf.scratch ? "[Scratch]" : buf.filename.empty() ? "[No Name]" : Basename(buf.filename)) + suffix;
+            // A buffer that stands for something other than a file (the :Mail
+            // pane) goes by that name.
+            const std::string mail_title = g_editor.MailPaneTitle(pane.buffer_id);
+            const std::string special = !mail_title.empty() ? mail_title : g_editor.SpecialBufferName(pane.buffer_id);
+            std::string label = (!special.empty() ? special
+                                 : buf.scratch    ? "[Scratch]"
+                                 : buf.filename.empty() ? "[No Name]"
+                                                        : Basename(buf.filename)) +
+                                suffix;
             float text_w = gfx::MeasureTextEx(g_font, label.c_str(), font_size, 0).x;
             float text_x = x + std::max(0.0f, (w - text_w) / 2.0f);
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{text_x, label_y}, font_size, 0, ResolveHlGroup("Normal"));
@@ -61043,6 +61058,8 @@ void UpdateDrawFrame() {
         // YouTube players no pane is drawing (hidden with <leader>yt, or in
         // another tab) still need their per-frame feed to keep playing.
         g_editor.YoutubePollOffscreen();
+        // :Mail lists on screen re-sync with the server every few minutes.
+        g_editor.MailTick();
         // mepml blocks whose program ended: their final screens become results.
         UDF_TIME("MepmlTerminalsTick", g_editor.MepmlTerminalsTick());
         // Glyphs a mepml style sheet's generated text needs that no font

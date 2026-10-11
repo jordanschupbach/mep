@@ -828,6 +828,9 @@ add_library(mep_core STATIC
     src/editor.cpp
     src/editor_mepml.cpp
     src/editor_exec.cpp
+    src/editor_mail.cpp
+    src/mail.cpp
+    src/mail_net.cpp
     src/editor_pres.cpp
     # Another program's window inside the document (mepml exec-gui):
     # gui_embed.cpp is the platform-free half, gui_embed_x11.cpp the X11
@@ -933,6 +936,8 @@ if(NOT EMSCRIPTEN)
         # user32 for the window and message pump, gdi32 for the pixel
         # format and SwapBuffers, opengl32 (OpenGL::GL) for WGL itself.
         target_link_libraries(mep_core PUBLIC OpenGL::GL user32 gdi32)
+        # mail_net.cpp keeps mail passwords DPAPI-encrypted (CryptProtectData).
+        target_link_libraries(mep_core PUBLIC crypt32)
     else()
         # X11::X11: gfx/backend_native.cpp's own X11/GLX window/input/context
         # implementation (GLFW_REMOVAL_PLAN.md) -- GLX itself is part of
@@ -2391,6 +2396,15 @@ target_compile_options(mep-youtube-player-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP
 target_link_options(mep-youtube-player-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-youtube-player-test)
 
+# The email client's pure half (mail.h): encodings, MIME, addresses,
+# dates, drafts, the outgoing message, IMAP responses and curl traces,
+# accounts -- no network, no display.
+add_executable(mep-mail-test EXCLUDE_FROM_ALL src/mail_test.cpp src/mail.cpp)
+target_include_directories(mep-mail-test PRIVATE src)
+target_compile_options(mep-mail-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-mail-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-mail-test)
+
 # The YouTube player's in-house media stack (mp4_player.h): the MP4
 # demuxer (progressive and fragmented, built box by box in the test), the
 # AAC-LC decoder and the H.264 decoder (Baseline/Main/High, CAVLC and
@@ -2802,7 +2816,7 @@ if(NOT EMSCRIPTEN)
         mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test
         mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test
         mep-youtube-player-test mep-mp4-demux-test mep-aac-decoder-test mep-h264-decoder-test
-        mep-collab-crdt-test)
+        mep-collab-crdt-test mep-mail-test)
     # Each test also carries the area it covers, as a second label: the
     # Tests panel groups ctest tests by label (one every test shares, like
     # `unit`, groups nothing), and `ctest -L cad` runs one area.

@@ -1,0 +1,194 @@
+#+TITLE: Email
+#+HTML_HEAD: <meta name="help-section" content="Web">
+#+HTML_HEAD: <meta name="help-order" content="30">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+An email client in a pane: read, search, sort and answer your mail with the
+same keys you edit with. It works with Gmail, Outlook / Microsoft 365,
+iCloud, Yahoo, Fastmail, Zoho, AOL, GMX, Proton Mail (through its Bridge)
+and any other provider that offers IMAP and SMTP, on Linux, macOS and
+Windows.
+
+The mail pane is an ordinary, read-only text buffer, so every Vim motion
+works in it -- =j=/=k=, =gg=/=G=, =Ctrl-d=/=Ctrl-u=, =/= search with
+=n=/=N=, counts, marks, and =v= / =y= to copy text out of a message. The
+mail commands are single keys on top of that. Writing a message is just
+editing a text file.
+
+Nothing extra needs installing. mep talks IMAP and SMTP itself and hands
+the encrypted connection to =curl=, which ships with macOS, Windows 10 and
+later, and every Linux distribution. Passwords are kept in the system's
+own credential store and never appear on a command line.
+
+* Setting up an account
+
+Run =:MailSetup= (or =<leader>eS=). It asks for:
+
+1. your email address -- for the providers above the server settings are
+   filled in for you; for any other domain it asks for the IMAP and SMTP
+   servers (=host= or =host:port=);
+2. your name, as it should appear in the From: line;
+3. the password. Most providers want an /app password/ for mail programs
+   rather than your normal password, and the prompt says where to make
+   one:
+   - Gmail: Google account > Security > 2-Step Verification > App
+     passwords (https://myaccount.google.com/apppasswords). Paste it with
+     or without the spaces Google shows.
+   - Outlook: Microsoft account > Security > Advanced security options >
+     App passwords.
+   - iCloud: Apple Account > Sign-In and Security > App-Specific Passwords.
+
+mep then connects once to check everything works and opens your inbox.
+Run =:MailSetup= again with another address to add a second account, or
+with the same address to change its password.
+
+Where the password goes:
+
+| macOS   | the login Keychain (service =mep-mail=)                            |
+| Linux   | the Secret Service keyring via =secret-tool=, else a private file   |
+| Windows | a file in mep's data directory, encrypted for your user (DPAPI)    |
+
+** The accounts file
+
+Accounts live in =mail/accounts.json= in mep's data directory
+(=~/.local/share/mep= on Linux, =~/Library/Application Support/mep= on
+macOS, =%APPDATA%\mep= on Windows). =:MailSetup= writes it, and it is plain
+JSON you can edit. Fields beyond the obvious ones:
+
+| =signature=         | text added under "-- " to every new message and reply          |
+| =trash=, =archive=  | folder names to use when the server does not mark them itself  |
+| =sent=, =drafts=    | the same, for where sent mail is filed                          |
+| =secret=            | =keychain= (default), =file=, or =command=                      |
+| =secret_command=    | with =command=: a shell command whose first line is the password |
+| =oauth2=            | =true= when the secret is an OAuth2 access token                |
+| =server_saves_sent= | =false= makes mep file a copy of each sent message in Sent      |
+| =insecure=          | plain-text IMAP/SMTP, for a server on this machine only         |
+
+=secret_command= is how to use a password manager (=pass show mail/work=,
+=op read ...=) or OAuth2: point it at a token helper such as =oama= or
+=mutt_oauth2.py=, and set =oauth2= to =true=. mep then logs in with
+XOAUTH2/OAUTHBEARER instead of a password.
+
+* Opening it
+
+- =:Mail= (or =<leader>ee=) opens your first account's inbox in the
+  current pane -- like =:e=, it replaces what the pane shows rather than
+  splitting. Any pane will do.
+- =:Mail work= opens the account whose id (or address) is =work=;
+  =:Mail Archive= opens a folder; =:Mail work Receipts= both.
+- There is one mail pane per workspace. Opening it again brings the same
+  pane back where you left it. =:bd= closes it.
+
+The pane moves between three views, like a file manager:
+
+#+begin_example
+Folders  --Enter-->  Messages  --Enter-->  One message
+         <---- h / - ---       <---- q / - ---
+#+end_example
+
+The pane's header shows where you are: the folder, the account, how many
+messages, and anything still loading.
+
+* Keys
+
+** The message list
+
+| =Enter= / =l= / =o= | read the message                                                 |
+| =h= / =-= / =q=     | up to the folders                                                |
+| =c= / =m=           | write a new message                                              |
+| =r=                 | reply to the sender                                              |
+| =R=                 | reply to everyone                                                |
+| =f=                 | forward (attachments go along)                                   |
+| =dd= / =x=          | delete -- into Trash; in Trash itself, for good. =3dd= deletes three |
+| =a=                 | archive (Gmail: removes it from the Inbox)                       |
+| =M=                 | move: pick the folder from the list, =Enter= moves it there      |
+| =s=                 | star / flag (Gmail's star)                                       |
+| =U=                 | mark read / unread                                               |
+| =$=                 | refresh now (a visible list also refreshes every few minutes)    |
+| =+=                 | load the next 100 older messages (or =Enter= on the last line)   |
+| =S=                 | search on the server -- Gmail accounts take Gmail's own search syntax (=from:ada has:attachment=) |
+| =A=                 | switch to the next account's inbox                               |
+| =?=                 | the key sheet                                                    |
+
+=a=, =s=, =U=, =x= and =M= take a count too: =5s= stars five messages from
+the cursor down.
+
+In the list, =N= in the first column marks unread mail, =*= a starred
+message, =r= one you have answered and =@= one with attachments.
+
+** One message
+
+| =q= / =-=     | back to the list                                                |
+| =J= / =K=     | the next (older) / previous (newer) message                    |
+| =r R f=       | reply, reply to all, forward                                    |
+| =dd x a M s U= | as in the list -- deleting or moving goes on to the next message |
+| =Enter=       | on an =Attach:= line: save the file to Downloads and open it   |
+
+Everything else is ordinary Vim: move around, search, select and yank.
+HTML-only mail is shown as text, with its links numbered under the
+message (=[1] https://...=). Its HTML is never run or rendered, so remote
+images (tracking pixels) are never loaded.
+
+** The folder list
+
+| =Enter= / =l= | open the folder, account inbox or draft under the cursor |
+| =$=           | reload the folder lists                                  |
+| =q=           | close the mail pane                                      |
+
+Under the accounts, /Drafts on this computer/ lists messages you started
+and have not sent; =Enter= opens one.
+
+* Writing a message
+
+=c=, =r=, =R=, =f= and =:MailCompose [address]= open a draft: a text file
+in the =mail/drafts= folder of mep's data directory, in the current pane.
+It is a header block, an empty line, then the message:
+
+#+begin_example
+From: Ada Lovelace <ada@example.com>
+To: Charles <charles@example.com>, team@example.com
+Cc:
+Bcc:
+Subject: The engine
+Attach: ~/notes/engine.pdf
+
+Charles,
+
+...
+#+end_example
+
+Edit it like any text. Then:
+
+| =:MailSend=           | send it (asks first; =:MailSend!= does not)          |
+| =:MailAttach file=    | add an =Attach:= line (or type one yourself)          |
+| =:w=                  | save the draft to finish later                        |
+| =:MailDiscard=        | throw the draft away                                  |
+
+Addresses are separated by commas; a header that runs long can continue on
+the next line indented by a space. Text is sent as UTF-8; attachments go as
+ordinary MIME attachments. Bcc recipients get the message but are never
+written into it. After sending, the pane returns to the mail you were
+reading, and the draft is deleted.
+
+The From: line picks the account that sends it -- change the address to
+send from another of your accounts.
+
+| =<leader>ee= | open mail (=:Mail=)                       |
+| =<leader>ec= | write a message (=:MailCompose=)          |
+| =<leader>es= | send this draft (=:MailSend=)             |
+| =<leader>ea= | attach a file (=:MailAttach=)             |
+| =<leader>eS= | set up an account (=:MailSetup=)          |
+
+* When something goes wrong
+
+- *"login refused"*: the password is wrong, or the provider wants an app
+  password (see above). Run =:MailSetup= with the same address to enter a
+  new one.
+- *"cannot connect"* / *"timed out"*: no network, or a firewall blocking
+  the mail ports (993 for IMAP, 465/587 for SMTP).
+- *"Mail needs curl on PATH"*: install curl. It is preinstalled on
+  macOS, Windows 10+ and nearly every Linux.
+- *Not sent*: the draft stays open with what you wrote, and the
+  notification says what the server answered.

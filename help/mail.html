@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Email</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Web">
+<meta name="help-order" content="30">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Email</h1>
+<h1>What it is</h1>
+<p>An email client in a pane: read, search, sort and answer your mail with the
+same keys you edit with. It works with Gmail, Outlook / Microsoft 365,
+iCloud, Yahoo, Fastmail, Zoho, AOL, GMX, Proton Mail (through its Bridge)
+and any other provider that offers IMAP and SMTP, on Linux, macOS and
+Windows.</p>
+<p>The mail pane is an ordinary, read-only text buffer, so every Vim motion
+works in it -- <code>j=/=k</code>, <code>gg=/=G</code>, <code>Ctrl-d=/=Ctrl-u</code>, <code>/</code> search with
+<code>n=/=N</code>, counts, marks, and <code>v</code> / <code>y</code> to copy text out of a message. The
+mail commands are single keys on top of that. Writing a message is just
+editing a text file.</p>
+<p>Nothing extra needs installing. mep talks IMAP and SMTP itself and hands
+the encrypted connection to <code>curl</code>, which ships with macOS, Windows 10 and
+later, and every Linux distribution. Passwords are kept in the system's
+own credential store and never appear on a command line.</p>
+<h1>Setting up an account</h1>
+<p>Run <code>:MailSetup</code> (or <code>&lt;leader&gt;eS</code>). It asks for:</p>
+<ol>
+<li>your email address -- for the providers above the server settings are filled in for you; for any other domain it asks for the IMAP and SMTP servers (<code>host</code> or <code>host:port</code>);</li>
+<li>your name, as it should appear in the From: line;</li>
+<li>the password. Most providers want an <i>app password</i> for mail programs rather than your normal password, and the prompt says where to make one:</li>
+</ol>
+<ul>
+<li>Gmail: Google account &gt; Security &gt; 2-Step Verification &gt; App passwords (https://myaccount.google.com/apppasswords). Paste it with or without the spaces Google shows.</li>
+<li>Outlook: Microsoft account &gt; Security &gt; Advanced security options &gt; App passwords.</li>
+<li>iCloud: Apple Account &gt; Sign-In and Security &gt; App-Specific Passwords.</li>
+</ul>
+<p>mep then connects once to check everything works and opens your inbox.
+Run <code>:MailSetup</code> again with another address to add a second account, or
+with the same address to change its password.</p>
+<p>Where the password goes:</p>
+<table>
+<tr><td>macOS</td><td>the login Keychain (service <code>mep-mail</code>)</td></tr>
+<tr><td>Linux</td><td>the Secret Service keyring via <code>secret-tool</code>, else a private file</td></tr>
+<tr><td>Windows</td><td>a file in mep's data directory, encrypted for your user (DPAPI)</td></tr>
+</table>
+<h2>The accounts file</h2>
+<p>Accounts live in <code>mail/accounts.json</code> in mep's data directory
+(<code>~/.local/share/mep</code> on Linux, <code>~/Library/Application Support/mep</code> on
+macOS, <code>%APPDATA%\mep</code> on Windows). <code>:MailSetup</code> writes it, and it is plain
+JSON you can edit. Fields beyond the obvious ones:</p>
+<table>
+<tr><td><code>signature</code></td><td>text added under "-- " to every new message and reply</td></tr>
+<tr><td><code>trash</code>, <code>archive</code></td><td>folder names to use when the server does not mark them itself</td></tr>
+<tr><td><code>sent</code>, <code>drafts</code></td><td>the same, for where sent mail is filed</td></tr>
+<tr><td><code>secret</code></td><td><code>keychain</code> (default), <code>file</code>, or <code>command</code></td></tr>
+<tr><td><code>secret_command</code></td><td>with <code>command</code>: a shell command whose first line is the password</td></tr>
+<tr><td><code>oauth2</code></td><td><code>true</code> when the secret is an OAuth2 access token</td></tr>
+<tr><td><code>server_saves_sent</code></td><td><code>false</code> makes mep file a copy of each sent message in Sent</td></tr>
+<tr><td><code>insecure</code></td><td>plain-text IMAP/SMTP, for a server on this machine only</td></tr>
+</table>
+<p><code>secret_command</code> is how to use a password manager (<code>pass show mail/work</code>,
+<code>op read ...</code>) or OAuth2: point it at a token helper such as <code>oama</code> or
+<code>mutt_oauth2.py</code>, and set <code>oauth2</code> to <code>true</code>. mep then logs in with
+XOAUTH2/OAUTHBEARER instead of a password.</p>
+<h1>Opening it</h1>
+<ul>
+<li><code>:Mail</code> (or <code>&lt;leader&gt;ee</code>) opens your first account's inbox in the current pane -- like <code>:e</code>, it replaces what the pane shows rather than splitting. Any pane will do.</li>
+<li><code>:Mail work</code> opens the account whose id (or address) is <code>work</code>; <code>:Mail Archive</code> opens a folder; <code>:Mail work Receipts</code> both.</li>
+<li>There is one mail pane per workspace. Opening it again brings the same pane back where you left it. <code>:bd</code> closes it.</li>
+</ul>
+<p>The pane moves between three views, like a file manager:</p>
+<pre>Folders  --Enter--&gt;  Messages  --Enter--&gt;  One message
+         &lt;---- h / - ---       &lt;---- q / - ---</pre>
+<p>The pane's header shows where you are: the folder, the account, how many
+messages, and anything still loading.</p>
+<h1>Keys</h1>
+<h2>The message list</h2>
+<table>
+<tr><td><code>Enter</code> / <code>l</code> / <code>o</code></td><td>read the message</td></tr>
+<tr><td><code>h</code> / <code>-</code> / <code>q</code></td><td>up to the folders</td></tr>
+<tr><td><code>c</code> / <code>m</code></td><td>write a new message</td></tr>
+<tr><td><code>r</code></td><td>reply to the sender</td></tr>
+<tr><td><code>R</code></td><td>reply to everyone</td></tr>
+<tr><td><code>f</code></td><td>forward (attachments go along)</td></tr>
+<tr><td><code>dd</code> / <code>x</code></td><td>delete -- into Trash; in Trash itself, for good. <code>3dd</code> deletes three</td></tr>
+<tr><td><code>a</code></td><td>archive (Gmail: removes it from the Inbox)</td></tr>
+<tr><td><code>M</code></td><td>move: pick the folder from the list, <code>Enter</code> moves it there</td></tr>
+<tr><td><code>s</code></td><td>star / flag (Gmail's star)</td></tr>
+<tr><td><code>U</code></td><td>mark read / unread</td></tr>
+<tr><td><code>$</code></td><td>refresh now (a visible list also refreshes every few minutes)</td></tr>
+<tr><td><code>+</code></td><td>load the next 100 older messages (or <code>Enter</code> on the last line)</td></tr>
+<tr><td><code>S</code></td><td>search on the server -- Gmail accounts take Gmail's own search syntax (<code>from:ada has:attachment</code>)</td></tr>
+<tr><td><code>A</code></td><td>switch to the next account's inbox</td></tr>
+<tr><td><code>?</code></td><td>the key sheet</td></tr>
+</table>
+<p><code>a</code>, <code>s</code>, <code>U</code>, <code>x</code> and <code>M</code> take a count too: <code>5s</code> stars five messages from
+the cursor down.</p>
+<p>In the list, <code>N</code> in the first column marks unread mail, <code>*</code> a starred
+message, <code>r</code> one you have answered and <code>@</code> one with attachments.</p>
+<h2>One message</h2>
+<table>
+<tr><td><code>q</code> / <code>-</code></td><td>back to the list</td></tr>
+<tr><td><code>J</code> / <code>K</code></td><td>the next (older) / previous (newer) message</td></tr>
+<tr><td><code>r R f</code></td><td>reply, reply to all, forward</td></tr>
+<tr><td><code>dd x a M s U</code></td><td>as in the list -- deleting or moving goes on to the next message</td></tr>
+<tr><td><code>Enter</code></td><td>on an <code>Attach:</code> line: save the file to Downloads and open it</td></tr>
+</table>
+<p>Everything else is ordinary Vim: move around, search, select and yank.
+HTML-only mail is shown as text, with its links numbered under the
+message (<code>[1] https://...</code>). Its HTML is never run or rendered, so remote
+images (tracking pixels) are never loaded.</p>
+<h2>The folder list</h2>
+<table>
+<tr><td><code>Enter</code> / <code>l</code></td><td>open the folder, account inbox or draft under the cursor</td></tr>
+<tr><td><code>$</code></td><td>reload the folder lists</td></tr>
+<tr><td><code>q</code></td><td>close the mail pane</td></tr>
+</table>
+<p>Under the accounts, <i>Drafts on this computer</i> lists messages you started
+and have not sent; <code>Enter</code> opens one.</p>
+<h1>Writing a message</h1>
+<p><code>c</code>, <code>r</code>, <code>R</code>, <code>f</code> and <code>:MailCompose [address]</code> open a draft: a text file
+in the <code>mail/drafts</code> folder of mep's data directory, in the current pane.
+It is a header block, an empty line, then the message:</p>
+<pre>From: Ada Lovelace &lt;ada@example.com&gt;
+To: Charles &lt;charles@example.com&gt;, team@example.com
+Cc:
+Bcc:
+Subject: The engine
+Attach: ~/notes/engine.pdf
+
+Charles,
+
+...</pre>
+<p>Edit it like any text. Then:</p>
+<table>
+<tr><td><code>:MailSend</code></td><td>send it (asks first; <code>:MailSend!</code> does not)</td></tr>
+<tr><td><code>:MailAttach file</code></td><td>add an <code>Attach:</code> line (or type one yourself)</td></tr>
+<tr><td><code>:w</code></td><td>save the draft to finish later</td></tr>
+<tr><td><code>:MailDiscard</code></td><td>throw the draft away</td></tr>
+</table>
+<p>Addresses are separated by commas; a header that runs long can continue on
+the next line indented by a space. Text is sent as UTF-8; attachments go as
+ordinary MIME attachments. Bcc recipients get the message but are never
+written into it. After sending, the pane returns to the mail you were
+reading, and the draft is deleted.</p>
+<p>The From: line picks the account that sends it -- change the address to
+send from another of your accounts.</p>
+<table>
+<tr><td><code>&lt;leader&gt;ee</code></td><td>open mail (<code>:Mail</code>)</td></tr>
+<tr><td><code>&lt;leader&gt;ec</code></td><td>write a message (<code>:MailCompose</code>)</td></tr>
+<tr><td><code>&lt;leader&gt;es</code></td><td>send this draft (<code>:MailSend</code>)</td></tr>
+<tr><td><code>&lt;leader&gt;ea</code></td><td>attach a file (<code>:MailAttach</code>)</td></tr>
+<tr><td><code>&lt;leader&gt;eS</code></td><td>set up an account (<code>:MailSetup</code>)</td></tr>
+</table>
+<h1>When something goes wrong</h1>
+<ul>
+<li>*"login refused"*: the password is wrong, or the provider wants an app password (see above). Run <code>:MailSetup</code> with the same address to enter a new one.</li>
+<li>*"cannot connect"* / *"timed out"*: no network, or a firewall blocking the mail ports (993 for IMAP, 465/587 for SMTP).</li>
+<li>*"Mail needs curl on PATH"*: install curl. It is preinstalled on macOS, Windows 10+ and nearly every Linux.</li>
+<li><b>Not sent</b>: the draft stays open with what you wrote, and the notification says what the server answered.</li>
+</ul>
+</body>
+</html>

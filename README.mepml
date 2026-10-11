@@ -6,11 +6,9 @@
 
 ~An editor where everything is in place.~
 
-mep is a modal, Vim-style code editor for Linux, written from the ground
-up in C\+\+20 with embedded Lua. There is no UI toolkit, no browser engine
-and no PDF library underneath it: the window, the renderer, the font
-rasterizer, the regex engine, the terminal emulator and the readers for
-every format it opens are all in this repository.
+mep is a cross platform modal multi-editor, written from the ground
+up in C\+\+20 with embedded Lua. It's meant to provide everything
+for you, all in one place.
 
 That buys the thing the name is about — one place to work. A C\+\+ file, a
 shell, a PDF, a Jupyter notebook, a 3D scene and a live web page are all

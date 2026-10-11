@@ -24,6 +24,7 @@
 #include "mov_container.h"
 #include "mp4_player.h"
 #include "youtube_player.h"
+#include "mail_ui.h"
 #include "folds.h"
 #include "vterm.h"
 #include "spell.h"
@@ -4011,6 +4012,10 @@ OrgHeadlineParse ParseOrgHeadline(const std::string &line, const std::vector<std
 // Pane navigation is directional (NavigatePaneDirection), not just
 // cycle-order, and reachable both via Ctrl-W h/j/k/l and mod1+h/j/k/l.
 class Editor {
+    // The :Mail pane's implementation (editor_mail.cpp) reaches into the
+    // buffer/pane/prompt machinery the same way the in-class media panes do.
+    friend struct MailUi;
+
 public:
     /**
      * @brief Constructs a new Editor with its default initial state (a single empty scratch buffer/pane/tab).
@@ -6466,6 +6471,40 @@ private:
     void YoutubeTeardown(YoutubeSession &sess);
 
 public:
+    // --- Email (:Mail and friends; editor_mail.cpp, mail.h, mail_net.h).
+    // The mail pane is an ordinary read-only text buffer (Vim motions all
+    // work); its single-key commands go through TryBufferKeyHook, Enter
+    // through MailActivate. One per workspace, like the YouTube player. ---
+    bool IsMailBuffer(int buffer_id) const;
+    // `:Mail [account] [folder]` -- opens (or re-shows) the mail pane in
+    // the current pane; with no accounts yet it starts :MailSetup.
+    void OpenMailInPlace(const std::string &args);
+    // `:MailSetup` -- prompts for an address (provider presets fill the
+    // servers in), a name and an app password, saves the account, stores
+    // the password in the OS keychain and tests the connection.
+    void MailSetup();
+    // `:MailCompose [to]` -- a new draft from the current account.
+    void MailComposeCommand(const std::string &args);
+    // `:MailSend` -- sends the draft in the current buffer, after a y/n
+    // question unless `no_confirm` (`:MailSend!`).
+    void MailSendCurrent(bool no_confirm = false);
+    // `:MailAttach [path]` -- adds an Attach: line to the current draft.
+    void MailAttach(const std::string &path);
+    // `:MailDiscard` -- deletes the current draft and returns to the mail pane.
+    void MailDiscard();
+    // Once per frame from the main loop: periodic refresh of visible lists.
+    void MailTick();
+    // :bd of a mail buffer -- stops its jobs and drops its state.
+    void MailTeardown(int buffer_id);
+    // The mail pane's header line (folder, account, counts, progress);
+    // empty for any other buffer.
+    std::string MailPaneTitle(int buffer_id) const;
+    // Enter in a mail buffer (Normal mode); true when handled.
+    bool MailActivate();
+    // A plain Normal-mode key in a mail buffer (`count` = any pending
+    // count, 0 for none); true when it was a mail command and is consumed.
+    bool MailHandleKey(int cp, int count);
+
     // True if `name`'s extension is a format DecodeAudioFile can play.
     static bool IsMusicFile(const std::string &name);
 
@@ -9787,7 +9826,7 @@ public:
      * @param on_done Callback invoked with the entered text on Enter.
      */
     void BeginPromptNative(const std::string &title, const std::string &default_text,
-                            std::function<void(const std::string &)> on_done);
+                            std::function<void(const std::string &)> on_done, bool masked = false);
     /**
      * @brief Opens a confirm-dialog-equivalent modal, taking over input until answered.
      * @param message The confirmation message text.
@@ -14579,6 +14618,8 @@ private:
     // the buffer closes, see the erase site in CloseBuffer/DeleteBuffer.
     std::unordered_map<int, MusicSession> music_sessions_;
     std::unordered_map<int, YoutubeSession> youtube_sessions_;
+    // :Mail -- accounts, cached folders, the mail panes and open drafts.
+    MailState mail_;
     // Keyed by buffer_id -- one entry per open HTML-preview pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, HtmlSession> htmldocs_;

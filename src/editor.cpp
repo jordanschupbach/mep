@@ -1302,6 +1302,18 @@ std::unordered_map<std::string, ThemeColor> BuildHighlightGroups(const Palette &
     // above once it is paused or finished.
     g["YoutubePlaying"] = Mix(p.red, p.bg, 0.3f);
     g["YoutubePaused"] = Mix(p.fg, p.bg, 0.5f);
+    // The :Mail pane (editor_mail.cpp): unread rows in full foreground
+    // (and bold), senders blue, dates and read mail muted, the N/*
+    // markers in the theme's attention colours.
+    g["MailUnread"] = p.fg;
+    g["MailSender"] = p.blue;
+    g["MailDate"] = DimText(p.fg, p.bg, 0.55f, kSecondaryTextContrast);
+    g["MailRead"] = Mix(p.fg, p.bg, 0.25f);
+    g["MailNew"] = p.cyan;
+    g["MailFlagged"] = p.yellow;
+    g["MailTitle"] = p.purple;
+    g["MailHeader"] = p.orange;
+    g["MailQuote"] = Mix(p.green, p.bg, 0.25f);
     // Status bar's mode chip (main.cpp's DrawFrame status line): a filled
     // badge colored by editing mode, toned toward the background the same
     // way as the Todo chip above so StatusLineFg text stays legible on top.
@@ -4893,6 +4905,10 @@ void Editor::ShutdownMedia() {
     // Idempotent in itself (it clears the job ids and audio_open it acts
     // on), so the ~Editor call below is a no-op after main's own.
     for (auto &kv : youtube_sessions_) YoutubeTeardown(kv.second);
+    // Mail panes: cancel their IMAP/SMTP jobs (curl is killed, not awaited).
+    std::vector<int> mail_ids;
+    for (const auto &kv : mail_.sessions) mail_ids.push_back(kv.first);
+    for (int id : mail_ids) MailTeardown(id);
 }
 
 Editor::~Editor() { ShutdownMedia(); }
@@ -13721,6 +13737,9 @@ bool Editor::IsYoutubeBuffer(int buffer_id) const { return youtube_sessions_.fin
 
 std::string Editor::SpecialBufferName(int buffer_id) const {
     if (IsYoutubeBuffer(buffer_id)) return "YT";
+    if (auto mit = mail_.sessions.find(buffer_id); mit != mail_.sessions.end()) {
+        return mit->second.short_title.empty() ? std::string("Mail") : "Mail: " + mit->second.short_title;
+    }
     // An :exec pane goes by its command.
     if (auto it = exec_apps_.find(buffer_id); it != exec_apps_.end()) return it->second.label;
     return "";
@@ -18535,6 +18554,8 @@ void Editor::BufferDeleteById(int target, bool force) {
     // An :exec pane: its program is asked to close (it may ask about
     // unsaved work first), and stopped if it has not within a few seconds.
     ExecAppClose(target);
+    // A mail pane: its IMAP jobs are cancelled and its state dropped.
+    MailTeardown(target);
     // Likewise a YouTube pane: kill its decoder/search jobs and close its
     // audio stream so :bd actually stops the video.
     if (auto yit = youtube_sessions_.find(target); yit != youtube_sessions_.end()) {
@@ -22020,6 +22041,10 @@ void Editor::HandleNormalInput() {
     if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && IsMepmlBuffer() &&
         MepmlTerminalFocus(MepmlTerminalRunAt(CurPane().cursor.row)))
         return;
+    // Enter in the mail pane: open the folder/message/attachment under the cursor.
+    if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) &&
+        IsMailBuffer(CurPane().buffer_id) && MailActivate())
+        return;
     if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && lua_) {
         if (int ref = BufferHookRef(enter_hook_refs_, CurPane().buffer_id)) {
             lua_->CallRef(ref);
@@ -22323,6 +22348,20 @@ void Editor::HandleNormalChar(int cp, bool no_pending_state) {
 }
 
 bool Editor::TryBufferKeyHook(int cp) {
+    if (cp > 0 && cp <= 127 && IsMailBuffer(CurPane().buffer_id)) {
+        // The mail pane's own single-key commands (editor_mail.cpp), offered
+        // the same "nothing mid-flight" way as a Lua hook below; a pending
+        // count is handed over (3dd deletes three messages).
+        int count = pending_count_;
+        pending_count_ = 0;
+        bool mid = IsMidNormalCommand();
+        pending_count_ = count;
+        if (!mid && MailHandleKey(cp, count)) {
+            pending_count_ = 0;
+            return true;
+        }
+        return false;
+    }
     if (cp <= 0 || cp > 127 || !lua_) return false;
     int ref = BufferHookRef(key_hook_refs_, CurPane().buffer_id);
     if (ref == 0) return false;
@@ -24924,14 +24963,14 @@ void Editor::BeginPrompt(const std::string &title, const std::string &default_te
 }
 
 void Editor::BeginPromptNative(const std::string &title, const std::string &default_text,
-                                std::function<void(const std::string &)> on_done) {
+                                std::function<void(const std::string &)> on_done, bool masked) {
     overlay_previous_mode_ = mode_;
     prompt_title_ = title;
     prompt_input_ = default_text;
     prompt_cursor_ = prompt_input_.size();
     prompt_callback_ref_ = 0;
     prompt_native_callback_ = std::move(on_done);
-    prompt_masked_ = false;
+    prompt_masked_ = masked;
     mode_ = Mode::Prompt;
 }
 
@@ -29030,6 +29069,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "wq", "x", "wq!", "x!", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!", "split", "sp", "vsplit", "vs",
         "terminal", "term",
         "music", "exec", "youtube", "yt", "MepYoutube",
+        "Mail", "MailSetup", "MailCompose", "MailSend", "MailSend!", "MailAttach", "MailDiscard",
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
         "wsnew", "wsnew!", "wsdelete", "wsdelete!", "wsclose", "wsclose!", "wsnext", "wsn", "wsprevious", "wsp",
         "wsrename", "ws", "workspace", "wslist", "workspaces", "wsadopt", "wsprune", "wssave", "wsrestore",
@@ -31596,6 +31636,21 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         SyncModeToActivePaneBuffer();
     } else if (name == "MepYoutube") {
         ToggleYoutube();
+    } else if (name == "Mail") {
+        // The email client (editor_mail.cpp), in the current pane.
+        OpenMailInPlace(args);
+        SyncModeToActivePaneBuffer();
+    } else if (name == "MailSetup") {
+        MailSetup();
+    } else if (name == "MailCompose") {
+        MailComposeCommand(args);
+    } else if (name == "MailSend" || name == "MailSend!") {
+        // The bang sends without the y/n question.
+        MailSendCurrent(name.back() == '!');
+    } else if (name == "MailAttach") {
+        MailAttach(args);
+    } else if (name == "MailDiscard") {
+        MailDiscard();
     } else if (name == "close") {
         ClosePane();
     } else if (name == "tabnew") {

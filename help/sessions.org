@@ -24,7 +24,9 @@ tabs, the same split arrangement at the same sizes, the same files open at the
 same cursor positions, your file tree, your terminals. With that on, the
 default layout is only a fallback -- for a workspace with nothing saved, or a
 saved layout that could not be rebuilt -- never applied on top of a layout
-that did come back.
+that did come back. This applies to a bare =mep= too, as long as the
+directory already has a saved session from a previous run -- only a
+directory with no saved session yet shows the dashboard instead.
 
 * What is saved
 

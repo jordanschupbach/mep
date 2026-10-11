@@ -35760,7 +35760,7 @@ const char *kBuiltinSettings =
     "  -- --- Project layout ---------------------------------------------------\n"
     "  {section = 'Project layout', key = 'restore_layouts', label = 'Reopen a project with its saved layout',\n"
     "   kind = 'choice', choices = MEP_ON_OFF,\n"
-    "   hint = 'Off opens tree + readme + terminal. Needs --project.',\n"
+    "   hint = 'Off opens tree + readme + terminal.',\n"
     "   get = function() return mep_settings_bool_get(mep.opt.restore_layouts) end,\n"
     "   set = function(v) if v ~= '' then mep.opt.restore_layouts = (v == 'on') end end},\n"
     "\n"
@@ -62965,16 +62965,23 @@ int main(int argc, char **argv) {
     // applied first (synchronously, so the bar is right from the first
     // frame), then the async git detection confirms/adopts worktrees.
     //
-    // Only an explicitly requested project (--project/$MEP_PROJECT) goes
-    // through session restore; a bare `mep` leaves the pristine bootstrap
-    // workspace alone so the dashboard shows (Editor::ShouldShowDashboard),
-    // matching the pre-session-restore behavior. RestoreWorkspaceState
-    // brings the workspace list back (and, with mep.opt.restore_layouts,
-    // each workspace's saved tabs/panes/files where it can), and
-    // project_apply_default_layout_to_empty_workspaces then lays out only
-    // the workspaces it could not (skipping the primary one when a file was
-    // already loaded into it).
-    if (!project_arg.empty() && g_editor.RestoreWorkspaces()) {
+    // An explicitly requested project (--project/$MEP_PROJECT) always goes
+    // through session restore. A bare `mep` does too, but only when cwd (the
+    // bootstrap project's root, decision 4 above) already has a saved
+    // session file: SaveWorkspaceState writes one on every bare run too
+    // (gated only on session persistence, not on --project), so without this
+    // check that file would be written and then never read back. A cwd with
+    // no saved file yet -- a genuinely fresh directory -- still leaves the
+    // pristine bootstrap workspace alone so the dashboard shows
+    // (Editor::ShouldShowDashboard), matching the pre-session-restore
+    // behavior. RestoreWorkspaceState brings the workspace list back (and,
+    // with mep.opt.restore_layouts, each workspace's saved tabs/panes/files
+    // where it can), and project_apply_default_layout_to_empty_workspaces
+    // then lays out only the workspaces it could not (skipping the primary
+    // one when a file was already loaded into it).
+    const bool bootstrap_has_saved_state =
+        project_arg.empty() && std::filesystem::exists(g_editor.WorkspaceStateFile(g_editor.ActiveProject()));
+    if ((!project_arg.empty() || bootstrap_has_saved_state) && g_editor.RestoreWorkspaces()) {
         g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty(), g_editor.RestoreLayouts());
         lua->DoString(std::string("mep.project_apply_default_layout_to_empty_workspaces(") +
                       (file_arg.empty() ? "false" : "true") + ")");

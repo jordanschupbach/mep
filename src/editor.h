@@ -10391,6 +10391,19 @@ public:
      */
     bool IsRowHiddenByFold(int row, int *fold_start_row) const;
     /**
+     * @brief Moves every pane's cursor off a row hidden inside one of this buffer's closed folds.
+     * @param buffer_id The buffer whose panes to fix up.
+     *
+     * ClampCursor does this for the focused pane after every motion, which
+     * leaves two gaps: a pane in a background tab whose fold was closed
+     * from somewhere else, and a session restore -- which puts each pane's
+     * saved cursor back *before* it applies the file's folds, deliberately,
+     * so that applying them cannot move the cursor. A cursor on a hidden
+     * row is drawn on the next visible line instead of its own, so the
+     * caret sits a line off its text until something moves it.
+     */
+    void SnapPaneCursorsOutOfClosedFolds(int buffer_id);
+    /**
      * @brief Returns the current buffer's folds.
      * @return The current buffer's fold list.
      */
@@ -13878,6 +13891,24 @@ private:
      * sat four rows above its own text from then on.
      */
     void ShiftFoldsForTextSwap(Buffer &buf, const std::vector<std::string> &before);
+    /**
+     * @brief Moves a buffer's folds across a replaced run of lines, by each fold's own text where it can.
+     * @param buf The buffer, with `lines` already holding the new text.
+     * @param anchors One anchor per fold, taken *before* the edit (FoldAnchorsFor).
+     * @param at_row The first row of the replaced run.
+     * @param removed How many lines the run had.
+     * @param inserted How many lines replaced them.
+     *
+     * The two-step arithmetic this grew out of (the delete, then the
+     * insert) cannot answer for a replacement that covers a fold whole --
+     * and :Format rewrites an entire file as exactly that, so every fold
+     * in it simply disappeared. Looking each fold up by its own first and
+     * last line instead survives that (and a reformat that moved it), and
+     * falls back to the arithmetic when the fold's own text is what got
+     * rewritten. See ShiftFoldListForReplace in folds.h for the rule.
+     */
+    void ShiftFoldsForReplace(Buffer &buf, const std::vector<FoldAnchor> &anchors, int at_row, int removed,
+                              int inserted);
 
     // Same idea as ShiftMarksForLineEdit/ShiftFoldsForLineEdit, but for the
     // current buffer's decorations (every namespace: syntax highlighting,
@@ -14853,7 +14884,17 @@ private:
         // project's session file. Roots are what the session file stores
         // for each workspace, so this round-trips exactly.
         std::string workspace_root;
-        std::vector<Fold> folds;
+        // Each fold with the text it was made over (FoldAnchor, folds.h).
+        // Rows alone are only true of the version of the file they were
+        // taken from, and between a quit and the next open the file may
+        // have been edited by anything at all -- another editor, a
+        // formatter, an agent in a terminal pane, a `git pull`. Applying
+        // the rows regardless is what put every fold a few lines above
+        // its own function on reopen; the anchors are what
+        // ApplySavedFolds finds the real rows with (and what tells it to
+        // drop a fold whose text is gone rather than leave it over
+        // somebody else's).
+        std::vector<AnchoredFold> folds;
     };
     std::unordered_map<std::string, SavedFolds> saved_folds_;
     /**

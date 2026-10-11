@@ -20322,6 +20322,20 @@ Json Editor::WorkspaceFoldsJson(const Workspace &ws) const {
             r["end"] = f.end_row;
             r["closed"] = f.closed;
             r["provider"] = f.provider;
+            // The fold's own first and last line, so the next run can
+            // find the fold's text rather than trusting these two row
+            // numbers against a file that may have changed since (see
+            // SavedFolds and ApplySavedFolds). Taken from the live
+            // buffer, which is the version these rows are true of.
+            const FoldAnchor anchor = FoldAnchorFor(buf.lines, f.start_row, f.end_row);
+            if (!anchor.head.empty() || !anchor.tail.empty()) {
+                r["head"] = anchor.head;
+                r["tail"] = anchor.tail;
+                // The lines either side, which is what tells two
+                // byte-identical folds apart on the way back in.
+                r["before"] = anchor.before;
+                r["after"] = anchor.after;
+            }
             ranges.push_back(std::move(r));
         }
         if (ranges.items().empty()) continue;
@@ -20350,13 +20364,23 @@ Json Editor::WorkspaceFoldsJson(const Workspace &ws) const {
         if (saved.workspace_root != ws.root || saved.folds.empty()) continue;
         if (written.count(path) != 0) continue;
         Json ranges = Json::Array();
-        for (const Fold &f : saved.folds) {
+        for (const AnchoredFold &af : saved.folds) {
+            const Fold &f = af.fold;
             if (f.provider != "manual" && !f.closed) continue;
             Json r = Json::Object();
             r["start"] = f.start_row;
             r["end"] = f.end_row;
             r["closed"] = f.closed;
             r["provider"] = f.provider;
+            // Carried through untouched: there is no buffer open to read
+            // the two lines back out of, and the anchor this entry came
+            // in with is still the text the rows beside it belong to.
+            if (!af.anchor.head.empty() || !af.anchor.tail.empty()) {
+                r["head"] = af.anchor.head;
+                r["tail"] = af.anchor.tail;
+                r["before"] = af.anchor.before;
+                r["after"] = af.anchor.after;
+            }
             ranges.push_back(std::move(r));
         }
         if (ranges.items().empty()) continue;
@@ -20770,30 +20794,47 @@ void Editor::RestoreWorkspaceFolds(const Json &wj, const std::string &root) {
             const int start = r.get("start").as_int(-1);
             const int end = r.get("end").as_int(-1);
             if (start < 0 || end <= start) continue;
-            Fold f;
-            f.start_row = start;
-            f.end_row = end;
-            f.closed = r.get("closed").as_bool(true);
-            f.provider = r.get("provider").as_string("manual");
+            AnchoredFold af;
+            af.fold.start_row = start;
+            af.fold.end_row = end;
+            af.fold.closed = r.get("closed").as_bool(true);
+            af.fold.provider = r.get("provider").as_string("manual");
+            // Absent in a session file written before folds were anchored
+            // (and in one whose entry was out of range when it was
+            // written): ApplySavedFolds then falls back to trusting the
+            // rows, which is exactly what it used to do for every fold.
+            af.anchor.head = r.get("head").as_string("");
+            af.anchor.tail = r.get("tail").as_string("");
+            af.anchor.before = r.get("before").as_string("");
+            af.anchor.after = r.get("after").as_string("");
             // Two panes on one file walk the same buffer twice, and the
             // same path can appear under more than one workspace.
             bool dup = false;
-            for (const Fold &have : saved_entry.folds) {
-                if (have.start_row == f.start_row && have.end_row == f.end_row && have.provider == f.provider) {
+            for (const AnchoredFold &have : saved_entry.folds) {
+                if (have.fold.start_row == af.fold.start_row && have.fold.end_row == af.fold.end_row &&
+                    have.fold.provider == af.fold.provider) {
                     dup = true;
                     break;
                 }
             }
-            if (!dup) saved_entry.folds.push_back(f);
+            if (!dup) saved_entry.folds.push_back(af);
         }
-        for (Buffer &candidate : buffers_) {
+        // By index, since the fixup below takes a buffer id.
+        for (size_t bi = 0; bi < buffers_.size(); bi++) {
+            Buffer &candidate = buffers_[bi];
             if (candidate.deleted || candidate.filename.empty()) continue;
             // Buffer::filename is absolute when the file was opened
             // through a restore and relative when it came off the command
             // line, so compare resolved paths: matching the relative name
             // directly would let one workspace's saved "notes.txt" land on
             // another workspace's open notes.txt.
-            if (BufferAbsolutePath(candidate) == path) ApplySavedFolds(candidate);
+            if (BufferAbsolutePath(candidate) != path) continue;
+            ApplySavedFolds(candidate);
+            // The panes' saved cursors were put back before this ran (the
+            // restore applies folds last, so it can't move them), and a
+            // cursor inside a fold that is now closed would be drawn a
+            // line off its own text.
+            SnapPaneCursorsOutOfClosedFolds(static_cast<int>(bi));
         }
     }
 }
@@ -20802,11 +20843,54 @@ void Editor::ApplySavedFolds(Buffer &buf) {
     if (saved_folds_.empty() || buf.filename.empty()) return;
     auto it = saved_folds_.find(BufferAbsolutePath(buf));
     if (it == saved_folds_.end()) return;
-    for (const Fold &f : it->second.folds) {
+    // Folds whose text this file no longer has anywhere (see below). Worth
+    // one line on the status bar: "my folds are gone" is a mystery, while
+    // "two of them were over code that changed" is an explanation.
+    int dropped = 0;
+    // Where each saved fold's own text is in the file as it stands *now*.
+    // The file may have been edited between the save and this restore by
+    // anything at all -- another editor, a formatter, an agent in a
+    // terminal pane, a git pull, or this same mep with its session file
+    // already written -- and applying the saved rows to changed text is
+    // what put every fold a few lines above its own function: the report
+    // this is here to answer ("I open a file with folds in it and
+    // everything is offset"). An unchanged file matches at exactly the
+    // saved rows, so the common case costs one string compare per fold
+    // and lands where it always did. Resolved as a set, not one fold at a
+    // time, so a saved method stays inside its saved class -- see
+    // RefindFoldsByAnchors.
+    std::vector<Fold> saved_ranges;
+    std::vector<FoldAnchor> saved_anchors;
+    saved_ranges.reserve(it->second.folds.size());
+    saved_anchors.reserve(it->second.folds.size());
+    for (const AnchoredFold &af : it->second.folds) {
+        saved_ranges.push_back(af.fold);
+        saved_anchors.push_back(af.anchor);
+    }
+    const std::vector<RefoundFold> refound = RefindFoldsByAnchors(saved_ranges, saved_anchors, buf.lines);
+    for (size_t i = 0; i < it->second.folds.size(); i++) {
+        const AnchoredFold &af = it->second.folds[i];
+        Fold f = af.fold;
+        if (FoldAnchorUsable(af.anchor.head)) {
+            if (!refound[i].found) {
+                // Its text is gone -- the function was deleted or
+                // rewritten, or it is a method whose class no longer
+                // holds it. Dropping the fold loses a `zf`; keeping it
+                // would hide somebody else's lines behind a summary line
+                // claiming to be this one, which is worse and is what the
+                // user has been deleting all their folds to escape.
+                dropped++;
+                continue;
+            }
+            f.start_row = refound[i].start_row;
+            f.end_row = refound[i].end_row;
+        }
         // The same validity rule CreateFold applies, against the file as
-        // it is *now*: it may well have been edited between the save and
-        // this restore, and a range running off the end of a file that has
-        // since shrunk would hide rows that no longer exist.
+        // it is *now*: a session file written before folds carried their
+        // text (or an entry whose anchor is a blank line, which matches
+        // everywhere and so proves nothing) has only its rows to go on,
+        // and a range running off the end of a file that has since shrunk
+        // would hide rows that no longer exist.
         if (f.start_row < 0 || f.end_row <= f.start_row || f.end_row >= buf.LineCount()) continue;
         Fold *existing = nullptr;
         for (Fold &have : buf.folds) {
@@ -20824,6 +20908,10 @@ void Editor::ApplySavedFolds(Buffer &buf) {
         buf.folds.push_back(f);
     }
     NormalizeFolds(buf);
+    if (dropped > 0) {
+        SetStatusMessage(std::to_string(dropped) + (dropped == 1 ? " saved fold was" : " saved folds were") +
+                         " dropped: the lines they covered are no longer in this file");
+    }
 }
 
 void Editor::RefreshSavedFoldsFromBuffers(const Project &project) {
@@ -20864,7 +20952,18 @@ void Editor::RefreshSavedFoldsFromBuffers(const Project &project) {
         }
         SavedFolds &entry = saved_folds_[path];
         entry.workspace_root = ws->root;
-        entry.folds = buf.folds;
+        // Each fold with the two lines it currently spans: the rows are
+        // only true of this version of the buffer, and the anchor is what
+        // keeps the fold findable in whatever the file looks like the next
+        // time it is opened (see SavedFolds, ApplySavedFolds).
+        entry.folds.clear();
+        entry.folds.reserve(buf.folds.size());
+        for (const Fold &f : buf.folds) {
+            AnchoredFold af;
+            af.fold = f;
+            af.anchor = FoldAnchorFor(buf.lines, f.start_row, f.end_row);
+            entry.folds.push_back(std::move(af));
+        }
     }
 }
 
@@ -26982,21 +27081,39 @@ void Editor::SetOrgLatexPreview(int first_row, int last_row, int col, const std:
 void Editor::ClearOrgLatexPreview() { Buf().org_latex_preview = Buffer::OrgLatexPreview{}; }
 
 bool Editor::IsRowHiddenByFold(int row, int *fold_start_row) const {
-    // The *outermost* closed fold hiding the row, not whichever one the
-    // fold vector happens to list first. With nesting they differ, and
-    // only the outermost one's start row is actually on screen -- an
-    // inner fold's own start row is itself hidden, so reporting that as
-    // "where this row displays" hands every caller (the cursor snap, the
-    // visible-row step, ClampCursor) a row that is no more visible than
-    // the one they asked about.
-    const Fold *outermost = nullptr;
-    for (const Fold &f : Buf().folds) {
-        if (!f.closed || row <= f.start_row || row > f.end_row) continue;
-        if (outermost == nullptr || f.start_row < outermost->start_row) outermost = &f;
+    // The rule itself -- and why it answers with the *outermost* fold --
+    // is RowHiddenByFoldIn (folds.h). This is the active buffer's.
+    return RowHiddenByFoldIn(Buf().folds, row, fold_start_row);
+}
+
+void Editor::SnapPaneCursorsOutOfClosedFolds(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
+    const std::vector<Fold> &folds = buffers_[static_cast<size_t>(buffer_id)].folds;
+    if (folds.empty()) return;
+    // Every pane in every tab of every workspace, not just the active one:
+    // ClampCursor only ever fixes the focused pane, and a pane showing
+    // this file in a background tab is exactly where a cursor gets left
+    // inside a fold that was closed while somewhere else had focus -- or
+    // by a session restore, which applies a file's folds after each
+    // pane's saved cursor has already been put back. A cursor on a hidden
+    // row is drawn on the *next* visible line instead of its own, so the
+    // caret sits a line off its text until the next motion moves it.
+    for (Project &project : projects_) {
+        for (Workspace &ws : project.workspaces) {
+            for (Tab &tab : ws.tabs) {
+                std::vector<int> pane_ids;
+                CollectLeaves(tab.root.get(), pane_ids);
+                for (int pane_id : pane_ids) {
+                    SplitNode *node = FindNode(tab.root.get(), pane_id);
+                    if (node == nullptr || node->pane.buffer_id != buffer_id) continue;
+                    int fold_start = 0;
+                    if (!RowHiddenByFoldIn(folds, node->pane.cursor.row, &fold_start)) continue;
+                    node->pane.cursor.row = fold_start;
+                    node->pane.cursor = ClampPositionInBuffer(buffer_id, node->pane.cursor);
+                }
+            }
+        }
     }
-    if (outermost == nullptr) return false;
-    if (fold_start_row) *fold_start_row = outermost->start_row;
-    return true;
 }
 
 // Sitting on a closed fold's start row and stepping down used to move one
@@ -30880,6 +30997,12 @@ void Editor::ShiftFoldsForLineEdit(int at_row, int count) { ShiftFoldsForLineEdi
 
 void Editor::ShiftFoldsForLineEdit(Buffer &buf, int at_row, int count) {
     ShiftFoldList(buf.folds, at_row, count, buf.LineCount());
+    buf.folds_normalized_line_count = buf.LineCount();
+}
+
+void Editor::ShiftFoldsForReplace(Buffer &buf, const std::vector<FoldAnchor> &anchors, int at_row, int removed,
+                                  int inserted) {
+    ShiftFoldListForReplace(buf.folds, anchors, at_row, removed, inserted, buf.lines);
     buf.folds_normalized_line_count = buf.LineCount();
 }
 
@@ -36067,18 +36190,21 @@ void Editor::ReplaceLinesForLua(int start_row, int end_row, const std::vector<st
     start_row = std::max(0, std::min(start_row, buf.LineCount()));
     end_row = std::max(start_row, std::min(end_row, buf.LineCount()));
     PushUndo();
+    // Where this buffer's folds are, in the text as it reads right now --
+    // four strings per fold, taken before the edit (see ShiftFoldsForReplace).
+    const std::vector<FoldAnchor> anchors = FoldAnchorsFor(buf.folds, buf.lines);
     buf.lines.erase(buf.lines.begin() + start_row, buf.lines.begin() + end_row);
     buf.lines.insert(buf.lines.begin() + start_row, lines.begin(), lines.end());
     if (buf.lines.empty()) buf.lines.emplace_back("");
-    // Same two-step shift as ReplaceLinesAt. This is the primitive the
-    // whole org-mode command family is built on (logbook entries,
-    // property drawers, subtree promote/demote/move, TODO cycling), so
-    // without it any of those that changes the line count leaves every
-    // fold below it offset -- in exactly the files most likely to be
-    // folded in the first place.
-    ShiftFoldsForLineEdit(buf, start_row, -(end_row - start_row));
+    // Same recovery as ReplaceLinesAt. This is the primitive the whole
+    // org-mode command family is built on (logbook entries, property
+    // drawers, subtree promote/demote/move, TODO cycling) *and* what
+    // :Format rewrites a whole file through, so without it any of those
+    // that changes the line count leaves every fold below it offset --
+    // and a whole-file replace wiped the fold set outright -- in exactly
+    // the files most likely to be folded in the first place.
+    ShiftFoldsForReplace(buf, anchors, start_row, end_row - start_row, static_cast<int>(lines.size()));
     ShiftMarksForLineEdit(buf, start_row, -(end_row - start_row));
-    ShiftFoldsForLineEdit(buf, start_row, static_cast<int>(lines.size()));
     ShiftMarksForLineEdit(buf, start_row, static_cast<int>(lines.size()));
     buf.modified = true;
     ClampCursor();
@@ -36091,8 +36217,29 @@ void Editor::SetBufferLinesForLua(int buffer_id, const std::vector<std::string> 
     // process output (Part VI Phase 27's terminal/Run/REPL) into a
     // dedicated buffer that isn't the active pane's, where "undo" has no
     // sensible meaning (there's nothing the user typed to undo).
+    //
+    // It is also what `buffer.setLines` / mep_buffer_set_lines is, though
+    // -- the agent tool whose whole job is "replace this file's contents",
+    // and MEP_AGENT_API.md tells agents to edit the human's open files
+    // through exactly that rather than writing to disk behind mep's back.
+    // Replacing the line vector under a folded buffer and telling the
+    // folds nothing left every one of them on its old rows: an agent that
+    // rewrote the top of a Python file moved every fold below it off its
+    // own function, live, with no reload or restart involved. So a buffer
+    // that has folds or marks in it gets the same text-swap recovery a
+    // reload does (each fold is re-found by its own text), and one that
+    // has neither -- every streaming-output buffer -- pays nothing but a
+    // move of the old vector it was going to drop anyway.
+    const bool recover = !buf.folds.empty() || !buf.marks.empty() || buf.has_last_jump;
+    std::vector<std::string> before;
+    if (recover) before = std::move(buf.lines);
     buf.lines = lines.empty() ? std::vector<std::string>{""} : lines;
     buf.modified = false;
+    if (recover) {
+        ShiftFoldsForTextSwap(buf, before);
+        ShiftMarksForTextSwap(buf, before);
+        NormalizeFoldsIfStale(buf);
+    }
 }
 
 // --- Participant-addressed editing (COLLAB_CURSORS_PLAN.md) ---------------
@@ -36129,16 +36276,19 @@ void Editor::ReplaceLinesAt(int buffer_id, int start_row, int end_row, const std
     start_row = std::max(0, std::min(start_row, static_cast<int>(buf.lines.size())));
     end_row = std::max(start_row, std::min(end_row, static_cast<int>(buf.lines.size())));
     PushUndoForBuffer(buffer_id);
+    const std::vector<FoldAnchor> anchors = FoldAnchorsFor(buf.folds, buf.lines);  // before the edit
     buf.lines.erase(buf.lines.begin() + start_row, buf.lines.begin() + end_row);
     buf.lines.insert(buf.lines.begin() + start_row, lines.begin(), lines.end());
     if (buf.lines.empty()) buf.lines.emplace_back("");
     // The replaced run and the replacement rarely have the same length,
-    // and every fold below the difference moves by it. One shift per
-    // mutation, in order, for the same reason ExMoveOrCopy does it that
-    // way: a fold *between* the two rows moves by the delete alone.
-    ShiftFoldsForLineEdit(buf, start_row, -(end_row - start_row));
+    // and every fold below the difference moves by it; a replacement that
+    // covers a fold moves it nowhere the row maths can work out at all,
+    // which is why each fold is looked for by its own text first
+    // (ShiftFoldsForReplace). Marks keep the two-step arithmetic, in
+    // order, for the same reason ExMoveOrCopy does it that way: a mark
+    // *between* the two rows moves by the delete alone.
+    ShiftFoldsForReplace(buf, anchors, start_row, end_row - start_row, static_cast<int>(lines.size()));
     ShiftMarksForLineEdit(buf, start_row, -(end_row - start_row));
-    ShiftFoldsForLineEdit(buf, start_row, static_cast<int>(lines.size()));
     ShiftMarksForLineEdit(buf, start_row, static_cast<int>(lines.size()));
     buf.modified = true;
 }
@@ -37626,7 +37776,16 @@ void Editor::TickCollaboration() {
     if (CurrentBufferId() != collaboration_buffer_id_) return;
     std::string merged;
     if (collaboration_->Synchronize(BufferText(Buf()), &merged)) {
-        Buf().lines = BufferLines(merged); Buf().modified = true; ClampCursor();
+        // A collaborator's edit replaces the line vector outright, so the
+        // folds and marks have to be recovered from the difference the
+        // same way a reload's are -- without that, someone else adding
+        // lines above a fold of mine moved my fold off its own text.
+        std::vector<std::string> before = std::move(Buf().lines);
+        Buf().lines = BufferLines(merged);
+        Buf().modified = true;
+        ShiftFoldsForTextSwap(Buf(), before);
+        ShiftMarksForTextSwap(Buf(), before);
+        ClampCursor();
         status_message_ = "Collaboration: remote changes applied";
     }
     collaboration_->SetPresence(CurPane().cursor.row, CurPane().cursor.col);

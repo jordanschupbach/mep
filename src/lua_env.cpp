@@ -4998,6 +4998,34 @@ int l_fold_clear_provider(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.fold_list(): the current buffer's folds, as a table of {start_row, end_row, closed, provider}.
+ * @param L Lua state.
+ * @return Number of values pushed (1: an array of fold tables, rows 1-indexed to match mep.fold_create).
+ *
+ * The read side of mep.fold_create, which had none: nothing could ask the
+ * editor what it thinks is folded, which is exactly the question a "my
+ * folds came back wrong" report needs answered (tools/fold_live_check.py
+ * is built on it).
+ */
+int l_fold_list(lua_State *L) {
+    const std::vector<Fold> &folds = GetEditor(L)->CurrentBufferFolds();
+    lua_createtable(L, static_cast<int>(folds.size()), 0);
+    for (size_t i = 0; i < folds.size(); i++) {
+        lua_createtable(L, 0, 4);
+        lua_pushinteger(L, folds[i].start_row + 1);
+        lua_setfield(L, -2, "start_row");
+        lua_pushinteger(L, folds[i].end_row + 1);
+        lua_setfield(L, -2, "end_row");
+        lua_pushboolean(L, folds[i].closed);
+        lua_setfield(L, -2, "closed");
+        lua_pushstring(L, folds[i].provider.c_str());
+        lua_setfield(L, -2, "provider");
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
+/**
  * @brief Implements mep.fold_toggle(): opens or closes the fold at the cursor.
  * @param L Lua state.
  * @return Number of values pushed (0).
@@ -14893,6 +14921,7 @@ const luaL_Reg kMepFuncs[] = {
     {"fold_create", l_fold_create},
     {"fold_clear_provider", l_fold_clear_provider},
     {"fold_toggle", l_fold_toggle},
+    {"fold_list", l_fold_list},
     {"buf_set_image_row", l_buf_set_image_row},
     {"buf_clear_image_rows", l_buf_clear_image_rows},
     {"org_images_toggle", l_org_images_toggle},

@@ -42,6 +42,18 @@ Fold F(int start, int end, bool closed = true, const char *provider = "manual") 
 }
 
 /**
+ * @brief Builds a fold anchor for the tests below (context optional).
+ */
+FoldAnchor A(const char *head, const char *tail, const char *before = "", const char *after = "") {
+    FoldAnchor a;
+    a.head = head;
+    a.tail = tail;
+    a.before = before;
+    a.after = after;
+    return a;
+}
+
+/**
  * @brief True when some fold in `folds` covers exactly this range.
  */
 bool Has(const std::vector<Fold> &folds, int start, int end) {
@@ -328,6 +340,221 @@ int main() {
         std::vector<Fold> folds = {F(5, 15)};
         ShiftFoldListForTextSwap(folds, a, b);
         CHECK(Has(folds, 5, 15));
+    }
+
+    // --- RefindFoldByAnchor: finding a fold's text again -------------------
+    //
+    // The report this exists for: a file with folds in it is opened, the
+    // file changed since the folds were saved (another editor, a
+    // formatter, an agent in a terminal pane, a git pull), and every fold
+    // comes back a few rows above its own function. Rows can't survive
+    // that; the fold's own first and last line can.
+    {
+        // A small Python file, and the same file with two lines added at
+        // the top and one added inside the function.
+        std::vector<std::string> before = {"import os", "", "def alpha(x):", "    total = 0", "    return total",
+                                           "", "def beta(y):", "    return -y"};
+        std::vector<std::string> after = {"from typing import List", "", "import os", "",
+                                          "def alpha(x):", "    total = 0", "    total += 1", "    return total",
+                                          "", "def beta(y):", "    return -y"};
+        int s = -1, e = -1;
+        CHECK(RefindFoldByAnchor(A("def alpha(x):", "    return total"), 2, 2, after, &s, &e));
+        CHECK(s == 4 && e == 7);  // moved down two, and grew by the inserted line
+        // The unchanged file is the common case: the answer is the rows
+        // the fold already had, with no search needed to notice it.
+        CHECK(RefindFoldByAnchor(A("def alpha(x):", "    return total"), 2, 2, before, &s, &e));
+        CHECK(s == 2 && e == 4);
+        // Text that is gone is reported gone -- the caller drops the fold
+        // rather than leaving it over whatever now occupies those rows.
+        CHECK(!RefindFoldByAnchor(A("def gamma(z):", "    return z"), 2, 2, after, &s, &e));
+        // A blank start line anchors nothing (it matches everywhere), and
+        // says so rather than matching the first blank in the file.
+        CHECK(!RefindFoldByAnchor(A("", "    return total"), 2, 2, after, &s, &e));
+        // A blank *end* line is allowed: a matched head plus the old span.
+        CHECK(RefindFoldByAnchor(A("def alpha(x):", ""), 2, 3, after, &s, &e));
+        CHECK(s == 4 && e == 7);
+    }
+    // Repeated lines, which is what real Python is: the match nearest to
+    // where the fold already was wins, so a fold on the tenth identical
+    // method does not jump to the first one.
+    {
+        std::vector<std::string> lines;
+        for (int i = 0; i < 12; i++) {
+            lines.push_back("class Thing" + std::to_string(i) + ":");
+            lines.push_back("    def __init__(self):");
+            lines.push_back("        self.x = 0");
+            lines.push_back("        return None");
+            lines.push_back("");
+        }
+        int s = -1, e = -1;
+        // The __init__ of class 10 is rows 51..53. With no context to go
+        // on, proximity is all there is, so asking from a row that moved
+        // (an insert above the fold) lands on the nearest copy -- which
+        // is the wrong class.
+        CHECK(RefindFoldByAnchor(A("    def __init__(self):", "        return None"), 51, 2, lines, &s, &e));
+        CHECK(s == 51 && e == 53);
+        CHECK(RefindFoldByAnchor(A("    def __init__(self):", "        return None"), 48, 2, lines, &s, &e));
+        CHECK(s == 46 && e == 48);
+        // With the context either side -- which is what FoldAnchorFor
+        // records and the session file carries -- the right copy wins
+        // however far the rows moved: `class Thing10:` above it is the
+        // only thing in the file that distinguishes it at all.
+        const FoldAnchor with_context = FoldAnchorFor(lines, 51, 53);
+        CHECK(with_context.before == "class Thing10:");
+        CHECK(RefindFoldByAnchor(with_context, 46, 2, lines, &s, &e));
+        CHECK(s == 51 && e == 53);
+        CHECK(RefindFoldByAnchor(with_context, 5, 2, lines, &s, &e));
+        CHECK(s == 51 && e == 53);
+        // Five lines added at the top: the fold is asked for at its old
+        // rows and has to come back five lower, still under Thing10.
+        std::vector<std::string> shifted = {"# a", "# b", "# c", "# d", "# e"};
+        shifted.insert(shifted.end(), lines.begin(), lines.end());
+        CHECK(RefindFoldByAnchor(with_context, 51, 2, shifted, &s, &e));
+        CHECK(s == 56 && e == 58);
+        CHECK(shifted[static_cast<size_t>(s) - 1] == "class Thing10:");
+    }
+    // ShiftFoldListForTextSwap on a *scattered* rewrite -- a reformat, or
+    // an agent editing three places at once. No single (at_row, count)
+    // describes it, so the old arithmetic put the fold wherever the first
+    // disagreement happened to be; the anchors put it on its text.
+    {
+        std::vector<std::string> before = {"import os", "", "def alpha(x):", "    total = 0", "    return total",
+                                           "", "def beta(y):", "    if y:", "        return y", "    return -y"};
+        std::vector<std::string> after = {"import os", "import sys", "", "def alpha(x):", "    total = 0",
+                                          "    return total", "", "def beta(y):", "    if y:", "        return y",
+                                          "    return -y", "", "def gamma():", "    pass"};
+        std::vector<Fold> folds = {F(2, 4), F(6, 9)};
+        ShiftFoldListForTextSwap(folds, before, after);
+        CHECK(Has(folds, 3, 5));   // def alpha, one row down
+        CHECK(Has(folds, 7, 10));  // def beta, likewise
+    }
+    // A fold whose own text the swap deleted outright goes away, rather
+    // than coming back over whatever moved into those rows.
+    {
+        std::vector<std::string> before = {"a", "def gone():", "    x = 1", "    return x", "z", "end"};
+        std::vector<std::string> after = {"a", "z", "end"};
+        std::vector<Fold> folds = {F(1, 3)};
+        ShiftFoldListForTextSwap(folds, before, after);
+        CHECK(folds.empty());
+    }
+
+    // --- Nested folds through the anchor paths -----------------------------
+    //
+    // Python is nested folds by default: a class, and a fold per method
+    // inside it. Each fold is re-found by its own text, which on its own
+    // is not enough -- the lookups are independent, so an inner fold can
+    // match a copy of its last line *below* its parent and come back as a
+    // range that crosses out of it, and NormalizeFoldList resolves a
+    // crossing by widening the outer fold. The class the user folded then
+    // silently covers whatever followed it.
+    {
+        const std::vector<std::string> klass = {
+            "class Gamma:",          // 0  outer
+            "    def one(self):",    // 1  inner A
+            "        return 1",      // 2
+            "",                      // 3
+            "    def two(self):",    // 4  inner B
+            "        return 2",      // 5
+            "",                      // 6
+            "    done = True",       // 7  outer ends
+            "",                      // 8
+            "print(1)",              // 9
+        };
+        // Two lines added above the class: every fold moves by two and
+        // the nesting is unchanged.
+        {
+            std::vector<std::string> after = {"# a", "# b"};
+            after.insert(after.end(), klass.begin(), klass.end());
+            std::vector<Fold> folds = {F(0, 7), F(1, 2), F(4, 5)};
+            ShiftFoldListForTextSwap(folds, klass, after);
+            CHECK(Has(folds, 2, 9) && Has(folds, 3, 4) && Has(folds, 6, 7));
+            CHECK(EveryClosedFoldIsReachable(folds));
+        }
+        // A line added inside the first method: that fold grows, the
+        // class grows with it, and the second method slides down.
+        {
+            std::vector<std::string> after = klass;
+            after.insert(after.begin() + 2, "        x = 1");
+            std::vector<Fold> folds = {F(0, 7), F(1, 2), F(4, 5)};
+            ShiftFoldListForTextSwap(folds, klass, after);
+            CHECK(Has(folds, 0, 8) && Has(folds, 1, 3) && Has(folds, 5, 6));
+        }
+        // The first method deleted outright: its fold goes, the class and
+        // the other method stay on their own text.
+        {
+            std::vector<std::string> after = klass;
+            after.erase(after.begin() + 1, after.begin() + 4);
+            std::vector<Fold> folds = {F(0, 7), F(1, 2), F(4, 5)};
+            ShiftFoldListForTextSwap(folds, klass, after);
+            CHECK(folds.size() == 2);
+            CHECK(Has(folds, 0, 4) && Has(folds, 1, 2));
+        }
+        // The *outer* fold's own last line rewritten, so its anchor fails
+        // and it falls back to arithmetic while its children anchor
+        // normally -- the mixed case, which still has to come out nested.
+        {
+            std::vector<std::string> after = {"# a", "# b", "# c"};
+            after.insert(after.end(), klass.begin(), klass.end());
+            after[3 + 7] = "    done = False";
+            std::vector<Fold> folds = {F(0, 7), F(1, 2), F(4, 5)};
+            ShiftFoldListForTextSwap(folds, klass, after);
+            CHECK(Has(folds, 3, 10) && Has(folds, 4, 5) && Has(folds, 7, 8));
+            CHECK(EveryClosedFoldIsReachable(folds));
+        }
+    }
+    // The crossing case itself: an inner fold whose last line was
+    // rewritten, with an identical copy of that line sitting just below
+    // its parent. Found freely, the inner fold lands on [2..6] and drags
+    // the class out to row 6 with it; confined to its parent, it does not.
+    {
+        const std::vector<std::string> before = {
+            "class Gamma:",        // 0  outer
+            "    def one(self):",  // 1  inner
+            "        return 1",    // 2  inner's last line
+            "    done = True",     // 3  outer ends
+            "",                    // 4
+            "        return 1",    // 5  the same text, outside the class
+            "print(1)",            // 6
+        };
+        std::vector<std::string> after = {"# header"};
+        after.insert(after.end(), before.begin(), before.end());
+        after[1 + 2] = "        return 42";  // the inner fold's last line, edited
+        std::vector<Fold> folds = {F(0, 3), F(1, 2)};
+        ShiftFoldListForTextSwap(folds, before, after);
+        CHECK(Has(folds, 1, 4));           // the class, moved by the header line
+        CHECK(!Has(folds, 1, 6));          // and NOT widened to swallow what follows it
+        for (const Fold &f : folds) CHECK(f.end_row <= 4);
+        CHECK(EveryClosedFoldIsReachable(folds));
+    }
+    // Same shape through the replace path (:Format). The inner fold's
+    // text is genuinely gone from inside its parent, so it is dropped --
+    // never placed on the copy below.
+    {
+        const std::vector<std::string> before = {
+            "class Gamma:", "    def one(self):", "        return 1", "    done = True", "", "        return 1",
+            "print(1)",
+        };
+        std::vector<std::string> after = {"# header"};
+        after.insert(after.end(), before.begin(), before.end());
+        after[1 + 2] = "        return 42";
+        std::vector<Fold> folds = {F(0, 3), F(1, 2)};
+        const std::vector<FoldAnchor> anchors = FoldAnchorsFor(folds, before);
+        ShiftFoldListForReplace(folds, anchors, 0, static_cast<int>(before.size()),
+                                static_cast<int>(after.size()), after);
+        CHECK(Has(folds, 1, 4));
+        for (const Fold &f : folds) CHECK(f.end_row <= 4);
+    }
+    // RefindFoldsByAnchors' own contract: a child is looked for inside its
+    // parent's *new* range, not the whole file.
+    {
+        const std::vector<std::string> before = {"class A:", "    def m(self):", "        pass", "x = 1"};
+        std::vector<std::string> after = {"# one", "# two"};
+        after.insert(after.end(), before.begin(), before.end());
+        const std::vector<Fold> folds = {F(0, 2), F(1, 2)};
+        const std::vector<RefoundFold> got = RefindFoldsByAnchors(folds, FoldAnchorsFor(folds, before), after);
+        CHECK(got.size() == 2);
+        CHECK(got[0].found && got[0].start_row == 2 && got[0].end_row == 4);
+        CHECK(got[1].found && got[1].start_row == 3 && got[1].end_row == 4);
     }
 
     // --- line_edit.h: the rule marks and folds share --------------------

@@ -507,6 +507,15 @@ test-gui: build-native
     else
         echo "   (skipped: run 'just pdf-fixtures' first)"
     fi
+    # Folding end to end, in Python files: fold by keystroke, quit, and
+    # open the file again in a *new process* that reads the session file
+    # the first one wrote -- including the cases where the file changed in
+    # between (another editor, a formatter, an agent, a git pull), which
+    # is what used to bring every fold back a few rows above its own
+    # function. Needs two real instances sharing one throwaway HOME, so
+    # like the session-restore test it cannot live in `just test`.
+    echo "== fold live check"
+    python3 tools/fold_live_check.py --build-dir {{native_build_dir}}
 
 # Part G.7: the mesher measured against Gmsh, on geometry carried across
 # as STEP written by mep's own writer. Separate from `test` because it

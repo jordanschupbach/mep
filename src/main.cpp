@@ -54898,6 +54898,35 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // starts on that row), for the alt text popup below.
     const gfx::Vector2 alt_mouse = gfx::GetMousePosition();
     int alt_hover_row = -1, alt_hover_col = -1;
+    /**
+     * @brief Draws one row's line number in the gutter (absolute, or the distance from the cursor under :set relativenumber).
+     * @param num_row The buffer row the number is for.
+     * @param num_ly The row's baseline y.
+     *
+     * Shared by the main row loop and the closed-fold summary above it. A
+     * folded row used to `continue` past the loop's own copy of this, so
+     * it was drawn with no number at all -- and a gutter that silently
+     * skips a number wherever a fold starts is the clearest way to make a
+     * correctly-numbered file look like it has lost count. Vim numbers a
+     * closed fold's line like any other; so does this.
+     */
+    auto draw_line_number = [&](int num_row, float num_ly) {
+        if (number_w <= 0.0f || row_in_column) return;  // (no number in the middle of the pane)
+        // :set relativenumber: every row but the cursor's own shows its
+        // distance from it instead of an absolute number: the cursor line
+        // itself still shows its real absolute number (left-aligned -- a
+        // "you are here" anchor distinct from every right-aligned
+        // relative row around it), matching real Vim/Neovim's "number
+        // relativenumber together" look.
+        const bool current_line = num_row == pane.cursor.row;
+        const bool relative = g_editor.ShowRelativeNumbers();
+        const std::string num = (relative && !current_line) ? std::to_string(std::abs(num_row - pane.cursor.row))
+                                                            : std::to_string(num_row + 1);
+        const float num_w = gfx::MeasureTextEx(g_font, num.c_str(), g_font_size, 0).x;
+        const float num_x = (relative && current_line) ? (text_x_left - number_w) : (text_x_left - g_char_width - num_w);
+        gfx::DrawTextEx(g_font, num.c_str(), gfx::Vector2{num_x, num_ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
+    };
+
     auto unclip_row = [&] {
         if (!row_clipped) return;
         gfx::EndScissorMode();
@@ -55626,6 +55655,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // headline's stars are hidden, so the ellipsis follows the
             // title instead of floating past where the asterisks used to
             // end the line.
+            // Numbered like any other row: this branch returns before the
+            // loop's own call, and a folded row with a blank gutter makes
+            // every number below it look wrong (see draw_line_number).
+            draw_line_number(row, ly);
             const int folded_cols = draw_fold_summary_text(row, ly);
             // How much is behind it, not just that something is: "... 34
             // lines" answers the question a collapsed line actually
@@ -56073,21 +56106,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             cursor_row_shift = single_line_shift;
             text_x -= single_line_shift;
         }
-        if (number_w > 0.0f && !row_in_column) {  // (no number in the middle of the pane)
-            // :set relativenumber: every row but the cursor's own shows
-            // its distance from it instead of an absolute number: the
-            // cursor line itself still shows its real absolute number
-            // (left-aligned -- a "you are here" anchor distinct from
-            // every right-aligned relative row around it), matching
-            // real Vim/Neovim's "number relativenumber together" look.
-            bool current_line = row == pane.cursor.row;
-            bool relative = g_editor.ShowRelativeNumbers();
-            std::string num = (relative && !current_line) ? std::to_string(std::abs(row - pane.cursor.row))
-                                                            : std::to_string(row + 1);
-            float num_w = gfx::MeasureTextEx(g_font, num.c_str(), g_font_size, 0).x;
-            float num_x = (relative && current_line) ? (text_x_left - number_w) : (text_x_left - g_char_width - num_w);
-            gfx::DrawTextEx(g_font, num.c_str(), gfx::Vector2{num_x, ly}, g_font_size, 0, ResolveHlGroup("LineNr"));
-        }
+        draw_line_number(row, ly);
         if (single_line_shift > 0.0f) {
             gfx::EndScissorMode();
             gfx::BeginScissorMode(static_cast<int>(text_x_left), static_cast<int>(content_y),

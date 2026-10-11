@@ -139,6 +139,19 @@ int main() {
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 
+    // The session-file checks below call Editor::SaveWorkspaceState, which
+    // writes under $XDG_DATA_HOME/mep -- i.e. the *real* per-user session
+    // files if this is left alone, and it was: a run of this test used to
+    // leave entries for /tmp/mep-fold-test/... in the session file of
+    // whatever project the developer had open. Point it at the scratch
+    // directory instead, before the first Editor is constructed.
+    std::filesystem::create_directories(dir + "/share");
+#if !defined(_WIN32)
+    setenv("XDG_DATA_HOME", (dir + "/share").c_str(), 1);
+#else
+    _putenv_s("XDG_DATA_HOME", (dir + "/share").c_str());
+#endif
+
     // ---------------------------------------------------------------- 1
     // Baseline: a manual fold over a hand-picked range stays exactly the
     // range that was picked, and hides exactly its interior.
@@ -954,6 +967,341 @@ int main() {
         EXPECT(at() == "5/0", "in view mode j goes from A's end to its rule", at());
         ed.RunCommand("normal j");
         EXPECT(at() == "14/0", "and then past the set, A still shown", at());
+    }
+
+    // --------------------------------------------------------------- 26
+    // The reported bug, in the shape it actually arrives in: the folds are
+    // saved, the file then changes *on disk* (another editor, a formatter,
+    // an agent in a terminal pane, a git pull -- mep watches no files), and
+    // the file is opened again in a new session. Saved rows are only true
+    // of the version they were taken from, so applying them to the new
+    // text is what put every fold a few lines above its own function.
+    std::printf("\n== 26. a file edited on disk between sessions comes back folded on its own text\n");
+    {
+        const std::string proj = dir + "/proj26";
+        std::filesystem::create_directories(proj);
+        const std::string path = WriteTempPython(proj, "t26.py");
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.CreateFold(4, 8, /*closed=*/true, "manual");    // def alpha
+            ed.CreateFold(17, 22, /*closed=*/true, "manual");  // class Gamma
+            ed.SaveWorkspaceState(ed.ActiveProject().id);
+        }
+        // Four lines added at the top by something that is not mep.
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << "# ext 1\n# ext 2\n# ext 3\n# ext 4\n" << kPythonSource;
+        }
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.RestoreFoldsOnly(ed.ActiveProject().id);
+            const std::vector<Fold> &folds = ed.CurrentBufferFolds();
+            EXPECT(FindFold(folds, 8, 12) != nullptr, "the alpha fold followed its text to 8..12",
+                   FoldsToString(folds));
+            EXPECT(FindFold(folds, 21, 26) != nullptr, "the class fold followed its text to 21..26",
+                   FoldsToString(folds));
+            EXPECT(FindFold(folds, 4, 8) == nullptr && FindFold(folds, 17, 22) == nullptr,
+                   "neither came back on the rows it was saved at", FoldsToString(folds));
+            for (const Fold &f : folds) {
+                const std::string head = ed.GetLineForLua(f.start_row);
+                EXPECT(head == "def alpha(x):" || head == "class Gamma:",
+                       "fold at " + std::to_string(f.start_row) + " starts on its own text", "it is \"" + head + "\"");
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- 27
+    // The other half: a file whose folded text is *gone* on disk. The fold
+    // has to go with it -- left behind, it is a summary line claiming to
+    // be a function that isn't there, hiding rows that belong to something
+    // else entirely.
+    std::printf("\n== 27. a fold whose text was deleted on disk does not come back on other rows\n");
+    {
+        const std::string proj = dir + "/proj27";
+        std::filesystem::create_directories(proj);
+        const std::string path = WriteTempPython(proj, "t27.py");
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.CreateFold(17, 22, /*closed=*/true, "manual");  // class Gamma
+            ed.CreateFold(4, 8, /*closed=*/true, "manual");    // def alpha
+            ed.SaveWorkspaceState(ed.ActiveProject().id);
+        }
+        {
+            // class Gamma deleted outright; def alpha left where it was.
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << "import os\nimport sys\n\n\ndef alpha(x):\n    total = 0\n    for i in range(x):\n"
+                << "        total += i\n    return total\n\n\ndef beta(y):\n    if y > 0:\n"
+                << "        return y\n    return -y\n\n\nprint(alpha(3))\nprint(beta(4))\n";
+        }
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.RestoreFoldsOnly(ed.ActiveProject().id);
+            const std::vector<Fold> &folds = ed.CurrentBufferFolds();
+            EXPECT(folds.size() == 1, "only the fold whose text survived came back", FoldsToString(folds));
+            EXPECT(FindFold(folds, 4, 8) != nullptr, "and it is still def alpha's 4..8", FoldsToString(folds));
+        }
+    }
+
+    // --------------------------------------------------------------- 28
+    // A file of repeated lines -- which real Python is, class after class
+    // of `    def __init__(self):` -- edited on disk above the folds. Each
+    // fold must come back on *its* copy, not on the first one in the file.
+    std::printf("\n== 28. in a file of identical methods each fold finds its own copy\n");
+    {
+        const std::string proj = dir + "/proj28";
+        std::filesystem::create_directories(proj);
+        const std::string path = proj + "/many.py";
+        std::string body;
+        for (int i = 0; i < 12; i++) {
+            body += "class Thing" + std::to_string(i) + ":\n";
+            body += "    def __init__(self):\n        self.x = 0\n        return None\n\n";
+        }
+        { std::ofstream out(path, std::ios::binary | std::ios::trunc); out << body; }
+        // class N starts at row 5N; its __init__ at 5N+1, returning at 5N+3.
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.CreateFold(16, 18, /*closed=*/true, "manual");  // Thing3's __init__
+            ed.CreateFold(51, 53, /*closed=*/true, "manual");  // Thing10's
+            ed.SaveWorkspaceState(ed.ActiveProject().id);
+        }
+        { std::ofstream out(path, std::ios::binary | std::ios::trunc); out << "# a\n# b\n# c\n# d\n# e\n" << body; }
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.RestoreFoldsOnly(ed.ActiveProject().id);
+            const std::vector<Fold> &folds = ed.CurrentBufferFolds();
+            EXPECT(FindFold(folds, 21, 23) != nullptr, "Thing3's fold moved by five, to 21..23",
+                   FoldsToString(folds));
+            EXPECT(FindFold(folds, 56, 58) != nullptr, "Thing10's moved by five, to 56..58",
+                   FoldsToString(folds));
+            EXPECT(folds.size() == 2, "and no third fold was invented", FoldsToString(folds));
+        }
+    }
+
+    // --------------------------------------------------------------- 29
+    // An agent rewriting the file through mep's own buffer tools
+    // (mep_buffer_set_lines -> Editor::SetBufferLinesForLua, which
+    // MEP_AGENT_API.md tells agents to use in preference to writing to
+    // disk). It replaces the line vector wholesale; nothing told the folds
+    // about it, so every fold stayed on its old rows -- offset, live, with
+    // no reload or restart anywhere in the story.
+    std::printf("\n== 29. an agent's whole-buffer rewrite leaves the folds on their own text\n");
+    {
+        Editor ed;
+        ed.LoadFile(WriteTempPython(dir, "t29.py"));
+        ed.CreateFold(17, 22, /*closed=*/true, "manual");  // class Gamma
+        ed.CreateFold(4, 8, /*closed=*/true, "manual");    // def alpha
+        // The same file with two lines added at the top and one inside
+        // the class -- an ordinary agent edit.
+        std::vector<std::string> rewritten;
+        rewritten.emplace_back("from typing import List");
+        rewritten.emplace_back("");
+        for (int r = 0; r < ed.LineCountForLua(); r++) {
+            rewritten.push_back(ed.GetLineForLua(r));
+            if (ed.GetLineForLua(r) == "class Gamma:") rewritten.emplace_back("    \"\"\"Docs.\"\"\"");
+        }
+        ed.SetBufferLinesForLua(ed.CurrentBufferId(), rewritten);
+        const std::vector<Fold> &folds = ed.CurrentBufferFolds();
+        EXPECT(FindFold(folds, 6, 10) != nullptr, "def alpha's fold followed the insert to 6..10",
+               FoldsToString(folds));
+        const Fold *gamma = nullptr;
+        for (const Fold &f : folds) {
+            if (ed.GetLineForLua(f.start_row) == "class Gamma:") gamma = &f;
+        }
+        EXPECT(gamma != nullptr, "the class fold is still on `class Gamma`", FoldsToString(folds));
+        EXPECT(gamma != nullptr && ed.GetLineForLua(gamma->end_row) == "        return 2",
+               "and still ends on its own last line",
+               FoldsToString(folds) + " end=\"" + (gamma ? ed.GetLineForLua(gamma->end_row) : std::string()) + "\"");
+    }
+
+    // --------------------------------------------------------------- 30
+    // :Format (and every Lua command built on mep.replace_lines) rewrites
+    // a whole file as one replacement covering every fold in it. The
+    // two-step row arithmetic had no answer for that -- the delete took
+    // every fold with it -- so formatting a Python file emptied the fold
+    // set, and the folds had to be made again by hand.
+    std::printf("\n== 30. formatting the whole file keeps the folds it did not change\n");
+    {
+        Editor ed;
+        ed.LoadFile(WriteTempPython(dir, "t30.py"));
+        ed.CreateFold(17, 22, /*closed=*/true, "manual");  // class Gamma
+        ed.CreateFold(11, 14, /*closed=*/false, "manual");  // def beta, open
+        // What a formatter hands back: the same code, two blank lines
+        // collapsed to one above `def beta`, everything else as it was.
+        std::vector<std::string> formatted;
+        for (int r = 0; r < ed.LineCountForLua(); r++) {
+            if (r == 10) continue;  // one of the two blank lines before `def beta`
+            formatted.push_back(ed.GetLineForLua(r));
+        }
+        ed.ReplaceLinesForLua(0, ed.LineCountForLua(), formatted);
+        const std::vector<Fold> &folds = ed.CurrentBufferFolds();
+        EXPECT(folds.size() == 2, "both folds survived the whole-file replace", FoldsToString(folds));
+        EXPECT(FindFold(folds, 10, 13) != nullptr, "def beta's fold came up a row with its text",
+               FoldsToString(folds));
+        EXPECT(FindFold(folds, 16, 21) != nullptr, "class Gamma's did too", FoldsToString(folds));
+        const Fold *beta = FindFold(folds, 10, 13);
+        EXPECT(beta != nullptr && !beta->closed, "and the open one is still open", FoldsToString(folds));
+        EXPECT(ed.GetLineForLua(16) == "class Gamma:", "row 16 really is `class Gamma` now",
+               "row 16 is \"" + ed.GetLineForLua(16) + "\"");
+    }
+
+    // --------------------------------------------------------------- 31
+    // The anchor is stored in the session file as JSON, so it has to
+    // survive every byte a line of Python can hold: quotes, backslashes,
+    // tabs, non-ASCII. A mangled anchor means a fold that can never be
+    // found again -- it would just silently stop coming back.
+    std::printf("\n== 31. an anchor round-trips through the session file verbatim\n");
+    {
+        const std::string proj = dir + "/proj31";
+        std::filesystem::create_directories(proj);
+        const std::string path = proj + "/odd.py";
+        const std::string body =
+            "import re\n"
+            "\n"
+            "def quote(s):  # \"double\" and 'single'\n"
+            "\tpattern = re.compile(\"\\\\d+\\t\")  # tab-indented, backslashes\n"
+            "\treturn pattern.sub('\u2014', s)  # em dash\n"
+            "\n"
+            "print(quote('x'))\n";
+        { std::ofstream out(path, std::ios::binary | std::ios::trunc); out << body; }
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.CreateFold(2, 4, /*closed=*/true, "manual");  // def quote .. return
+            ed.SaveWorkspaceState(ed.ActiveProject().id);
+        }
+        // Two lines added at the top on disk, so the restore has to use
+        // the anchor rather than the saved rows.
+        { std::ofstream out(path, std::ios::binary | std::ios::trunc); out << "# one\n# two\n" << body; }
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.RestoreFoldsOnly(ed.ActiveProject().id);
+            const std::vector<Fold> &folds = ed.CurrentBufferFolds();
+            EXPECT(FindFold(folds, 4, 6) != nullptr, "the fold followed its text to 4..6", FoldsToString(folds));
+            EXPECT(ed.GetLineForLua(4).rfind("def quote(s):", 0) == 0, "row 4 is `def quote`",
+                   "row 4 is \"" + ed.GetLineForLua(4) + "\"");
+        }
+    }
+
+    // --------------------------------------------------------------- 32
+    // Folds inside folds, across a session and an on-disk change -- which
+    // is what a folded Python file actually is: the class, and a fold per
+    // method inside it. Each has to come back on its own text, still
+    // nested, with the outer one covering exactly what it covered before.
+    std::printf("\n== 32. nested folds survive an on-disk change still nested\n");
+    {
+        const std::string proj = dir + "/proj32";
+        std::filesystem::create_directories(proj);
+        const std::string path = WriteTempPython(proj, "t32.py");
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.CreateFold(17, 22, /*closed=*/true, "manual");   // class Gamma
+            ed.CreateFold(18, 19, /*closed=*/false, "manual");  // def one, inside it
+            ed.CreateFold(21, 22, /*closed=*/false, "manual");  // def two, inside it
+            EXPECT(ed.CurrentBufferFolds().size() == 3, "three nested folds made",
+                   FoldsToString(ed.CurrentBufferFolds()));
+            ed.SaveWorkspaceState(ed.ActiveProject().id);
+        }
+        // Three lines at the top, and one added inside the class, by
+        // something that is not mep.
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << "# ext 1\n# ext 2\n# ext 3\n";
+            const std::string src = kPythonSource;
+            size_t pos = 0;
+            while (pos < src.size()) {
+                const size_t nl = src.find('\n', pos);
+                const std::string line = src.substr(pos, nl - pos);
+                out << line << "\n";
+                if (line == "class Gamma:") out << "    \"\"\"Docs.\"\"\"\n";
+                pos = nl + 1;
+            }
+        }
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.RestoreFoldsOnly(ed.ActiveProject().id);
+            const std::vector<Fold> &folds = ed.CurrentBufferFolds();
+            EXPECT(folds.size() == 3, "all three came back", FoldsToString(folds));
+            // class Gamma moved 17 -> 20 and grew by its new docstring row.
+            EXPECT(FindFold(folds, 20, 26) != nullptr, "the class fold is 20..26", FoldsToString(folds));
+            EXPECT(FindFold(folds, 22, 23) != nullptr, "`def one` is 22..23 inside it", FoldsToString(folds));
+            EXPECT(FindFold(folds, 25, 26) != nullptr, "`def two` is 25..26 inside it", FoldsToString(folds));
+            const Fold *outer = FindFold(folds, 20, 26);
+            bool nested = outer != nullptr;
+            for (const Fold &f : folds) {
+                if (outer == nullptr || &f == outer) continue;
+                nested = nested && f.start_row >= outer->start_row && f.end_row <= outer->end_row;
+            }
+            EXPECT(nested, "both methods are still inside the class", FoldsToString(folds));
+            EXPECT(outer != nullptr && outer->closed, "the class fold is still the closed one",
+                   FoldsToString(folds));
+            EXPECT(ed.GetLineForLua(20) == "class Gamma:" && ed.GetLineForLua(22) == "    def one(self):",
+                   "and each sits on its own text",
+                   "row 20 is \"" + ed.GetLineForLua(20) + "\", row 22 is \"" + ed.GetLineForLua(22) + "\"");
+        }
+    }
+
+    // --------------------------------------------------------------- 33
+    // The nested case that goes wrong if each fold is re-found on its own:
+    // a method whose last line was edited, with an identical line just
+    // below its class. Found freely it crosses out of the class, and the
+    // crossing rule then widens the class over everything between -- "the
+    // fold swallowed lines I never selected", from a new direction.
+    std::printf("\n== 33. a method fold cannot escape its class and drag it wider\n");
+    {
+        const std::string proj = dir + "/proj33";
+        std::filesystem::create_directories(proj);
+        const std::string path = proj + "/esc.py";
+        const char *src =
+            "class Gamma:\n"        // 0
+            "    def one(self):\n"  // 1
+            "        return 1\n"    // 2
+            "    done = True\n"     // 3
+            "\n"                    // 4
+            "        return 1\n"    // 5  the same line, outside the class
+            "print(1)\n";           // 6
+        { std::ofstream out(path, std::ios::binary | std::ios::trunc); out << src; }
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.CreateFold(0, 3, /*closed=*/true, "manual");   // the class
+            ed.CreateFold(1, 2, /*closed=*/false, "manual");  // the method
+            ed.SaveWorkspaceState(ed.ActiveProject().id);
+        }
+        {
+            // A header line added, and the method's last line edited.
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out << "# header\n"
+                   "class Gamma:\n"
+                   "    def one(self):\n"
+                   "        return 42\n"
+                   "    done = True\n"
+                   "\n"
+                   "        return 1\n"
+                   "print(1)\n";
+        }
+        {
+            Editor ed;
+            ed.LoadFile(path);
+            ed.RestoreFoldsOnly(ed.ActiveProject().id);
+            const std::vector<Fold> &folds = ed.CurrentBufferFolds();
+            const Fold *klass = FindFold(folds, 1, 4);
+            EXPECT(klass != nullptr, "the class fold is 1..4, where its own text is", FoldsToString(folds));
+            for (const Fold &f : folds) {
+                EXPECT(f.end_row <= 4, "no fold reaches past the class's own last line",
+                       FoldsToString(folds) + " -- one of them swallowed the rows below it");
+            }
+            EXPECT(ed.GetLineForLua(4) == "    done = True", "row 4 is the class's last line",
+                   "row 4 is \"" + ed.GetLineForLua(4) + "\"");
+        }
     }
 
     std::printf("\n---- %d checks, %d failures ----\n", g_checks, g_failures);

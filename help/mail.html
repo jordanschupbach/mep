@@ -28,12 +28,23 @@ the encrypted connection to <code>curl</code>, which ships with macOS, Windows 1
 later, and every Linux distribution. Passwords are kept in the system's
 own credential store and never appear on a command line.</p>
 <h1>Setting up an account</h1>
-<p>Run <code>:MailSetup</code> (or <code>&lt;leader&gt;eS</code>). It asks for:</p>
-<ol>
-<li>your email address -- for the providers above the server settings are filled in for you; for any other domain it asks for the IMAP and SMTP servers (<code>host</code> or <code>host:port</code>);</li>
-<li>your name, as it should appear in the From: line;</li>
-<li>the password. Most providers want an <i>app password</i> for mail programs rather than your normal password, and the prompt says where to make one:</li>
-</ol>
+<p>Run <code>:MailSetup</code> (or <code>&lt;leader&gt;eS</code>) and give it your email address. For
+Gmail, Outlook, iCloud, Yahoo, Fastmail, Zoho, AOL, GMX and Proton the
+server settings are filled in for you; for any other domain it asks for
+the IMAP and SMTP servers (<code>host</code> or <code>host:port</code>).</p>
+<p>The quickest way for Gmail is <code>:MailSetup google</code> (or <code>:MailSetup</code> and
+leave the address empty): your browser opens on Google's own page, you
+pick the account you are already signed in with and click <i>Allow</i>, and
+mep learns the address and your name from Google -- nothing to type.
+<code>:MailSetup outlook</code> does the same for Microsoft. (This needs a mep built
+with its own client; see the "A built-in client" section below. Without
+one, mep asks for a client ID once.)</p>
+<p>For <b>Gmail and Outlook</b> addresses typed in, it asks whether to *sign in
+with your browser* -- answer yes, and you never type your password into mep (see
+the Browser sign-in section below). Answer no, or use any other provider, and it
+asks for a password instead. Most providers want an <i>app password</i> for
+mail programs rather than your normal password, and the prompt says
+where to make one:</p>
 <ul>
 <li>Gmail: Google account &gt; Security &gt; 2-Step Verification &gt; App passwords (https://myaccount.google.com/apppasswords). Paste it with or without the spaces Google shows.</li>
 <li>Outlook: Microsoft account &gt; Security &gt; Advanced security options &gt; App passwords.</li>
@@ -41,13 +52,113 @@ own credential store and never appear on a command line.</p>
 </ul>
 <p>mep then connects once to check everything works and opens your inbox.
 Run <code>:MailSetup</code> again with another address to add a second account, or
-with the same address to change its password.</p>
-<p>Where the password goes:</p>
+with the same address to change how it signs in.</p>
+<p>Where the password (or browser sign-in token) goes:</p>
 <table>
-<tr><td>macOS</td><td>the login Keychain (service <code>mep-mail</code>)</td></tr>
-<tr><td>Linux</td><td>the Secret Service keyring via <code>secret-tool</code>, else a private file</td></tr>
-<tr><td>Windows</td><td>a file in mep's data directory, encrypted for your user (DPAPI)</td></tr>
+<tr><td>macOS</td><td>the login Keychain (service <code>mep-mail</code>), readable by mep alone</td></tr>
+<tr><td>Windows</td><td>a file encrypted for your Windows user (DPAPI)</td></tr>
+<tr><td>Linux</td><td>the Secret Service keyring (GNOME Keyring, KWallet) via <code>secret-tool</code></td></tr>
+<tr><td>Linux without a keyring</td><td>mep's encrypted mail vault (below)</td></tr>
 </table>
+<p>On macOS, mep saves Keychain items itself, so an item trusts mep and no
+other program: anything else -- the <code>security</code> command included -- makes
+macOS ask you first. When mep saves one, macOS may ask you to allow it; a
+newly built mep counts as a new program, so after a rebuild macOS asks
+once more the first time mail is opened (<i>Always Allow</i> remembers it).
+Items saved by older versions of mep (which trusted the <code>security</code>
+command) are re-created this way automatically.</p>
+<p>Nothing is ever kept in plain text: there is no password in
+<code>accounts.json</code>, and passwords never appear on a command line (mep hands
+them to <code>curl</code> on its standard input).</p>
+<h2>The mail vault</h2>
+<p>Where the system has no credential store, mep keeps secrets in its own
+vault, <code>mail/vault.json</code>, encrypted with ChaCha20-Poly1305 under a key
+made from a passphrase you choose (PBKDF2-HMAC-SHA256, 600,000 rounds).
+The first time it is needed, mep asks you to pick the passphrase (twice);
+after that it asks once per session, the first time mail needs a
+password. The passphrase and the key are never written anywhere -- if you
+forget the passphrase, delete <code>vault.json</code> and sign in again.</p>
+<p>A wrong passphrase and a tampered file both simply fail to open. Saved
+passwords from older versions of mep, which were plain files, move into
+the vault (and the files are overwritten and deleted) the next time it is
+unlocked.</p>
+<p><code>:MailLock</code> forgets every password and token mep holds in memory and locks
+the vault; the next mail action asks again.</p>
+<h2>What else is protected</h2>
+<ul>
+<li>Connections always use TLS, with certificates checked. <code>insecure</code> (unencrypted) accounts are only allowed to a server on your own computer (<code>127.0.0.1</code> / <code>localhost</code>), so a typo can never send a password in the clear.</li>
+<li>mep's mail folder (drafts, the vault, temporary files) is readable by your user only. Temporary files (forwarded attachments) are removed after sending, or after a day otherwise.</li>
+<li>HTML mail is never rendered or run, and remote images are never fetched. Attachments open in mep only for formats it just displays (PDF, images, text, office documents, media); anything else is saved to Downloads.</li>
+<li>Browser sign-in uses PKCE and a random <code>state</code> from the system's secure random generator, listens on <code>127.0.0.1</code> only, and only talks to <code>https://</code> sign-in servers.</li>
+</ul>
+<h1>Browser sign-in</h1>
+<p>With browser sign-in, mep opens your provider's own sign-in page in your
+browser. You sign in there (with your password, 2-step verification and
+whatever else your account uses), approve access to your mail, and the
+page tells you to go back to mep. mep never sees your password. What it
+keeps is a <i>refresh token</i> in the system credential store (the table
+above), from which it fetches short-lived access tokens as it needs them.
+You can revoke it any time in your Google or Microsoft account's security
+settings.</p>
+<p>How it works: mep listens on 127.0.0.1 (only reachable from your own
+machine) for the browser to come back, using OAuth 2.0 with PKCE (the
+same way Thunderbird does it). If the browser does not open by itself,
+the sign-in address is on your clipboard; paste it into a browser. mep
+uses <code>$BROWSER</code> if you set it, otherwise the system's default browser.
+mep waits five minutes for you to finish.</p>
+<p><code>:MailSignIn</code> (optionally with an account id or address) signs an
+existing account in again -- after you revoked it, after it expired, or
+to move a password account over to browser sign-in.</p>
+<h2>A built-in client</h2>
+<p>Apps that offer "Sign in with Google" carry a client ID registered by
+their developer, so their users never see one. mep does the same: build
+it with a client, and every <code>:MailSetup google</code> on that build is just the
+browser and <i>Allow</i>.</p>
+<pre>cmake -S . -B build/native -DMEP_GOOGLE_OAUTH_CLIENT_ID=1234-abc.apps.googleusercontent.com \
+      -DMEP_GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-... \
+      -DMEP_MICROSOFT_OAUTH_CLIENT_ID=00000000-0000-0000-0000-000000000000
+just build-native</pre>
+<p>The values stay in the build directory's CMake cache, not in the
+repository. For a quick try without rebuilding, the environment variables
+of the same names (<code>MEP_GOOGLE_OAUTH_CLIENT_ID</code>, ...) work too. The client
+itself is made as described next.</p>
+<p>Who can use it: while the Google client is in <i>Testing</i>, only the test
+users you list (up to 100), and sign-ins expire after 7 days. <i>Publishing</i>
+it lifts both limits, with Google's "unverified app" warning on the
+consent screen. Removing that warning for the public means Google's app
+verification, which for full Gmail access includes a yearly security
+assessment -- worth it only for a mep you distribute widely.</p>
+<h2>One-time setup: your own client ID</h2>
+<p>Google and Microsoft only let registered apps start a browser sign-in,
+and the registration ("client ID") has to belong to whoever runs the app
+-- so you make one, once. It is free and takes a few minutes. mep asks
+for it the first time; later accounts with the same provider reuse it.</p>
+<p><b>Google</b> (Gmail and Google Workspace):</p>
+<ol>
+<li>Open https://console.cloud.google.com/ and create a project (any name, e.g. "mep mail").</li>
+<li>Go to <i>Google Auth Platform</i> and click <i>Get started</i>: give the app a name, your email as the support address, choose <i>External</i> as the audience, and finish.</li>
+<li>Under <i>Audience</i>, add your Gmail address as a <i>test user</i>.</li>
+<li>Under <i>Data access</i>, <i>Add or remove scopes</i>, and add <code>https://mail.google.com/</code> by hand.</li>
+<li>Under <i>Clients</i>, <i>Create client</i>, choose <i>Desktop app</i>, and create it. In the dialog that follows, click <i>Download JSON</i> -- that saves a <code>client_secret_....json</code> file in your Downloads folder.</li>
+<li>In mep, run <code>:MailSetup google</code>. mep finds the downloaded file and asks whether to use it; say yes, and your browser opens for the sign-in. (Or name the file: <code>:MailSetup google ~/Downloads/client_secret_....json</code>.)</li>
+</ol>
+<p>mep keeps the client in <code>mail/oauth_clients.json</code> (readable by you only),
+so later accounts and sign-ins never ask for it again. If you would rather
+paste the ID and secret, mep asks for them when there is no file --
+<code>Cmd+V</code> (macOS) or <code>Ctrl+V</code> pastes into any mep prompt.</p>
+<p>While the app is in <i>Testing</i>, Google makes sign-ins expire after 7 days
+(mep then says so; <code>:MailSignIn</code> signs in again). To stop that, click
+<i>Publish app</i> under <i>Audience</i>. Google then shows an "unverified app"
+warning when you sign in -- expected for an app only you use: choose
+<i>Advanced</i>, then continue.</p>
+<p><b>Microsoft</b> (Outlook.com, Hotmail, Microsoft 365):</p>
+<ol>
+<li>Open https://entra.microsoft.com/, <i>App registrations</i>, /New registration/. Choose /Accounts in any organizational directory and personal Microsoft accounts/, and add a redirect URI of type /Public client/native (mobile &amp; desktop)/ with the value <code>http://localhost</code>.</li>
+<li>Under <i>Authentication</i>, set <i>Allow public client flows</i> to <i>Yes</i>.</li>
+<li>Under <i>API permissions</i>, <i>Add a permission</i>, /APIs my organization uses/, <i>Office 365 Exchange Online</i>, <i>Delegated</i>: add <code>IMAP.AccessAsUser.All</code> and <code>SMTP.Send</code>.</li>
+<li>Copy the <i>Application (client) ID</i> into mep's prompt. Microsoft needs no secret.</li>
+</ol>
+<p>A work or school account may need its administrator to allow the app.</p>
 <h2>The accounts file</h2>
 <p>Accounts live in <code>mail/accounts.json</code> in mep's data directory
 (<code>~/.local/share/mep</code> on Linux, <code>~/Library/Application Support/mep</code> on
@@ -59,14 +170,16 @@ JSON you can edit. Fields beyond the obvious ones:</p>
 <tr><td><code>sent</code>, <code>drafts</code></td><td>the same, for where sent mail is filed</td></tr>
 <tr><td><code>secret</code></td><td><code>keychain</code> (default), <code>file</code>, or <code>command</code></td></tr>
 <tr><td><code>secret_command</code></td><td>with <code>command</code>: a shell command whose first line is the password</td></tr>
-<tr><td><code>oauth2</code></td><td><code>true</code> when the secret is an OAuth2 access token</td></tr>
+<tr><td><code>oauth2</code></td><td><code>true</code> when <code>secret_command</code> prints an OAuth2 access token</td></tr>
+<tr><td><code>oauth_provider</code></td><td><code>google</code> or <code>microsoft</code>: browser sign-in (set by <code>:MailSetup</code>)</td></tr>
+<tr><td><code>oauth_client_id</code></td><td>the client ID from the one-time setup above</td></tr>
 <tr><td><code>server_saves_sent</code></td><td><code>false</code> makes mep file a copy of each sent message in Sent</td></tr>
 <tr><td><code>insecure</code></td><td>plain-text IMAP/SMTP, for a server on this machine only</td></tr>
 </table>
 <p><code>secret_command</code> is how to use a password manager (<code>pass show mail/work</code>,
-<code>op read ...</code>) or OAuth2: point it at a token helper such as <code>oama</code> or
-<code>mutt_oauth2.py</code>, and set <code>oauth2</code> to <code>true</code>. mep then logs in with
-XOAUTH2/OAUTHBEARER instead of a password.</p>
+<code>op read ...</code>). It also works with an external OAuth2 token helper such
+as <code>oama</code>: point it at the helper and set <code>oauth2</code> to <code>true</code>. Most
+people want the built-in browser sign-in above instead.</p>
 <h1>Opening it</h1>
 <ul>
 <li><code>:Mail</code> (or <code>&lt;leader&gt;ee</code>) opens your first account's inbox in the current pane -- like <code>:e</code>, it replaces what the pane shows rather than splitting. Any pane will do.</li>
@@ -156,10 +269,18 @@ send from another of your accounts.</p>
 <tr><td><code>&lt;leader&gt;es</code></td><td>send this draft (<code>:MailSend</code>)</td></tr>
 <tr><td><code>&lt;leader&gt;ea</code></td><td>attach a file (<code>:MailAttach</code>)</td></tr>
 <tr><td><code>&lt;leader&gt;eS</code></td><td>set up an account (<code>:MailSetup</code>)</td></tr>
+<tr><td><code>&lt;leader&gt;eL</code></td><td>sign in again in the browser (<code>:MailSignIn</code>)</td></tr>
+<tr><td><code>&lt;leader&gt;el</code></td><td>forget passwords in memory, lock the vault (<code>:MailLock</code>)</td></tr>
+<tr><td><code>:MailLog</code></td><td>open the setup / sign-in log</td></tr>
 </table>
 <h1>When something goes wrong</h1>
 <ul>
 <li>*"login refused"*: the password is wrong, or the provider wants an app password (see above). Run <code>:MailSetup</code> with the same address to enter a new one.</li>
+<li><b>Something went wrong during sign-in</b>: <code>:MailLog</code> opens <code>mail/mail.log</code>, which records each setup and sign-in step and what the server answered (never a password or token). <code>:MailSignIn</code> (or <code>:MailSetup google</code> again) starts a fresh sign-in, replacing one still waiting.</li>
+<li>*"did not accept the client ID/secret"*: re-import the client with <code>:MailSetup google &lt;client_secret JSON&gt;</code>.</li>
+<li>*"refused mep's return address"*: the client was made as a /Web application/; make a <i>Desktop app</i> client instead.</li>
+<li>*"the sign-in has expired or was revoked"*: run <code>:MailSignIn</code>. With Google, see the 7-day note under the Browser sign-in section.</li>
+<li>*Google says "access blocked" or "not a test user"*: add your address as a test user (step 3 of the Google setup), or publish the app.</li>
 <li>*"cannot connect"* / *"timed out"*: no network, or a firewall blocking the mail ports (993 for IMAP, 465/587 for SMTP).</li>
 <li>*"Mail needs curl on PATH"*: install curl. It is preinstalled on macOS, Windows 10+ and nearly every Linux.</li>
 <li><b>Not sent</b>: the draft stays open with what you wrote, and the notification says what the server answered.</li>

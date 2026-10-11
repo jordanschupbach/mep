@@ -298,6 +298,13 @@ struct Account {
     std::string secret = "keychain";
     std::string secret_command;
     bool oauth2 = false;          // the secret is an OAuth2 bearer token (XOAUTH2/OAUTHBEARER)
+    // Browser sign-in (OAuth2Provider): with a provider set, the stored
+    // secret is a refresh token, and access tokens are minted from it.
+    std::string oauth_provider;   // "google", "microsoft", or "" for none
+    std::string oauth_client_id;
+    std::string oauth_client_secret;  // Google's "desktop app" secret (not confidential by design)
+    // Endpoint overrides (another provider, or a test server).
+    std::string oauth_auth_url, oauth_token_url, oauth_scope;
     bool server_saves_sent = false;
     bool insecure = false;        // plain imap:// / smtp:// -- localhost testing only
     std::string signature;        // appended to new drafts after "-- "
@@ -305,6 +312,8 @@ struct Account {
     std::string trash, archive, sent, drafts;
 
     std::string Login() const { return username.empty() ? email : username; }
+    /** @brief True when logins use an OAuth2 access token rather than a password. */
+    bool UsesOAuth() const { return oauth2 || !oauth_provider.empty(); }
     /** @brief "Name <email>" for From:. */
     std::string FromLine() const;
 };
@@ -319,6 +328,72 @@ void ApplyProviderDefaults(Account *a);
 /** @brief An account id derived from an email ("jane.doe@x.com" -> "jane.doe"), unique among `existing`. */
 std::string AccountIdFor(const std::string &email, const std::vector<Account> &existing);
 
+// --- OAuth2 browser sign-in -----------------------------------------------
+//
+// The authorization-code flow with PKCE (RFC 7636) and a loopback
+// redirect (RFC 8252): mep listens on 127.0.0.1, opens the provider's
+// sign-in page in the browser, and receives the code on the redirect --
+// the password is only ever typed into the provider's own page.
+
+struct OAuthProvider {
+    std::string id;     // "google"
+    std::string label;  // "Google"
+    std::string auth_url;
+    std::string token_url;
+    std::string scope;
+    std::string redirect_host;  // "127.0.0.1" or "localhost" (what the provider's registration allows)
+    std::string extra_params;   // appended to the authorize URL (already encoded)
+    bool needs_secret = false;  // asks for a client secret at setup
+    std::string console_url;    // where to make a client ID
+};
+
+/** @brief The built-in providers ("google", "microsoft"). */
+const std::vector<OAuthProvider> &OAuthProviders();
+/** @brief The provider named `id`, nullptr if none. */
+const OAuthProvider *OAuthProviderById(std::string_view id);
+/** @brief The browser sign-in that goes with a mail preset ("gmail" -> google, "outlook" -> microsoft). */
+const OAuthProvider *OAuthProviderForMail(std::string_view mail_provider);
+/** @brief Whether this build carries its own client for `provider_id` (so setup needs no client ID). The
+ *  environment (MEP_GOOGLE_OAUTH_CLIENT_ID / _SECRET, MEP_MICROSOFT_OAUTH_CLIENT_ID) overrides the build's. */
+bool HasBuiltinOAuthClient(std::string_view provider_id);
+/** @brief Fills an account's empty client ID/secret from the built-in client, if there is one. */
+void FillBuiltinOAuthClient(Account *a);
+/** @brief The mail preset that goes with a sign-in provider ("google" -> "gmail"). */
+std::string MailPresetForOAuth(std::string_view oauth_provider);
+/** @brief The account's provider with its endpoint overrides applied; false when it has none. */
+bool AccountOAuthProvider(const Account &a, OAuthProvider *out);
+
+/** @brief SHA-256 of `data`, as 32 raw bytes. */
+std::string Sha256(std::string_view data);
+/** @brief base64url without padding (RFC 4648 section 5). */
+std::string Base64Url(std::string_view in);
+/** @brief The PKCE S256 challenge for a code verifier. */
+std::string PkceChallenge(std::string_view verifier);
+/** @brief Percent-encodes for a URL query / form value (unreserved characters kept). */
+std::string UrlEncodeComponent(std::string_view s);
+/** @brief Decodes %XX and '+' in a query value. */
+std::string UrlDecodeComponent(std::string_view s);
+/** @brief "a=1&b=2" -> pairs, decoded. */
+std::vector<std::pair<std::string, std::string>> ParseQuery(std::string_view query);
+/** @brief The browser URL that starts sign-in. */
+std::string OAuthAuthorizeUrl(const OAuthProvider &p, const std::string &client_id, const std::string &redirect_uri,
+                              const std::string &state, const std::string &challenge, const std::string &login_hint);
+
+struct OAuthTokens {
+    std::string email;  // who signed in (the OpenID id_token's email claim)
+    std::string name;   // their display name, when shared
+    std::string access_token;
+    std::string refresh_token;  // empty when the provider did not send a new one
+    long long expires_in = 0;
+    std::string error;          // "invalid_grant: Token has been expired or revoked." etc.
+};
+
+/** @brief The email and name claims of an OpenID id_token (a JWT straight from the token endpoint over TLS,
+ *  which OpenID Connect lets a client trust without checking its signature). */
+void ParseIdTokenClaims(std::string_view jwt, std::string *email, std::string *name);
+/** @brief Reads a token endpoint's JSON answer. */
+OAuthTokens ParseTokenResponse(std::string_view json);
+
 // --- curl ---------------------------------------------------------------
 
 /** @brief Quotes a value for a curl config file (`-K`): double quotes with \\ \" \n \r \t escaped. */
@@ -330,6 +405,22 @@ std::string UrlEncodePath(std::string_view s, bool keep_slash);
 std::string ImapUrl(const Account &a, std::string_view mailbox_raw);
 /** @brief smtps://host:465 or smtp://host:587 (STARTTLS required by the caller's ssl-reqd). */
 std::string SmtpUrl(const Account &a);
+
+// --- Safety checks --------------------------------------------------------
+
+/** @brief True for 127.x.x.x, ::1 and localhost -- where an unencrypted connection never leaves the machine. */
+bool IsLoopbackHost(std::string_view host);
+/** @brief The host of an http(s) URL ("https://a.b:1/x" -> "a.b"). */
+std::string UrlHost(std::string_view url);
+/** @brief https://, or http:// to a loopback host (a local test server) -- never plain http over the network. */
+bool IsSafeAuthUrl(std::string_view url);
+/** @brief A pasted/typed client value cleaned up: surrounding whitespace and quotes removed. */
+std::string CleanPastedValue(std::string_view s);
+/** @brief Shape check for a Google OAuth client ID ("<digits>-<letters>.apps.googleusercontent.com"). */
+bool LooksLikeGoogleClientId(std::string_view id);
+/** @brief A plain addr-spec with nothing a command line or keychain query could misread (no spaces, quotes,
+ *  control characters). */
+bool IsPlainEmail(std::string_view email);
 
 // --- Small helpers shared with the editor side ---------------------------
 

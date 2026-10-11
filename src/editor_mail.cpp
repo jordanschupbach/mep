@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include "gfx/platform.h"
 #include "job.h"
 #include "mail.h"
+#include "mail_crypto.h"
 #include "mail_net.h"
 #include "mail_ui.h"
 
@@ -155,11 +157,13 @@ std::string Plural(size_t n, const char *word) {
     return std::to_string(n) + " " + word + (n == 1 ? "" : "s");
 }
 
+// Saved attachments that open straight into a split: formats mep only
+// displays. Anything mep could execute or that pulls in other content
+// (HTML, SVG, Org/mepml with code blocks, scripts) is saved, not opened.
 bool ViewableInMep(const std::string &filename) {
-    static const char *kExt[] = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".txt", ".md",
-                                 ".org", ".csv", ".json", ".xml", ".docx", ".xlsx", ".pptx", ".odt", ".ods",
-                                 ".odp", ".rtf", ".mp3", ".wav", ".flac", ".mp4", ".mov", ".eml", ".ics",
-                                 ".patch", ".diff", ".log", ".py", ".c", ".cpp", ".h", ".js", ".ts", ".tex"};
+    static const char *kExt[] = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".txt", ".md", ".csv",
+                                 ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".rtf", ".mp3", ".wav", ".flac",
+                                 ".mp4", ".mov", ".eml", ".patch", ".diff", ".log"};
     const std::string lower = mail::Lower(filename);
     for (const char *e : kExt) {
         const size_t n = std::strlen(e);
@@ -168,20 +172,73 @@ bool ViewableInMep(const std::string &filename) {
     return false;
 }
 
+// Forwarded attachments and outgoing copies left in mail/tmp by a draft
+// that was never sent (or a crash) go after a day.
+void PurgeStaleTemp() {
+    const std::string dir = mail::MailDataDir();
+    if (dir.empty()) return;
+    std::error_code ec;
+    const auto cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
+    for (const auto &ent : std::filesystem::directory_iterator(dir + "/tmp", ec)) {
+        if (ent.last_write_time(ec) < cutoff) std::filesystem::remove_all(ent.path(), ec);
+    }
+}
+
+// Sign-in and setup steps go to mail/mail.log (:MailLog) -- never a
+// secret -- and, with MEP_MAIL_DEBUG=1, to stderr too.
+void MailDebug(const std::string &what) {
+    static const bool on = [] {
+        const char *v = std::getenv("MEP_MAIL_DEBUG");
+        return v && *v && std::string(v) != "0";
+    }();
+    mail::MailLog(what);
+    if (on) std::fprintf(stderr, "mep mail: %s\n", what.c_str());
+}
+
+// What a provider's sign-in error codes mean for the person at the keyboard.
+std::string FriendlySignInError(const std::string &provider_label, const std::string &raw) {
+    auto has = [&](const char *code) { return raw.find(code) != std::string::npos; };
+    if (has("invalid_client") || has("unauthorized_client")) {
+        return provider_label + " did not accept the client ID/secret -- re-import the client (:MailSetup google "
+                                "<client_secret JSON>) or check them in " + mail::MailDataDir() + "/oauth_clients.json";
+    }
+    if (has("redirect_uri_mismatch")) {
+        return provider_label + " refused mep's return address -- the client must be a \"Desktop app\" client";
+    }
+    if (has("access_denied") || has("cancelled in the browser")) {
+        return "access was not granted -- if Google said \"access blocked\", add your address as a test user "
+               "(Google Auth Platform > Audience > Test users), or publish the app";
+    }
+    if (has("admin_policy_enforced") || has("org_internal")) {
+        return "your organisation's Google admin does not allow this app";
+    }
+    if (has("timed out")) return "no answer from the browser within 5 minutes -- run :MailSignIn to try again";
+    return raw;
+}
+
 // What a worker needs to talk to the server: the account, its secret if
 // already known (else the worker looks it up), and how that went.
 struct Cred {
     mail::Account account;
-    std::string secret;
+    std::string secret;  // as stored: the password, or a browser sign-in's refresh token
+    std::string login;   // what the server is given: the password, or a fresh access token
     bool resolved_here = false;
     std::string error;
-    bool Ensure() {
-        if (!secret.empty()) return true;
-        secret = mail::ResolveSecret(account, &error);
-        resolved_here = !secret.empty();
-        return resolved_here;
+    bool Ensure(const std::atomic<bool> *cancel = nullptr) {
+        if (secret.empty()) {
+            secret = mail::ResolveSecret(account, &error);
+            resolved_here = !secret.empty();
+            if (secret.empty()) return false;
+        }
+        std::string rotated;
+        login = mail::LoginSecret(account, secret, &rotated, &error, cancel);
+        if (!rotated.empty()) {
+            secret = rotated;
+            resolved_here = true;
+        }
+        return !login.empty();
     }
-    mail::Session Session() const { return {account, secret}; }
+    mail::Session Session() const { return {account, login}; }
 };
 
 std::string FindRoleFolder(const mail::Account &a, const std::vector<mail::Folder> &folders, const std::string &role) {
@@ -253,6 +310,7 @@ struct MailUi {
         const std::string path = mail::AccountsPath();
         const long long stamp = path.empty() ? -1 : FileStamp(path);
         if (m.accounts_loaded && stamp == m.accounts_stamp) return;
+        if (!m.accounts_loaded) PurgeStaleTemp();
         m.accounts_loaded = true;
         m.accounts_stamp = stamp;
         m.accounts_error.clear();
@@ -304,7 +362,10 @@ struct MailUi {
     // forget one the server refused (so a corrected one is read next time).
     static void AfterCred(Editor &e, const Cred &c, const std::string &error) {
         if (c.resolved_here && !c.secret.empty()) e.mail_.secrets[c.account.id] = c.secret;
-        if (error.find("login refused") != std::string::npos) e.mail_.secrets.erase(c.account.id);
+        if (error.find("login refused") != std::string::npos) {
+            e.mail_.secrets.erase(c.account.id);
+            mail::ForgetAccessToken(c.account);
+        }
     }
 
     // A failure worth a toast: not the "cancelled" of a job stopped because
@@ -527,7 +588,8 @@ struct MailUi {
         size_t unread = 0;
         for (const mail::MessageSummary &m : s.list.msgs) unread += m.Seen() ? 0 : 1;
         std::string rest = a ? a->email : "";
-        if (s.list.loaded) {
+        const bool failed = s.list.loaded && s.list.msgs.empty() && !s.status.empty();
+        if (s.list.loaded && !failed) {
             const size_t total = s.list.search.empty() && s.list.exists > 0 ? s.list.exists : s.list.msgs.size();
             rest += "   " + Plural(total, s.list.search.empty() ? "message" : "match");
             if (unread > 0) rest += ", " + std::to_string(unread) + " unread";
@@ -540,7 +602,10 @@ struct MailUi {
             o.Line("MailDate");
             return;
         }
-        if (s.list.loaded && s.list.msgs.empty()) {
+        if (failed) {
+            o.Add("  Could not load this folder (the reason is in the header). $ tries again.");
+            o.Line("MailDate");
+        } else if (s.list.loaded && s.list.msgs.empty()) {
             o.Add(s.list.search.empty() ? "  This folder is empty." : "  Nothing matched.");
             o.Line("MailDate");
         }
@@ -712,7 +777,7 @@ struct MailUi {
         Spawn(
             e, s.buffer_id, "folders",
             [cred, res](const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     res->second = cred->error;
                     return;
                 }
@@ -776,7 +841,7 @@ struct MailUi {
         Spawn(
             e, s.buffer_id, "open " + mailbox,
             [cred, res, mailbox, need_folders](const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
                 }
@@ -846,7 +911,7 @@ struct MailUi {
         Spawn(
             e, s.buffer_id, "refresh " + mailbox,
             [cred, res, mailbox, min_uid](const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
                 }
@@ -919,7 +984,7 @@ struct MailUi {
         Spawn(
             e, s.buffer_id, "older " + mailbox,
             [cred, res, mailbox, from, to](const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
                 }
@@ -965,7 +1030,7 @@ struct MailUi {
         Spawn(
             e, s.buffer_id, "search",
             [cred, res, mailbox, query](const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
                 }
@@ -1030,7 +1095,7 @@ struct MailUi {
         Spawn(
             e, s.buffer_id, "message",
             [cred, res, mailbox, uid](const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
                 }
@@ -1177,7 +1242,7 @@ struct MailUi {
         Spawn(
             e, s.buffer_id, role.empty() ? "move" : role,
             [cred, res, uids, mailbox, role, dest_in, folders](const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
                 }
@@ -1290,7 +1355,7 @@ struct MailUi {
         Spawn(
             e, s.buffer_id, "flag",
             [cred, err, uids, mailbox, flag, on](const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     *err = cred->error;
                     return;
                 }
@@ -1329,7 +1394,7 @@ struct MailUi {
         Spawn(
             e, s.buffer_id, "fetch",
             [cred, res, mailbox, uid](const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
                 }
@@ -1690,7 +1755,448 @@ struct MailUi {
     struct SetupState {
         mail::Account account;
         std::string secret;
+        bool browser = false;  // sign in through the browser instead of a password
     };
+
+    // Adds `a`, or replaces the account with the same address (keeping the
+    // hand-set extras: signature, folder overrides). Returns its index.
+    static int UpsertAccount(Editor &e, mail::Account &a) {
+        int idx = AccountIndexForEmail(e, a.email);
+        if (idx >= 0) {
+            const mail::Account &old = e.mail_.accounts[static_cast<size_t>(idx)];
+            a.id = old.id;
+            if (a.signature.empty()) a.signature = old.signature;
+            if (a.trash.empty()) a.trash = old.trash;
+            if (a.archive.empty()) a.archive = old.archive;
+            if (a.sent.empty()) a.sent = old.sent;
+            if (a.drafts.empty()) a.drafts = old.drafts;
+            e.mail_.accounts[static_cast<size_t>(idx)] = a;
+        } else {
+            a.id = mail::AccountIdFor(a.email, e.mail_.accounts);
+            e.mail_.accounts.push_back(a);
+            idx = static_cast<int>(e.mail_.accounts.size()) - 1;
+        }
+        SaveAccounts(e);
+        e.mail_.accounts_stamp = FileStamp(mail::AccountsPath());  // our own write is not a hand edit
+        return idx;
+    }
+
+    // PKCE verifiers and OAuth state: from the OS's cryptographic generator,
+    // 64 symbols so every byte maps without bias.
+    static std::string RandomToken(size_t n) {
+        static const char kChars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const std::string bytes = mail::SecureRandom(n);
+        std::string out;
+        for (char b : bytes) out.push_back(kChars[static_cast<unsigned char>(b) & 63]);
+        return out;
+    }
+
+    // The OS credential store where there is one; the encrypted vault
+    // otherwise (Linux without a Secret Service keyring). Never a plain file.
+    static void ChooseSecretStore(mail::Account *a) {
+        a->secret = "keychain";
+        a->secret_command.clear();
+#if !defined(__APPLE__) && !defined(_WIN32)
+        if (mail::KeychainName() == "a private file") a->secret = "vault";
+#endif
+    }
+
+    // --- The vault gate ------------------------------------------------------
+
+    static bool NeedsVault(Editor &e) {
+        for (const mail::Account &a : e.mail_.accounts) {
+            if (a.secret == "vault" || a.secret == "file") return true;
+        }
+        return false;
+    }
+
+    // Masked prompts' text is gone from the editor once used.
+    static void WipePromptInput(Editor &e) { mail::Wipe(&e.prompt_input_); }
+
+    // Secrets older versions kept in plain files move into the vault (and
+    // the files are overwritten, then deleted).
+    static void MigratePlainSecrets(Editor &e) {
+        size_t moved = 0;
+        for (mail::Account &a : e.mail_.accounts) {
+            if (a.secret != "file") continue;
+            std::string err;
+            std::string secret = mail::ResolveSecret(a, &err);
+            mail::Account plain = a;
+            a.secret = "vault";
+            if (!secret.empty() && !mail::StoreSecret(a, secret, &err)) {
+                a.secret = "file";
+                e.Notify("Mail: could not move " + a.email + "'s password into the vault: " + err, Editor::NotifyLevel::Error);
+                mail::Wipe(&secret);
+                continue;
+            }
+            mail::Wipe(&secret);
+            const std::string path = mail::MailDataDir() + "/secrets/" + mail::SafeFilename(a.id.empty() ? a.email : a.id) + ".secret";
+            std::error_code ec;
+            const auto size = std::filesystem::file_size(path, ec);
+            if (!ec) WriteFileBytes(path, std::string(static_cast<size_t>(size), '\0'));
+            mail::ForgetSecret(plain);
+            moved++;
+        }
+        if (moved > 0) {
+            SaveAccounts(e);
+            e.mail_.accounts_stamp = FileStamp(mail::AccountsPath());
+            e.Notify("Mail: moved " + Plural(moved, "saved password") + " out of plain files into the encrypted vault",
+                     Editor::NotifyLevel::Info);
+        }
+    }
+
+    static void UnlockJob(Editor &e, std::shared_ptr<std::string> passphrase, bool create, std::function<void()> then) {
+        auto err = std::make_shared<std::string>();
+        auto ok = std::make_shared<bool>(false);
+        e.mail_.unlocking = true;
+        e.SetStatusMessage(create ? "Mail: creating the vault..." : "Mail: unlocking the vault...");
+        Editor *ed = &e;
+        JobManager::Callbacks cb;
+        cb.on_exit = [ed, err, ok, create, then](int) {
+            ed->mail_.unlocking = false;
+            if (!*ok) {
+                ed->Notify("Mail: " + *err, Editor::NotifyLevel::Error);
+                if (!create && err->rfind("wrong passphrase", 0) == 0) AskVaultPassphrase(*ed, then);  // try again
+                mep::NoteActivity();
+                return;
+            }
+            ed->SetStatusMessage(create ? "Mail: vault created" : "Mail: vault unlocked");
+            MigratePlainSecrets(*ed);
+            then();
+            mep::NoteActivity();
+        };
+        JobManager::Instance().SpawnTask(
+            [passphrase, create, err, ok](const Job::EmitLine &, const std::atomic<bool> &) {
+                *ok = mail::VaultUnlock(*passphrase, create, err.get());
+                mail::Wipe(passphrase.get());
+                return 0;
+            },
+            std::move(cb), "mail: vault");
+    }
+
+    static void AskVaultPassphrase(Editor &e, std::function<void()> then) {
+        e.BeginPromptNative(
+            "Mail vault passphrase", "",
+            [&e, then](const std::string &text) {
+                auto pw = std::make_shared<std::string>(text);
+                WipePromptInput(e);
+                if (pw->empty()) return;
+                UnlockJob(e, pw, false, then);
+            },
+            /*masked=*/true);
+    }
+
+    static void CreateVault(Editor &e, std::function<void()> then) {
+        e.BeginPromptNative(
+            "New mail vault passphrase (8+ characters, never stored -- keep it safe)", "",
+            [&e, then](const std::string &first_in) {
+                auto first = std::make_shared<std::string>(first_in);
+                WipePromptInput(e);
+                if (first->empty()) return;
+                if (mail::DisplayWidth(*first) < 8) {
+                    e.Notify("Mail: the passphrase needs at least 8 characters", Editor::NotifyLevel::Warn);
+                    CreateVault(e, then);
+                    return;
+                }
+                e.BeginPromptNative(
+                    "Type the vault passphrase again", "",
+                    [&e, then, first](const std::string &second) {
+                        const bool same = second == *first;
+                        WipePromptInput(e);
+                        if (!same) {
+                            mail::Wipe(first.get());
+                            e.Notify("Mail: the passphrases differ -- try again", Editor::NotifyLevel::Warn);
+                            CreateVault(e, then);
+                            return;
+                        }
+                        UnlockJob(e, first, true, then);
+                    },
+                    /*masked=*/true);
+            },
+            /*masked=*/true);
+    }
+
+    // Runs `then` once every secret mail might need is readable: at once,
+    // unless an account keeps its secret in the vault (or an old plain file,
+    // which moves into the vault) and the vault is still locked.
+    static void WithSecretsReady(Editor &e, std::function<void()> then, bool need_vault = false) {
+        if (!need_vault && !NeedsVault(e)) {
+            then();
+            return;
+        }
+        if (mail::VaultUnlocked()) {
+            MigratePlainSecrets(e);
+            then();
+            return;
+        }
+        if (e.mail_.unlocking) {
+            e.Notify("Mail: still unlocking the vault", Editor::NotifyLevel::Info);
+            return;
+        }
+        if (mail::VaultExists()) AskVaultPassphrase(e, then);
+        else CreateVault(e, then);
+    }
+
+    // The browser sign-in: listen on 127.0.0.1, open the provider's page,
+    // take the code from its redirect, trade it (with the PKCE verifier)
+    // for tokens, keep the refresh token in the keychain, check the mail
+    // server accepts the access token, then save the account.
+    static void BrowserSignIn(Editor &e, mail::Account acct) {
+        if (acct.secret.empty() || acct.secret == "command" || acct.secret == "file") ChooseSecretStore(&acct);
+        WithSecretsReady(e, [&e, acct] { BrowserSignInNow(e, acct); }, acct.secret == "vault");
+    }
+
+    static void BrowserSignInNow(Editor &e, mail::Account acct) {
+        mail::OAuthProvider p;
+        if (!mail::AccountOAuthProvider(acct, &p)) {
+            e.Notify("Mail: no browser sign-in is known for " + acct.email, Editor::NotifyLevel::Error);
+            return;
+        }
+        // The client this sign-in presents: the account's own, else the one
+        // built into this mep (kept out of accounts.json, so a rebuilt mep
+        // with a new client just uses it).
+        mail::Account client = acct;
+        mail::FillOAuthClient(&client);
+        if (client.oauth_client_id.empty()) {
+            e.Notify("Mail: " + p.label + " sign-in needs a client ID (see :help mail)", Editor::NotifyLevel::Error);
+            return;
+        }
+        if (!mail::IsSafeAuthUrl(p.auth_url) || !mail::IsSafeAuthUrl(p.token_url)) {
+            e.Notify("Mail: sign-in addresses must be https:// -- check oauth_auth_url / oauth_token_url",
+                     Editor::NotifyLevel::Error);
+            return;
+        }
+        if (e.mail_.signing_in && e.mail_.signin_job > 0) {
+            // Asked again while one waits: start over (a closed tab, a wrong account...).
+            MailDebug("restarting the browser sign-in");
+            JobManager::Instance().Kill(e.mail_.signin_job);
+            e.mail_.signin_job = 0;
+            e.mail_.signing_in = false;
+        }
+        auto listener = std::make_shared<mail::OAuthRedirectListener>();
+        std::string err;
+        if (!listener->Listen(&err)) {
+            e.Notify("Mail: " + err, Editor::NotifyLevel::Error);
+            return;
+        }
+        const std::string redirect = "http://" + p.redirect_host + ":" + std::to_string(listener->Port());
+        const std::string verifier = RandomToken(64);
+        const std::string state = RandomToken(24);
+        const std::string url =
+            mail::OAuthAuthorizeUrl(p, client.oauth_client_id, redirect, state, mail::PkceChallenge(verifier), acct.email);
+        // If no browser opens, the address is one paste away.
+        gfx::SetClipboardText(url);
+        e.Notify("Mail: choose your " + p.label + " account in the browser and click Allow (no browser? the address is "
+                 "on the clipboard). If Google says \"access blocked\", add yourself as a test user -- :help mail.",
+                 Editor::NotifyLevel::Info);
+        e.SetStatusMessage("Mail: waiting for the " + p.label + " sign-in in your browser... (:MailSignIn restarts it)");
+        MailDebug("starting " + p.label + " sign-in" + (acct.email.empty() ? std::string() : " for " + acct.email) +
+                  " with client " + client.oauth_client_id);
+        e.mail_.signing_in = true;
+        struct Result {
+            std::string error;
+            std::string warning;
+            std::string refresh_token;
+            std::vector<mail::Folder> folders;
+            mail::Account account;  // as signed in: the address and name come from the provider
+        };
+        auto res = std::make_shared<Result>();
+        Editor *ed = &e;
+        JobManager::Callbacks cb;
+        auto my_job = std::make_shared<int>(0);
+        cb.on_exit = [ed, res, my_job, label = p.label](int) {
+            MailDebug("sign-in finished: " + (res->error.empty() ? std::string("ok") : res->error));
+            // A sign-in replaced by a newer one leaves the newer one's state alone.
+            if (ed->mail_.signin_job == *my_job) {
+                ed->mail_.signing_in = false;
+                ed->mail_.signin_job = 0;
+            }
+            if (!res->error.empty()) {
+                if (res->error != "cancelled") {
+                    const std::string why = FriendlySignInError(label, res->error);
+                    ed->Notify("Mail: " + why, Editor::NotifyLevel::Error);
+                    ed->SetStatusMessage("Mail sign-in failed: " + why + "  (details: :MailLog)");
+                }
+                mep::NoteActivity();
+                return;
+            }
+            mail::Account acct = res->account;
+            UpsertAccount(*ed, acct);
+            ed->mail_.secrets[acct.id] = res->refresh_token;
+            CacheFolders(*ed, acct.id, res->folders);
+            if (!res->warning.empty()) ed->Notify("Mail: " + res->warning, Editor::NotifyLevel::Warn);
+            ed->Notify("Mail: signed in to " + acct.email + " (" + Plural(res->folders.size(), "folder") + ")",
+                       Editor::NotifyLevel::Info);
+            const int buf = WorkspaceMailBuffer(*ed);
+            if (buf < 0) {
+                ed->OpenMailInPlace(acct.id);
+            } else if (MailSession *s = Session(*ed, buf)) {
+                Render(*ed, *s);
+            }
+            mep::NoteActivity();
+        };
+        e.mail_.signin_job = JobManager::Instance().SpawnTask(
+            [listener, acct, client, p, url, redirect, verifier, state, res](const Job::EmitLine &,
+                                                                               const std::atomic<bool> &cancel) mutable {
+                std::string err2;
+                if (!mail::OpenInBrowser(url, &err2)) {
+                    res->warning = err2 + " -- paste the address from the clipboard into a browser";
+                }
+                MailDebug("browser opened, waiting for the redirect on port " + std::to_string(listener->Port()));
+                const std::string code = listener->AwaitCode(state, 5 * 60 * 1000, &cancel, &res->error);
+                MailDebug(code.empty() ? "no code: " + res->error : "got the code; exchanging it");
+                if (code.empty()) return 0;
+                mail::OAuthTokens t = mail::OAuthExchangeCode(p, client, code, verifier, redirect, &cancel);
+                if (!t.error.empty()) {
+                    res->error = p.label + " sign-in failed: " + t.error;
+                    return 0;
+                }
+                // Whoever actually signed in is the account (it may differ from
+                // an address typed at setup: the browser picks the account).
+                if (!t.email.empty()) {
+                    if (!acct.email.empty() && mail::Lower(acct.email) != mail::Lower(t.email)) {
+                        res->warning = "you signed in as " + t.email + ", not " + acct.email + " -- set up " + t.email;
+                    }
+                    acct.email = t.email;
+                    client.email = t.email;
+                }
+                if (acct.name.empty()) acct.name = t.name;
+                if (acct.email.empty() || !mail::IsPlainEmail(acct.email)) {
+                    res->error = p.label + " did not say which account signed in";
+                    return 0;
+                }
+                if (acct.provider.empty() || acct.imap_host.empty()) {
+                    acct.provider = mail::MailPresetForOAuth(p.id);
+                    acct.imap_host.clear();
+                    acct.smtp_host.clear();
+                    mail::ApplyProviderDefaults(&acct);
+                    client.provider = acct.provider;
+                    client.imap_host = acct.imap_host;
+                    client.imap_port = acct.imap_port;
+                    client.smtp_host = acct.smtp_host;
+                    client.smtp_port = acct.smtp_port;
+                    client.server_saves_sent = acct.server_saves_sent;
+                }
+                client.name = acct.name;
+                res->account = acct;
+                res->refresh_token = t.refresh_token;
+                MailDebug("tokens received for " + acct.email + "; saving to \"" + acct.secret + "\"");
+                std::string stored_err;
+                if (!mail::StoreSecret(acct, t.refresh_token, &stored_err)) {
+                    res->warning = "the sign-in was not saved (" + stored_err + ") -- it lasts until mep exits";
+                }
+                // The mail server has to accept the token too.
+                MailDebug(res->warning.empty() ? "saved; checking the mail server" : "save: " + res->warning);
+                std::string list_err;
+                if (!mail::ListFolders({client, t.access_token}, &res->folders, &list_err, &cancel)) {
+                    res->error = "signed in, but the mail server refused: " + list_err;
+                }
+                return 0;
+            },
+            std::move(cb), "mail: browser sign-in");
+        *my_job = e.mail_.signin_job;
+    }
+
+    // Makes sure a client exists for the provider (saved in
+    // oauth_clients.json, shared by every account), then runs `then`:
+    // Google's downloaded client JSON is picked up from ~/Downloads (or
+    // given as a path); otherwise the ID and secret are asked for --
+    // pasting works (Cmd+V / Ctrl+V), and the ID's shape is checked.
+    static void AskClientThen(Editor &e, std::shared_ptr<SetupState> st, std::function<void()> then) {
+        const std::string provider = st->account.oauth_provider;
+        const mail::OAuthProvider *p = mail::OAuthProviderById(provider);
+        if (!p) return;
+        if (!st->account.oauth_client_id.empty() || mail::HaveOAuthClient(provider)) {
+            then();
+            return;
+        }
+        if (provider == "google") {
+            const std::string found = mail::FindGoogleClientJson();
+            if (!found.empty()) {
+                e.BeginConfirmNative(
+                    "Use the Google client in " + std::filesystem::path(found).filename().string() + " (in Downloads)?",
+                    true, [&e, st, then, found](bool yes) {
+                        if (yes) ImportGoogleClientThen(e, found, then);
+                        else PromptClientId(e, st, then);
+                    });
+                return;
+            }
+        }
+        PromptClientId(e, st, then);
+    }
+
+    static bool ImportGoogleClient(Editor &e, const std::string &path) {
+        std::string text;
+        if (!ReadFileBytes(ExpandPath(path), &text)) {
+            e.Notify("Mail: cannot read " + path, Editor::NotifyLevel::Error);
+            return false;
+        }
+        mail::OAuthClient client;
+        std::string err;
+        if (!mail::ParseGoogleClientJson(text, &client, &err) || !mail::SaveOAuthClient("google", client, &err)) {
+            e.Notify("Mail: " + err, Editor::NotifyLevel::Error);
+            MailDebug("client import from " + path + " failed: " + err);
+            return false;
+        }
+        MailDebug("imported the Google client " + client.id + " from " + path);
+        e.SetStatusMessage("Mail: Google client saved (" + client.id.substr(0, 12) + "...)");
+        return true;
+    }
+
+    static void ImportGoogleClientThen(Editor &e, const std::string &path, std::function<void()> then) {
+        if (ImportGoogleClient(e, path)) then();
+    }
+
+    static void PromptClientId(Editor &e, std::shared_ptr<SetupState> st, std::function<void()> then) {
+        const mail::OAuthProvider *p = mail::OAuthProviderById(st->account.oauth_provider);
+        if (!p) return;
+        const std::string provider = p->id;
+        e.BeginPromptNative(
+            p->label + " client ID (paste with " +
+#if defined(__APPLE__)
+                "Cmd+V"
+#else
+                "Ctrl+V"
+#endif
+                + "; see :help mail)",
+            "", [&e, st, p, provider, then](const std::string &raw) {
+                const std::string id = mail::CleanPastedValue(raw);
+                if (id.empty()) {
+                    e.Notify("Mail setup cancelled: no client ID", Editor::NotifyLevel::Warn);
+                    return;
+                }
+                if (provider == "google" && !mail::LooksLikeGoogleClientId(id)) {
+                    e.Notify("Mail: \"" + id + "\" does not look like a Google client ID (it ends in "
+                             ".apps.googleusercontent.com) -- try again",
+                             Editor::NotifyLevel::Warn);
+                    PromptClientId(e, st, then);
+                    return;
+                }
+                auto save = [&e, provider, then](mail::OAuthClient client) {
+                    std::string err;
+                    if (!mail::SaveOAuthClient(provider, client, &err)) {
+                        e.Notify("Mail: " + err, Editor::NotifyLevel::Error);
+                        return;
+                    }
+                    MailDebug("saved the " + provider + " client " + client.id);
+                    then();
+                };
+                if (!p->needs_secret) {
+                    save({id, ""});
+                    return;
+                }
+                e.BeginPromptNative(p->label + " client secret (from the same client)", "",
+                                    [&e, id, save](const std::string &raw_secret) {
+                                        const std::string secret = mail::CleanPastedValue(raw_secret);
+                                        WipePromptInput(e);
+                                        if (secret.empty()) {
+                                            e.Notify("Mail setup cancelled: no client secret", Editor::NotifyLevel::Warn);
+                                            return;
+                                        }
+                                        save({id, secret});
+                                    });
+            });
+    }
 
     static void ParseHostPort(const std::string &in, std::string *host, int *port, int default_port) {
         std::string s = mail::Trim(in);
@@ -1711,6 +2217,7 @@ struct MailUi {
             title, "",
             [&e, st](const std::string &pw) {
                 std::string secret = pw;
+                WipePromptInput(e);
                 // Google shows app passwords in groups of four; they work without the spaces.
                 if (st->account.provider == "gmail") secret.erase(std::remove(secret.begin(), secret.end(), ' '), secret.end());
                 if (secret.empty()) {
@@ -1723,36 +2230,68 @@ struct MailUi {
             /*masked=*/true);
     }
 
+    // "Sign in with Google" from nothing: the provider says who you are.
+    static void StartProviderSignIn(Editor &e, const std::string &oauth_provider) {
+        mail::Account a;
+        a.oauth_provider = oauth_provider;
+        a.provider = mail::MailPresetForOAuth(oauth_provider);
+        mail::ApplyProviderDefaults(&a);
+        if (mail::HaveOAuthClient(oauth_provider)) {
+            BrowserSignIn(e, a);
+            return;
+        }
+        auto st = std::make_shared<SetupState>();
+        st->account = a;
+        st->browser = true;
+        AskClientThen(e, st, [&e, st] { BrowserSignIn(e, st->account); });
+    }
+
     static void SetupAskName(Editor &e, std::shared_ptr<SetupState> st) {
+        if (st->browser && mail::HaveOAuthClient(st->account.oauth_provider)) {
+            BrowserSignIn(e, st->account);  // name and address come back from the sign-in
+            return;
+        }
         e.BeginPromptNative("Your name (shown as the sender)", st->account.name, [&e, st](const std::string &name) {
             st->account.name = mail::Trim(name);
-            SetupAskPassword(e, st);
+            if (!st->browser) {
+                SetupAskPassword(e, st);
+                return;
+            }
+            AskClientThen(e, st, [&e, st] { BrowserSignIn(e, st->account); });
         });
     }
 
-    static void SetupFinish(Editor &e, std::shared_ptr<SetupState> st) {
-        mail::Account &a = st->account;
-#if !defined(__APPLE__) && !defined(_WIN32)
-        if (a.secret == "keychain" && mail::KeychainName() == "a private file") a.secret = "file";
-#endif
-        // Replace an account with the same address, else add it.
-        int idx = AccountIndexForEmail(e, a.email);
-        if (idx >= 0) {
-            a.id = e.mail_.accounts[static_cast<size_t>(idx)].id;
-            const mail::Account &old = e.mail_.accounts[static_cast<size_t>(idx)];
-            a.signature = old.signature;
-            a.trash = old.trash;
-            a.archive = old.archive;
-            a.sent = old.sent;
-            a.drafts = old.drafts;
-            e.mail_.accounts[static_cast<size_t>(idx)] = a;
-        } else {
-            a.id = mail::AccountIdFor(a.email, e.mail_.accounts);
-            e.mail_.accounts.push_back(a);
-            idx = static_cast<int>(e.mail_.accounts.size()) - 1;
+    // Gmail/Outlook: the browser, or an app password typed here.
+    static void SetupChooseMethod(Editor &e, std::shared_ptr<SetupState> st) {
+        const mail::OAuthProvider *op = mail::OAuthProviderForMail(st->account.provider);
+        if (!op) {
+            SetupAskName(e, st);
+            return;
         }
-        SaveAccounts(e);
-        e.mail_.accounts_stamp = FileStamp(mail::AccountsPath());  // our own write is not a hand edit
+        e.BeginConfirmNative("Sign in to " + st->account.email + " in your browser? (No: type an app password here instead)",
+                             true, [&e, st, op](bool yes) {
+                                 st->browser = yes;
+                                 if (yes) {
+                                     st->account.oauth_provider = op->id;
+                                     st->account.oauth2 = false;
+                                 } else {
+                                     st->account.oauth_provider.clear();
+                                 }
+                                 SetupAskName(e, st);
+                             });
+    }
+
+    static void SetupFinish(Editor &e, std::shared_ptr<SetupState> st) {
+        mail::Account &acc = st->account;
+        if (acc.secret.empty() || acc.secret == "keychain" || acc.secret == "file") ChooseSecretStore(&acc);
+        WithSecretsReady(e, [&e, st] { SetupFinishNow(e, st); }, acc.secret == "vault");
+    }
+
+    static void SetupFinishNow(Editor &e, std::shared_ptr<SetupState> st) {
+        mail::Account &a = st->account;
+        a.oauth_provider.clear();  // a password account from here on
+        UpsertAccount(e, a);
+        mail::ForgetAccessToken(a);
         e.mail_.secrets[a.id] = st->secret;
         e.mail_.folders.erase(a.id);
         e.Notify("Mail: checking " + a.email + "...", Editor::NotifyLevel::Info);
@@ -1818,6 +2357,15 @@ bool Editor::MailActivate() {
 
 void Editor::OpenMailInPlace(const std::string &args) {
     MailUi::EnsureAccounts(*this);
+    if (mail_.accounts_error.empty() && !mail_.accounts.empty() && mail::CurlAvailable()) {
+        // Saved secrets first (the vault's passphrase, when it is locked).
+        MailUi::WithSecretsReady(*this, [this, args] { OpenMailNow(args); });
+        return;
+    }
+    OpenMailNow(args);
+}
+
+void Editor::OpenMailNow(const std::string &args) {
     if (!mail_.accounts_error.empty()) {
         Notify("Mail: " + mail_.accounts_error, NotifyLevel::Error);
         LoadFile(mail::AccountsPath());
@@ -1881,14 +2429,37 @@ void Editor::OpenMailInPlace(const std::string &args) {
     }
 }
 
-void Editor::MailSetup() {
+void Editor::MailSetup(const std::string &args) {
     MailUi::EnsureAccounts(*this);
     if (mail_.ns < 0) mail_.ns = CreateNamespace("mail");
     auto st = std::make_shared<MailUi::SetupState>();
-    BeginPromptNative("Email address to set up (Gmail, Outlook, iCloud, Yahoo, Fastmail... or any IMAP server)", "",
-                      [this, st](const std::string &email_in) {
+    // With a client at hand (saved, built in, or a downloaded JSON to
+    // import), Gmail needs nothing typed at all.
+    const bool google_ready = mail::HaveOAuthClient("google") || !mail::FindGoogleClientJson().empty();
+    // `:MailSetup google` / `:MailSetup outlook`: straight to the browser.
+    const std::string want = mail::Lower(mail::Trim(args));
+    // `:MailSetup google ~/Downloads/client_secret_....json`: import the client, then sign in.
+    std::string first = want, rest;
+    if (const size_t sp = want.find(' '); sp != std::string::npos) {
+        first = want.substr(0, sp);
+        rest = mail::Trim(mail::Trim(args).substr(sp + 1));
+    }
+    if (first == "google" || first == "gmail" || first == "microsoft" || first == "outlook") {
+        const std::string provider = first == "google" || first == "gmail" ? "google" : "microsoft";
+        if (!rest.empty() && provider == "google" && !MailUi::ImportGoogleClient(*this, rest)) return;
+        MailUi::StartProviderSignIn(*this, provider);
+        return;
+    }
+    BeginPromptNative(google_ready ? "Email address to set up -- or leave it empty to sign in with Google in your browser"
+                                   : "Email address to set up (Gmail, Outlook, iCloud, Yahoo, Fastmail... or any IMAP server)",
+                      "",
+                      [this, st, google_ready](const std::string &email_in) {
                           const std::string email = mail::Trim(email_in);
-                          if (email.find('@') == std::string::npos) {
+                          if (email.empty() && google_ready) {
+                              MailUi::StartProviderSignIn(*this, "google");
+                              return;
+                          }
+                          if (!mail::IsPlainEmail(email)) {
                               Notify("Mail setup: \"" + email + "\" is not an email address", NotifyLevel::Warn);
                               return;
                           }
@@ -1903,7 +2474,7 @@ void Editor::MailSetup() {
                               a.imap_host.clear();
                               a.smtp_host.clear();
                               mail::ApplyProviderDefaults(&a);
-                              MailUi::SetupAskName(*this, st);
+                              MailUi::SetupChooseMethod(*this, st);
                               return;
                           }
                           // An unknown domain: ask for its servers.
@@ -1925,6 +2496,45 @@ void Editor::MailSetup() {
                                       });
                               });
                       });
+}
+
+void Editor::MailSignIn(const std::string &args) {
+    MailUi::EnsureAccounts(*this);
+    if (mail_.accounts.empty()) {
+        MailSetup();
+        return;
+    }
+    int account = 0;
+    if (MailSession *s = MailUi::Session(*this, CurPane().buffer_id)) account = s->account;
+    const std::string want = mail::Lower(mail::Trim(args));
+    if (!want.empty()) {
+        account = -1;
+        for (size_t i = 0; i < mail_.accounts.size(); i++) {
+            if (mail_.accounts[i].id == want || mail::Lower(mail_.accounts[i].email) == want) account = static_cast<int>(i);
+        }
+        if (account < 0) {
+            Notify("Mail: no account \"" + args + "\"", NotifyLevel::Error);
+            return;
+        }
+    }
+    auto st = std::make_shared<MailUi::SetupState>();
+    st->account = mail_.accounts[static_cast<size_t>(account)];
+    st->browser = true;
+    if (st->account.oauth_provider.empty()) {
+        const mail::OAuthProvider *op = mail::OAuthProviderForMail(st->account.provider);
+        if (!op) {
+            Notify("Mail: browser sign-in is available for Gmail and Outlook accounts; " + st->account.email +
+                       " signs in with a password (:MailSetup)",
+                   NotifyLevel::Warn);
+            return;
+        }
+        st->account.oauth_provider = op->id;
+    }
+    if (!st->account.oauth_client_id.empty() || mail::HaveOAuthClient(st->account.oauth_provider)) {
+        MailUi::BrowserSignIn(*this, st->account);
+        return;
+    }
+    MailUi::AskClientThen(*this, st, [this, st] { MailUi::BrowserSignIn(*this, st->account); });
 }
 
 void Editor::MailComposeCommand(const std::string &args) {
@@ -2080,7 +2690,7 @@ void Editor::MailSendCurrent(bool no_confirm) {
         };
         JobManager::Instance().SpawnTask(
             [cred, res, d, rcpts, files, folders, context](const Job::EmitLine &, const std::atomic<bool> &cancel) {
-                if (!cred->Ensure()) {
+                if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return 0;
                 }
@@ -2125,8 +2735,29 @@ void Editor::MailSendCurrent(bool no_confirm) {
             },
             std::move(cb), "mail: send");
     };
-    if (no_confirm) send(true);
-    else BeginConfirmNative(question, true, send);
+    MailUi::WithSecretsReady(*this, [this, no_confirm, question, send] {
+        if (no_confirm) send(true);
+        else BeginConfirmNative(question, true, send);
+    });
+}
+
+void Editor::MailShowLog() {
+    const std::string path = mail::MailLogPath();
+    std::error_code ec;
+    if (path.empty() || !std::filesystem::exists(path, ec)) {
+        Notify("Mail: nothing logged yet", NotifyLevel::Info);
+        return;
+    }
+    SplitCurrentPane(SplitDir::Vertical, path);
+}
+
+void Editor::MailLock() {
+    mail::VaultLock();
+    mail::ForgetAllAccessTokens();
+    for (auto &kv : mail_.secrets) mail::Wipe(&kv.second);
+    mail_.secrets.clear();
+    SetStatusMessage("Mail: saved passwords forgotten for now" +
+                     std::string(MailUi::NeedsVault(*this) ? " -- the vault is locked" : ""));
 }
 
 void Editor::MailTick() {

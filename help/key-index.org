@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 171 =<leader>= sequences registered at startup. Press
+All 173 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -46,10 +46,12 @@ the features live.
 | =<leader>dt= | Debug: terminate | [[file:debugging.html][Debugging]] |
 | =<leader>du= | Debug: toggle UI | [[file:debugging.html][Debugging]] |
 | =<leader>dv= | Debug: evaluate under cursor | [[file:debugging.html][Debugging]] |
+| =<leader>eL= | Sign in to mail in the browser again (:MailSignIn) | [[file:mail.html][Email]] |
 | =<leader>eS= | Set up a mail account (:MailSetup) | [[file:mail.html][Email]] |
 | =<leader>ea= | Attach a file to this draft (:MailAttach) | [[file:mail.html][Email]] |
 | =<leader>ec= | Compose a message (:MailCompose) | [[file:mail.html][Email]] |
 | =<leader>ee= | Open mail (:Mail) | [[file:mail.html][Email]] |
+| =<leader>el= | Lock mail: forget passwords held in memory (:MailLock) | [[file:mail.html][Email]] |
 | =<leader>es= | Send this draft (:MailSend) | [[file:mail.html][Email]] |
 | =<leader>ff= | Toggle file tree | [[file:file-tree.html][The file tree]] |
 | =<leader>fh= | Toggle hidden and git-ignored files in tree | [[file:file-tree.html][The file tree]] |

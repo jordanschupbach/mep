@@ -1,5 +1,11 @@
 #include "mail_net.h"
 
+#include "json.h"
+#include "mail_crypto.h"
+#if defined(__APPLE__)
+#include "mail_keychain_macos.h"
+#endif
+
 // platform_compat.h first: on Windows it supplies the POSIX spellings
 // (mkdir(path, mode), ...) that persist.h's inline helpers use.
 #include "platform_compat.h"
@@ -10,7 +16,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <thread>
@@ -19,11 +29,15 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <wincrypt.h>
 #include <direct.h>
 #else
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
@@ -365,6 +379,11 @@ std::string MailDataDir() {
     if (base.empty()) return "";
     const std::string dir = base + "/mail";
     MakeDir(dir);
+#if !defined(_WIN32)
+    // Owner-only, even if something created it looser: drafts, the vault
+    // and (on systems without a keyring) secrets live under it.
+    chmod(dir.c_str(), 0700);
+#endif
     return dir;
 }
 
@@ -471,6 +490,397 @@ std::vector<std::string> ShellArgv(const std::string &command) {
 
 }  // namespace
 
+// --- OAuth clients and the mail log ------------------------------------------
+
+namespace {
+
+std::string HomeDirectory() {
+    const char *home = std::getenv("HOME");
+#if defined(_WIN32)
+    if (!home || !*home) home = std::getenv("USERPROFILE");
+#endif
+    return home && *home ? std::string(home) : std::string();
+}
+
+std::string OAuthClientsPath() {
+    const std::string dir = MailDataDir();
+    return dir.empty() ? "" : dir + "/oauth_clients.json";
+}
+
+bool WritePrivateFile(const std::string &path, const std::string &data) {
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out << data;
+        if (!out) return false;
+    }
+#if !defined(_WIN32)
+    chmod(tmp.c_str(), 0600);
+#endif
+    std::remove(path.c_str());
+    return std::rename(tmp.c_str(), path.c_str()) == 0;
+}
+
+}  // namespace
+
+bool LoadSavedOAuthClient(const std::string &provider_id, OAuthClient *out) {
+    std::ifstream in(OAuthClientsPath(), std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    Json root;
+    if (!Json::Parse(ss.str(), &root) || !root.is_object()) return false;
+    const Json &c = root.get(provider_id);
+    out->id = c.get("client_id").as_string("");
+    out->secret = c.get("client_secret").as_string("");
+    return !out->id.empty();
+}
+
+bool SaveOAuthClient(const std::string &provider_id, const OAuthClient &client, std::string *error) {
+    const std::string path = OAuthClientsPath();
+    Json root = Json::Object();
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (in) {
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            Json existing;
+            if (Json::Parse(ss.str(), &existing) && existing.is_object()) root = existing;
+        }
+    }
+    Json c = Json::Object();
+    c["client_id"] = Json(client.id);
+    if (!client.secret.empty()) c["client_secret"] = Json(client.secret);
+    root[provider_id] = std::move(c);
+    if (path.empty() || !WritePrivateFile(path, root.dump() + "\n")) {
+        *error = "cannot write " + path;
+        return false;
+    }
+    return true;
+}
+
+bool HaveOAuthClient(const std::string &provider_id) {
+    OAuthClient c;
+    const OAuthProvider *p = OAuthProviderById(provider_id);
+    if (LoadSavedOAuthClient(provider_id, &c) && (!p || !p->needs_secret || !c.secret.empty())) return true;
+    return HasBuiltinOAuthClient(provider_id);
+}
+
+void FillOAuthClient(Account *a) {
+    if (!a->oauth_client_id.empty() || a->oauth_provider.empty()) return;
+    OAuthClient c;
+    if (LoadSavedOAuthClient(a->oauth_provider, &c)) {
+        a->oauth_client_id = c.id;
+        a->oauth_client_secret = c.secret;
+        return;
+    }
+    FillBuiltinOAuthClient(a);
+}
+
+bool ParseGoogleClientJson(const std::string &text, OAuthClient *out, std::string *error) {
+    Json root;
+    if (!Json::Parse(text, &root) || !root.is_object()) {
+        *error = "that file is not JSON";
+        return false;
+    }
+    if (root.contains("web") && !root.contains("installed")) {
+        *error = "that client is a \"Web application\" -- mep needs a \"Desktop app\" client (Google Auth Platform > "
+                 "Clients > Create client > Desktop app)";
+        return false;
+    }
+    const Json &c = root.get("installed");
+    out->id = Trim(c.get("client_id").as_string(""));
+    out->secret = Trim(c.get("client_secret").as_string(""));
+    if (out->id.empty() || out->secret.empty()) {
+        *error = "no client_id/client_secret in that file (is it the JSON Google offers to download for a client?)";
+        return false;
+    }
+    return true;
+}
+
+std::string FindGoogleClientJson() {
+    const std::string home = HomeDirectory();
+    if (home.empty()) return "";
+    std::error_code ec;
+    std::string best;
+    std::filesystem::file_time_type best_time{};
+    for (const auto &ent : std::filesystem::directory_iterator(home + "/Downloads", ec)) {
+        const std::string name = ent.path().filename().string();
+        if (name.rfind("client_secret_", 0) != 0 || ent.path().extension() != ".json") continue;
+        const auto t = ent.last_write_time(ec);
+        if (best.empty() || t > best_time) {
+            best = ent.path().string();
+            best_time = t;
+        }
+    }
+    return best;
+}
+
+std::string MailLogPath() {
+    const std::string dir = MailDataDir();
+    return dir.empty() ? "" : dir + "/mail.log";
+}
+
+void MailLog(const std::string &line) {
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    const std::string path = MailLogPath();
+    if (path.empty()) return;
+    std::error_code ec;
+    if (std::filesystem::file_size(path, ec) > 256 * 1024 && !ec) {
+        std::filesystem::rename(path, path + ".1", ec);  // keep one old log, small
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::app);
+    if (!out) return;
+    char stamp[32];
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+    std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm);
+    out << stamp << "  " << line << "\n";
+    out.close();
+#if !defined(_WIN32)
+    chmod(path.c_str(), 0600);
+#endif
+}
+
+// --- The vault ---------------------------------------------------------------
+
+namespace {
+
+constexpr uint32_t kVaultIterations = 600000;  // OWASP's 2023 figure for PBKDF2-HMAC-SHA256
+constexpr char kVaultAad[] = "mep-mail-vault-v1";
+
+struct VaultState {
+    std::mutex mutex;
+    bool unlocked = false;
+    std::string key;   // 32 bytes, only while unlocked
+    std::string salt;
+    uint32_t iterations = kVaultIterations;
+    std::map<std::string, std::string> items;  // lower-cased email -> secret
+};
+
+VaultState &Vault() {
+    static VaultState v;
+    return v;
+}
+
+std::string VaultPath() {
+    const std::string dir = MailDataDir();
+    return dir.empty() ? "" : dir + "/vault.json";
+}
+
+// Seals and writes the whole vault (caller holds the mutex): a fresh nonce
+// every time, temp file + rename so a crash never leaves half a vault.
+bool VaultWriteLocked(VaultState &v, std::string *error) {
+    Json items = Json::Object();
+    for (const auto &kv : v.items) items[kv.first] = Json(kv.second);
+    Json inner = Json::Object();
+    inner["items"] = std::move(items);
+    std::string plain = inner.dump();
+    const std::string nonce = SecureRandom(12);
+    const std::string sealed = AeadSeal(v.key, nonce, plain, kVaultAad);
+    Wipe(&plain);
+    Json outer = Json::Object();
+    outer["version"] = Json(1);
+    outer["kdf"] = Json("pbkdf2-sha256");
+    outer["iterations"] = Json(static_cast<long long>(v.iterations));
+    outer["salt"] = Json(Base64Encode(v.salt));
+    outer["cipher"] = Json("chacha20-poly1305");
+    outer["nonce"] = Json(Base64Encode(nonce));
+    outer["data"] = Json(Base64Encode(sealed));
+    const std::string path = VaultPath();
+    if (path.empty()) {
+        *error = "no data directory for the mail vault";
+        return false;
+    }
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            *error = "cannot write " + tmp;
+            return false;
+        }
+        out << outer.dump() << "\n";
+    }
+#if !defined(_WIN32)
+    chmod(tmp.c_str(), 0600);
+#endif
+    std::remove(path.c_str());
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        *error = "cannot replace " + path;
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool VaultExists() {
+    const std::string path = VaultPath();
+    std::ifstream in(path, std::ios::binary);
+    return !path.empty() && static_cast<bool>(in);
+}
+
+bool VaultUnlocked() {
+    std::lock_guard<std::mutex> lock(Vault().mutex);
+    return Vault().unlocked;
+}
+
+bool VaultUnlock(const std::string &passphrase, bool create, std::string *error) {
+    const std::string path = VaultPath();
+    std::string text;
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (in) {
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            text = ss.str();
+        }
+    }
+    if (text.empty()) {
+        if (!create) {
+            *error = "there is no mail vault yet";
+            return false;
+        }
+        VaultState &v = Vault();
+        std::string salt = SecureRandom(16);
+        std::string key = Pbkdf2Sha256(passphrase, salt, kVaultIterations, 32);
+        std::lock_guard<std::mutex> lock(v.mutex);
+        v.salt = salt;
+        v.iterations = kVaultIterations;
+        v.key = key;
+        v.items.clear();
+        v.unlocked = true;
+        Wipe(&key);
+        return VaultWriteLocked(v, error);
+    }
+    Json outer;
+    if (!Json::Parse(text, &outer) || !outer.is_object() || outer.get("version").as_int(0) != 1 ||
+        outer.get("cipher").as_string("") != "chacha20-poly1305") {
+        *error = path + " is not a mail vault this mep can read";
+        return false;
+    }
+    const std::string salt = Base64Decode(outer.get("salt").as_string(""));
+    const double iter = outer.get("iterations").as_double(0.0);
+    const std::string nonce = Base64Decode(outer.get("nonce").as_string(""));
+    const std::string sealed = Base64Decode(outer.get("data").as_string(""));
+    // A file that asks for a trivially cheap derivation was not written by mep.
+    if (salt.size() < 16 || nonce.size() != 12 || iter < 100000 || iter > 50000000) {
+        *error = path + " is damaged";
+        return false;
+    }
+    const uint32_t iterations = static_cast<uint32_t>(iter);
+    std::string key = Pbkdf2Sha256(passphrase, salt, iterations, 32);
+    std::string plain;
+    if (!AeadOpen(key, nonce, sealed, kVaultAad, &plain)) {
+        Wipe(&key);
+        *error = "wrong passphrase (or the vault file was altered)";
+        return false;
+    }
+    Json inner;
+    const bool parsed = Json::Parse(plain, &inner) && inner.is_object();
+    Wipe(&plain);
+    if (!parsed) {
+        Wipe(&key);
+        *error = path + " is damaged";
+        return false;
+    }
+    VaultState &v = Vault();
+    std::lock_guard<std::mutex> lock(v.mutex);
+    v.items.clear();
+    const Json &items = inner.get("items");
+    if (items.is_object()) {
+        for (const auto &kv : items.fields()) v.items[kv.first] = kv.second.as_string("");
+    }
+    v.salt = salt;
+    v.iterations = iterations;
+    v.key = key;
+    v.unlocked = true;
+    Wipe(&key);
+    return true;
+}
+
+void VaultLock() {
+    VaultState &v = Vault();
+    std::lock_guard<std::mutex> lock(v.mutex);
+    Wipe(&v.key);
+    for (auto &kv : v.items) Wipe(&kv.second);
+    v.items.clear();
+    v.unlocked = false;
+}
+
+#if defined(__APPLE__)
+namespace {
+
+std::string KeychainLabel(const Account &a) { return "mep mail: " + a.email; }
+
+// Replaces any existing item (one only mep can read once rewritten).
+bool MacKeychainWrite(const Account &a, const std::string &secret, std::string *error, bool interactive = true) {
+    using keychain::Status;
+    Status del = keychain::Delete(kService, a.email, false);
+    if (del == Status::Denied) {
+        // Made by the `security` command (older mep): that command may delete it.
+        RunProcess({"security", "delete-generic-password", "-s", kService, "-a", a.email}, "", 30000, nullptr);
+        del = keychain::Delete(kService, a.email, false);
+        if (del == Status::Denied && interactive) del = keychain::Delete(kService, a.email, true);  // an older mep build's
+    }
+    // Silently first; macOS may want the user's permission before an app
+    // adds to the login keychain, which only an interactive save asks for.
+    Status st = keychain::Add(kService, a.email, KeychainLabel(a), secret, false);
+    if (st == Status::Denied && interactive) st = keychain::Add(kService, a.email, KeychainLabel(a), secret, true);
+    if (st != Status::Ok) {
+        *error = st == Status::Denied ? "the Keychain is locked or asked for permission"
+                                      : "the Keychain refused to save the password";
+        return false;
+    }
+    return true;
+}
+
+std::string MacKeychainRead(const Account &a, std::string *error) {
+    using keychain::Status;
+    std::string secret;
+    bool ours = false;
+    Status st = keychain::Read(kService, a.email, false, &secret, &ours);
+    if (st == Status::Ok) {
+        if (!ours) {
+            // Readable but not marked as mep's own: re-create it so it trusts mep alone.
+            std::string ignored;
+            MacKeychainWrite(a, secret, &ignored, false);
+        }
+        return secret;
+    }
+    if (st == Status::Denied) {
+        // An item the `security` command made (older versions of mep): read it
+        // once that way, then make it mep's own -- after which `security`, like
+        // every other program, has to ask.
+        ProcResult p = RunProcess({"security", "find-generic-password", "-s", kService, "-a", a.email, "-w"}, "", 30000,
+                                  nullptr);
+        std::string legacy = FirstLine(p.out);
+        if (p.exit_code == 0 && !legacy.empty()) {
+            std::string ignored;
+            MacKeychainWrite(a, legacy, &ignored, true);
+            return legacy;
+        }
+        // Made by an earlier build of mep: macOS asks ("Always Allow" remembers this build).
+        st = keychain::Read(kService, a.email, true, &secret, &ours);
+        if (st == Status::Ok) return secret;
+        *error = st == Status::Denied ? "access to the Keychain item for " + a.email + " was not allowed"
+                                      : "the Keychain could not be read";
+        return "";
+    }
+    *error = "no password for " + a.email + " in the Keychain (run :MailSetup)";
+    return "";
+}
+
+}  // namespace
+#endif
+
 std::string KeychainName() {
 #if defined(__APPLE__)
     return "the macOS Keychain";
@@ -495,20 +905,34 @@ std::string ResolveSecret(const Account &a, std::string *error) {
         }
         return s;
     }
+    if (a.secret == "vault") {
+        VaultState &v = Vault();
+        std::lock_guard<std::mutex> lock(v.mutex);
+        if (!v.unlocked) {
+            *error = "the mail vault is locked (:Mail asks for its passphrase)";
+            return "";
+        }
+        auto it = v.items.find(Lower(a.email));
+        if (it == v.items.end() || it->second.empty()) {
+            *error = "no saved password for " + a.email + " in the mail vault (run :MailSetup)";
+            return "";
+        }
+        return it->second;
+    }
     if (a.secret == "file") {
+        // Plain files are what older versions wrote; the editor moves them
+        // into the vault as soon as it can (MailUi::MigratePlainSecrets).
         std::string s = ReadSecretFile(a, false);
         if (s.empty()) *error = "no saved password for " + a.email + " (run :MailSetup)";
         return s;
     }
-    // keychain
-#if defined(__APPLE__)
-    ProcResult p = RunProcess({"security", "find-generic-password", "-s", kService, "-a", a.email, "-w"}, "", 30000, nullptr);
-    std::string s = FirstLine(p.out);
-    if (p.exit_code != 0 || s.empty()) {
-        *error = "no password for " + a.email + " in the Keychain (run :MailSetup)";
+    if (!IsPlainEmail(a.email)) {
+        *error = "\"" + a.email + "\" is not a plain email address";
         return "";
     }
-    return s;
+    // keychain
+#if defined(__APPLE__)
+    return MacKeychainRead(a, error);
 #elif defined(_WIN32)
     std::string s = ReadSecretFile(a, true);
     if (s.empty()) *error = "no saved password for " + a.email + " (run :MailSetup)";
@@ -525,27 +949,25 @@ std::string ResolveSecret(const Account &a, std::string *error) {
 #endif
 }
 
-bool StoreSecret(const Account &a, const std::string &secret, std::string *error) {
+bool StoreSecret(const Account &a, const std::string &secret, std::string *error, bool interactive) {
     if (a.secret == "command") return true;
-    if (a.secret == "file") return WriteSecretFile(a, secret, false, error);
-#if defined(__APPLE__)
-    // `security -i` reads its command from stdin, and -X takes the
-    // password as hex: nothing secret in argv, nothing to quote.
-    static const char kHex[] = "0123456789abcdef";
-    std::string hex;
-    for (char c : secret) {
-        const unsigned char u = static_cast<unsigned char>(c);
-        hex.push_back(kHex[u >> 4]);
-        hex.push_back(kHex[u & 15]);
+    if (a.secret == "vault") {
+        VaultState &v = Vault();
+        std::lock_guard<std::mutex> lock(v.mutex);
+        if (!v.unlocked) {
+            *error = "the mail vault is locked";
+            return false;
+        }
+        v.items[Lower(a.email)] = secret;
+        return VaultWriteLocked(v, error);
     }
-    const std::string cmd =
-        "add-generic-password -U -s " + std::string(kService) + " -a " + a.email + " -l mep-mail -X " + hex + "\n";
-    ProcResult p = RunProcess({"security", "-i"}, cmd, 30000, nullptr);
-    if (!p.spawned || p.exit_code != 0 || p.err.find("rror") != std::string::npos) {
-        *error = "the Keychain refused the password: " + Trim(p.err);
+    if (a.secret == "file") return WriteSecretFile(a, secret, false, error);
+    if (!IsPlainEmail(a.email)) {
+        *error = "\"" + a.email + "\" is not a plain email address";
         return false;
     }
-    return true;
+#if defined(__APPLE__)
+    return MacKeychainWrite(a, secret, error, interactive);
 #elif defined(_WIN32)
     return WriteSecretFile(a, secret, true, error);
 #else
@@ -561,9 +983,24 @@ bool StoreSecret(const Account &a, const std::string &secret, std::string *error
 
 void ForgetSecret(const Account &a) {
     std::remove(SecretFilePath(a).c_str());
+    if (a.secret == "vault") {
+        VaultState &v = Vault();
+        std::lock_guard<std::mutex> lock(v.mutex);
+        auto it = v.items.find(Lower(a.email));
+        if (v.unlocked && it != v.items.end()) {
+            Wipe(&it->second);
+            v.items.erase(it);
+            std::string ignored;
+            VaultWriteLocked(v, &ignored);
+        }
+        return;
+    }
+    if (!IsPlainEmail(a.email)) return;
     if (a.secret != "keychain") return;
 #if defined(__APPLE__)
-    RunProcess({"security", "delete-generic-password", "-s", kService, "-a", a.email}, "", 30000, nullptr);
+    if (mail::keychain::Delete(kService, a.email, false) == mail::keychain::Status::Denied) {
+        RunProcess({"security", "delete-generic-password", "-s", kService, "-a", a.email}, "", 30000, nullptr);
+    }
 #elif !defined(_WIN32)
     if (mep::compat::ProgramOnPath("secret-tool")) {
         RunProcess({"secret-tool", "clear", "service", kService, "account", a.email}, "", 30000, nullptr);
@@ -577,7 +1014,7 @@ namespace {
 
 std::string AuthConfig(const Session &s) {
     std::string c;
-    if (s.account.oauth2) {
+    if (s.account.UsesOAuth()) {
         c += "user = " + CurlConfigQuote(s.account.Login()) + "\n";
         c += "oauth2-bearer = " + CurlConfigQuote(s.secret) + "\n";
     } else {
@@ -617,9 +1054,11 @@ std::string DescribeCurlFailure(int exit_code, const std::string &stderr_text, c
         case 60: why = "the server's certificate could not be verified"; break;
         case 67:
             why = "login refused for " + a.Login();
-            if (a.provider == "gmail") {
-                why += " -- Gmail needs an app password (Google account > Security > 2-Step Verification > App "
-                       "passwords), not your account password";
+            if (a.UsesOAuth()) {
+                why += " -- the sign-in token was not accepted; run :MailSignIn to sign in again";
+            } else if (a.provider == "gmail") {
+                why += " -- Gmail does not take your Google password here: sign in with the browser instead "
+                       "(:MailSetup google), or use an app password";
             } else {
                 why += " -- check the password (most providers need an app password for IMAP)";
             }
@@ -638,9 +1077,23 @@ std::string DescribeCurlFailure(int exit_code, const std::string &stderr_text, c
     return why;
 }
 
+namespace {
+
+// "insecure" (no TLS) is for a server on this machine (a test server,
+// Proton Bridge); over a network it would send the password in clear.
+bool PlaintextRefused(const Account &a, const std::string &host, std::string *error) {
+    if (!a.insecure || IsLoopbackHost(host)) return false;
+    *error = "refusing an unencrypted connection to " + host +
+             " -- \"insecure\" is only allowed for servers on this computer (127.0.0.1 / localhost)";
+    return true;
+}
+
+}  // namespace
+
 ImapResult RunImap(const Session &s, const std::vector<ImapStep> &steps, bool traced, const std::atomic<bool> *cancel,
                    int timeout_ms) {
     ImapResult r;
+    if (PlaintextRefused(s.account, s.account.imap_host, &r.error)) return r;
     if (steps.empty()) {
         r.ok = true;
         return r;
@@ -802,6 +1255,7 @@ bool SendMail(const Session &s, const std::string &from_email, const std::vector
         *error = "no recipients";
         return false;
     }
+    if (PlaintextRefused(s.account, s.account.smtp_host, error)) return false;
     const std::string path = WriteTempFile(message, error);
     if (path.empty()) return false;
     const std::string url = SmtpUrl(s.account);
@@ -837,6 +1291,7 @@ bool SendMail(const Session &s, const std::string &from_email, const std::vector
 
 bool AppendMessage(const Session &s, const std::string &mailbox, const std::string &message, std::string *error,
                    const std::atomic<bool> *cancel) {
+    if (PlaintextRefused(s.account, s.account.imap_host, error)) return false;
     const std::string path = WriteTempFile(message, error);
     if (path.empty()) return false;
     const std::string url = ImapUrl(s.account, mailbox);
@@ -851,6 +1306,389 @@ bool AppendMessage(const Session &s, const std::string &mailbox, const std::stri
         return false;
     }
     return true;
+}
+
+// --- OAuth2 browser sign-in -------------------------------------------------
+
+namespace {
+
+#if defined(_WIN32)
+using SockLen = int;
+void CloseSock(long long fd) { closesocket(static_cast<SOCKET>(fd)); }
+bool SocketsReady() {
+    static const bool ok = [] {
+        WSADATA w;
+        return WSAStartup(MAKEWORD(2, 2), &w) == 0;
+    }();
+    return ok;
+}
+#else
+using SockLen = socklen_t;
+void CloseSock(long long fd) { close(static_cast<int>(fd)); }
+bool SocketsReady() { return true; }
+#endif
+
+// Waits up to `ms` for `fd` to be readable.
+bool WaitReadable(long long fd, int ms) {
+#if defined(_WIN32)
+    WSAPOLLFD p{};
+    p.fd = static_cast<SOCKET>(fd);
+    p.events = POLLRDNORM;
+    return WSAPoll(&p, 1, ms) > 0;
+#else
+    pollfd p{static_cast<int>(fd), POLLIN, 0};
+    return poll(&p, 1, ms) > 0;
+#endif
+}
+
+void SendAll(long long fd, const std::string &data) {
+    size_t off = 0;
+    while (off < data.size()) {
+#if defined(_WIN32)
+        const int n = send(static_cast<SOCKET>(fd), data.data() + off, static_cast<int>(data.size() - off), 0);
+#elif defined(__APPLE__)
+        const ssize_t n = send(static_cast<int>(fd), data.data() + off, data.size() - off, 0);
+#else
+        const ssize_t n = send(static_cast<int>(fd), data.data() + off, data.size() - off, MSG_NOSIGNAL);
+#endif
+        if (n <= 0) return;
+        off += static_cast<size_t>(n);
+    }
+}
+
+std::string BrowserPage(const std::string &title, const std::string &text) {
+    const std::string body = "<!doctype html><meta charset=utf-8><title>mep mail</title>"
+                             "<body style=\"font-family:system-ui,sans-serif;max-width:32em;margin:4em auto;line-height:1.5\">"
+                             "<h2>" + title + "</h2><p>" + text + "</p></body>";
+    return "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + std::to_string(body.size()) +
+           "\r\nConnection: close\r\n\r\n" + body;
+}
+
+struct CachedToken {
+    std::string token;
+    long long expires_at = 0;  // unix seconds
+};
+
+std::mutex g_token_mutex;
+std::map<std::string, CachedToken> g_tokens;  // account email -> access token
+
+std::string TokenKey(const Account &a) { return Lower(a.email) + "|" + a.oauth_provider; }
+
+OAuthTokens PostToken(const OAuthProvider &p, const std::vector<std::pair<std::string, std::string>> &fields,
+                      const std::atomic<bool> *cancel) {
+    if (!IsSafeAuthUrl(p.token_url)) {
+        OAuthTokens refused;
+        refused.error = "the token address must be https:// (" + p.token_url + ")";
+        return refused;
+    }
+    // Form fields (the code, the refresh token) go through the config on
+    // stdin like every other secret; curl url-encodes them.
+    std::string config = "url = " + CurlConfigQuote(p.token_url) + "\n";
+    for (const auto &f : fields) config += "data-urlencode = " + CurlConfigQuote(f.first + "=" + f.second) + "\n";
+    config += "connect-timeout = 20\n";
+    ProcResult r = RunProcess({CurlProgram(), "-sS", "-K", "-"}, config, 60000, cancel);
+    OAuthTokens t;
+    if (!r.spawned) {
+        t.error = "could not run curl (is it installed?)";
+    } else if (r.cancelled) {
+        t.error = "cancelled";
+    } else if (r.exit_code != 0) {
+        t.error = "the sign-in server could not be reached (curl exit " + std::to_string(r.exit_code) + ")";
+    } else {
+        t = ParseTokenResponse(r.out);
+    }
+    return t;
+}
+
+}  // namespace
+
+namespace {
+
+// Starts `argv` and lets it run on its own: no pipes, nothing waited for.
+// A browser may stay up for the rest of the session (a fresh `firefox`),
+// so it must never be tied to -- or killed with -- the sign-in job.
+bool SpawnDetached(const std::vector<std::string> &argv) {
+#if defined(__EMSCRIPTEN__)
+    (void)argv;
+    return false;
+#elif defined(_WIN32)
+    std::wstring cmd;
+    for (const std::string &a : argv) {
+        if (!cmd.empty()) cmd.push_back(L' ');
+        cmd += QuoteArg(Widen(a));
+    }
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(L'\0');
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | DETACHED_PROCESS, nullptr,
+                        nullptr, &si, &pi)) {
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+#else
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    short flags = POSIX_SPAWN_SETPGROUP;  // its own process group: no signals of mep's reach it
+#if defined(__APPLE__)
+    flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+#endif
+    posix_spawnattr_setflags(&attr, flags);
+    posix_spawnattr_setpgroup(&attr, 0);
+    std::vector<char *> args;
+    for (const std::string &a : argv) args.push_back(const_cast<char *>(a.c_str()));
+    args.push_back(nullptr);
+    pid_t pid = -1;
+    const int rc = posix_spawnp(&pid, args[0], &fa, &attr, args.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&attr);
+    if (rc != 0) return false;
+    // Reaped in the background whenever it exits, so it never lingers as a zombie.
+    std::thread([pid] {
+        int status = 0;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        }
+    }).detach();
+    return true;
+#endif
+}
+
+}  // namespace
+
+bool OpenInBrowser(const std::string &url, std::string *error) {
+    std::vector<std::string> argv;
+    const char *browser = std::getenv("BROWSER");
+    if (browser && *browser) {
+        // $BROWSER may hold several ':'-separated commands; the first is used.
+        std::string cmd = browser;
+#if !defined(_WIN32)
+        const size_t colon = cmd.find(':');
+        if (colon != std::string::npos) cmd.resize(colon);
+#endif
+        argv = {cmd, url};
+    } else {
+#if defined(__APPLE__)
+        argv = {"open", url};
+#elif defined(_WIN32)
+        argv = {"rundll32.exe", "url.dll,FileProtocolHandler", url};
+#else
+        argv = {"xdg-open", url};
+#endif
+    }
+    if (!SpawnDetached(argv)) {
+        *error = "could not start " + argv[0];
+        return false;
+    }
+    return true;
+}
+
+OAuthRedirectListener::~OAuthRedirectListener() {
+    if (fd_ >= 0) CloseSock(fd_);
+}
+
+bool OAuthRedirectListener::Listen(std::string *error) {
+    if (!SocketsReady()) {
+        *error = "networking is unavailable";
+        return false;
+    }
+#if defined(_WIN32)
+    const SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) {
+        *error = "cannot open a socket";
+        return false;
+    }
+    fd_ = static_cast<long long>(s);
+#else
+    const int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) {
+        *error = "cannot open a socket";
+        return false;
+    }
+    fcntl(s, F_SETFD, FD_CLOEXEC);
+    fd_ = s;
+#endif
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // never reachable from other machines
+    addr.sin_port = 0;
+    if (bind(static_cast<decltype(s)>(fd_), reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0 ||
+        listen(static_cast<decltype(s)>(fd_), 8) != 0) {
+        *error = "cannot listen on 127.0.0.1";
+        return false;
+    }
+    SockLen len = sizeof(addr);
+    getsockname(static_cast<decltype(s)>(fd_), reinterpret_cast<sockaddr *>(&addr), &len);
+    port_ = ntohs(addr.sin_port);
+    return true;
+}
+
+std::string OAuthRedirectListener::AwaitCode(const std::string &state, int timeout_ms, const std::atomic<bool> *cancel,
+                                             std::string *error) {
+    const auto start = std::chrono::steady_clock::now();
+    while (true) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+        if (cancel && cancel->load()) {
+            *error = "cancelled";
+            return "";
+        }
+        if (ms > timeout_ms) {
+            *error = "no answer from the browser sign-in (timed out)";
+            return "";
+        }
+        if (!WaitReadable(fd_, 200)) continue;
+#if defined(_WIN32)
+        const SOCKET cs = accept(static_cast<SOCKET>(fd_), nullptr, nullptr);
+        if (cs == INVALID_SOCKET) continue;
+        const long long c = static_cast<long long>(cs);
+#else
+        const int ci = accept(static_cast<int>(fd_), nullptr, nullptr);
+        if (ci < 0) continue;
+        const long long c = ci;
+#if defined(__APPLE__)
+        int one = 1;
+        setsockopt(ci, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+#endif
+        // Read the request head (a browser sends it at once; give it 5s).
+        std::string req;
+        char buf[4096];
+        while (req.find("\r\n\r\n") == std::string::npos && req.size() < 65536 && WaitReadable(c, 5000)) {
+#if defined(_WIN32)
+            const int n = recv(static_cast<SOCKET>(c), buf, sizeof(buf), 0);
+#else
+            const ssize_t n = recv(static_cast<int>(c), buf, sizeof(buf), 0);
+#endif
+            if (n <= 0) break;
+            req.append(buf, static_cast<size_t>(n));
+        }
+        // "GET /?code=...&state=... HTTP/1.1"
+        std::string target;
+        if (req.rfind("GET ", 0) == 0) {
+            const size_t sp = req.find(' ', 4);
+            target = req.substr(4, sp == std::string::npos ? std::string::npos : sp - 4);
+        }
+        const size_t qm = target.find('?');
+        const auto query = ParseQuery(qm == std::string::npos ? "" : std::string_view(target).substr(qm + 1));
+        std::string code, got_state, err, err_desc;
+        for (const auto &kv : query) {
+            if (kv.first == "code") code = kv.second;
+            else if (kv.first == "state") got_state = kv.second;
+            else if (kv.first == "error") err = kv.second;
+            else if (kv.first == "error_description") err_desc = kv.second;
+        }
+        if (code.empty() && err.empty()) {
+            // favicon.ico and the like
+            SendAll(c, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            CloseSock(c);
+            continue;
+        }
+        if (got_state != state) {
+            // Not the request this sign-in started (a stale tab, or someone else's page).
+            SendAll(c, BrowserPage("Sign-in not recognised", "This sign-in was not started by mep just now. Go back to mep and try again."));
+            CloseSock(c);
+            continue;
+        }
+        if (!err.empty()) {
+            SendAll(c, BrowserPage("Sign-in cancelled", "mep was not given access. You can close this tab."));
+            CloseSock(c);
+            *error = err == "access_denied" ? "sign-in was cancelled in the browser" : err + (err_desc.empty() ? "" : ": " + err_desc);
+            return "";
+        }
+        SendAll(c, BrowserPage("Signed in", "mep can now read and send your mail. You can close this tab and go back to mep."));
+        CloseSock(c);
+        return code;
+    }
+}
+
+OAuthTokens OAuthExchangeCode(const OAuthProvider &p, const Account &a, const std::string &code,
+                              const std::string &verifier, const std::string &redirect_uri, const std::atomic<bool> *cancel) {
+    std::vector<std::pair<std::string, std::string>> fields = {{"grant_type", "authorization_code"},
+                                                               {"code", code},
+                                                               {"code_verifier", verifier},
+                                                               {"redirect_uri", redirect_uri},
+                                                               {"client_id", a.oauth_client_id}};
+    if (!a.oauth_client_secret.empty()) fields.emplace_back("client_secret", a.oauth_client_secret);
+    OAuthTokens t = PostToken(p, fields, cancel);
+    if (t.error.empty() && t.refresh_token.empty()) {
+        t.error = "the provider gave no refresh token (sign in again, and allow offline access)";
+    }
+    if (t.error.empty()) {
+        std::lock_guard<std::mutex> lock(g_token_mutex);
+        g_tokens[TokenKey(a)] = {t.access_token, static_cast<long long>(std::time(nullptr)) + t.expires_in};
+    }
+    return t;
+}
+
+OAuthTokens OAuthRefresh(const OAuthProvider &p, const Account &a, const std::string &refresh_token,
+                         const std::atomic<bool> *cancel) {
+    std::vector<std::pair<std::string, std::string>> fields = {
+        {"grant_type", "refresh_token"}, {"refresh_token", refresh_token}, {"client_id", a.oauth_client_id}};
+    if (!a.oauth_client_secret.empty()) fields.emplace_back("client_secret", a.oauth_client_secret);
+    if (!p.scope.empty() && p.id == "microsoft") fields.emplace_back("scope", p.scope);
+    return PostToken(p, fields, cancel);
+}
+
+std::string LoginSecret(const Account &acct, const std::string &stored, std::string *new_stored, std::string *error,
+                        const std::atomic<bool> *cancel) {
+    if (acct.oauth_provider.empty()) return stored;  // a password, or (oauth2) a token from secret_command
+    Account a = acct;
+    FillOAuthClient(&a);  // the saved or built-in client, unless the account names one
+    OAuthProvider p;
+    if (!AccountOAuthProvider(a, &p)) {
+        *error = "unknown sign-in provider \"" + a.oauth_provider + "\"";
+        return "";
+    }
+    const long long now = static_cast<long long>(std::time(nullptr));
+    {
+        std::lock_guard<std::mutex> lock(g_token_mutex);
+        auto it = g_tokens.find(TokenKey(a));
+        if (it != g_tokens.end() && it->second.expires_at - 120 > now) return it->second.token;
+    }
+    OAuthTokens t = OAuthRefresh(p, a, stored, cancel);
+    if (!t.error.empty()) {
+        if (t.error.rfind("invalid_grant", 0) == 0) {
+            *error = "the " + p.label + " sign-in has expired or was revoked -- run :MailSignIn to sign in again";
+            if (p.id == "google") {
+                *error += " (a Google client still in \"Testing\" expires sign-ins after 7 days; publishing it stops that)";
+            }
+        } else {
+            *error = p.label + " sign-in failed: " + t.error;
+        }
+        return "";
+    }
+    if (!t.refresh_token.empty() && t.refresh_token != stored) {
+        // Rotated (Microsoft does this on every refresh): keep the new one.
+        std::string ignored;
+        // In the background: no dialog. If it cannot be saved, the new token
+        // still serves this session (the editor caches *new_stored).
+        StoreSecret(a, t.refresh_token, &ignored, false);
+        *new_stored = t.refresh_token;
+    }
+    std::lock_guard<std::mutex> lock(g_token_mutex);
+    g_tokens[TokenKey(a)] = {t.access_token, now + (t.expires_in > 0 ? t.expires_in : 3600)};
+    return t.access_token;
+}
+
+void ForgetAccessToken(const Account &a) {
+    std::lock_guard<std::mutex> lock(g_token_mutex);
+    auto it = g_tokens.find(TokenKey(a));
+    if (it == g_tokens.end()) return;
+    Wipe(&it->second.token);
+    g_tokens.erase(it);
+}
+
+void ForgetAllAccessTokens() {
+    std::lock_guard<std::mutex> lock(g_token_mutex);
+    for (auto &kv : g_tokens) Wipe(&kv.second.token);
+    g_tokens.clear();
 }
 
 }  // namespace mail

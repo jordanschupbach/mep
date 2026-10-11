@@ -4,6 +4,8 @@
 // IMAP response grammar (literals, BODY[...] sections, LIST/SEARCH/
 // SELECT/FETCH readers) and `curl --trace` parsing. No network.
 #include "mail.h"
+#include "mail_crypto.h"
+#include "platform_compat.h"  // setenv/unsetenv on Windows
 
 #include <cstdio>
 #include <cstdlib>
@@ -388,15 +390,154 @@ void TestAccounts() {
     b.secret = "command";
     b.secret_command = "pass show \"corp mail\"";
     b.signature = "Jane\nCorp";
+    b.oauth_provider = "microsoft";
+    b.oauth_client_id = "cid-123";
     CHECK(mail::SaveAccounts(path, {b}));
     std::string err;
     const std::vector<mail::Account> loaded = mail::LoadAccounts(path, &err);
     CHECK(err.empty() && loaded.size() == 1);
     CHECK(loaded[0].id == "work" && loaded[0].secret_command == b.secret_command && loaded[0].smtp_port == 587);
     CHECK(loaded[0].signature == "Jane\nCorp" && !loaded[0].server_saves_sent);
+    CHECK(loaded[0].oauth_provider == "microsoft" && loaded[0].oauth_client_id == "cid-123" && loaded[0].UsesOAuth());
     CHECK(loaded[0].FromLine() == "Jane <jane@corp.example>");
     std::remove(path.c_str());
     CHECK(mail::LoadAccounts("does-not-exist.json", &err).empty() && err.empty());
+}
+
+std::string Hex(const std::string &bytes) {
+    static const char kHex[] = "0123456789abcdef";
+    std::string out;
+    for (char c : bytes) {
+        out.push_back(kHex[static_cast<unsigned char>(c) >> 4]);
+        out.push_back(kHex[static_cast<unsigned char>(c) & 15]);
+    }
+    return out;
+}
+
+void TestOAuth() {
+    CHECK(Hex(mail::Sha256("abc")) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(Hex(mail::Sha256("")) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    CHECK(Hex(mail::Sha256(std::string(1000, 'a'))) ==
+          "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
+    // RFC 7636 appendix B.
+    CHECK(mail::PkceChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") ==
+          "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    CHECK(mail::Base64Url("\xfb\xff") == "-_8");
+    CHECK(mail::UrlEncodeComponent("a b/c?d=e") == "a%20b%2Fc%3Fd%3De");
+    CHECK(mail::UrlDecodeComponent("a+b%2Fc") == "a b/c");
+    const auto q = mail::ParseQuery("code=4%2F0Ab&state=xyz&scope=https%3A%2F%2Fmail.google.com%2F&flag");
+    CHECK(q.size() == 4 && q[0].second == "4/0Ab" && q[1].second == "xyz" && q[2].second == "https://mail.google.com/");
+    CHECK(q[3].first == "flag" && q[3].second.empty());
+    const mail::OAuthProvider *g = mail::OAuthProviderForMail("gmail");
+    CHECK(g && g->id == "google" && g->needs_secret);
+    CHECK(mail::OAuthProviderForMail("outlook")->id == "microsoft");
+    CHECK(mail::OAuthProviderForMail("yahoo") == nullptr);
+    const std::string url = mail::OAuthAuthorizeUrl(*g, "id.apps", "http://127.0.0.1:5555", "st", "ch", "me@gmail.com");
+    CHECK(Contains(url, "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=id.apps"));
+    CHECK(Contains(url, "redirect_uri=http%3A%2F%2F127.0.0.1%3A5555"));
+    CHECK(Contains(url, "scope=https%3A%2F%2Fmail.google.com%2F%20openid%20email%20profile"));
+    CHECK(Contains(url, "code_challenge=ch&code_challenge_method=S256"));
+    CHECK(Contains(url, "login_hint=me%40gmail.com") && Contains(url, "access_type=offline"));
+    mail::OAuthTokens t = mail::ParseTokenResponse(
+        "{\"access_token\":\"ya29.x\",\"expires_in\":3599,\"refresh_token\":\"1//r\",\"token_type\":\"Bearer\"}");
+    CHECK(t.error.empty() && t.access_token == "ya29.x" && t.refresh_token == "1//r" && t.expires_in == 3599);
+    t = mail::ParseTokenResponse("{\"error\":\"invalid_grant\",\"error_description\":\"Token has been expired or revoked.\"}");
+    CHECK(t.error == "invalid_grant: Token has been expired or revoked." && t.access_token.empty());
+    CHECK(!mail::ParseTokenResponse("not json").error.empty());
+    // id_token claims: header.payload.signature, payload base64url without padding.
+    const std::string payload = mail::Base64Url("{\"iss\":\"https://accounts.google.com\",\"email\":\"ada@gmail.com\","
+                                                "\"email_verified\":true,\"name\":\"Ada Lovelace\"}");
+    std::string em, nm;
+    mail::ParseIdTokenClaims("eyJhbGciOiJSUzI1NiJ9." + payload + ".sig", &em, &nm);
+    CHECK(em == "ada@gmail.com" && nm == "Ada Lovelace");
+    em.clear();
+    mail::ParseIdTokenClaims("x." + mail::Base64Url("{\"preferred_username\":\"bob@outlook.com\"}") + ".y", &em, &nm);
+    CHECK(em == "bob@outlook.com");
+    em.clear();
+    mail::ParseIdTokenClaims("garbage", &em, &nm);
+    CHECK(em.empty());
+    t = mail::ParseTokenResponse("{\"access_token\":\"a\",\"refresh_token\":\"r\",\"id_token\":\"h." + payload + ".s\"}");
+    CHECK(t.email == "ada@gmail.com" && t.name == "Ada Lovelace");
+    CHECK(mail::MailPresetForOAuth("google") == "gmail" && mail::MailPresetForOAuth("microsoft") == "outlook");
+    // A built-in client from the environment (the build's own is empty here).
+    CHECK(!mail::HasBuiltinOAuthClient("google"));
+    setenv("MEP_GOOGLE_OAUTH_CLIENT_ID", "builtin.apps.googleusercontent.com", 1);
+    CHECK(!mail::HasBuiltinOAuthClient("google"));  // Google also needs the secret
+    setenv("MEP_GOOGLE_OAUTH_CLIENT_SECRET", "GOCSPX-x", 1);
+    CHECK(mail::HasBuiltinOAuthClient("google"));
+    mail::Account filled;
+    filled.oauth_provider = "google";
+    mail::FillBuiltinOAuthClient(&filled);
+    CHECK(filled.oauth_client_id == "builtin.apps.googleusercontent.com" && filled.oauth_client_secret == "GOCSPX-x");
+    filled.oauth_client_id = "own";
+    filled.oauth_client_secret = "mine";
+    mail::FillBuiltinOAuthClient(&filled);  // an account's own client wins
+    CHECK(filled.oauth_client_id == "own");
+    CHECK(mail::CleanPastedValue("  \"123-abc.apps.googleusercontent.com\"\t") == "123-abc.apps.googleusercontent.com");
+    CHECK(mail::CleanPastedValue("'GOCSPX-x'") == "GOCSPX-x");
+    CHECK(mail::LooksLikeGoogleClientId("1234567890-abcdef123ghi.apps.googleusercontent.com"));
+    CHECK(!mail::LooksLikeGoogleClientId("1234567890-abcdef123ghi.apps.googleusercontent.co"));
+    CHECK(!mail::LooksLikeGoogleClientId("GOCSPX-abc"));
+    CHECK(!mail::LooksLikeGoogleClientId("abc-def.apps.googleusercontent.com"));
+    CHECK(!mail::LooksLikeGoogleClientId("123 4-ab.apps.googleusercontent.com"));
+    unsetenv("MEP_GOOGLE_OAUTH_CLIENT_ID");
+    unsetenv("MEP_GOOGLE_OAUTH_CLIENT_SECRET");
+    mail::Account a;
+    a.email = "x@gmail.com";
+    CHECK(!a.UsesOAuth());
+    a.oauth_provider = "google";
+    a.oauth_token_url = "http://127.0.0.1:9/token";
+    mail::OAuthProvider p;
+    CHECK(a.UsesOAuth() && mail::AccountOAuthProvider(a, &p));
+    CHECK(p.token_url == "http://127.0.0.1:9/token" && p.auth_url == g->auth_url);
+}
+
+std::string FromHex(const std::string &hex) {
+    std::string out;
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) out.push_back(static_cast<char>(std::stoi(hex.substr(i, 2), nullptr, 16)));
+    return out;
+}
+
+void TestCrypto() {
+    // RFC 4231 test cases 1 and 2.
+    CHECK(Hex(mail::HmacSha256(std::string(20, '\x0b'), "Hi There")) ==
+          "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+    CHECK(Hex(mail::HmacSha256("Jefe", "what do ya want for nothing?")) ==
+          "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+    // RFC 7914 section 11 (PBKDF2-HMAC-SHA256).
+    CHECK(Hex(mail::Pbkdf2Sha256("passwd", "salt", 1, 64)) ==
+          "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc"
+          "49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783");
+    CHECK(Hex(mail::Pbkdf2Sha256("Password", "NaCl", 80000, 64)) ==
+          "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56"
+          "a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d");
+    // RFC 8439 section 2.8.2 (AEAD_CHACHA20_POLY1305).
+    const std::string key = FromHex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+    const std::string nonce = FromHex("070000004041424344454647");
+    const std::string aad = FromHex("50515253c0c1c2c3c4c5c6c7");
+    const std::string text =
+        "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+    const std::string sealed = mail::AeadSeal(key, nonce, text, aad);
+    CHECK(sealed.size() == text.size() + 16);
+    CHECK(Hex(sealed.substr(0, 16)) == "d31a8d34648e60db7b86afbc53ef7ec2");
+    CHECK(Hex(sealed.substr(sealed.size() - 16)) == "1ae10b594f09e26a7e902ecbd0600691");
+    std::string opened;
+    CHECK(mail::AeadOpen(key, nonce, sealed, aad, &opened) && opened == text);
+    std::string tampered = sealed;
+    tampered[5] = static_cast<char>(tampered[5] ^ 1);
+    CHECK(!mail::AeadOpen(key, nonce, tampered, aad, &opened));
+    CHECK(!mail::AeadOpen(key, nonce, sealed, "other aad", &opened));
+    std::string wrong_key = key;
+    wrong_key[0] = 'x';
+    CHECK(!mail::AeadOpen(wrong_key, nonce, sealed, aad, &opened));
+    // Empty plaintext still authenticates.
+    const std::string empty = mail::AeadSeal(key, nonce, "", "");
+    CHECK(empty.size() == 16 && mail::AeadOpen(key, nonce, empty, "", &opened) && opened.empty());
+    const std::string r1 = mail::SecureRandom(32), r2 = mail::SecureRandom(32);
+    CHECK(r1.size() == 32 && r1 != r2);
+    std::string secret = "hunter2";
+    mail::Wipe(&secret);
+    CHECK(secret.empty());
 }
 
 void TestDisplayHelpers() {
@@ -429,6 +570,8 @@ int main() {
     TestCurlTrace();
     TestAccounts();
     TestDisplayHelpers();
+    TestOAuth();
+    TestCrypto();
     std::printf("mail_test: all checks passed\n");
     return 0;
 }

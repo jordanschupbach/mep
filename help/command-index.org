@@ -5,7 +5,7 @@
 
 * Every command
 
-All 403 ex commands mep defines: 131 built in and 273 registered from Lua.
+All 406 ex commands mep defines: 134 built in and 273 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -64,9 +64,12 @@ bindings instead. A dash means no page covers that command yet.
 | =:MailAttach= | [[file:mail.html][Email]] |
 | =:MailCompose= | [[file:mail.html][Email]] |
 | =:MailDiscard= | [[file:mail.html][Email]] |
+| =:MailLock= | [[file:mail.html][Email]] |
+| =:MailLog= | [[file:mail.html][Email]] |
 | =:MailSend= | [[file:mail.html][Email]] |
 | =:MailSend!= | [[file:mail.html][Email]] |
 | =:MailSetup= | [[file:mail.html][Email]] |
+| =:MailSignIn= | [[file:mail.html][Email]] |
 | =:MarkdownViewToggle= | [[file:mepml.html][mepml]] |
 | =:Menu= | [[file:mod1-keys.html][The mod1 layer]] |
 | =:MepActivityBar= | -- |

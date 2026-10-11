@@ -25303,6 +25303,13 @@ void Editor::HandlePromptInput() {
     // software-rendered frame isn't silently swallowed.
     bool escape = false, enter = false, backspace = false;
     bool left = false, right = false, home = false, end = false, del = false;
+    bool paste = false, clear_to_start = false;
+    // Paste: Cmd+V (macOS) / Ctrl+V / Ctrl+Shift+V / Shift+Insert. The
+    // backends send no character event while Cmd/Ctrl is held, so the V
+    // itself never lands in the text.
+    const bool ctrl_or_cmd = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl) ||
+                             gfx::IsKeyDown(gfx::Key::LeftSuper) || gfx::IsKeyDown(gfx::Key::RightSuper);
+    const bool shift_down = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
@@ -25312,6 +25319,9 @@ void Editor::HandlePromptInput() {
         else if (key == gfx::Key::Home) home = true;
         else if (key == gfx::Key::End) end = true;
         else if (key == gfx::Key::Delete) del = true;
+        else if (key == gfx::Key::V && ctrl_or_cmd) paste = true;
+        else if (key == gfx::Key::Insert && shift_down) paste = true;
+        else if (key == gfx::Key::U && ctrl_or_cmd) clear_to_start = true;
     }
     if (escape) {
         int ref = prompt_callback_ref_;
@@ -25353,6 +25363,19 @@ void Editor::HandlePromptInput() {
         while (i < prompt_input_.size() && (static_cast<unsigned char>(prompt_input_[i]) & 0xC0) == 0x80) ++i;
         return i;
     };
+    if (paste) {
+        // One line: a pasted line break would otherwise end up inside the
+        // value (an API key or client ID copied with its trailing newline).
+        std::string pasted = gfx::GetClipboardText();
+        pasted.erase(std::remove_if(pasted.begin(), pasted.end(), [](char c) { return c == '\n' || c == '\r'; }),
+                     pasted.end());
+        prompt_input_.insert(prompt_cursor_, pasted);
+        prompt_cursor_ += pasted.size();
+    }
+    if (clear_to_start) {
+        prompt_input_.erase(0, prompt_cursor_);
+        prompt_cursor_ = 0;
+    }
     if (left || gfx::IsKeyPressedRepeat(gfx::Key::Left)) prompt_cursor_ = prev_boundary(prompt_cursor_);
     if (right || gfx::IsKeyPressedRepeat(gfx::Key::Right)) prompt_cursor_ = next_boundary(prompt_cursor_);
     if (home) prompt_cursor_ = 0;
@@ -29069,7 +29092,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "wq", "x", "wq!", "x!", "wqa", "xa", "wqall", "xall", "e", "edit", "e!", "edit!", "split", "sp", "vsplit", "vs",
         "terminal", "term",
         "music", "exec", "youtube", "yt", "MepYoutube",
-        "Mail", "MailSetup", "MailCompose", "MailSend", "MailSend!", "MailAttach", "MailDiscard",
+        "Mail", "MailSetup", "MailSignIn", "MailLock", "MailLog", "MailCompose", "MailSend", "MailSend!", "MailAttach", "MailDiscard",
         "close", "tabnew", "tabdelete", "tabclose", "tabnext", "tabn", "tabprevious", "tabp", "tabN",
         "wsnew", "wsnew!", "wsdelete", "wsdelete!", "wsclose", "wsclose!", "wsnext", "wsn", "wsprevious", "wsp",
         "wsrename", "ws", "workspace", "wslist", "workspaces", "wsadopt", "wsprune", "wssave", "wsrestore",
@@ -31641,7 +31664,13 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         OpenMailInPlace(args);
         SyncModeToActivePaneBuffer();
     } else if (name == "MailSetup") {
-        MailSetup();
+        MailSetup(args);
+    } else if (name == "MailSignIn") {
+        MailSignIn(args);
+    } else if (name == "MailLock") {
+        MailLock();
+    } else if (name == "MailLog") {
+        MailShowLog();
     } else if (name == "MailCompose") {
         MailComposeCommand(args);
     } else if (name == "MailSend" || name == "MailSend!") {

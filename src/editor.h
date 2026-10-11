@@ -6479,10 +6479,23 @@ public:
     // `:Mail [account] [folder]` -- opens (or re-shows) the mail pane in
     // the current pane; with no accounts yet it starts :MailSetup.
     void OpenMailInPlace(const std::string &args);
+    // OpenMailInPlace's second half, once saved secrets are readable.
+    void OpenMailNow(const std::string &args);
+    // `:MailLog` -- opens mail/mail.log (setup and sign-in steps, errors).
+    void MailShowLog();
+    // `:MailLock` -- forgets every password/token held in memory and locks
+    // the encrypted vault (the next mail action asks for its passphrase).
+    void MailLock();
     // `:MailSetup` -- prompts for an address (provider presets fill the
     // servers in), a name and an app password, saves the account, stores
     // the password in the OS keychain and tests the connection.
-    void MailSetup();
+    // With `args` "google"/"gmail" or "microsoft"/"outlook" it goes straight
+    // to that provider's browser sign-in.
+    void MailSetup(const std::string &args = "");
+    // `:MailSignIn [account]` -- (re)does an account's browser sign-in
+    // (Gmail/Outlook OAuth2): after a revoked or expired token, or to
+    // move a password account over to it.
+    void MailSignIn(const std::string &args);
     // `:MailCompose [to]` -- a new draft from the current account.
     void MailComposeCommand(const std::string &args);
     // `:MailSend` -- sends the draft in the current buffer, after a y/n

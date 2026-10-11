@@ -90,6 +90,9 @@ struct MailState {
     std::unordered_map<std::string, MailDraftContext> drafts;          // draft path -> context
     int ns = -1;
     bool sending = false;
+    bool signing_in = false;  // a browser sign-in is waiting for its redirect
+    int signin_job = 0;       // its job, killed when a new sign-in starts
+    bool unlocking = false;   // the vault's key is being derived
 };
 
 #endif  // MEP_MAIL_UI_H

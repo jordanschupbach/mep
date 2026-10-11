@@ -34333,6 +34333,8 @@ const char *kBuiltinWhichKeyGroups =
     "mep.leader_map('es', 'Send this draft (:MailSend)', function() mep.cmd('MailSend') end)\n"
     "mep.leader_map('ea', 'Attach a file to this draft (:MailAttach)', function() mep.cmd('MailAttach') end)\n"
     "mep.leader_map('eS', 'Set up a mail account (:MailSetup)', function() mep.cmd('MailSetup') end)\n"
+    "mep.leader_map('eL', 'Sign in to mail in the browser again (:MailSignIn)', function() mep.cmd('MailSignIn') end)\n"
+    "mep.leader_map('el', 'Lock mail: forget passwords held in memory (:MailLock)', function() mep.cmd('MailLock') end)\n"
     "mep.leader_group('f', 'file', 0xf15b, 'Yellow')\n"
     "mep.leader_group('g', 'git', 0xe725, 'Orange')\n"
     "mep.leader_group('h', 'help', 0xf059, 'Blue')\n"

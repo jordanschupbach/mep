@@ -12,6 +12,17 @@
 #include <set>
 #include <sstream>
 
+// The build's own OAuth clients (CMakeLists.txt); absent in builds that
+// don't generate it (the unit test), which then have none.
+#if __has_include("mail_oauth_clients.h")
+#include "mail_oauth_clients.h"
+#endif
+#ifndef MEP_GOOGLE_OAUTH_CLIENT_ID
+#define MEP_GOOGLE_OAUTH_CLIENT_ID ""
+#define MEP_GOOGLE_OAUTH_CLIENT_SECRET ""
+#define MEP_MICROSOFT_OAUTH_CLIENT_ID ""
+#endif
+
 #if defined(_WIN32)
 #include "platform_compat.h"
 #else
@@ -2100,6 +2111,12 @@ std::vector<Account> LoadAccounts(const std::string &path, std::string *error) {
         a.secret = j.get("secret").as_string("keychain");
         a.secret_command = j.get("secret_command").as_string("");
         a.oauth2 = j.get("oauth2").as_bool(false);
+        a.oauth_provider = j.get("oauth_provider").as_string("");
+        a.oauth_client_id = j.get("oauth_client_id").as_string("");
+        a.oauth_client_secret = j.get("oauth_client_secret").as_string("");
+        a.oauth_auth_url = j.get("oauth_auth_url").as_string("");
+        a.oauth_token_url = j.get("oauth_token_url").as_string("");
+        a.oauth_scope = j.get("oauth_scope").as_string("");
         a.server_saves_sent = j.get("server_saves_sent").as_bool(false);
         a.insecure = j.get("insecure").as_bool(false);
         a.signature = j.get("signature").as_string("");
@@ -2138,6 +2155,12 @@ bool SaveAccounts(const std::string &path, const std::vector<Account> &accounts)
         field("secret", Json(a.secret));
         if (!a.secret_command.empty()) field("secret_command", Json(a.secret_command));
         if (a.oauth2) field("oauth2", Json(true));
+        if (!a.oauth_provider.empty()) field("oauth_provider", Json(a.oauth_provider));
+        if (!a.oauth_client_id.empty()) field("oauth_client_id", Json(a.oauth_client_id));
+        if (!a.oauth_client_secret.empty()) field("oauth_client_secret", Json(a.oauth_client_secret));
+        if (!a.oauth_auth_url.empty()) field("oauth_auth_url", Json(a.oauth_auth_url));
+        if (!a.oauth_token_url.empty()) field("oauth_token_url", Json(a.oauth_token_url));
+        if (!a.oauth_scope.empty()) field("oauth_scope", Json(a.oauth_scope));
         if (a.insecure) field("insecure", Json(true));
         if (!a.signature.empty()) field("signature", Json(a.signature));
         if (!a.trash.empty()) field("trash", Json(a.trash));
@@ -2176,6 +2199,245 @@ std::string AccountIdFor(const std::string &email, const std::vector<Account> &e
         if (!taken) return id;
         id = clean + std::to_string(n);
     }
+}
+
+// --- OAuth2 browser sign-in -----------------------------------------------
+
+const std::vector<OAuthProvider> &OAuthProviders() {
+    static const std::vector<OAuthProvider> kProviders = {
+        {"google", "Google", "https://accounts.google.com/o/oauth2/v2/auth", "https://oauth2.googleapis.com/token",
+         "https://mail.google.com/ openid email profile", "127.0.0.1", "access_type=offline&prompt=consent", true,
+         "https://console.cloud.google.com/auth/clients"},
+        {"microsoft", "Microsoft", "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+         "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+         "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access openid "
+         "email profile",
+         "localhost", "prompt=select_account", false,
+         "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"},
+    };
+    return kProviders;
+}
+
+const OAuthProvider *OAuthProviderById(std::string_view id) {
+    for (const OAuthProvider &p : OAuthProviders()) {
+        if (p.id == id) return &p;
+    }
+    return nullptr;
+}
+
+const OAuthProvider *OAuthProviderForMail(std::string_view mail_provider) {
+    if (mail_provider == "gmail") return OAuthProviderById("google");
+    if (mail_provider == "outlook") return OAuthProviderById("microsoft");
+    return nullptr;
+}
+
+namespace {
+
+std::string EnvOr(const char *name, const char *fallback) {
+    const char *v = std::getenv(name);
+    return v && *v ? std::string(v) : std::string(fallback);
+}
+
+void BuiltinClient(std::string_view provider_id, std::string *id, std::string *secret) {
+    id->clear();
+    secret->clear();
+    if (provider_id == "google") {
+        *id = EnvOr("MEP_GOOGLE_OAUTH_CLIENT_ID", MEP_GOOGLE_OAUTH_CLIENT_ID);
+        *secret = EnvOr("MEP_GOOGLE_OAUTH_CLIENT_SECRET", MEP_GOOGLE_OAUTH_CLIENT_SECRET);
+    } else if (provider_id == "microsoft") {
+        *id = EnvOr("MEP_MICROSOFT_OAUTH_CLIENT_ID", MEP_MICROSOFT_OAUTH_CLIENT_ID);
+    }
+}
+
+}  // namespace
+
+bool HasBuiltinOAuthClient(std::string_view provider_id) {
+    std::string id, secret;
+    BuiltinClient(provider_id, &id, &secret);
+    const OAuthProvider *p = OAuthProviderById(provider_id);
+    return !id.empty() && (!p || !p->needs_secret || !secret.empty());
+}
+
+void FillBuiltinOAuthClient(Account *a) {
+    if (!a->oauth_client_id.empty() || !HasBuiltinOAuthClient(a->oauth_provider)) return;
+    BuiltinClient(a->oauth_provider, &a->oauth_client_id, &a->oauth_client_secret);
+}
+
+std::string MailPresetForOAuth(std::string_view oauth_provider) {
+    if (oauth_provider == "google") return "gmail";
+    if (oauth_provider == "microsoft") return "outlook";
+    return "";
+}
+
+void ParseIdTokenClaims(std::string_view jwt, std::string *email, std::string *name) {
+    const size_t a = jwt.find('.');
+    const size_t b = a == std::string_view::npos ? a : jwt.find('.', a + 1);
+    if (b == std::string_view::npos) return;
+    Json claims;
+    if (!Json::Parse(Base64Decode(jwt.substr(a + 1, b - a - 1)), &claims) || !claims.is_object()) return;
+    *email = claims.get("email").as_string("");
+    // Microsoft personal accounts may carry the address only as the sign-in name.
+    if (email->empty()) {
+        const std::string upn = claims.get("preferred_username").as_string("");
+        if (upn.find('@') != std::string::npos) *email = upn;
+    }
+    *name = claims.get("name").as_string("");
+}
+
+bool AccountOAuthProvider(const Account &a, OAuthProvider *out) {
+    if (a.oauth_provider.empty()) return false;
+    const OAuthProvider *preset = OAuthProviderById(a.oauth_provider);
+    OAuthProvider p = preset ? *preset : OAuthProvider{a.oauth_provider, a.oauth_provider, "", "", "", "127.0.0.1", "", false, ""};
+    if (!a.oauth_auth_url.empty()) p.auth_url = a.oauth_auth_url;
+    if (!a.oauth_token_url.empty()) p.token_url = a.oauth_token_url;
+    if (!a.oauth_scope.empty()) p.scope = a.oauth_scope;
+    if (p.auth_url.empty() || p.token_url.empty()) return false;
+    *out = p;
+    return true;
+}
+
+std::string Sha256(std::string_view data) {
+    static const uint32_t k[64] = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+        0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+        0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+        0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2};
+    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    std::string msg(data);
+    const uint64_t bits = static_cast<uint64_t>(data.size()) * 8;
+    msg.push_back(static_cast<char>(0x80));
+    while (msg.size() % 64 != 56) msg.push_back('\0');
+    for (int i = 7; i >= 0; i--) msg.push_back(static_cast<char>((bits >> (i * 8)) & 0xFF));
+    auto rotr = [](uint32_t x, uint32_t n) { return (x >> n) | (x << (32 - n)); };
+    for (size_t off = 0; off < msg.size(); off += 64) {
+        uint32_t w[64];
+        for (size_t i = 0; i < 16; i++) {
+            w[i] = (static_cast<uint32_t>(static_cast<unsigned char>(msg[off + i * 4])) << 24) |
+                   (static_cast<uint32_t>(static_cast<unsigned char>(msg[off + i * 4 + 1])) << 16) |
+                   (static_cast<uint32_t>(static_cast<unsigned char>(msg[off + i * 4 + 2])) << 8) |
+                   static_cast<uint32_t>(static_cast<unsigned char>(msg[off + i * 4 + 3]));
+        }
+        for (size_t i = 16; i < 64; i++) {
+            const uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            const uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (size_t i = 0; i < 64; i++) {
+            const uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            const uint32_t ch = (e & f) ^ (~e & g);
+            const uint32_t t1 = hh + S1 + ch + k[i] + w[i];
+            const uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            const uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            const uint32_t t2 = S0 + maj;
+            hh = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+        h[0] += a;
+        h[1] += b;
+        h[2] += c;
+        h[3] += d;
+        h[4] += e;
+        h[5] += f;
+        h[6] += g;
+        h[7] += hh;
+    }
+    std::string out;
+    for (uint32_t v : h) {
+        for (int i = 3; i >= 0; i--) out.push_back(static_cast<char>((v >> (i * 8)) & 0xFF));
+    }
+    return out;
+}
+
+std::string Base64Url(std::string_view in) {
+    std::string b = Base64Encode(in);
+    while (!b.empty() && b.back() == '=') b.pop_back();
+    for (char &c : b) {
+        if (c == '+') c = '-';
+        else if (c == '/') c = '_';
+    }
+    return b;
+}
+
+std::string PkceChallenge(std::string_view verifier) { return Base64Url(Sha256(verifier)); }
+
+std::string UrlEncodeComponent(std::string_view s) { return UrlEncodePath(s, false); }
+
+std::string UrlDecodeComponent(std::string_view s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '+') {
+            out.push_back(' ');
+        } else if (s[i] == '%' && i + 2 < s.size() && HexVal(s[i + 1]) >= 0 && HexVal(s[i + 2]) >= 0) {
+            out.push_back(static_cast<char>(HexVal(s[i + 1]) * 16 + HexVal(s[i + 2])));
+            i += 2;
+        } else {
+            out.push_back(s[i]);
+        }
+    }
+    return out;
+}
+
+std::vector<std::pair<std::string, std::string>> ParseQuery(std::string_view query) {
+    std::vector<std::pair<std::string, std::string>> out;
+    size_t pos = 0;
+    while (pos <= query.size()) {
+        size_t amp = query.find('&', pos);
+        if (amp == std::string_view::npos) amp = query.size();
+        std::string_view part = query.substr(pos, amp - pos);
+        if (!part.empty()) {
+            const size_t eq = part.find('=');
+            if (eq == std::string_view::npos) out.emplace_back(UrlDecodeComponent(part), "");
+            else out.emplace_back(UrlDecodeComponent(part.substr(0, eq)), UrlDecodeComponent(part.substr(eq + 1)));
+        }
+        pos = amp + 1;
+    }
+    return out;
+}
+
+std::string OAuthAuthorizeUrl(const OAuthProvider &p, const std::string &client_id, const std::string &redirect_uri,
+                              const std::string &state, const std::string &challenge, const std::string &login_hint) {
+    std::string url = p.auth_url + (p.auth_url.find('?') == std::string::npos ? "?" : "&");
+    url += "response_type=code&client_id=" + UrlEncodeComponent(client_id);
+    url += "&redirect_uri=" + UrlEncodeComponent(redirect_uri);
+    url += "&scope=" + UrlEncodeComponent(p.scope);
+    url += "&state=" + UrlEncodeComponent(state);
+    url += "&code_challenge=" + UrlEncodeComponent(challenge) + "&code_challenge_method=S256";
+    if (!login_hint.empty()) url += "&login_hint=" + UrlEncodeComponent(login_hint);
+    if (!p.extra_params.empty()) url += "&" + p.extra_params;
+    return url;
+}
+
+OAuthTokens ParseTokenResponse(std::string_view json) {
+    OAuthTokens t;
+    Json j;
+    if (!Json::Parse(std::string(json), &j) || !j.is_object()) {
+        t.error = "the sign-in server sent no usable answer";
+        return t;
+    }
+    t.access_token = j.get("access_token").as_string("");
+    ParseIdTokenClaims(j.get("id_token").as_string(""), &t.email, &t.name);
+    t.refresh_token = j.get("refresh_token").as_string("");
+    t.expires_in = static_cast<long long>(j.get("expires_in").as_double(0.0));
+    const std::string err = j.get("error").as_string("");
+    if (!err.empty()) {
+        t.error = err;
+        const std::string desc = j.get("error_description").as_string("");
+        if (!desc.empty()) t.error += ": " + desc;
+    } else if (t.access_token.empty()) {
+        t.error = "the sign-in server sent no access token";
+    }
+    return t;
 }
 
 // --- curl ---------------------------------------------------------------
@@ -2224,6 +2486,83 @@ std::string ImapUrl(const Account &a, std::string_view mailbox_raw) {
 std::string SmtpUrl(const Account &a) {
     const bool implicit_tls = a.smtp_port == 465 && !a.insecure;
     return std::string(implicit_tls ? "smtps://" : "smtp://") + a.smtp_host + ":" + std::to_string(a.smtp_port);
+}
+
+// --- Safety checks --------------------------------------------------------
+
+bool IsLoopbackHost(std::string_view host_in) {
+    std::string host = Lower(Trim(host_in));
+    if (host.size() >= 2 && host.front() == '[' && host.back() == ']') host = host.substr(1, host.size() - 2);
+    if (host == "localhost" || host == "::1") return true;
+    // 127.0.0.0/8, written as four decimal octets.
+    if (host.rfind("127.", 0) != 0) return false;
+    int dots = 0;
+    for (char c : host) {
+        if (c == '.') dots++;
+        else if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    }
+    return dots == 3;
+}
+
+std::string UrlHost(std::string_view url) {
+    const size_t scheme = url.find("://");
+    if (scheme == std::string_view::npos) return "";
+    std::string_view rest = url.substr(scheme + 3);
+    const size_t end = rest.find_first_of("/?#");
+    std::string_view authority = rest.substr(0, end);
+    const size_t at = authority.rfind('@');
+    if (at != std::string_view::npos) authority = authority.substr(at + 1);
+    if (!authority.empty() && authority.front() == '[') {
+        const size_t close = authority.find(']');
+        return std::string(authority.substr(0, close == std::string_view::npos ? authority.size() : close + 1));
+    }
+    const size_t colon = authority.rfind(':');
+    return std::string(colon == std::string_view::npos ? authority : authority.substr(0, colon));
+}
+
+bool IsSafeAuthUrl(std::string_view url) {
+    const std::string lower = Lower(url);
+    if (lower.rfind("https://", 0) == 0) return !UrlHost(url).empty();
+    if (lower.rfind("http://", 0) == 0) return IsLoopbackHost(UrlHost(url));
+    return false;
+}
+
+std::string CleanPastedValue(std::string_view s) {
+    std::string v = Trim(s);
+    while (v.size() >= 2 && ((v.front() == '"' && v.back() == '"') || (v.front() == '\'' && v.back() == '\''))) {
+        v = Trim(std::string_view(v).substr(1, v.size() - 2));
+    }
+    return v;
+}
+
+bool LooksLikeGoogleClientId(std::string_view id) {
+    static const std::string kSuffix = ".apps.googleusercontent.com";
+    if (id.size() <= kSuffix.size() || id.substr(id.size() - kSuffix.size()) != kSuffix) return false;
+    const std::string_view head = id.substr(0, id.size() - kSuffix.size());
+    const size_t dash = head.find('-');
+    if (dash == std::string_view::npos || dash == 0 || dash + 1 >= head.size()) return false;
+    for (size_t i = 0; i < head.size(); i++) {
+        const char c = head[i];
+        if (i < dash ? !std::isdigit(static_cast<unsigned char>(c)) : !(std::isalnum(static_cast<unsigned char>(c)) != 0)) {
+            if (i != dash) return false;
+        }
+    }
+    return true;
+}
+
+bool IsPlainEmail(std::string_view email) {
+    const size_t at = email.find('@');
+    if (at == std::string_view::npos || at == 0 || at + 1 >= email.size() || email.find('@', at + 1) != std::string_view::npos) {
+        return false;
+    }
+    for (char c : email) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u <= 0x20 || u == 0x7F || c == '"' || c == '\'' || c == '\\' || c == '`' || c == '$' || c == ';' ||
+            c == '<' || c == '>' || c == '(' || c == ')' || c == ',') {
+            return false;
+        }
+    }
+    return true;
 }
 
 // --- Display helpers ----------------------------------------------------

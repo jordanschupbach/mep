@@ -528,6 +528,25 @@ foreach(driver ${MEP_TEST_DRIVERS})
     string(APPEND MEP_TEST_DRIVERS_H "    {\"${driver}\", R\"MEPDRV(${driver_text})MEPDRV\"},\n")
 endforeach()
 string(APPEND MEP_TEST_DRIVERS_H "};\n")
+# :Mail's browser sign-in ("Sign in with Google/Microsoft"): the OAuth
+# client this build of mep presents to the provider -- registered once by
+# whoever builds mep, so nobody using it has to make one (see help/mail.org,
+# "A built-in client"). Passed at configure time and kept in the build
+# directory's cache, never in the repository:
+#   cmake -S . -B build/native -DMEP_GOOGLE_OAUTH_CLIENT_ID=... -DMEP_GOOGLE_OAUTH_CLIENT_SECRET=...
+# Empty (the default) means mep asks for a client ID at setup instead.
+set(MEP_GOOGLE_OAUTH_CLIENT_ID "" CACHE STRING "Google OAuth desktop client ID built into :Mail")
+set(MEP_GOOGLE_OAUTH_CLIENT_SECRET "" CACHE STRING "Google OAuth desktop client secret built into :Mail")
+set(MEP_MICROSOFT_OAUTH_CLIENT_ID "" CACHE STRING "Microsoft (Entra) application ID built into :Mail")
+foreach(var MEP_GOOGLE_OAUTH_CLIENT_ID MEP_GOOGLE_OAUTH_CLIENT_SECRET MEP_MICROSOFT_OAUTH_CLIENT_ID)
+    # Client IDs are plain tokens; anything that could break out of a C string goes.
+    string(REGEX REPLACE "[^A-Za-z0-9._~-]" "" _mep_clean "${${var}}")
+    string(APPEND MEP_OAUTH_CLIENTS_H "#define ${var} \"${_mep_clean}\"\n")
+endforeach()
+file(WRITE "${CMAKE_BINARY_DIR}/generated/mail_oauth_clients.h.tmp" "${MEP_OAUTH_CLIENTS_H}")
+file(COPY_FILE "${CMAKE_BINARY_DIR}/generated/mail_oauth_clients.h.tmp"
+     "${CMAKE_BINARY_DIR}/generated/mail_oauth_clients.h" ONLY_IF_DIFFERENT)
+
 file(WRITE "${CMAKE_BINARY_DIR}/generated/test_drivers.h.tmp" "${MEP_TEST_DRIVERS_H}")
 file(COPY_FILE "${CMAKE_BINARY_DIR}/generated/test_drivers.h.tmp"
      "${CMAKE_BINARY_DIR}/generated/test_drivers.h" ONLY_IF_DIFFERENT)
@@ -831,6 +850,7 @@ add_library(mep_core STATIC
     src/editor_mail.cpp
     src/mail.cpp
     src/mail_net.cpp
+    src/mail_crypto.cpp
     src/editor_pres.cpp
     # Another program's window inside the document (mepml exec-gui):
     # gui_embed.cpp is the platform-free half, gui_embed_x11.cpp the X11
@@ -931,13 +951,17 @@ if(NOT EMSCRIPTEN)
         # Cocoa: gfx/backend_native_macos.mm's windowing/input layer;
         # AudioToolbox: gfx/backend_native_audio.cpp's CoreAudio output.
         target_link_libraries(mep_core PUBLIC OpenGL::GL "-framework Cocoa" "-framework AudioToolbox")
+        # :Mail's Keychain items, made by mep itself so they trust mep alone.
+        target_sources(mep_core PRIVATE src/mail_keychain_macos.cpp)
+        target_link_libraries(mep_core PUBLIC "-framework Security" "-framework CoreFoundation")
     elseif(WIN32)
         # gfx/backend_native_win32.cpp's window/input/WGL-context layer:
         # user32 for the window and message pump, gdi32 for the pixel
         # format and SwapBuffers, opengl32 (OpenGL::GL) for WGL itself.
         target_link_libraries(mep_core PUBLIC OpenGL::GL user32 gdi32)
-        # mail_net.cpp keeps mail passwords DPAPI-encrypted (CryptProtectData).
-        target_link_libraries(mep_core PUBLIC crypt32)
+        # mail_net.cpp keeps mail passwords DPAPI-encrypted (CryptProtectData)
+        # and listens on 127.0.0.1 for the browser sign-in's redirect.
+        target_link_libraries(mep_core PUBLIC crypt32 ws2_32 bcrypt)
     else()
         # X11::X11: gfx/backend_native.cpp's own X11/GLX window/input/context
         # implementation (GLFW_REMOVAL_PLAN.md) -- GLX itself is part of
@@ -2398,8 +2422,9 @@ add_dependencies(tests mep-youtube-player-test)
 
 # The email client's pure half (mail.h): encodings, MIME, addresses,
 # dates, drafts, the outgoing message, IMAP responses and curl traces,
-# accounts -- no network, no display.
-add_executable(mep-mail-test EXCLUDE_FROM_ALL src/mail_test.cpp src/mail.cpp)
+# accounts, and the vault's crypto against its RFC test vectors -- no
+# network, no display.
+add_executable(mep-mail-test EXCLUDE_FROM_ALL src/mail_test.cpp src/mail.cpp src/mail_crypto.cpp)
 target_include_directories(mep-mail-test PRIVATE src)
 target_compile_options(mep-mail-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-mail-test PRIVATE ${MEP_SANITIZE_FLAGS})

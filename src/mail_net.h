@@ -68,8 +68,35 @@ struct Session {
  * @return The secret; empty with `*error` set when there is none.
  */
 std::string ResolveSecret(const Account &a, std::string *error);
-/** @brief Saves `secret` for `a` in the store Account::secret names ("command" accounts store nothing). */
-bool StoreSecret(const Account &a, const std::string &secret, std::string *error);
+/** @brief Saves `secret` for `a` in the store Account::secret names ("command" accounts store nothing).
+ *  `interactive`: the user is at hand (setup, sign-in), so macOS may ask permission -- a background save
+ *  never shows a dialog and just fails instead. */
+bool StoreSecret(const Account &a, const std::string &secret, std::string *error, bool interactive = true);
+// --- The vault -----------------------------------------------------------
+//
+// Account::secret == "vault": the secret lives in MailDataDir()/vault.json,
+// encrypted with ChaCha20-Poly1305 under a key derived from the user's
+// master passphrase (PBKDF2-HMAC-SHA256, 600k iterations). The key is held
+// in memory only while the vault is unlocked; mep never writes it, or the
+// passphrase, anywhere. Used where the OS has no credential store (Linux
+// without a Secret Service keyring), and the destination for secrets that
+// older versions kept in plain files.
+
+/** @brief Whether a vault file exists yet. */
+bool VaultExists();
+/** @brief Whether the vault's key is in memory. */
+bool VaultUnlocked();
+/**
+ * @brief Derives the key from `passphrase` and opens the vault -- or, with `create` and no vault yet, makes an
+ *        empty one. Slow on purpose (the key derivation): call from a worker thread.
+ * @return False with `*error` set for a wrong passphrase or an unreadable/tampered file.
+ */
+bool VaultUnlock(const std::string &passphrase, bool create, std::string *error);
+/** @brief Forgets the key and the decrypted secrets. */
+void VaultLock();
+/** @brief Drops every cached access token (with VaultLock, :MailLock). */
+void ForgetAllAccessTokens();
+
 /** @brief Removes a stored secret (best effort). */
 void ForgetSecret(const Account &a);
 /** @brief Where Account::secret == "keychain" actually puts things on this platform, for messages. */
@@ -122,6 +149,81 @@ bool SendMail(const Session &s, const std::string &from_email, const std::vector
 /** @brief APPENDs `message` to `mailbox` (marked \\Seen) -- the Sent copy on servers that do not keep one. */
 bool AppendMessage(const Session &s, const std::string &mailbox, const std::string &message, std::string *error,
                    const std::atomic<bool> *cancel);
+
+// --- OAuth2 browser sign-in (mail.h's OAuthProvider) ---------------------
+
+/** @brief Opens `url` in the user's browser: $BROWSER if set, else the platform's opener. */
+bool OpenInBrowser(const std::string &url, std::string *error);
+
+// A one-shot HTTP listener on 127.0.0.1 for the sign-in redirect.
+class OAuthRedirectListener {
+public:
+    OAuthRedirectListener() = default;
+    ~OAuthRedirectListener();
+    OAuthRedirectListener(const OAuthRedirectListener &) = delete;
+    OAuthRedirectListener &operator=(const OAuthRedirectListener &) = delete;
+    /** @brief Binds an OS-chosen port on 127.0.0.1. */
+    bool Listen(std::string *error);
+    int Port() const { return port_; }
+    /**
+     * @brief Serves requests until one carries `code` (or `error`) with the expected `state`.
+     * @return The code; empty with `*error` set on refusal, timeout or cancel.
+     */
+    std::string AwaitCode(const std::string &state, int timeout_ms, const std::atomic<bool> *cancel, std::string *error);
+
+private:
+    long long fd_ = -1;
+    int port_ = 0;
+};
+
+/** @brief Trades an authorization code for tokens at the provider's token endpoint. */
+OAuthTokens OAuthExchangeCode(const OAuthProvider &p, const Account &a, const std::string &code,
+                              const std::string &verifier, const std::string &redirect_uri, const std::atomic<bool> *cancel);
+/** @brief Mints an access token from a refresh token. */
+OAuthTokens OAuthRefresh(const OAuthProvider &p, const Account &a, const std::string &refresh_token,
+                         const std::atomic<bool> *cancel);
+
+/**
+ * @brief What an account logs in with, from its stored secret: the password itself, or -- for browser
+ * sign-in -- a fresh access token minted from the stored refresh token (cached until shortly before it
+ * expires). When the provider rotated the refresh token, the new one is stored and returned in
+ * `*new_stored`.
+ */
+std::string LoginSecret(const Account &a, const std::string &stored, std::string *new_stored, std::string *error,
+                        const std::atomic<bool> *cancel);
+// --- OAuth clients ---------------------------------------------------------
+//
+// The client a browser sign-in presents is looked up in order: the
+// account's own (oauth_client_id in accounts.json), then the one saved for
+// the provider in MailDataDir()/oauth_clients.json (what :MailSetup stores
+// after importing Google's client JSON or a pasted ID), then the one built
+// into this mep (CMake / environment, mail.h's HasBuiltinOAuthClient).
+
+struct OAuthClient {
+    std::string id;
+    std::string secret;
+};
+
+/** @brief The client saved for `provider_id`; false when none is. */
+bool LoadSavedOAuthClient(const std::string &provider_id, OAuthClient *out);
+/** @brief Saves the client for `provider_id` (owner-only file). */
+bool SaveOAuthClient(const std::string &provider_id, const OAuthClient &client, std::string *error);
+/** @brief Whether any client (saved or built in) exists for `provider_id`. */
+bool HaveOAuthClient(const std::string &provider_id);
+/** @brief Fills an account's empty client from the saved one, else the built-in one. */
+void FillOAuthClient(Account *a);
+/** @brief Reads the JSON Google's console downloads for a client ({"installed": {...}}). */
+bool ParseGoogleClientJson(const std::string &text, OAuthClient *out, std::string *error);
+/** @brief The newest client_secret_*.json in ~/Downloads, or "". */
+std::string FindGoogleClientJson();
+
+/** @brief Appends a line to MailDataDir()/mail.log (owner-only, kept small). Never pass a secret. */
+void MailLog(const std::string &line);
+/** @brief The log's path. */
+std::string MailLogPath();
+
+/** @brief Drops a cached access token (after the server refused it). */
+void ForgetAccessToken(const Account &a);
 
 /** @brief A readable reason for a curl exit code (plus the server's own words when the trace has them). */
 std::string DescribeCurlFailure(int exit_code, const std::string &stderr_text, const Account &a);

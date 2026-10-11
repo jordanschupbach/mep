@@ -30309,6 +30309,33 @@ const char *kBuiltinAi =
     "function mep.ai_send_selection()\n"
     "  local sel = mep.visual_selection()\n"
     "  if sel == '' then mep.notify('No Visual selection', 'warn') return end\n"
+    // The answer goes on a fresh line AFTER the highlighted block, not
+    // wherever the caret happened to be sitting inside it.
+    //
+    // mep.ai_send_text streams into the buffer at the cursor, and in
+    // Visual mode the cursor is somewhere within the selection -- so
+    // highlighting a two-line comment and asking for the function it
+    // describes wrote the function *between* the comment's two lines,
+    // splitting what had just been selected. Moving to the end of the
+    // range first is what makes the reply land where a reader expects
+    // it: under the thing they highlighted.
+    "  local r = mep.visual_range()\n"
+    "  mep.enter_normal()\n"
+    "  if r and r.end_row then\n"
+    // Start of the line AFTER the block, not the end of its last line.
+    // Normal mode clamps the cursor to the last character of a line, so
+    // asking for "one past the end" and inserting a newline there split
+    // the line before its final character instead -- it took the `/` off
+    // the end of a closing `*/`. Starting on the following line needs no
+    // such position, and a trailing newline keeps whatever was there.
+    "    local n = mep.line_count()\n"
+    "    if r.end_row < n then\n"
+    "      mep.set_cursor(r.end_row + 1, 1)\n"
+    "    else\n"
+    "      mep.set_cursor(r.end_row, 1)\n"
+    "      mep.insert_text('\\n')\n"
+    "    end\n"
+    "  end\n"
     "  mep.ai_send_text(sel)\n"
     "end\n"
     // Replace-selection variant of the above: sends the same prompt (the

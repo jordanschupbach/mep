@@ -386,6 +386,33 @@ void TestGlyphNameEncodesCode() {
     CHECK(pdfenc::GlyphNameToUnicode("OE") == 0x0152);
 }
 
+// A glyph name that is a single printable character is that character.
+//
+// The Adobe list spells punctuation out (`comma`, `period`), but plenty
+// of Type 3 producers simply write the character: a /Differences of
+// `/1 /2 /, /. /:`. Letters already resolve through the name table, so
+// this is what digits and marks depend on -- without it a book read
+// "Example 11.65: Let us now return to Example 11.56." as "Example Let
+// us now return to Example".
+void TestSingleCharacterGlyphNames() {
+    CHECK(pdfenc::GlyphNameToUnicode("1") == '1');
+    CHECK(pdfenc::GlyphNameToUnicode("0") == '0');
+    CHECK(pdfenc::GlyphNameToUnicode(",") == ',');
+    CHECK(pdfenc::GlyphNameToUnicode(".") == '.');
+    CHECK(pdfenc::GlyphNameToUnicode(":") == ':');
+    CHECK(pdfenc::GlyphNameToUnicode(";") == ';');
+    CHECK(pdfenc::GlyphNameToUnicode("+") == '+');
+    CHECK(pdfenc::GlyphNameToUnicode("=") == '=');
+    // Letters keep resolving through the table, to the same answer.
+    CHECK(pdfenc::GlyphNameToUnicode("A") == 'A');
+    CHECK(pdfenc::GlyphNameToUnicode("z") == 'z');
+    // Control codes are NOT read as themselves: TeX puts its ff/fi/fl
+    // ligatures at 11-15, and those mean a ligature, not a control
+    // character.
+    CHECK(pdfenc::GlyphNameToUnicode(std::string(1, '\x0b')) == -1);
+    CHECK(pdfenc::GlyphNameToUnicode(std::string(1, '\x7f')) == -1);
+}
+
 }  // namespace
 
 int main() {
@@ -400,6 +427,7 @@ int main() {
     TestGlyphNameToUnicodeTexSizeVariants();
     TestGlyphNameToUnicodeDotSuffix();
     TestGlyphNameEncodesCode();
+    TestSingleCharacterGlyphNames();
     std::printf("pdf_encodings_test: all checks passed\n");
     return 0;
 }

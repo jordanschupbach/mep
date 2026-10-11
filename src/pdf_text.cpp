@@ -475,7 +475,22 @@ std::string JoinGlyphRowText(const std::vector<GlyphBox> &glyphs, const std::vec
             // Letter spacing within a word in the same fixture is
             // exactly 0, and kerning generally stays under 0.05em, so
             // there is a wide margin below a shrunk space to aim at.
-            const double unit = std::max(height, prev_height);
+            // The em, as well as it can be known. Normally the glyph
+            // box's height is it (0.95em by construction), and it is
+            // bigger than any single glyph's width, so this is just the
+            // height.
+            //
+            // The widths are there because a Type 3 font can report a
+            // nonsense height: its glyph space is defined by /FontMatrix
+            // rather than the usual 1/1000 em, which the vertical
+            // estimate does not account for. One real book's Type 3
+            // glyphs measured 5.5pt wide and 0.114pt tall, which put the
+            // word-gap threshold at 0.023pt -- so the ordinary 0.24pt
+            // space between two letters read as a word break and
+            // "number" came out as "numb er". Taking the larger
+            // dimension costs nothing where the height is right and
+            // rescues the case where it is not.
+            const double unit = std::max({height, prev_height, g.right - g.left, prev.right - prev.left});
             const bool gap = gg.left - prev.right > 0.20 * unit;
             // Stepping onto a different baseline within the row, onto
             // something that is a separate structure rather than a

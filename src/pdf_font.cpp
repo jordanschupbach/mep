@@ -646,7 +646,24 @@ void PdfFont::Impl::LoadType3Font(const unsigned char *doc_data, size_t doc_len,
     for (int c = 0; c < 256; ++c) {
         std::string name = enc.Explicit(c);
         if (name.empty()) continue;
-        int unicode = pdfenc::GlyphNameToUnicode(name);
+        // A name that provably spells its own character code is read
+        // that way FIRST, before the name table is consulted at all.
+        //
+        // Order matters because the table's fallbacks are speculative
+        // while this is not. TeX's size-variant rule strips a trailing
+        // 1-4 ("parenleft1" is a parenleft), and base-36 glyph names
+        // collide with it head-on: /D1 /D2 /D3 /D4 are codes 109-112,
+        // i.e. m n o p, and stripping the digit resolved all four to the
+        // letter "D". A page of one book came out as "self-cDDtaiDed
+        // textb D Dk DD real algebra" -- and because the name resolved
+        // to *something*, the code reading below never ran to correct
+        // it.
+        int unicode = -1;
+        if (pdfenc::GlyphNameEncodesCode(name, c)) {
+            if (const char *std_name = pdfenc::EncodingName(pdfenc::Base::kStandard, c))
+                unicode = pdfenc::GlyphNameToUnicode(std_name);
+        }
+        if (unicode < 0) unicode = pdfenc::GlyphNameToUnicode(name);
         if (unicode < 0) {
             // A glyph name that says nothing. dvips-style Type 3 bitmap
             // fonts -- what a TeX document from before outline fonts

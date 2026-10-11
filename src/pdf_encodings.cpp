@@ -369,6 +369,23 @@ int GlyphNameToUnicode(const std::string &name) {
     const auto &table = GlyphList();
     auto it = table.find(name);
     if (it != table.end()) return it->second;
+
+    // A name that is a single printable character is that character.
+    //
+    // The Adobe list spells punctuation out -- `comma`, `period`,
+    // `colon` -- but plenty of producers just write the character:
+    // a /Differences of `/1 /2 /, /. /:` is common in Type 3 fonts.
+    // Letters already resolve through the table above, so this is what
+    // digits and punctuation hang on, and without it a book's text came
+    // out with every digit and mark missing: "Example 11.65: Let us now
+    // return to Example 11.56." read as "Example Let us now return to
+    // Example". Restricted to printable ASCII so a control code used as
+    // a name (TeX puts its ff/fi/fl ligatures at 11-15) is left alone
+    // rather than read as itself.
+    if (name.size() == 1) {
+        const unsigned char c = static_cast<unsigned char>(name[0]);
+        if (c >= 0x21 && c <= 0x7E) return static_cast<int>(c);
+    }
     if (name.size() > 3 && name.compare(0, 3, "uni") == 0) {
         int v = ParseHexEscape(name, 3);
         if (v >= 0) return v;

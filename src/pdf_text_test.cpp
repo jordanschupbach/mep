@@ -742,11 +742,21 @@ void TestJoinGlyphRowTextComposesAccents() {
 // prose comes out with stray spaces down its left edge.
 void TestJoinGlyphRowsKeepsListIndentation() {
     std::vector<pdftext::GlyphBox> g;
+    // Character-sized boxes, not one wide box holding a whole phrase:
+    // the word-gap unit is the larger of the glyphs' height and width,
+    // so a single 50pt-wide "glyph" would set the threshold far above
+    // any real gap and nothing would ever be spaced.
     auto row_at = [&](double left, double bottom, const std::string &first, const std::string &rest) {
         const int start = static_cast<int>(g.size());
         g.push_back(Box(left, bottom + 10, left + 8, bottom, first));
-        g.push_back(Box(left + 16, bottom + 10, left + 60, bottom, rest));  // a real gap after the marker
-        return std::vector<int>{start, start + 1};
+        double x = left + 16;  // a real gap after the marker
+        for (char ch : rest) {
+            g.push_back(Box(x, bottom + 10, x + 5, bottom, std::string(1, ch)));
+            x += 5;
+        }
+        std::vector<int> row;
+        for (int i = start; i < static_cast<int>(g.size()); ++i) row.push_back(i);
+        return row;
     };
     // Two outer items at x=70, one nested at x=90 (just over one step
     // for 10pt text), and an indented paragraph line that is not a list.
@@ -764,6 +774,40 @@ void TestJoinGlyphRowsKeepsListIndentation() {
     CHECK(out.find("\n\u2022 outer two\n") != std::string::npos);
     // ...and the indented prose line is left alone, marker-less.
     CHECK(out.find("\nIndented prose line") != std::string::npos);
+}
+
+// A font that reports a nonsense glyph height must not have every
+// letter spaced apart.
+//
+// The word-gap test needs the em, and the glyph box's height normally
+// is it. A Type 3 font defines its glyph space with /FontMatrix rather
+// than the usual 1/1000 em, which the vertical estimate does not
+// account for: one real book's glyphs measured 5.5pt wide and 0.114pt
+// tall, putting the threshold at 0.023pt so the ordinary 0.24pt gap
+// between two letters read as a word break -- "number" came out as
+// "numb er", "code" as "co de".
+void TestJoinGlyphRowTextSurvivesDegenerateHeights() {
+    // Geometry straight off that page: real widths, collapsed heights,
+    // and the inter-letter gaps it actually had.
+    std::vector<pdftext::GlyphBox> g = {
+        Box(111.120, 0.114, 116.640, 0.0, "n"),
+        Box(116.400, 0.114, 121.920, 0.0, "u"),
+        Box(121.920, 0.114, 130.200, 0.0, "m"),
+        Box(129.960, 0.114, 135.480, 0.0, "b"),
+        Box(135.720, 0.114, 140.160, 0.0, "e"),   // the 0.24pt gap that split it
+        Box(140.160, 0.114, 144.120, 0.0, "r"),
+    };
+    std::vector<int> all;
+    for (int i = 0; i < static_cast<int>(g.size()); ++i) all.push_back(i);
+    CHECK(pdftext::JoinGlyphRowText(g, all) == "number");
+
+    // A genuine word space in the same font -- several points, far wider
+    // than any letter gap -- must still register.
+    std::vector<pdftext::GlyphBox> two = {
+        Box(100.0, 0.114, 105.5, 0.0, "a"),
+        Box(112.0, 0.114, 117.5, 0.0, "b"),  // 6.5pt apart
+    };
+    CHECK(pdftext::JoinGlyphRowText(two, {0, 1}) == "a b");
 }
 
 // --- rotated pages ---------------------------------------------------
@@ -828,6 +872,7 @@ int main(int argc, char **argv) {
     TestGlyphRowsHandleRotatedPage();
     TestJoinGlyphRowTextComposesAccents();
     TestJoinGlyphRowsKeepsListIndentation();
+    TestJoinGlyphRowTextSurvivesDegenerateHeights();
     TestJoinGlyphTextIgnoresImplausibleActualText();
     TestSelectionGlyphRangeIsVisualNotStreamOrder();
     std::printf("pdf_text_test: all checks passed\n");

@@ -219,6 +219,38 @@ void TestCompositeFontWArrayBothForms() {
 // perfectly in content-stream order scrambled when sorted into visual
 // order: "The Singular Value Decomposition" became "ThSegi unVllaauDreeo
 // cpmsoition", every glyph reporting the same width.
+// A name that spells its own code beats a speculative name-table
+// reading of it.
+//
+// These two rules collide head-on. TeX's size variants mean a trailing
+// 1-4 can be stripped ("parenleft1" is a parenleft), and base-36 glyph
+// names put real characters at /D1 /D2 /D3 /D4 -- codes 109-112, i.e.
+// m n o p. Consulting the name table first stripped the digit off all
+// four and resolved them to the letter "D", and because that *did*
+// resolve, the code reading never ran to correct it: a book's
+// bibliography came out as "self-cDDtaiDed textb D Dk DD real algebra".
+void TestType3CodeNameBeatsSuffixStripping() {
+    // A Type 3 font whose /Differences uses base-36 names. 109 is "D1",
+    // which must read as 'm', not as 'D'.
+    std::string doc = BuildDoc(
+        {
+            {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+            {2, "<< /Type /Pages /Kids [] >>"},
+            {3, "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [0.001 0 0 0.001 0 0]"
+                " /CharProcs << >> /Encoding 4 0 R /FirstChar 109 /LastChar 112 /Widths [1 1 1 1] >>"},
+            {4, "<< /Type /Encoding /Differences [109 /D1 /D2 /D3 /D4] >>"},
+        },
+        1);
+    pdfxref::XrefTable table;
+    pdfobj::Object font_dict = LoadFontDict(doc, &table, 3);
+    pdffont::PdfFont font;
+    font.Load(B(doc), doc.size(), table, font_dict);
+    CHECK(font.GetUnicodeText(109) == "m");
+    CHECK(font.GetUnicodeText(110) == "n");
+    CHECK(font.GetUnicodeText(111) == "o");
+    CHECK(font.GetUnicodeText(112) == "p");
+}
+
 void TestCompositeFontWArrayIndirectParts() {
     std::string doc = BuildDoc(
         {
@@ -445,6 +477,7 @@ int main() {
     TestMissingWidthFallback();
     TestDifferencesOverridesBaseEncoding();
     TestCompositeFontWArrayBothForms();
+    TestType3CodeNameBeatsSuffixStripping();
     TestCompositeFontWArrayIndirectParts();
     TestCompositeFontWArrayRejectsAbsurdRange();
     TestCompositeFontDefaultWidthWithNoW();

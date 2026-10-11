@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <set>
 
 #include "json.h"
 
@@ -183,6 +184,75 @@ std::string CtestExactNameRegex(const std::string &name) {
     }
     out += '$';
     return out;
+}
+
+ProtocolLine ParseProtocolLine(const std::string &line) {
+    ProtocolLine out;
+    static const char kMark[] = "@@mep-test ";
+    size_t at = line.find(kMark);
+    if (at == std::string::npos) return out;
+    std::string rest = line.substr(at + sizeof kMark - 1);
+    while (!rest.empty() && (rest.back() == '\r' || rest.back() == '\n')) rest.pop_back();
+    size_t sp = rest.find(' ');
+    if (sp == std::string::npos) return out;
+    const std::string word = rest.substr(0, sp);
+    std::string arg = rest.substr(sp + 1);
+    if (arg.empty()) return out;
+    if (word == "runner") {
+        out.kind = ProtocolLine::Kind::Runner;
+        out.runner = Trim(arg);
+    } else if (word == "case" || word == "start") {
+        out.kind = word == "case" ? ProtocolLine::Kind::Case : ProtocolLine::Kind::Start;
+        out.result.name = arg;
+    } else if (word == "result") {
+        // STATUS SECONDS NAME
+        size_t a = arg.find(' ');
+        size_t b = a == std::string::npos ? a : arg.find(' ', a + 1);
+        if (b == std::string::npos || b + 1 >= arg.size()) return out;
+        std::string status = arg.substr(0, a);
+        std::string secs = arg.substr(a + 1, b - a - 1);
+        char *end = nullptr;
+        double seconds = std::strtod(secs.c_str(), &end);
+        if (secs.empty() || end != secs.c_str() + secs.size()) return out;
+        if (status != "passed" && status != "skipped" && status != "timeout") status = "failed";
+        out.kind = ProtocolLine::Kind::Result;
+        out.result.name = arg.substr(b + 1);
+        out.result.status = status;
+        out.result.detail = std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(status[0])))) + status.substr(1);
+        out.result.seconds = seconds;
+    }
+    return out;
+}
+
+std::vector<std::string> ParseProtocolCases(const std::vector<std::string> &lines) {
+    std::vector<std::string> names;
+    std::set<std::string> seen;
+    for (const std::string &line : lines) {
+        ProtocolLine p = ParseProtocolLine(line);
+        if (p.kind == ProtocolLine::Kind::Case && seen.insert(p.result.name).second) names.push_back(p.result.name);
+    }
+    return names;
+}
+
+std::vector<CtestResult> ParseProtocolOutput(const std::vector<std::string> &lines) {
+    std::vector<CtestResult> results;
+    std::vector<std::string> since;  // lines since the last marker
+    for (const std::string &line : lines) {
+        ProtocolLine p = ParseProtocolLine(line);
+        if (p.kind == ProtocolLine::Kind::Other) {
+            since.push_back(line);
+            continue;
+        }
+        if (p.kind == ProtocolLine::Kind::Result) {
+            size_t b = 0, e = since.size();
+            while (b < e && Trim(since[b]).empty()) b++;
+            while (e > b && Trim(since[e - 1]).empty()) e--;
+            p.result.output.assign(since.begin() + static_cast<std::ptrdiff_t>(b), since.begin() + static_cast<std::ptrdiff_t>(e));
+            results.push_back(std::move(p.result));
+        }
+        since.clear();
+    }
+    return results;
 }
 
 std::string CtestBuildTarget(const CtestTest &test) {

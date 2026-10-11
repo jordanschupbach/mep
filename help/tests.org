@@ -31,9 +31,31 @@ rather than guessing.
 
 * The Tests panel
 
-=<leader>tT= (=:MepActivityTestPanel=) opens the test sidebar. In a CMake
-project it lists every test ctest knows about, one row each, with a mark
-for where it stands:
+=<leader>tT= (=:MepActivityTestPanel=) opens the test sidebar. It looks
+through the project for every test suite it knows how to run and lists
+each one as its own group, so a repository with a CMake build, a Python
+package and two npm packages shows all four:
+
+| Suite       | Found when a directory has                                    | One row per        |
+|-------------+---------------------------------------------------------------+--------------------|
+| ctest       | a configured build directory (see below), at the project root | ctest test         |
+| pytest      | a Python project marker and tests, with pytest importable     | test (node id)     |
+| unittest    | the same, without pytest                                       | test method        |
+| testthat    | =tests/testthat=                                               | =test-*.R= file    |
+| jest        | a =package.json= naming jest                                   | test file          |
+| vitest      | a =package.json= naming vitest                                 | test file          |
+| node:test   | a =package.json= whose test script runs =node --test=          | test file          |
+
+A Python project marker is =pyproject.toml=, =setup.py=, =setup.cfg=,
+=pytest.ini=, =tox.ini= or =conftest.py=, alongside a =tests/= or =test/=
+directory or =test_*.py= files. The search goes four directories deep
+(=mep.opt.activity_test_scan_depth=) and skips hidden directories, =build*=,
+=node_modules= and virtualenvs. A suite found in a directory hides any more
+of the same kind beneath it, because pytest or jest at the top already runs
+those. The exception is a =package.json= with =workspaces=: its packages
+are listed as suites of their own.
+
+Each row has a mark for where it stands:
 
 | Mark | Means                                       |
 |------+---------------------------------------------|
@@ -42,29 +64,59 @@ for where it stands:
 | ●    | running now                                 |
 | ✓    | passed (with how long it took)              |
 | ✗    | failed, timed out, or its build failed      |
+| -    | skipped                                     |
 
-Press Enter on a test to build its CMake target and run just that test.
-Enter on the summary row at the top (the build directory and the
-pass/fail/not-run counts) runs them all. The marks update live as ctest
-reports each test.
+Press Enter on a test to run just that test, or on a suite's heading to
+run that suite. Enter on the =all= row at the top runs every suite, one
+after another. The marks update live as each runner reports.
 
-| Key   | Does                                                     |
-|-------+----------------------------------------------------------|
-| Enter | build and run the test under the cursor (summary: all)   |
-| =a=   | run every test                                           |
-| =f=   | re-run only the tests that failed                        |
-| =o=   | show the output of the test under the cursor             |
-| =x=   | stop the run                                             |
-| =R=   | reload the test list (after adding a test and re-configuring) |
+| Key   | Does                                                       |
+|-------+------------------------------------------------------------|
+| Enter | run the test, suite or (top row) everything under the cursor |
+| =a=   | run every suite                                            |
+| =f=   | re-run only the tests that failed, in every suite          |
+| =o=   | show the output of the test or suite under the cursor      |
+| =c=   | fold or unfold the suite under the cursor                  |
+| =x=   | stop the run                                               |
+| =R=   | look for suites again and re-list their tests              |
 
-=o= on a failed test shows what it printed. For a test whose build failed, it
-shows the build log, compiler error included. On the summary row it shows the
-whole last run. The popout (=mod1+m=) shows the same output beside the list
-as you move through it.
+=o= on a failed test shows its traceback, testthat's failure summary, or
+Jest/Vitest/Node's message for that file. For a ctest test whose build
+failed, it shows the build log, compiler error included. On a suite's
+heading it shows that suite's last run; on the top row, every suite's. The
+popout (=mod1+m=) shows the same output beside the list as you move
+through it.
 
-The build directory is the first entry of =mep.opt.lang_test_build_dirs=
-that holds a configured ctest tree. Set =mep.activity_test_build_dir= to pick
-one yourself, and =mep.opt.activity_test_jobs= to run tests in parallel:
+** What runs each suite
+
+| Suite     | Runs                                                              |
+|-----------+-------------------------------------------------------------------|
+| ctest     | =cmake --build= for the test's target, then =ctest -R=            |
+| pytest    | the project's =.venv=, =venv= or =env= Python if it has one, else =python3= |
+| unittest  | the same interpreter, with the standard library's =unittest=      |
+| testthat  | =Rscript=. A package is loaded once with =pkgload::load_all= |
+| jest, vitest | the project's =node_modules/.bin= (or a parent's), else =npx=  |
+| node:test | =node --test=                                                     |
+
+mep runs each one through a small driver or reporter of its own, so it
+reads results from the runner itself rather than from its console output.
+pytest still reads the project's own configuration (=addopts= included).
+When a runner is not installed, its tests are marked /could not start/.
+
+#+begin_src lua
+mep.opt.lang_test_python = 'unittest'      -- 'auto' (default), 'pytest', 'unittest'
+mep.opt.activity_test_python_bin = '/opt/py/bin/python3'
+mep.opt.activity_test_rscript = '/usr/local/bin/Rscript'
+mep.opt.activity_test_node = 'node'
+mep.opt.activity_test_scan_depth = 2
+#+end_src
+
+** ctest
+
+The CMake build directory is the first entry of
+=mep.opt.lang_test_build_dirs= that holds a configured ctest tree. Set
+=mep.activity_test_build_dir= to pick one yourself, and
+=mep.opt.activity_test_jobs= to run tests in parallel:
 
 #+begin_src lua
 mep.activity_test_build_dir = 'build/native-dev'
@@ -77,9 +129,60 @@ from. For a target nobody has built yet, it builds the target named after the
 test. mep's own windowless test binaries are registered this way, so
 =ctest --test-dir build/native= runs the same suite.
 
-Outside a CMake project, =:MepActivityTestRun= runs the whole suite once
+** Adding a kind of suite
+
+A provider is a Lua table that finds suites, lists their tests and says how
+to run them. Register one from =init.lua= and it is searched for alongside
+the built-in ones. One registered under an existing =id= replaces it, and
+=enabled = false= turns one off:
+
+#+begin_src lua
+mep.test_provider_register({
+  id = 'cargo', name = 'cargo',
+  -- Called for each directory searched; entries maps name -> 'file' | 'dir'.
+  detect = function(dir, entries, depth)
+    if entries['Cargo.toml'] == 'file' then return {} end
+  end,
+  -- done({{name = ...}, ...}) or done(nil, 'why not').
+  list = function(suite, done)
+    done({{name = 'all'}})
+  end,
+  -- argv (run in the suite's directory) for `names`, nil meaning every test.
+  command = function(suite, names)
+    return {'cargo', 'test'}
+  end,
+  -- The run's output lines -> {{name, status, seconds, output}, ...}.
+  -- Without it (and parse_line, for live marks) the protocol below is read.
+  parse_output = function(lines)
+    local ok = false
+    for _, l in ipairs(lines) do
+      if l:match('^test result: ok') then ok = true end
+    end
+    return {{name = 'all', status = ok and 'passed' or 'failed', seconds = 0, output = lines}}
+  end,
+})
+#+end_src
+
+The built-in drivers report one line per event, which the default parsers
+read:
+
+#+begin_example
+@@mep-test case NAME
+@@mep-test start NAME
+@@mep-test result passed|failed|skipped SECONDS NAME
+#+end_example
+
+A result claims the output printed since the line before it. A runner that
+can print these lines needs no parsers of its own: =mep.test_provider_list_job=
+runs a listing command and collects its =case= lines. =mep.activity_test_suites()=
+returns what the panel shows, for scripts and agents.
+
+** No suites found
+
+When nothing is found, or =mep.activity_test_cmd= is set,
+=:MepActivityTestRun= runs one whole-suite command instead
 (=mep.activity_test_cmd=, or =npm test= when there is a =package.json=)
-and lists its failure lines; =mep.activity_test_failure_lines()= exposes
+and lists its failure lines. =mep.activity_test_failure_lines()= exposes
 them to Lua.
 
 * See also

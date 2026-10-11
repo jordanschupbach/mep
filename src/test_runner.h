@@ -1,8 +1,9 @@
 #pragma once
 
-// The ctest side of the Tests sidebar (kBuiltinActivityBar's
+// The parsing side of the Tests sidebar (kBuiltinActivityBar's
 // mep.activity_test_panel, main.cpp): what tests a CMake build directory
-// registers, and what happened when ctest ran them.
+// registers and what happened when ctest ran them, plus the one line
+// protocol every other test provider's driver speaks (assets/test_drivers).
 //
 //   ParseCtestList   -- `ctest --show-only=json-v1` -> one CtestTest per test.
 //   ParseCtestLine   -- one line of a live `ctest` run -> "test N started" /
@@ -14,7 +15,7 @@
 //
 // Pure string functions with no editor, buffer or Lua dependency (same ethos
 // as indent.h), so they're unit-tested on their own in test_runner_test.cpp
-// against verbatim ctest output.
+// against verbatim ctest and driver output.
 
 #include <string>
 #include <vector>
@@ -69,5 +70,40 @@ std::string CtestExactNameRegex(const std::string &name);
 // target's test is conventionally called -- ctest can't say otherwise, see
 // CtestTest::command).
 std::string CtestBuildTarget(const CtestTest &test);
+
+// --- mep's test driver protocol --------------------------------------------
+//
+// The pytest/unittest, testthat, Jest, Vitest and node:test drivers in
+// assets/test_drivers all report through these lines, so one parser serves
+// every provider but ctest:
+//
+//   @@mep-test runner NAME                  which runner the driver picked
+//   @@mep-test case NAME                    a test exists (listing)
+//   @@mep-test start NAME                   it began
+//   @@mep-test result STATUS SECONDS NAME   it ended: passed/failed/skipped
+//
+// A marker may follow other text on its line (a runner's unterminated
+// progress dots); that text is ignored. NAME runs to the end of the line
+// and may contain spaces.
+
+struct ProtocolLine {
+    enum class Kind { Other, Runner, Case, Start, Result };
+    Kind kind = Kind::Other;
+    // name for Case/Start/Result; status and seconds only for Result;
+    // detail is the status as a word ("Failed"), for the sidebar.
+    CtestResult result;
+    std::string runner;  // for Runner
+};
+
+ProtocolLine ParseProtocolLine(const std::string &line);
+
+// Every Case name in a listing, in order, each once.
+std::vector<std::string> ParseProtocolCases(const std::vector<std::string> &lines);
+
+// Every Result in a run, in order. A result's output is the lines between
+// the marker before it (of any test) and itself: drivers print what a test
+// produced right before its result line, which keeps that right even when a
+// runner works on several files at once and their start lines interleave.
+std::vector<CtestResult> ParseProtocolOutput(const std::vector<std::string> &lines);
 
 }  // namespace meptest

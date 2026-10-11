@@ -204,6 +204,122 @@ void TestBuildTarget() {
     ExpectEq(meptest::CtestBuildTarget(t), "tool", "windows exe");
 }
 
+// The driver protocol (assets/test_drivers). Fixtures are what the drivers
+// printed against scratch projects: pytest 9 (with a module that fails to
+// import), Jest 30 running two files at once, testthat 3.
+void TestProtocolLine() {
+    using K = meptest::ProtocolLine::Kind;
+    meptest::ProtocolLine p = meptest::ParseProtocolLine("@@mep-test runner pytest");
+    CHECK(p.kind == K::Runner);
+    ExpectEq(p.runner, "pytest", "runner");
+
+    p = meptest::ParseProtocolLine("@@mep-test case tests/test_math.py::TestThing::test_param[1]");
+    CHECK(p.kind == K::Case);
+    ExpectEq(p.result.name, "tests/test_math.py::TestThing::test_param[1]", "case name");
+
+    p = meptest::ParseProtocolLine("@@mep-test start test-add.R");
+    CHECK(p.kind == K::Start);
+    ExpectEq(p.result.name, "test-add.R", "start name");
+
+    p = meptest::ParseProtocolLine("@@mep-test result failed 0.109 __tests__/bad.js");
+    CHECK(p.kind == K::Result);
+    ExpectEq(p.result.name, "__tests__/bad.js", "result name");
+    ExpectEq(p.result.status, "failed", "result status");
+    ExpectEq(p.result.detail, "Failed", "result detail");
+    CHECK(std::fabs(p.result.seconds - 0.109) < 1e-9);
+
+    // A name with spaces runs to the end of the line; a CR is dropped.
+    p = meptest::ParseProtocolLine("@@mep-test result skipped 0 my dir/test one.R\r");
+    CHECK(p.kind == K::Result);
+    ExpectEq(p.result.name, "my dir/test one.R", "name with spaces");
+    ExpectEq(p.result.status, "skipped", "skipped");
+
+    // An unknown status is a failure rather than a silent pass.
+    p = meptest::ParseProtocolLine("@@mep-test result error 1.5 x");
+    ExpectEq(p.result.status, "failed", "unknown status");
+
+    // After a runner's unterminated progress characters.
+    p = meptest::ParseProtocolLine("..F@@mep-test result passed 0.001 a");
+    CHECK(p.kind == K::Result);
+    ExpectEq(p.result.name, "a", "after progress dots");
+
+    CHECK(meptest::ParseProtocolLine("@@mep-test result passed x name").kind == K::Other);
+    CHECK(meptest::ParseProtocolLine("@@mep-test result passed 0.1").kind == K::Other);
+    CHECK(meptest::ParseProtocolLine("@@mep-test start").kind == K::Other);
+    CHECK(meptest::ParseProtocolLine("@@mep-test bogus x").kind == K::Other);
+    CHECK(meptest::ParseProtocolLine("plain output").kind == K::Other);
+}
+
+void TestProtocolCases() {
+    const std::vector<std::string> lines = {
+        "",
+        "@@mep-test runner pytest",
+        "@@mep-test case tests/test_broken.py",
+        "@@mep-test case tests/test_math.py::test_add",
+        "tests/test_math.py::test_add",
+        "@@mep-test case tests/test_math.py::test_add",
+        "@@mep-test case tests/test_math.py::test_fail",
+    };
+    std::vector<std::string> cases = meptest::ParseProtocolCases(lines);
+    CHECK(cases.size() == 3);
+    if (cases.size() == 3) {
+        ExpectEq(cases[0], "tests/test_broken.py", "case 0");
+        ExpectEq(cases[1], "tests/test_math.py::test_add", "case 1 (once)");
+        ExpectEq(cases[2], "tests/test_math.py::test_fail", "case 2");
+    }
+}
+
+void TestProtocolOutput() {
+    // Jest: both files start before either ends; bad.js's message comes
+    // after sum.test.js's result and so is bad.js's alone.
+    const std::vector<std::string> jest = {
+        "",
+        "@@mep-test start __tests__/bad.js",
+        "",
+        "@@mep-test start sum.test.js",
+        "",
+        "@@mep-test result passed 0.102 sum.test.js",
+        "  \xe2\x97\x8f fails",
+        "",
+        "    expect(received).toBe(expected) // Object.is equality",
+        "",
+        "@@mep-test result failed 0.109 __tests__/bad.js",
+    };
+    std::vector<meptest::CtestResult> r = meptest::ParseProtocolOutput(jest);
+    CHECK(r.size() == 2);
+    if (r.size() == 2) {
+        ExpectEq(r[0].name, "sum.test.js", "jest first");
+        CHECK(r[0].output.empty());
+        ExpectEq(r[1].name, "__tests__/bad.js", "jest second");
+        ExpectEq(r[1].status, "failed", "jest second status");
+        CHECK(r[1].output.size() == 3);
+        if (r[1].output.size() == 3) {
+            ExpectEq(r[1].output[0], "  \xe2\x97\x8f fails", "output first line kept");
+            ExpectEq(r[1].output[2], "    expect(received).toBe(expected) // Object.is equality", "output last line");
+        }
+    }
+
+    // testthat: one file at a time, its summary between start and result.
+    const std::vector<std::string> r_out = {
+        "@@mep-test start test-err.R",
+        "err: 1",
+        "\xe2\x95\x90\xe2\x95\x90 Failed \xe2\x95\x90\xe2\x95\x90",
+        "Error in `eval(code, test_env)`: boom",
+        "@@mep-test result failed 0.012 test-err.R",
+        "@@mep-test start test-ok.R",
+        "ok: .",
+        "@@mep-test result passed 0.006 test-ok.R",
+        "trailing noise",
+    };
+    r = meptest::ParseProtocolOutput(r_out);
+    CHECK(r.size() == 2);
+    if (r.size() == 2) {
+        CHECK(r[0].output.size() == 3);
+        ExpectEq(r[1].name, "test-ok.R", "testthat second");
+        CHECK(r[1].output.size() == 1);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -213,6 +329,9 @@ int main() {
     TestParseOutput();
     TestExactNameRegex();
     TestBuildTarget();
+    TestProtocolLine();
+    TestProtocolCases();
+    TestProtocolOutput();
     if (g_failures) {
         std::fprintf(stderr, "%d failure(s)\n", g_failures);
         return 1;

@@ -32,9 +32,29 @@ mep.opt.lang_test_build_dirs = {<span class="tok-green">'build'</span>, <span cl
 <p>If mep cannot work out a runner for the filetype, it says so in one line
 rather than guessing.</p>
 <h1>The Tests panel</h1>
-<p><code>&lt;leader&gt;tT</code> (<code>:MepActivityTestPanel</code>) opens the test sidebar. In a CMake
-project it lists every test ctest knows about, one row each, with a mark
-for where it stands:</p>
+<p><code>&lt;leader&gt;tT</code> (<code>:MepActivityTestPanel</code>) opens the test sidebar. It looks
+through the project for every test suite it knows how to run and lists
+each one as its own group, so a repository with a CMake build, a Python
+package and two npm packages shows all four:</p>
+<table>
+<tr><th>Suite</th><th>Found when a directory has</th><th>One row per</th></tr>
+<tr><td>ctest</td><td>a configured build directory (see below), at the project root</td><td>ctest test</td></tr>
+<tr><td>pytest</td><td>a Python project marker and tests, with pytest importable</td><td>test (node id)</td></tr>
+<tr><td>unittest</td><td>the same, without pytest</td><td>test method</td></tr>
+<tr><td>testthat</td><td><code>tests/testthat</code></td><td><code>test-*.R</code> file</td></tr>
+<tr><td>jest</td><td>a <code>package.json</code> naming jest</td><td>test file</td></tr>
+<tr><td>vitest</td><td>a <code>package.json</code> naming vitest</td><td>test file</td></tr>
+<tr><td>node:test</td><td>a <code>package.json</code> whose test script runs <code>node --test</code></td><td>test file</td></tr>
+</table>
+<p>A Python project marker is <code>pyproject.toml</code>, <code>setup.py</code>, <code>setup.cfg</code>,
+<code>pytest.ini</code>, <code>tox.ini</code> or <code>conftest.py</code>, alongside a <code>tests/</code> or <code>test/</code>
+directory or <code>test_*.py</code> files. The search goes four directories deep
+(<code>mep.opt.activity_test_scan_depth</code>) and skips hidden directories, <code>build*</code>,
+<code>node_modules</code> and virtualenvs. A suite found in a directory hides any more
+of the same kind beneath it, because pytest or jest at the top already runs
+those. The exception is a <code>package.json</code> with <code>workspaces</code>: its packages
+are listed as suites of their own.</p>
+<p>Each row has a mark for where it stands:</p>
 <table>
 <tr><th>Mark</th><th>Means</th></tr>
 <tr><td>○</td><td>not run yet</td></tr>
@@ -42,27 +62,51 @@ for where it stands:</p>
 <tr><td>●</td><td>running now</td></tr>
 <tr><td>✓</td><td>passed (with how long it took)</td></tr>
 <tr><td>✗</td><td>failed, timed out, or its build failed</td></tr>
+<tr><td>-</td><td>skipped</td></tr>
 </table>
-<p>Press Enter on a test to build its CMake target and run just that test.
-Enter on the summary row at the top (the build directory and the
-pass/fail/not-run counts) runs them all. The marks update live as ctest
-reports each test.</p>
+<p>Press Enter on a test to run just that test, or on a suite's heading to
+run that suite. Enter on the <code>all</code> row at the top runs every suite, one
+after another. The marks update live as each runner reports.</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
-<tr><td>Enter</td><td>build and run the test under the cursor (summary: all)</td></tr>
-<tr><td><code>a</code></td><td>run every test</td></tr>
-<tr><td><code>f</code></td><td>re-run only the tests that failed</td></tr>
-<tr><td><code>o</code></td><td>show the output of the test under the cursor</td></tr>
+<tr><td>Enter</td><td>run the test, suite or (top row) everything under the cursor</td></tr>
+<tr><td><code>a</code></td><td>run every suite</td></tr>
+<tr><td><code>f</code></td><td>re-run only the tests that failed, in every suite</td></tr>
+<tr><td><code>o</code></td><td>show the output of the test or suite under the cursor</td></tr>
+<tr><td><code>c</code></td><td>fold or unfold the suite under the cursor</td></tr>
 <tr><td><code>x</code></td><td>stop the run</td></tr>
-<tr><td><code>R</code></td><td>reload the test list (after adding a test and re-configuring)</td></tr>
+<tr><td><code>R</code></td><td>look for suites again and re-list their tests</td></tr>
 </table>
-<p><code>o</code> on a failed test shows what it printed. For a test whose build failed, it
-shows the build log, compiler error included. On the summary row it shows the
-whole last run. The popout (<code>mod1+m</code>) shows the same output beside the list
-as you move through it.</p>
-<p>The build directory is the first entry of <code>mep.opt.lang_test_build_dirs</code>
-that holds a configured ctest tree. Set <code>mep.activity_test_build_dir</code> to pick
-one yourself, and <code>mep.opt.activity_test_jobs</code> to run tests in parallel:</p>
+<p><code>o</code> on a failed test shows its traceback, testthat's failure summary, or
+Jest/Vitest/Node's message for that file. For a ctest test whose build
+failed, it shows the build log, compiler error included. On a suite's
+heading it shows that suite's last run; on the top row, every suite's. The
+popout (<code>mod1+m</code>) shows the same output beside the list as you move
+through it.</p>
+<h2>What runs each suite</h2>
+<table>
+<tr><th>Suite</th><th>Runs</th></tr>
+<tr><td>ctest</td><td><code>cmake --build</code> for the test's target, then <code>ctest -R</code></td></tr>
+<tr><td>pytest</td><td>the project's <code>.venv</code>, <code>venv</code> or <code>env</code> Python if it has one, else <code>python3</code></td></tr>
+<tr><td>unittest</td><td>the same interpreter, with the standard library's <code>unittest</code></td></tr>
+<tr><td>testthat</td><td><code>Rscript</code>. A package is loaded once with <code>pkgload::load_all</code></td></tr>
+<tr><td>jest, vitest</td><td>the project's <code>node_modules/.bin</code> (or a parent's), else <code>npx</code></td></tr>
+<tr><td>node:test</td><td><code>node --test</code></td></tr>
+</table>
+<p>mep runs each one through a small driver or reporter of its own, so it
+reads results from the runner itself rather than from its console output.
+pytest still reads the project's own configuration (<code>addopts</code> included).
+When a runner is not installed, its tests are marked <i>could not start</i>.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.lang_test_python = <span class="tok-green">'unittest'</span>      <span class="tok-comment">-- 'auto' (default), 'pytest', 'unittest'</span>
+mep.opt.activity_test_python_bin = <span class="tok-green">'/opt/py/bin/python3'</span>
+mep.opt.activity_test_rscript = <span class="tok-green">'/usr/local/bin/Rscript'</span>
+mep.opt.activity_test_node = <span class="tok-green">'node'</span>
+mep.opt.activity_test_scan_depth = <span class="tok-cyan">2</span></code></pre></div>
+<h2>ctest</h2>
+<p>The CMake build directory is the first entry of
+<code>mep.opt.lang_test_build_dirs</code> that holds a configured ctest tree. Set
+<code>mep.activity_test_build_dir</code> to pick one yourself, and
+<code>mep.opt.activity_test_jobs</code> to run tests in parallel:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.activity_test_build_dir = <span class="tok-green">'build/native-dev'</span>
 mep.opt.activity_test_jobs = <span class="tok-cyan">8</span></code></pre></div>
 <p>Tests come from ordinary CMake: <code>enable_testing()</code> and one <code>add_test()</code>
@@ -70,9 +114,49 @@ per test. Before running a test, mep builds the target its executable comes
 from. For a target nobody has built yet, it builds the target named after the
 test. mep's own windowless test binaries are registered this way, so
 <code>ctest --test-dir build/native</code> runs the same suite.</p>
-<p>Outside a CMake project, <code>:MepActivityTestRun</code> runs the whole suite once
+<h2>Adding a kind of suite</h2>
+<p>A provider is a Lua table that finds suites, lists their tests and says how
+to run them. Register one from <code>init.lua</code> and it is searched for alongside
+the built-in ones. One registered under an existing <code>id</code> replaces it, and
+<code>enabled = false</code> turns one off:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">test_provider_register</span>({
+  id = <span class="tok-green">'cargo'</span>, name = <span class="tok-green">'cargo'</span>,
+  <span class="tok-comment">-- Called for each directory searched; entries maps name -&gt; 'file' | 'dir'.</span>
+  <span class="tok-blue">detect</span> = <span class="tok-purple">function</span>(<span class="tok-red">dir</span>, entries, <span class="tok-red">depth</span>)
+    <span class="tok-purple">if</span> entries[<span class="tok-green">'Cargo.toml'</span>] == <span class="tok-green">'file'</span> <span class="tok-purple">then</span> <span class="tok-purple">return</span> <span class="tok-blue">{</span><span class="tok-blue">}</span> <span class="tok-purple">end</span>
+  <span class="tok-purple">end</span>,
+  <span class="tok-comment">-- done({{name = ...}, ...}) or done(nil, 'why not').</span>
+  list = <span class="tok-purple">function</span>(<span class="tok-red">suite</span>, <span class="tok-red">done</span>)
+    <span class="tok-blue">done</span>({<span class="tok-blue">{</span>name = <span class="tok-green">'all'</span><span class="tok-blue">}</span>})
+  <span class="tok-purple">end</span>,
+  <span class="tok-comment">-- argv (run in the suite's directory) for `names`, nil meaning every test.</span>
+  <span class="tok-blue">command</span> = <span class="tok-purple">function</span>(<span class="tok-red">suite</span>, names)
+    <span class="tok-purple">return</span> {<span class="tok-green">'cargo'</span>, <span class="tok-green">'test'</span>}
+  <span class="tok-purple">end</span>,
+  <span class="tok-comment">-- The run's output lines -&gt; {{name, status, seconds, output}, ...}.</span>
+  <span class="tok-comment">-- Without it (and parse_line, for live marks) the protocol below is read.</span>
+  parse_output = <span class="tok-purple">function</span>(lines)
+    <span class="tok-purple">local</span> ok = <span class="tok-cyan">false</span>
+    <span class="tok-purple">for</span> _, l <span class="tok-purple">in</span> <span class="tok-blue">ipairs</span>(lines) <span class="tok-purple">do</span>
+      <span class="tok-purple">if</span> l:<span class="tok-blue">match</span>(<span class="tok-green">'^test result: ok'</span>) <span class="tok-purple">then</span> ok = <span class="tok-cyan">true</span> <span class="tok-purple">end</span>
+    <span class="tok-purple">end</span>
+    <span class="tok-purple">return</span> {{name = <span class="tok-green">'all'</span>, status = ok <span class="tok-purple">and</span> <span class="tok-green">'passed'</span> <span class="tok-purple">or</span> <span class="tok-green">'failed'</span>, seconds = <span class="tok-cyan">0</span>, output = lines}}
+  <span class="tok-purple">end</span>,
+})</code></pre></div>
+<p>The built-in drivers report one line per event, which the default parsers
+read:</p>
+<pre>@@mep-test case NAME
+@@mep-test start NAME
+@@mep-test result passed|failed|skipped SECONDS NAME</pre>
+<p>A result claims the output printed since the line before it. A runner that
+can print these lines needs no parsers of its own: <code>mep.test_provider_list_job</code>
+runs a listing command and collects its <code>case</code> lines. <code>mep.activity_test_suites()</code>
+returns what the panel shows, for scripts and agents.</p>
+<h2>No suites found</h2>
+<p>When nothing is found, or <code>mep.activity_test_cmd</code> is set,
+<code>:MepActivityTestRun</code> runs one whole-suite command instead
 (<code>mep.activity_test_cmd</code>, or <code>npm test</code> when there is a <code>package.json</code>)
-and lists its failure lines; <code>mep.activity_test_failure_lines()</code> exposes
+and lists its failure lines. <code>mep.activity_test_failure_lines()</code> exposes
 them to Lua.</p>
 <h1>See also</h1>
 <ul>

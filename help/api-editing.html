@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (230)</h1>
+<h1>The bindings (234)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -213,6 +213,10 @@ that it does nothing.</p>
 <tr><td><code>mep.termsend_register</code></td><td>registers a source buffer's default termsend target</td></tr>
 <tr><td><code>mep.termsend_target</code></td><td>looks up the registered termsend target buffer for a source buffer</td></tr>
 <tr><td><code>mep.termsend_unregister</code></td><td>removes a source buffer's registered termsend target</td></tr>
+<tr><td><code>mep.test_driver_path</code></td><td>the on-disk path of an embedded test driver, writing it out if needed</td></tr>
+<tr><td><code>mep.test_protocol_cases</code></td><td>the test names a driver's listing reported</td></tr>
+<tr><td><code>mep.test_protocol_parse_line</code></td><td>classifies one line of a test driver's output</td></tr>
+<tr><td><code>mep.test_protocol_parse_output</code></td><td>every test result in a driver's run, with its output</td></tr>
 <tr><td><code>mep.titlebar_set_visible</code></td><td>shows or hides the window's own title bar; a no-op where unsupported</td></tr>
 <tr><td><code>mep.titlebar_supported</code></td><td>whether the window's own title bar (macOS's traffic-light strip) can be hidden here</td></tr>
 <tr><td><code>mep.titlebar_visible</code></td><td>whether the window's own title bar is showing (always true where it can't be hidden)</td></tr>

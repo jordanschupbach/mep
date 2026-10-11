@@ -15,6 +15,7 @@
 #include "maxima_format.h"
 #include "r_format.h"
 #include "tcp_client.h"
+#include "test_drivers.h"
 #include "test_runner.h"
 #include "treesitter.h"
 
@@ -3016,6 +3017,19 @@ void PushCtestStrings(lua_State *L, const std::vector<std::string> &items) {
         lua_rawseti(L, -2, static_cast<int>(i + 1));
     }
 }
+
+// The array of strings at stack index `idx` (anything else in it is "").
+std::vector<std::string> CheckLuaLines(lua_State *L, int idx) {
+    luaL_checktype(L, idx, LUA_TTABLE);
+    std::vector<std::string> lines;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, idx));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, idx, i);
+        lines.emplace_back(lua_isstring(L, -1) ? lua_tostring(L, -1) : "");
+        lua_pop(L, 1);
+    }
+    return lines;
+}
 }  // namespace
 
 // mep.ctest_parse_list(json) -> array of {name, command, working_dir,
@@ -3112,6 +3126,115 @@ int l_ctest_name_regex(lua_State *L) {
     const char *s = luaL_checklstring(L, 1, &len);
     std::string re = meptest::CtestExactNameRegex(std::string(s, len));
     lua_pushlstring(L, re.data(), re.size());
+    return 1;
+}
+
+// mep.test_protocol_parse_line(line) -> {kind = 'runner', runner} |
+// {kind = 'case' | 'start', name} | {kind = 'result', name, status, detail,
+// seconds} | nil: one line of a test driver's output, see
+// meptest::ParseProtocolLine.
+/**
+ * @brief Implements mep.test_protocol_parse_line(line): classifies one line of a test driver's output.
+ * @param L Lua state; arg 1 is one output line.
+ * @return Number of values pushed (1: a runner/case/start/result table, or nil for any other line).
+ */
+int l_test_protocol_parse_line(lua_State *L) {
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 1, &len);
+    meptest::ProtocolLine line = meptest::ParseProtocolLine(std::string(s, len));
+    using K = meptest::ProtocolLine::Kind;
+    if (line.kind == K::Other) {
+        lua_pushnil(L);
+        return 1;
+    }
+    if (line.kind == K::Runner) {
+        lua_createtable(L, 0, 2);
+        lua_pushlstring(L, line.runner.data(), line.runner.size());
+        lua_setfield(L, -2, "runner");
+    } else {
+        PushCtestResult(L, line.result);
+    }
+    lua_pushstring(L, line.kind == K::Runner ? "runner" : line.kind == K::Case ? "case" : line.kind == K::Start ? "start" : "result");
+    lua_setfield(L, -2, "kind");
+    return 1;
+}
+
+// mep.test_protocol_cases(lines) -> array of test names: what a driver's
+// listing run reported, see meptest::ParseProtocolCases.
+/**
+ * @brief Implements mep.test_protocol_cases(lines): the test names a driver's listing reported.
+ * @param L Lua state; arg 1 is an array of the listing's output lines.
+ * @return Number of values pushed (1: array of names, in order, each once).
+ */
+int l_test_protocol_cases(lua_State *L) {
+    PushCtestStrings(L, meptest::ParseProtocolCases(CheckLuaLines(L, 1)));
+    return 1;
+}
+
+// mep.test_protocol_parse_output(lines) -> array of {name, status, detail,
+// seconds, output}: every result in a driver's run, see
+// meptest::ParseProtocolOutput.
+/**
+ * @brief Implements mep.test_protocol_parse_output(lines): every test result in a driver's run, with its output.
+ * @param L Lua state; arg 1 is an array of the run's output lines.
+ * @return Number of values pushed (1: array of result tables, in run order).
+ */
+int l_test_protocol_parse_output(lua_State *L) {
+    std::vector<meptest::CtestResult> results = meptest::ParseProtocolOutput(CheckLuaLines(L, 1));
+    lua_createtable(L, static_cast<int>(results.size()), 0);
+    for (size_t i = 0; i < results.size(); i++) {
+        PushCtestResult(L, results[i]);
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+    return 1;
+}
+
+// mep.test_driver_path(name) -> path | nil, err: one of the Tests panel's
+// drivers (assets/test_drivers, embedded at build time by CMakeLists.txt),
+// written under MepDataDir()/test-drivers so a runner can be pointed at a
+// file. Rewritten whenever its text differs, so a new mep never runs an
+// old driver.
+/**
+ * @brief Implements mep.test_driver_path(name): the on-disk path of an embedded test driver, writing it out if needed.
+ * @param L Lua state; arg 1 is the driver's file name (e.g. "python_driver.py").
+ * @return Number of values pushed (1: the path, or 2: nil and an error message).
+ */
+int l_test_driver_path(lua_State *L) {
+    const std::string name = luaL_checkstring(L, 1);
+    const char *text = nullptr;
+    for (const MepTestDriver &d : kMepTestDrivers)
+        if (name == d.name) text = d.text;
+    if (!text) {
+        lua_pushnil(L);
+        lua_pushstring(L, ("no test driver named " + name).c_str());
+        return 2;
+    }
+    const std::string base = MepDataDir();
+    if (base.empty()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "no data directory to write the test driver to");
+        return 2;
+    }
+    const std::filesystem::path dir = std::filesystem::path(base) / "test-drivers";
+    const std::filesystem::path path = dir / name;
+    std::string current;
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (in) current.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (current != text) {
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << text;
+        if (!out) {
+            lua_pushnil(L);
+            lua_pushstring(L, ("could not write " + path.string()).c_str());
+            return 2;
+        }
+    }
+    const std::string p = path.string();
+    lua_pushlstring(L, p.data(), p.size());
     return 1;
 }
 
@@ -14425,6 +14548,10 @@ const luaL_Reg kMepFuncs[] = {
     {"ctest_parse_line", l_ctest_parse_line},
     {"ctest_parse_output", l_ctest_parse_output},
     {"ctest_name_regex", l_ctest_name_regex},
+    {"test_protocol_parse_line", l_test_protocol_parse_line},
+    {"test_protocol_cases", l_test_protocol_cases},
+    {"test_protocol_parse_output", l_test_protocol_parse_output},
+    {"test_driver_path", l_test_driver_path},
     {"syntax_highlight_fallback", l_syntax_highlight_fallback},
     {"org_highlight_emphasis", l_org_highlight_emphasis},
     {"md_toggle_checkbox", l_md_toggle_checkbox},

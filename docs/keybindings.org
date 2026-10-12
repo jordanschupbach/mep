@@ -414,6 +414,11 @@ horizontal/vertical; =mod1+h/j/k/l= move focus to the pane spatially
 left/down/up/right of the current one (picking the one with the most
 overlap along the perpendicular axis, then the closest, the same
 heuristic tmux/i3 use) -- a no-op if there isn't one that way.
+(In a spreadsheet pane, =mod1+arrow= -- the arrow keys, not =hjkl=, which
+mod1 has already claimed above -- resizes the *column and row* the cursor
+is in, the same gesture applied to the grid instead of the layout. See
+[[file:../help/sheets.org][Spreadsheets]].)
+
 =mod1+Shift+h/j/k/l= resizes the current pane that way instead: it grows
 against a neighbor on that side if there is one, otherwise shrinks
 against whichever neighbor it does have on that axis, so opposite keys

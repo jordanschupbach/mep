@@ -835,6 +835,7 @@ add_library(mep_core STATIC
     src/office_rtf.cpp
     src/doc_export.cpp
     src/sheet_doc.cpp
+    src/sheet_view.cpp
     src/sheet_xlsx.cpp
     src/sheet_ods.cpp
     src/office_math.cpp
@@ -2154,6 +2155,22 @@ target_link_options(mep-office-rtf-test PRIVATE ${MEP_SANITIZE_FLAGS})
 target_sources(mep-office-rtf-test PUBLIC FILE_SET CXX_MODULES FILES src/path_util.cppm)
 add_dependencies(tests mep-office-rtf-test)
 
+# The spreadsheet pane's view layer: the display order (filter + sort with
+# the frozen header rows held out of both), the geometry that
+# Editor::ResizeSheetViewport and main.cpp's grid renderer now BOTH read
+# instead of each dividing by a constant of their own, the column stats,
+# find-in-grid, and the apply-the-view-order-to-the-data rewrite. Pure
+# CPU-side -- no window, no font, no GL context -- the same windowless
+# model as mep-notebook-doc-test below. Links regex.cpp for the regex
+# filter, and path_util.cppm because sheet_doc.cpp imports that module.
+add_executable(mep-sheet-view-test EXCLUDE_FROM_ALL src/sheet_view_test.cpp src/sheet_view.cpp
+    src/sheet_doc.cpp src/formula.cpp src/regex.cpp)
+target_include_directories(mep-sheet-view-test PRIVATE src)
+target_compile_options(mep-sheet-view-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-sheet-view-test PRIVATE ${MEP_SANITIZE_FLAGS})
+target_sources(mep-sheet-view-test PUBLIC FILE_SET CXX_MODULES FILES src/path_util.cppm)
+add_dependencies(tests mep-sheet-view-test)
+
 add_executable(mep-notebook-doc-test EXCLUDE_FROM_ALL src/notebook_doc_test.cpp src/notebook_doc.cpp)
 target_include_directories(mep-notebook-doc-test PRIVATE src)
 target_compile_options(mep-notebook-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -2872,7 +2889,7 @@ if(NOT EMSCRIPTEN)
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
         mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test
-        mep-maxima-format-test mep-notebook-doc-test mep-office-rtf-test mep-workspace-test mep-fold-test
+        mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-fold-test
         mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test
         mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test
         mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test

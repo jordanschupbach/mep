@@ -16,7 +16,9 @@
 <p><code>.xlsx</code>, <code>.ods</code> and <code>.csv</code> open as a grid: a real spreadsheet view with
 rows, columns and cell selection.</p>
 <h1>Moving and editing</h1>
-<p>The usual motions move between cells. Type to edit the selected cell.</p>
+<p>The usual motions move between cells. Type to edit the selected cell.
+<code>gg</code> and <code>G</code> go to the first and last row <b>shown</b> -- which, once a sort or
+a filter is on, is not the same as the sheet's first and last row.</p>
 <table>
 <tr><th>Command</th><th>Does</th></tr>
 <tr><td><code>:MepNextSheet</code></td><td>next sheet in the workbook</td></tr>
@@ -24,15 +26,125 @@ rows, columns and cell selection.</p>
 <tr><td><code>mep.sheet_next()</code></td><td>the Lua form</td></tr>
 <tr><td><code>mep.sheet_prev()</code></td><td>the Lua form</td></tr>
 </table>
+<h1>Zoom</h1>
+<p><code>+</code> and <code>-</code> make the grid bigger and smaller -- cells and text together,
+so nothing clips -- and <code>=</code> puts it back to 100%. <code>Ctrl</code> with the mouse
+wheel does the same. The zoom belongs to the pane, so switching between a
+workbook's sheets keeps it. <code>:MepSheetZoom in|out|reset|&lt;percent&gt;</code> sets it
+from the command line, and <code>&lt;leader&gt;Sz</code> resets it.</p>
+<h1>Column widths and row heights</h1>
+<p><code>Alt-Left</code> and <code>Alt-Right</code> narrow and widen the column the cursor is in;
+<code>Alt-Up</code> and <code>Alt-Down</code> make its row shorter and taller. Hold <code>Shift</code> as
+well to size every column or row at once. (The arrow keys, not <code>hjkl</code>:
+<code>Alt-h/j/k/l</code> already move between panes.)</p>
+<p>With the mouse, drag the edge of a column header -- or of a row number --
+to size it, and double-click that edge to fit the column to its contents.</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:MepSheetWidth [col] &lt;px&gt;</code></td><td>set a width; <code>+10</code> / <code>-10</code> adjust, <code>auto</code> fits</td></tr>
+<tr><td><code>:MepSheetHeight [row] &lt;px&gt;</code></td><td>set a row height</td></tr>
+<tr><td><code>:MepSheetAutofit [col\vert all]</code></td><td>fit one column, or every column</td></tr>
+<tr><td><code>&lt;leader&gt;Sw</code></td><td>prompt for this column's width</td></tr>
+<tr><td><code>&lt;leader&gt;Sa</code></td><td>autofit this column</td></tr>
+<tr><td><code>&lt;leader&gt;SA</code></td><td>autofit every column</td></tr>
+</table>
+<p>Autofit measures the widest value it can find, sampling the first few
+thousand rows of a very long file rather than stalling on all of them; it
+says so in the status line when it had to sample.</p>
+<h1>Sorting</h1>
+<p>Sorting is a <b>view</b>: it changes the order rows are shown in and nothing
+else. No cell moves, no formula is rewritten, <code>u</code> is not involved, and
+<code>:w</code> still writes the file in its original order. The row numbers down the
+left stay with their rows, so a sorted sheet shows you exactly which rows
+you are looking at.</p>
+<p>Text sorts case-insensitively, numbers sort as numbers, numbers come
+before text in a mixed column, and blanks go last whichever direction you
+sort in. Equal values keep their original order.</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:MepSheetSort [col] [asc\vert desc] [text\vert num\vert auto]</code></td><td>sort by a column</td></tr>
+<tr><td><code>:MepSheetSortClear</code></td><td>back to the file's own order</td></tr>
+<tr><td><code>&lt;leader&gt;Ss</code> / <code>&lt;leader&gt;SS</code></td><td>sort this column up / down</td></tr>
+<tr><td><code>&lt;leader&gt;Sn</code> / <code>&lt;leader&gt;SN</code></td><td>sort this column numerically, up / down</td></tr>
+<tr><td><code>&lt;leader&gt;Sc</code></td><td>clear the sort</td></tr>
+</table>
+<p>A column argument can be a letter (<code>B</code>, <code>AB</code>) or a 1-based number; leave
+it out and the cursor's column is used.</p>
+<h2>Making it permanent</h2>
+<p><code>:MepSheetApply</code> rewrites the cells into the order you are looking at, so
+<code>:w</code> saves it. That one <b>is</b> an edit -- <code>u</code> undoes it. If a filter is on,
+the rows it is hiding are kept, after the visible ones, rather than
+dropped. If moving a row would move a formula with it, the command stops
+and says so, because nothing here rewrites the references inside a
+formula; <code>:MepSheetApply!</code> goes ahead anyway. <code>&lt;leader&gt;Sp</code> is the same
+thing.</p>
+<h1>Filtering</h1>
+<p>Filters hide rows. Like sorting they are a view: the file is untouched
+until you apply the order. The formula bar shows how many rows survived --
+"12 of 4310 rows" -- so a filtered sheet never looks like the whole file.</p>
+<p>: :MepSheetFilter [col] &lt;op&gt; [value]</p>
+<p>where <code>&lt;op&gt;</code> is one of <code>=</code>, <code>!</code>, <code>~</code> (contains), <code>!~</code> (does not contain),
+<code>&gt;</code>, <code>&lt;</code>, <code>empty</code>, <code>nonempty</code>, or <code>re</code> (a regular expression). Text
+matching ignores case. <code>&gt;</code> and <code>&lt;</code> compare as numbers when you give them
+a number, so <code>:MepSheetFilter C &gt; 100</code> does not drag text values in with
+it, and as text otherwise.</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>:MepSheetFilterClear [col]</code></td><td>clear one column's filter, or all of them</td></tr>
+<tr><td><code>&lt;leader&gt;Sf</code></td><td>prompt for a filter on this column</td></tr>
+<tr><td><code>&lt;leader&gt;SF</code></td><td>clear every filter</td></tr>
+</table>
+<p>One filter per column; filters on different columns all have to pass.</p>
+<h1>The column menu</h1>
+<p>Click a column's letter to open a menu on it: sort, autofit, freeze,
+statistics, and a list of the column's values with a tick box each. Tick
+the ones you want and choose "Apply ticked values as a filter". On a
+column with more distinct values than fit, the list scrolls, and says how
+many it is showing -- use <code>&lt;leader&gt;Sf</code> to filter by text instead. Clicking
+anywhere else closes the menu.</p>
+<p>The column header also shows what is on: <code>^</code> or <code>v</code> for the sort
+direction, and <code>*</code> on a filtered column.</p>
+<h1>Freezing headers</h1>
+<p><code>:MepSheetFreeze [rows] [cols]</code> pins that many leading rows and columns so
+they stay put while the rest scrolls. With no arguments it freezes
+everything above and left of the cursor, which is the quick way to pin a
+header row. Frozen rows are also held out of the sorting and filtering --
+a header is a label, not data. <code>:MepSheetUnfreeze</code> and <code>&lt;leader&gt;SH</code> undo
+it; <code>&lt;leader&gt;Sh</code> freezes at the cursor.</p>
+<h1>Statistics</h1>
+<p><code>&lt;leader&gt;St</code> or <code>:MepSheetStats [col]</code> reports the column's row count,
+how many are non-empty, how many distinct values it holds, and -- for the
+numbers in it -- the sum, mean, minimum and maximum. It describes what is
+currently visible, so a filtered view reports the filtered numbers. In
+Visual mode it describes the selected rows instead.</p>
+<h1>Finding</h1>
+<p><code>/</code> prompts for text and jumps to the next cell containing it; <code>n</code> and
+<code>N</code> go to the next and previous match, wrapping around. It honours
+<code>:set ignorecase</code>, searches the values as shown (so a formula is found by
+its result), and never lands on a row a filter is hiding.
+<code>:MepSheetFind &lt;text&gt;</code> and <code>&lt;leader&gt;S/</code> are the same thing.</p>
 <h1>Formulas</h1>
 <p>mep has its own formula engine, so a cell containing <code>SUM(A1:A10)</code> is
 evaluated rather than shown as text. Formulas recalculate as their inputs
 change.</p>
 <h1>Saving</h1>
-<p><code>:w</code> writes back in the original format -- <code>.xlsx</code> stays <code>.xlsx</code>.</p>
+<p><code>:w</code> writes back in the original format -- <code>.xlsx</code> stays <code>.xlsx</code>. The
+view -- zoom, widths, sort, filters, frozen headers -- is not part of the
+file and is not saved with it.</p>
+<h1>From Lua</h1>
+<p><code>mep.sheet_sort(col, kind, descending)</code>, <code>mep.sheet_sort_clear()</code>,
+<code>mep.sheet_filter(col, op, value)</code>, <code>mep.sheet_filter_clear(col)</code>,
+<code>mep.sheet_freeze(rows, cols)</code>, <code>mep.sheet_zoom(factor)</code>,
+<code>mep.sheet_zoom_reset()</code>, <code>mep.sheet_autofit(col)</code>,
+<code>mep.sheet_col_width(col, px)</code>, <code>mep.sheet_row_height(row, px)</code>,
+<code>mep.sheet_stats(col)</code>, <code>mep.sheet_find(text, forward)</code>,
+<code>mep.sheet_apply()</code>, <code>mep.sheet_cell(row, col)</code> and <code>mep.sheet_info()</code>,
+which returns the cursor, the zoom, the sort, the filters, the row counts
+and the display order in one table. Rows and columns are 1-based.</p>
 <h1>CSV</h1>
 <p>A <code>.csv</code> opens in the same grid, which makes it a comfortable way to read
-data files that are painful as text. Saving writes CSV back.</p>
+data files that are painful as text. Saving writes CSV back -- as values,
+so a formula is saved as its result.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="office.html">Word processor documents</a> -- the other office formats.</li>

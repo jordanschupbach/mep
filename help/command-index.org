@@ -5,7 +5,7 @@
 
 * Every command
 
-All 406 ex commands mep defines: 134 built in and 273 registered from Lua.
+All 419 ex commands mep defines: 147 built in and 273 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -297,6 +297,19 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepRunButtonSetup= | [[file:run-button.html][Running the current file]] |
 | =:MepScratch= | [[file:files.html][Files and buffers]] |
 | =:MepSettings= | [[file:config.html][Configuration]] |
+| =:MepSheetApply= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetAutofit= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetFilter= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetFilterClear= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetFind= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetFreeze= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetHeight= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetSort= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetSortClear= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetStats= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetUnfreeze= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetWidth= | [[file:sheets.html][Spreadsheets]] |
+| =:MepSheetZoom= | [[file:sheets.html][Spreadsheets]] |
 | =:MepSidebars= | [[file:mod1-keys.html][The mod1 layer]] |
 | =:MepSnippetHelp= | [[file:org-notes.html][Note-taking: snippets and highlights]] |
 | =:MepSnippetNext= | [[file:insert-mode.html][Insert and Replace]] |

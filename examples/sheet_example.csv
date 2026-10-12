@@ -1,0 +1,13 @@
+region,rep,units,revenue,status
+West,Alice,120,15400.50,closed
+East,bob,45,5120.00,open
+West,Carol,330,41250.75,closed
+North,dave,,0,stalled
+South,Erin,78,9870.25,open
+East,Frank,210,26500.00,closed
+North,Grace,15,1800.00,open
+West,alice,95,12100.40,open
+South,Heidi,410,52300.90,closed
+East,Ivan,,0,stalled
+North,Judy,180,22900.10,closed
+South,Ken,62,7640.00,open

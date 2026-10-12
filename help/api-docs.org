@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (195)
+* The bindings (210)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -211,8 +211,23 @@ that it does nothing.
 | =mep.pdf_yank= | copies the focused PDF pane's selection to the unnamed |
 | =mep.roam_graph_close= | closes the Roam graph overlay without invoking its on_select callback |
 | =mep.roam_graph_open= | opens the Roam backlink-graph overlay |
+| =mep.sheet_apply= | rewrites the cells into the order the view |
+| =mep.sheet_autofit= | no argument fits every column |
+| =mep.sheet_cell= | the cell's displayed text, as the grid shows |
+| =mep.sheet_col_width= | / mep.sheet_row_height(row [, px]) -- |
+| =mep.sheet_filter= | op is one of the ex-command's tokens |
+| =mep.sheet_filter_clear= | -- |
+| =mep.sheet_find= | moves the cursor to the next |
+| =mep.sheet_freeze= | no arguments freezes everything above and |
+| =mep.sheet_info= | everything about the pane's current state, in one |
 | =mep.sheet_next= | / mep.sheet_prev() -- Lua-reachable equivalent of the |
 | =mep.sheet_prev= | -- |
+| =mep.sheet_row_height= | -- |
+| =mep.sheet_sort= | kind is 'auto' (default), 'text' |
+| =mep.sheet_sort_clear= | -- |
+| =mep.sheet_stats= | table of counts and, for a numeric column, |
+| =mep.sheet_zoom= | multiplies by `factor`, or resets when given |
+| =mep.sheet_zoom_reset= | -- |
 
 * See also
 

@@ -6,6 +6,7 @@
 #include "indent.h"
 #include "lua_env.h"
 #include "job.h"
+#include "formula.h"
 #include "frame_activity.h"
 #include "regex.h"
 #include "vterm.h"
@@ -6072,9 +6073,24 @@ void Editor::WheelScrollSheet(float dx, float dy) {
     // No upper clamp beyond 0, matching HandleSheetNormalInput's own hjkl
     // (a sheet has no fixed bottom-right corner to stop at -- see its own
     // comment).
+    // Ctrl+wheel zooms, the gesture every other grid and document viewer
+    // uses, and takes the whole notch -- a zoom gesture must not also
+    // scroll, or the cell under the pointer walks away as it magnifies.
+    if (gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl)) {
+        if (dy != 0.0f) SheetZoomBy(CurPane().buffer_id, dy > 0.0f ? kSheetZoomStep : 1.0f / kSheetZoomStep);
+        return;
+    }
     if (dy != 0.0f) {
         int steps = WheelSteps(wheel_accum_sheet_row_, -dy, kWheelLinesPerNotch);
-        if (steps != 0) sess.cursor_row = std::max(0, sess.cursor_row + steps);
+        // Through the display order like every other row motion, or the
+        // wheel would scroll onto rows a filter is hiding.
+        if (steps != 0) {
+            if (SheetView *sview = SheetViewMutable(CurPane().buffer_id)) {
+                MoveSheetCursorRows(sess, *sview, steps);
+            } else {
+                sess.cursor_row = std::max(0, sess.cursor_row + steps);
+            }
+        }
     }
     if (dx != 0.0f) {
         int steps = WheelSteps(wheel_accum_sheet_col_, dx, kWheelColsPerNotch);
@@ -16899,20 +16915,546 @@ const SheetSession *Editor::GetSheet(int buffer_id) const {
     return it == sheetdocs_.end() ? nullptr : &it->second;
 }
 
+// Grows SheetSession::views to cover every sheet in the workbook. Called
+// before anything reads a view, rather than at load time only, because a
+// workbook's sheet list is fixed for the session's lifetime but a session
+// can be constructed (undo swap, a freshly-opened buffer) without passing
+// through the loader.
+/**
+ * @brief Ensures a session has one SheetView per sheet in its workbook.
+ * @param sess The session to fix up.
+ */
+void Editor::EnsureSheetViews(SheetSession &sess) {
+    if (sess.views.size() != sess.wb.sheets.size()) sess.views.resize(sess.wb.sheets.size());
+    if (sess.active_sheet < 0) sess.active_sheet = 0;
+    if (!sess.wb.sheets.empty() && static_cast<size_t>(sess.active_sheet) >= sess.wb.sheets.size()) {
+        sess.active_sheet = static_cast<int>(sess.wb.sheets.size()) - 1;
+    }
+}
+
+// The cursor must always be on a row that is actually displayed -- not
+// merely for the look of it: `i`/`a` seed the edit buffer from
+// cursor_row/cursor_col and commit straight back there, so a cursor
+// parked on a row a filter hid would silently edit a cell that is not on
+// screen. Called at the end of every view-spec change and after every
+// order rebuild.
+/**
+ * @brief Moves a sheet cursor onto a visible row if the display order no longer shows the one it is on.
+ * @param sess The session whose cursor to re-snap.
+ */
+void Editor::ReclampSheetCursor(SheetSession &sess) {
+    EnsureSheetViews(sess);
+    if (sess.wb.sheets.empty()) return;
+    SheetView &view = sess.views[static_cast<size_t>(sess.active_sheet)];
+    EnsureSheetOrder(view, sess.wb, sess.active_sheet);
+    const int count = SheetDisplayCount(view);
+    if (count <= 0) {
+        sess.cursor_row = 0;
+        return;
+    }
+    if (SheetDisplayOfRow(view, sess.cursor_row) >= 0) return;
+    const int disp = SheetNearestVisibleDisplay(view, sess.cursor_row);
+    const int row = SheetRowAtDisplay(view, disp);
+    if (row >= 0) sess.cursor_row = row;
+}
+
+// Moves a sheet cursor by whole DISPLAY rows. Stepping cursor_row itself
+// is wrong the moment a filter or a sort is active: `j` would walk onto a
+// row that is not on screen, and the next `i` would edit a cell the user
+// cannot see. Shared by hjkl/arrows, Ctrl-D/U and the mouse wheel so all
+// three agree.
+/**
+ * @brief Moves a sheet session's cursor by a number of display rows, skipping rows the view hides.
+ * @param sess The session whose cursor to move.
+ * @param view The active sheet's view, supplying the display order.
+ * @param delta Display rows to move by; negative moves up.
+ */
+void Editor::MoveSheetCursorRows(SheetSession &sess, SheetView &view, int delta) {
+    if (delta == 0) return;
+    EnsureSheetOrder(view, sess.wb, sess.active_sheet);
+    const int count = SheetDisplayCount(view);
+    if (count <= 0) {
+        sess.cursor_row = std::max(0, sess.cursor_row + delta);
+        return;
+    }
+    int disp = SheetDisplayOfRow(view, sess.cursor_row);
+    if (disp < 0) disp = SheetNearestVisibleDisplay(view, sess.cursor_row);
+    int next = std::max(0, disp + delta);
+    if (next > count - 1) {
+        // Past the last displayed row. With no sort or filter the display
+        // index *is* the sheet row, so walking off the end is the existing
+        // "navigate to an empty cell and start typing there" behaviour and
+        // is kept. With the view reordered there is no such row to land
+        // on -- row N of a sorted view is not row N of the sheet -- so the
+        // cursor stops at the end instead.
+        if (view.sort.col < 0 && view.filters.empty()) {
+            sess.cursor_row = next;
+            return;
+        }
+        next = count - 1;
+    }
+    const int row = SheetRowAtDisplay(view, next);
+    if (row >= 0) sess.cursor_row = row;
+}
+
+// Alt+Left/Right and Alt+Up/Down, the spreadsheet equivalent of
+// mod1+Shift+hjkl resizing a pane. Sizes are stored unzoomed, so a column
+// widened at 2x zoom is still that much wider when the zoom goes back to
+// 1 -- the user resized the column, not the picture of it.
+/**
+ * @brief Widens or narrows a sheet column by one step.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param delta Unzoomed pixels to add; negative narrows.
+ * @param all_cols Apply to every column in the used range instead of the cursor's.
+ */
+void Editor::SheetStepColWidth(int buffer_id, int delta, bool all_cols) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return;
+    const int last = all_cols ? sess->wb.sheets[static_cast<size_t>(sess->active_sheet)].max_col : sess->cursor_col;
+    const int first = all_cols ? 0 : sess->cursor_col;
+    for (int c = first; c <= last; c++) SheetSetColWidth(*sview, c, SheetStoredColWidth(*sview, c) + delta);
+    const int shown = SheetStoredColWidth(*sview, sess->cursor_col);
+    status_message_ = "column " + ColumnIndexToLetters(sess->cursor_col) + ": " + std::to_string(shown) + "px" +
+                      (all_cols ? " (all columns)" : "");
+}
+
+/**
+ * @brief Makes a sheet row taller or shorter by one step.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param delta Unzoomed pixels to add; negative shortens.
+ * @param all_rows Apply to every row in the used range instead of the cursor's.
+ */
+void Editor::SheetStepRowHeight(int buffer_id, int delta, bool all_rows) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return;
+    if (all_rows) {
+        // Every row in the used range, which is also the only way to
+        // change the *default* -- a per-row override map cannot express
+        // "and every row I have not visited yet".
+        const int rows = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)].max_row;
+        for (int r = 0; r <= rows; r++) SheetSetRowHeight(*sview, r, SheetStoredRowHeight(*sview, r) + delta);
+    } else {
+        SheetSetRowHeight(*sview, sess->cursor_row, SheetStoredRowHeight(*sview, sess->cursor_row) + delta);
+    }
+    const int shown = SheetStoredRowHeight(*sview, sess->cursor_row);
+    status_message_ = "row " + std::to_string(sess->cursor_row + 1) + ": " + std::to_string(shown) + "px" +
+                      (all_rows ? " (all rows)" : "");
+}
+
+// `+`/`-`/`=` in a sheet pane, the same keys and the same meaning as in
+// the image and PDF panes -- except that a grid zoom scales the cell
+// geometry *and* the cell font together, so a zoomed-in sheet shows fewer,
+// bigger cells rather than the same cells with clipped text.
+/**
+ * @brief Multiplies a sheet pane's zoom by a factor, clamped to the supported range.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param factor Factor to multiply by; below 1 zooms out.
+ */
+void Editor::SheetZoomBy(int buffer_id, float factor) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess) return;
+    sess->zoom = ClampSheetZoom(sess->zoom * factor);
+    status_message_ = "sheet zoom " + std::to_string(static_cast<int>(std::lround(sess->zoom * 100.0f))) + "%";
+}
+
+/**
+ * @brief Resets a sheet pane's zoom to 1.0.
+ * @param buffer_id The spreadsheet buffer id.
+ */
+void Editor::SheetZoomReset(int buffer_id) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess) return;
+    sess->zoom = 1.0f;
+    status_message_ = "sheet zoom 100%";
+}
+
+// ---- Sheet view operations ------------------------------------------
+//
+// Every one of these is reachable three ways -- an ex-command, a <leader>
+// mapping, and the column-header menu -- and they all land here rather
+// than each surface doing its own thing, so the three can never disagree
+// about what "sort this column" means.
+//
+// Sorting and filtering change `views`, never a Cell. That is the whole
+// contract: :w writes the file in its original order no matter how the
+// grid is currently arranged, and only :MepSheetApply (below) turns the
+// arrangement into data.
+
+/**
+ * @brief Sorts a sheet column in the view, leaving the cells untouched.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param col Zero-based column to sort by; negative uses the cursor's column.
+ * @param kind Text, numeric, or auto-detect.
+ * @param descending Whether to reverse the order.
+ */
+void Editor::SheetSortColumn(int buffer_id, int col, SheetSortKind kind, bool descending) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return;
+    const int target = col < 0 ? sess->cursor_col : col;
+    sview->sort = SheetSort{target, kind, descending};
+    MarkSheetOrderDirty(*sview);
+    RebuildSheetOrder(*sview, sess->wb, sess->active_sheet);
+    ReclampSheetCursor(*sess);
+    status_message_ = "sorted by column " + ColumnIndexToLetters(target) + (descending ? " (descending)" : " (ascending)") +
+                      " -- view only, :w still writes the original order";
+}
+
+/**
+ * @brief Removes a sheet's sort, returning the display to the file's own row order.
+ * @param buffer_id The spreadsheet buffer id.
+ */
+void Editor::SheetSortClear(int buffer_id) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return;
+    sview->sort = SheetSort{};
+    MarkSheetOrderDirty(*sview);
+    RebuildSheetOrder(*sview, sess->wb, sess->active_sheet);
+    ReclampSheetCursor(*sess);
+    status_message_ = "sort cleared";
+}
+
+/**
+ * @brief Adds a row filter to a sheet's view.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param filter The predicate to add; filters already on that column are replaced.
+ */
+void Editor::SheetAddFilter(int buffer_id, const SheetFilter &filter) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return;
+    // One filter per column: a second predicate on the same column is
+    // nearly always a correction of the first ("no, contains 'west'"),
+    // not an additional condition, and silently ANDing them is how a
+    // filter ends up showing nothing for no visible reason.
+    for (size_t i = 0; i < sview->filters.size();) {
+        if (sview->filters[i].col == filter.col) {
+            sview->filters.erase(sview->filters.begin() + static_cast<long>(i));
+        } else {
+            i++;
+        }
+    }
+    sview->filters.push_back(filter);
+    MarkSheetOrderDirty(*sview);
+    RebuildSheetOrder(*sview, sess->wb, sess->active_sheet);
+    ReclampSheetCursor(*sess);
+    const int shown = sview->visible_rows;
+    const int total = sview->total_rows;
+    status_message_ = "filter on column " + ColumnIndexToLetters(filter.col) + ": showing " + std::to_string(shown) +
+                      " of " + std::to_string(total) + " rows";
+    if (shown <= sview->freeze_rows) status_message_ += " -- nothing matched";
+}
+
+/**
+ * @brief Removes a sheet's filters.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param col Only clear this column's filter; -1 clears every filter.
+ */
+void Editor::SheetClearFilters(int buffer_id, int col) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return;
+    if (col < 0) {
+        sview->filters.clear();
+    } else {
+        for (size_t i = 0; i < sview->filters.size();) {
+            if (sview->filters[i].col == col) {
+                sview->filters.erase(sview->filters.begin() + static_cast<long>(i));
+            } else {
+                i++;
+            }
+        }
+    }
+    MarkSheetOrderDirty(*sview);
+    RebuildSheetOrder(*sview, sess->wb, sess->active_sheet);
+    ReclampSheetCursor(*sess);
+    status_message_ = "filters cleared -- showing all " + std::to_string(sview->total_rows) + " rows";
+}
+
+/**
+ * @brief Pins a sheet's leading rows and columns so they stay put while the rest scrolls.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param rows Number of leading rows to pin; negative pins up to the cursor.
+ * @param cols Number of leading columns to pin; negative pins up to the cursor.
+ */
+void Editor::SheetFreeze(int buffer_id, int rows, int cols) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return;
+    sview->freeze_rows = std::max(0, rows < 0 ? sess->cursor_row : rows);
+    sview->freeze_cols = std::max(0, cols < 0 ? sess->cursor_col : cols);
+    // Frozen rows are held out of the sort and the filters, so changing
+    // the freeze changes the display order, not just where things are
+    // drawn.
+    MarkSheetOrderDirty(*sview);
+    RebuildSheetOrder(*sview, sess->wb, sess->active_sheet);
+    ReclampSheetCursor(*sess);
+    if (sview->freeze_rows == 0 && sview->freeze_cols == 0) {
+        status_message_ = "header rows and columns unfrozen";
+    } else {
+        status_message_ = "frozen: " + std::to_string(sview->freeze_rows) + " row(s), " +
+                          std::to_string(sview->freeze_cols) + " column(s)";
+    }
+}
+
+/**
+ * @brief Sets one sheet column's width, in unzoomed pixels.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param col Zero-based column.
+ * @param px Desired width; clamped to the supported range.
+ */
+void Editor::SheetSetColumnWidth(int buffer_id, int col, int px) {
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sview || col < 0) return;
+    SheetSetColWidth(*sview, col, px);
+}
+
+/**
+ * @brief Sets one sheet row's height, in unzoomed pixels.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param row Zero-based sheet row.
+ * @param px Desired height; clamped to the supported range.
+ */
+void Editor::SheetSetRowHeightPx(int buffer_id, int row, int px) {
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sview || row < 0) return;
+    SheetSetRowHeight(*sview, row, px);
+}
+
+/**
+ * @brief Asks the renderer to size columns to their content on its next frame.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param col Column to fit, or -1 for every column.
+ *
+ * Autofit needs to measure text, which needs a font and a GL context, so
+ * it cannot happen here. The request is parked on the session and
+ * main.cpp's DrawPane consumes it on the next frame -- the same
+ * "editor.cpp asks, main.cpp measures, a setter brings the answer back"
+ * split as SetOfficeCursorWrapLines.
+ */
+void Editor::SheetRequestAutofit(int buffer_id, int col) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess) return;
+    sess->autofit_request = col;
+    sess->autofit_pending = true;
+}
+
+/**
+ * @brief Reports a column's statistics in the status line.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param col Column to summarize; negative uses the cursor's column.
+ */
+void Editor::SheetReportStats(int buffer_id, int col) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return;
+    EnsureSheetOrder(*sview, sess->wb, sess->active_sheet);
+    const int target = col < 0 ? sess->cursor_col : col;
+    // A Visual selection means "these rows"; otherwise the whole column,
+    // minus the frozen header rows -- a header is a label, not a value,
+    // and counting it would put every column's distinct count one too
+    // high and make a numeric column look like it has a stray text cell.
+    int d0 = sview->freeze_rows;
+    int d1 = SheetDisplayCount(*sview) - 1;
+    if (mode_ == Mode::SheetVisual && sess->has_selection) {
+        const int a = SheetDisplayOfRow(*sview, sess->sel_anchor_row);
+        const int b = SheetDisplayOfRow(*sview, sess->cursor_row);
+        if (a >= 0 && b >= 0) {
+            d0 = std::min(a, b);
+            d1 = std::max(a, b);
+        }
+    }
+    const SheetColumnStats st = SheetComputeStats(sess->wb, sess->active_sheet, *sview, target, d0, d1);
+    /**
+     * @brief Formats a double the way the grid would show it (trimmed, no trailing zeros).
+     * @param v The value to format.
+     * @return The formatted text.
+     */
+    auto num = [](double v) {
+        CellValue cv;
+        cv.kind = CellKind::Number;
+        cv.number = v;
+        return FormatCellValue(cv);
+    };
+    std::string msg = ColumnIndexToLetters(target) + ": " + std::to_string(st.count) + " rows, " +
+                      std::to_string(st.nonempty) + " non-empty, " + std::to_string(st.distinct) + " distinct";
+    if (st.numeric > 0) {
+        msg += " | " + std::to_string(st.numeric) + " numeric: sum " + num(st.sum) + ", mean " + num(st.mean) +
+               ", min " + num(st.min) + ", max " + num(st.max);
+    }
+    status_message_ = msg;
+}
+
+/**
+ * @brief Finds the next cell whose text contains a query and moves the cursor to it.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param query Text to look for; empty repeats the last query.
+ * @param forward Search direction.
+ * @return True if a match was found.
+ */
+bool Editor::SheetFind(int buffer_id, const std::string &query, bool forward) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return false;
+    if (!query.empty()) sess->find_query = query;
+    if (sess->find_query.empty()) {
+        status_message_ = "E: no previous sheet search";
+        return false;
+    }
+    EnsureSheetOrder(*sview, sess->wb, sess->active_sheet);
+    int from_disp = SheetDisplayOfRow(*sview, sess->cursor_row);
+    if (from_disp < 0) from_disp = SheetNearestVisibleDisplay(*sview, sess->cursor_row);
+    int disp = 0, col = 0;
+    if (!SheetFindNext(sess->wb, sess->active_sheet, *sview, sess->find_query, ignore_case_, from_disp, sess->cursor_col,
+                       forward, &disp, &col)) {
+        status_message_ = "E486: Pattern not found: " + sess->find_query;
+        return false;
+    }
+    const int row = SheetRowAtDisplay(*sview, disp);
+    if (row >= 0) sess->cursor_row = row;
+    sess->cursor_col = col;
+    status_message_ = "/" + sess->find_query + "  " + ColumnIndexToLetters(col) + std::to_string(row + 1);
+    return true;
+}
+
+/**
+ * @brief Rewrites a sheet's cells into the order the view is showing them in.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param force Proceed even when a row holding a formula would move.
+ * @return True if anything changed.
+ */
+bool Editor::SheetApplyViewOrder(int buffer_id, bool force) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview) return false;
+    EnsureSheetOrder(*sview, sess->wb, sess->active_sheet);
+    if (!force && SheetApplyWouldMoveFormula(sess->wb, sess->active_sheet, *sview)) {
+        // Moving a row does not rewrite the relative references inside its
+        // formulas, so this would quietly produce a sheet whose numbers
+        // are wrong rather than one that is merely reordered.
+        status_message_ = "E: a row with a formula would move -- :MepSheetApply! to do it anyway";
+        return false;
+    }
+    PushUndoSheet();
+    const SheetApplyResult res = SheetApplyOrderToData(sess->wb, sess->active_sheet, *sview);
+    if (!res.changed) {
+        // Nothing moved, so the undo level would be a no-op the user has
+        // to press `u` through later.
+        if (!sess->undo_stack.empty()) sess->undo_stack.pop_back();
+        status_message_ = "the file is already in this order";
+        return false;
+    }
+    sess->modified = true;
+    RebuildSheetOrder(*sview, sess->wb, sess->active_sheet);
+    ReclampSheetCursor(*sess);
+    status_message_ = "applied: " + std::to_string(res.moved_rows) + " row(s) moved";
+    if (res.hidden_rows > 0) {
+        // Never leave this implicit: the user is looking at a filtered
+        // view and has just rewritten the whole file.
+        status_message_ += ", " + std::to_string(res.hidden_rows) + " filtered-out row(s) kept at the end";
+    }
+    status_message_ += " -- :w to save";
+    return true;
+}
+
+/**
+ * @brief Moves a sheet cursor to a clicked cell, optionally extending a Visual range to it.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param row Zero-based sheet row that was clicked.
+ * @param col Zero-based column that was clicked.
+ * @param extend Extend the current selection instead of starting a new one (a drag).
+ */
+void Editor::SheetSetCursorFromMouse(int buffer_id, int row, int col, bool extend) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess) return;
+    if (extend) {
+        // A drag past the first cell turns the click into a range, the
+        // same way dragging in a text buffer does. The anchor is whatever
+        // the press put the cursor on.
+        if (!sess->has_selection) {
+            sess->has_selection = true;
+            sess->sel_anchor_row = sess->cursor_row;
+            sess->sel_anchor_col = sess->cursor_col;
+        }
+        if (row != sess->cursor_row || col != sess->cursor_col) mode_ = Mode::SheetVisual;
+    } else {
+        sess->has_selection = false;
+        if (mode_ == Mode::SheetVisual) mode_ = Mode::SheetNormal;
+    }
+    sess->cursor_row = std::max(0, row);
+    sess->cursor_col = std::max(0, col);
+}
+
 void Editor::ResizeSheetViewport(int buffer_id, int w, int h) {
     auto it = sheetdocs_.find(buffer_id);
     if (it == sheetdocs_.end()) return;
     SheetSession &sess = it->second;
     sess.viewport_w = w;
     sess.viewport_h = h;
-    int visible_rows = std::max(1, h / kSheetRowHeight);
-    int visible_cols = std::max(1, (w - kSheetRowHeaderW) / kSheetColWidth);
-    if (sess.cursor_row < sess.scroll_row) sess.scroll_row = sess.cursor_row;
-    if (sess.cursor_row >= sess.scroll_row + visible_rows) sess.scroll_row = sess.cursor_row - visible_rows + 1;
-    if (sess.cursor_col < sess.scroll_col) sess.scroll_col = sess.cursor_col;
-    if (sess.cursor_col >= sess.scroll_col + visible_cols) sess.scroll_col = sess.cursor_col - visible_cols + 1;
-    sess.scroll_row = std::max(0, sess.scroll_row);
+    EnsureSheetViews(sess);
+    if (sess.wb.sheets.empty()) return;
+    SheetView &view = sess.views[static_cast<size_t>(sess.active_sheet)];
+
+    // The display order is rebuilt here, once, if something marked it
+    // stale -- never per keystroke and never per frame. Typing into a
+    // brand-new row grows the sheet's used range, which the order has to
+    // notice, so that is checked too.
+    if (view.order_dirty || view.total_rows != sess.wb.sheets[static_cast<size_t>(sess.active_sheet)].max_row + 1) {
+        RebuildSheetOrder(view, sess.wb, sess.active_sheet);
+        ReclampSheetCursor(sess);
+    }
+
+    const SheetGeom geom = MakeSheetGeom(view, sess.zoom);
+    const SheetPaneMetrics m = SheetMeasurePane(geom, w, h);
+    int cursor_disp = SheetDisplayOfRow(view, sess.cursor_row);
+    if (cursor_disp < 0) cursor_disp = SheetNearestVisibleDisplay(view, sess.cursor_row);
+    SheetFollowCursor(geom, &sess.scroll_disp, &sess.scroll_col, cursor_disp, sess.cursor_col, m.avail_w, m.avail_h);
+    // A shrinking sheet (undo back to a smaller used range) can leave the
+    // scroll origin past the end of the display order.
+    const int count = SheetDisplayCount(view);
+    sess.scroll_disp = std::max(0, std::min(sess.scroll_disp, std::max(0, count - 1)));
     sess.scroll_col = std::max(0, sess.scroll_col);
+}
+
+void Editor::SetSheetFontMetrics(int buffer_id, float line_height) {
+    auto it = sheetdocs_.find(buffer_id);
+    if (it == sheetdocs_.end()) return;
+    SheetSession &sess = it->second;
+    EnsureSheetViews(sess);
+    if (sess.wb.sheets.empty()) return;
+    SheetView &view = sess.views[static_cast<size_t>(sess.active_sheet)];
+    // Only a real change counts: this arrives every frame, and treating
+    // float jitter as a change would invalidate geometry continuously.
+    if (std::abs(view.font_line_height - line_height) > 0.01f) view.font_line_height = line_height;
+}
+
+SheetSession *Editor::GetSheetMutable(int buffer_id) {
+    auto it = sheetdocs_.find(buffer_id);
+    return it == sheetdocs_.end() ? nullptr : &it->second;
+}
+
+SheetView *Editor::SheetViewMutable(int buffer_id) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess) return nullptr;
+    EnsureSheetViews(*sess);
+    if (sess->wb.sheets.empty()) return nullptr;
+    return &sess->views[static_cast<size_t>(sess->active_sheet)];
+}
+
+const SheetView *Editor::SheetViewFor(int buffer_id) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess) return nullptr;
+    EnsureSheetViews(*sess);
+    if (sess->wb.sheets.empty()) return nullptr;
+    SheetView &view = sess->views[static_cast<size_t>(sess->active_sheet)];
+    // Non-const despite the const return: like EvaluateSheetCell, this
+    // brings cached state up to date on demand rather than handing back
+    // something stale, and the caller (main.cpp's renderer) only reads it.
+    EnsureSheetOrder(view, sess->wb, sess->active_sheet);
+    return &view;
 }
 
 CellValue Editor::EvaluateSheetCell(int buffer_id, int row, int col) {
@@ -16975,6 +17517,10 @@ void Editor::HandleSheetNormalInput() {
     }
     if (sess->wb.sheets.empty()) return;
     const Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
+    // The active sheet's view -- how it is shown, and (through its display
+    // order) which rows the motions below are allowed to land on. Named
+    // sview rather than view because view_scene.h owns a `view` namespace.
+    SheetView *sview = SheetViewMutable(CurPane().buffer_id);
 
     // 2D grid navigation -- h/l move columns, j/k move rows (unlike
     // Office's 1D paragraph navigation). No upper clamp beyond 0 --
@@ -16987,10 +17533,30 @@ void Editor::HandleSheetNormalInput() {
      * @return True if the key is freshly pressed or repeating this frame.
      */
     auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
-    if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
-    if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->cursor_col++;
-    if (held(gfx::Key::J) || held(gfx::Key::Down)) sess->cursor_row++;
-    if (held(gfx::Key::K) || held(gfx::Key::Up)) sess->cursor_row = std::max(0, sess->cursor_row - 1);
+    // Alt+arrows resize the cursor's column/row (the sheet-pane answer to
+    // mod1+Shift+hjkl resizing a pane). The bare-arrow motions below must
+    // not also fire while Alt is held, or widening a column would walk the
+    // cursor sideways at the keyboard's auto-repeat rate. Alt+hjkl never
+    // arrives here at all -- mod1 defaults to Alt and claims those for
+    // pane navigation before mode dispatch -- so the arrow forms are the
+    // only ones, which is worth knowing when reading the help.
+    const bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+    const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+    if (alt) {
+        if (held(gfx::Key::Left)) SheetStepColWidth(CurPane().buffer_id, -kSheetColWidthStep, shift);
+        if (held(gfx::Key::Right)) SheetStepColWidth(CurPane().buffer_id, kSheetColWidthStep, shift);
+        if (held(gfx::Key::Up)) SheetStepRowHeight(CurPane().buffer_id, -kSheetRowHeightStep, shift);
+        if (held(gfx::Key::Down)) SheetStepRowHeight(CurPane().buffer_id, kSheetRowHeightStep, shift);
+    } else {
+        if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+        if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->cursor_col++;
+        // Row motion goes through the display order, so j/k step over rows
+        // a filter hides instead of landing on them.
+        if (sview) {
+            if (held(gfx::Key::J) || held(gfx::Key::Down)) MoveSheetCursorRows(*sess, *sview, 1);
+            if (held(gfx::Key::K) || held(gfx::Key::Up)) MoveSheetCursorRows(*sess, *sview, -1);
+        }
+    }
 
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
@@ -17000,16 +17566,45 @@ void Editor::HandleSheetNormalInput() {
         } else if (cp == static_cast<int>(leader_key_) && !whichkey_bindings_.empty()) {
             TriggerWhichKey();
             return;
+        } else if (cp == '/') {
+            // Find-in-grid. A prompt rather than a mode of its own: the
+            // editor already has one that draws, edits and cancels
+            // correctly, and a sheet does not need a second.
+            pending_g_ = false;
+            if (lua_) lua_->DoString("mep.sheet_find_prompt()");
+            return;
+        } else if (cp == 'n' || cp == 'N') {
+            // Repeat the last find forwards/backwards, as in a text
+            // buffer -- except over the display order, so `n` never lands
+            // on a row a filter is hiding.
+            pending_g_ = false;
+            SheetFind(CurPane().buffer_id, "", cp == 'n');
         } else if (cp == 'g') {
             if (pending_g_) {
                 pending_g_ = false;
-                sess->cursor_row = 0;
+                // The first row *shown*, not sheet row 0: in a sorted or
+                // filtered view that row is somewhere in the middle, or
+                // hidden altogether.
+                const int row = sview ? SheetRowAtDisplay(*sview, 0) : 0;
+                sess->cursor_row = row < 0 ? 0 : row;
             } else {
                 pending_g_ = true;
             }
         } else if (cp == 'G') {
             pending_g_ = false;
-            sess->cursor_row = sh.max_row;
+            // Likewise the last row shown, which in a filtered view is the
+            // last row that passed the filter, not the sheet's last row.
+            const int last = sview ? SheetRowAtDisplay(*sview, SheetDisplayCount(*sview) - 1) : sh.max_row;
+            sess->cursor_row = last < 0 ? sh.max_row : last;
+        } else if (cp == '+') {
+            pending_g_ = false;
+            SheetZoomBy(CurPane().buffer_id, kSheetZoomStep);
+        } else if (cp == '-') {
+            pending_g_ = false;
+            SheetZoomBy(CurPane().buffer_id, 1.0f / kSheetZoomStep);
+        } else if (cp == '=') {
+            pending_g_ = false;
+            SheetZoomReset(CurPane().buffer_id);
         } else if (cp == '0') {
             pending_g_ = false;
             sess->cursor_col = 0;
@@ -17040,6 +17635,10 @@ void Editor::HandleSheetNormalInput() {
             pending_g_ = false;
             PushUndoSheet();
             SetCellRaw(sess->wb, sess->active_sheet, sess->cursor_row, sess->cursor_col, "");
+            // The order is only restamped, not rebuilt here: a live resort
+            // would teleport the cursor away from the cell just edited.
+            // ResizeSheetViewport rebuilds on the next frame.
+            if (sview) MarkSheetOrderDirty(*sview);
             sess->modified = true;
         } else if (cp == 'u') {
             pending_g_ = false;
@@ -17061,11 +17660,19 @@ void Editor::HandleSheetNormalInput() {
     if (gfx::IsKeyPressed(gfx::Key::PageUp) && ctrl) {
         PrevSheet();
     }
-    if (ctrl && held(gfx::Key::D)) {
-        sess->cursor_row += std::max(1, sess->viewport_h / kSheetRowHeight / 2);
-    }
-    if (ctrl && held(gfx::Key::U)) {
-        sess->cursor_row = std::max(0, sess->cursor_row - std::max(1, sess->viewport_h / kSheetRowHeight / 2));
+    if (ctrl && (held(gfx::Key::D) || held(gfx::Key::U))) {
+        // Half a screen of *display* rows, measured in pixels rather than
+        // divided out of a constant: with per-row heights and a zoom, a
+        // row count is not a height. Moves through the display order, so a
+        // half-page in a filtered sheet skips the hidden rows instead of
+        // landing on one.
+        if (sview) {
+            const SheetGeom geom = MakeSheetGeom(*sview, sess->zoom);
+            const SheetPaneMetrics m = SheetMeasurePane(geom, sess->viewport_w, sess->viewport_h);
+            const int page = std::max(1, SheetVisibleRows(geom, m.avail_h, sess->scroll_disp) / 2);
+            const int delta = held(gfx::Key::D) ? page : -page;
+            MoveSheetCursorRows(*sess, *sview, delta);
+        }
     }
 }
 
@@ -17093,6 +17700,13 @@ void ClampSheetCursorAfterSwap(SheetSession &sess) {
     const Sheet &sh = sess.wb.sheets[static_cast<size_t>(sess.active_sheet)];
     sess.cursor_row = std::clamp(sess.cursor_row, 0, sh.max_row);
     sess.cursor_col = std::clamp(sess.cursor_col, 0, sh.max_col);
+    // Every display order in the session is now suspect, not just the
+    // active sheet's: an undo swaps the whole Workbook, and an older one
+    // can have a smaller used range than the order was built from. The
+    // views themselves (widths, sort, filters) deliberately survive --
+    // they are not part of the undo snapshot, because sorting is not an
+    // edit -- but what they *derive* has to be recomputed.
+    for (SheetView &view : sess.views) MarkSheetOrderDirty(view);
 }
 }  // namespace
 
@@ -17173,6 +17787,13 @@ void Editor::HandleSheetInsertInput() {
         sess->modified = true;
         sess->editing = false;
         mode_ = Mode::SheetNormal;
+        // Restamp, don't rebuild: a live resort in the middle of typing
+        // would move the row out from under the cursor on every commit.
+        // ResizeSheetViewport rebuilds on the next frame, and the cursor
+        // tracks its *sheet* row, so it stays on the cell just edited
+        // even if the new value sorts it somewhere else -- scroll-follow
+        // then brings it back into view rather than stranding it.
+        if (SheetView *sview = SheetViewMutable(CurPane().buffer_id)) MarkSheetOrderDirty(*sview);
     };
     if (escape) {
         commit();
@@ -17180,7 +17801,14 @@ void Editor::HandleSheetInsertInput() {
     }
     if (enter) {
         commit();
-        sess->cursor_row++;  // real-spreadsheet "Enter commits and advances" convention
+        // Real-spreadsheet "Enter commits and advances" -- by a display
+        // row, so advancing in a filtered sheet lands on the next row the
+        // user can actually see.
+        if (SheetView *sview = SheetViewMutable(CurPane().buffer_id)) {
+            MoveSheetCursorRows(*sess, *sview, 1);
+        } else {
+            sess->cursor_row++;
+        }
         return;
     }
 
@@ -17224,6 +17852,10 @@ void Editor::HandleSheetVisualInput() {
         return;
     }
     const Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
+    // The active sheet's view -- how it is shown, and (through its display
+    // order) which rows the motions below are allowed to land on. Named
+    // sview rather than view because view_scene.h owns a `view` namespace.
+    SheetView *sview = SheetViewMutable(CurPane().buffer_id);
 
     /**
      * @brief Checks whether a key was just pressed or is auto-repeating.
@@ -17231,23 +17863,59 @@ void Editor::HandleSheetVisualInput() {
      * @return True if the key is freshly pressed or repeating this frame.
      */
     auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
-    if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
-    if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->cursor_col++;
-    if (held(gfx::Key::J) || held(gfx::Key::Down)) sess->cursor_row++;
-    if (held(gfx::Key::K) || held(gfx::Key::Up)) sess->cursor_row = std::max(0, sess->cursor_row - 1);
+    // Alt+arrows resize the cursor's column/row (the sheet-pane answer to
+    // mod1+Shift+hjkl resizing a pane). The bare-arrow motions below must
+    // not also fire while Alt is held, or widening a column would walk the
+    // cursor sideways at the keyboard's auto-repeat rate. Alt+hjkl never
+    // arrives here at all -- mod1 defaults to Alt and claims those for
+    // pane navigation before mode dispatch -- so the arrow forms are the
+    // only ones, which is worth knowing when reading the help.
+    const bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+    const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+    if (alt) {
+        if (held(gfx::Key::Left)) SheetStepColWidth(CurPane().buffer_id, -kSheetColWidthStep, shift);
+        if (held(gfx::Key::Right)) SheetStepColWidth(CurPane().buffer_id, kSheetColWidthStep, shift);
+        if (held(gfx::Key::Up)) SheetStepRowHeight(CurPane().buffer_id, -kSheetRowHeightStep, shift);
+        if (held(gfx::Key::Down)) SheetStepRowHeight(CurPane().buffer_id, kSheetRowHeightStep, shift);
+    } else {
+        if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
+        if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->cursor_col++;
+        // Row motion goes through the display order, so j/k step over rows
+        // a filter hides instead of landing on them.
+        if (sview) {
+            if (held(gfx::Key::J) || held(gfx::Key::Down)) MoveSheetCursorRows(*sess, *sview, 1);
+            if (held(gfx::Key::K) || held(gfx::Key::Up)) MoveSheetCursorRows(*sess, *sview, -1);
+        }
+    }
 
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == 'g') {
             if (pending_g_) {
                 pending_g_ = false;
-                sess->cursor_row = 0;
+                // The first row *shown*, not sheet row 0: in a sorted or
+                // filtered view that row is somewhere in the middle, or
+                // hidden altogether.
+                const int row = sview ? SheetRowAtDisplay(*sview, 0) : 0;
+                sess->cursor_row = row < 0 ? 0 : row;
             } else {
                 pending_g_ = true;
             }
         } else if (cp == 'G') {
             pending_g_ = false;
-            sess->cursor_row = sh.max_row;
+            // Likewise the last row shown, which in a filtered view is the
+            // last row that passed the filter, not the sheet's last row.
+            const int last = sview ? SheetRowAtDisplay(*sview, SheetDisplayCount(*sview) - 1) : sh.max_row;
+            sess->cursor_row = last < 0 ? sh.max_row : last;
+        } else if (cp == '+') {
+            pending_g_ = false;
+            SheetZoomBy(CurPane().buffer_id, kSheetZoomStep);
+        } else if (cp == '-') {
+            pending_g_ = false;
+            SheetZoomBy(CurPane().buffer_id, 1.0f / kSheetZoomStep);
+        } else if (cp == '=') {
+            pending_g_ = false;
+            SheetZoomReset(CurPane().buffer_id);
         } else if (cp == '0') {
             pending_g_ = false;
             sess->cursor_col = 0;
@@ -17261,9 +17929,15 @@ void Editor::HandleSheetVisualInput() {
             int r1 = std::max(sess->sel_anchor_row, sess->cursor_row);
             int c0 = std::min(sess->sel_anchor_col, sess->cursor_col);
             int c1 = std::max(sess->sel_anchor_col, sess->cursor_col);
+            // Only the rows actually shown between the two corners. With a
+            // filter active, every hidden row whose number happens to fall
+            // between them is NOT part of the selection the user drew --
+            // clearing those would destroy data that was never on screen.
             for (int r = r0; r <= r1; r++) {
+                if (sview && !SheetDisplayRangeContains(*sview, sess->sel_anchor_row, sess->cursor_row, r)) continue;
                 for (int c = c0; c <= c1; c++) SetCellRaw(sess->wb, sess->active_sheet, r, c, "");
             }
+            if (sview) MarkSheetOrderDirty(*sview);
             sess->modified = true;
             sess->has_selection = false;
             sess->cursor_row = r0;
@@ -29825,7 +30499,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN", "bdelete", "bd", "bdelete!", "bd!",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "MepPaneZoom", "colorscheme", "colo", "lua", "source",
-        "MepNextSheet", "MepPrevSheet", "PresNew", "PresImage", "PresExport", "PresPresent", "PresBackground", "PresMath", "Model3DNew", "SketchNew", "CadNew", "CadExport", "Viewer", "ViewerBind", "ViewerRun", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
+        "MepNextSheet", "MepPrevSheet", "MepSheetSort", "MepSheetSortClear", "MepSheetFilter", "MepSheetFilterClear", "MepSheetFreeze", "MepSheetUnfreeze", "MepSheetZoom", "MepSheetWidth", "MepSheetHeight", "MepSheetAutofit", "MepSheetStats", "MepSheetFind", "MepSheetApply", "PresNew", "PresImage", "PresExport", "PresPresent", "PresBackground", "PresMath", "Model3DNew", "SketchNew", "CadNew", "CadExport", "Viewer", "ViewerBind", "ViewerRun", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
         "CollabStatus", "AgentSocket",
     };
     return kNames;
@@ -32628,6 +33302,180 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         NextSheet();
     } else if (name == "MepPrevSheet") {
         PrevSheet();
+    } else if (name.rfind("MepSheet", 0) == 0) {
+        // The spreadsheet view commands. All of them work on the active
+        // pane's sheet, take an optional leading column (letters or a
+        // 1-based number, defaulting to the cursor's), and change only how
+        // the grid is shown -- except :MepSheetApply, which says so.
+        const bool bang = !name.empty() && name.back() == '!';
+        const std::string base = bang ? name.substr(0, name.size() - 1) : name;
+        const int sheet_buf = CurPane().buffer_id;
+        if (!IsSheetBuffer(sheet_buf)) {
+            status_message_ = "E: :" + name + " works in a spreadsheet (.csv/.xlsx/.ods) buffer";
+        } else {
+            // Split the argument string into whitespace-separated words
+            // once, here, rather than in each command's own branch.
+            std::vector<std::string> words;
+            for (size_t i = 0; i < args.size();) {
+                while (i < args.size() && (args[i] == ' ' || args[i] == '\t')) i++;
+                const size_t start = i;
+                while (i < args.size() && args[i] != ' ' && args[i] != '\t') i++;
+                if (i > start) words.push_back(args.substr(start, i - start));
+            }
+            /**
+             * @brief Reads an optional leading column argument, defaulting to the cursor's column.
+             * @param at Index into `words` to try; incremented if a column was consumed.
+             * @return The zero-based column index.
+             */
+            auto take_col = [&](size_t *at) {
+                int col = -1;
+                if (at && *at < words.size() && ParseSheetColumnArg(words[*at], &col)) {
+                    (*at)++;
+                    return col;
+                }
+                const SheetSession *cs = GetSheet(sheet_buf);
+                return cs ? cs->cursor_col : 0;
+            };
+            if (base == "MepSheetSort") {
+                size_t at = 0;
+                const int col = take_col(&at);
+                SheetSortKind kind = SheetSortKind::Auto;
+                bool desc = false;
+                for (; at < words.size(); at++) {
+                    if (words[at] == "desc" || words[at] == "descending") desc = true;
+                    else if (words[at] == "asc" || words[at] == "ascending") desc = false;
+                    else if (words[at] == "num" || words[at] == "numeric") kind = SheetSortKind::Number;
+                    else if (words[at] == "text" || words[at] == "alpha") kind = SheetSortKind::Text;
+                    else if (words[at] == "auto") kind = SheetSortKind::Auto;
+                    else status_message_ = "E: :MepSheetSort: unknown option \"" + words[at] + "\"";
+                }
+                SheetSortColumn(sheet_buf, col, kind, desc);
+            } else if (base == "MepSheetSortClear") {
+                SheetSortClear(sheet_buf);
+            } else if (base == "MepSheetFilter") {
+                size_t at = 0;
+                const int col = take_col(&at);
+                SheetFilter f;
+                f.col = col;
+                if (at >= words.size() || !ParseSheetFilterOp(words[at], &f.op)) {
+                    status_message_ =
+                        "E: :MepSheetFilter [col] = | != | ~ | !~ | > | < | empty | nonempty | re  [value]";
+                } else {
+                    at++;
+                    // The rest of the line is the value, spaces and all --
+                    // a filter value is data, not a word list, and
+                    // "contains new york" has to mean what it says.
+                    for (size_t i = at; i < words.size(); i++) {
+                        if (i > at) f.value += " ";
+                        f.value += words[i];
+                    }
+                    SheetAddFilter(sheet_buf, f);
+                }
+            } else if (base == "MepSheetFilterClear") {
+                // No argument clears every filter; a column clears just
+                // that one.
+                int col = -1;
+                if (!words.empty() && !ParseSheetColumnArg(words[0], &col)) {
+                    status_message_ = "E: :MepSheetFilterClear [column]";
+                } else {
+                    SheetClearFilters(sheet_buf, words.empty() ? -1 : col);
+                }
+            } else if (base == "MepSheetFreeze") {
+                // No arguments freezes everything above and left of the
+                // cursor, which is how a header gets frozen without having
+                // to count rows.
+                int rows = -1, cols = -1;
+                if (!words.empty()) rows = std::atoi(words[0].c_str());
+                if (words.size() > 1) cols = std::atoi(words[1].c_str());
+                if (words.size() == 1) cols = 0;
+                SheetFreeze(sheet_buf, rows, cols);
+            } else if (base == "MepSheetUnfreeze") {
+                SheetFreeze(sheet_buf, 0, 0);
+            } else if (base == "MepSheetZoom") {
+                const std::string arg = words.empty() ? std::string("reset") : words[0];
+                if (arg == "in") {
+                    SheetZoomBy(sheet_buf, kSheetZoomStep);
+                } else if (arg == "out") {
+                    SheetZoomBy(sheet_buf, 1.0f / kSheetZoomStep);
+                } else if (arg == "reset") {
+                    SheetZoomReset(sheet_buf);
+                } else {
+                    const int pct = std::atoi(arg.c_str());
+                    if (pct <= 0) {
+                        status_message_ = "E: :MepSheetZoom in | out | reset | <percent>";
+                    } else if (SheetSession *zs = GetSheetMutable(sheet_buf)) {
+                        zs->zoom = ClampSheetZoom(static_cast<float>(pct) / 100.0f);
+                        status_message_ = "sheet zoom " +
+                                          std::to_string(static_cast<int>(std::lround(zs->zoom * 100.0f))) + "%";
+                    }
+                }
+            } else if (base == "MepSheetWidth" || base == "MepSheetHeight") {
+                const bool is_width = base == "MepSheetWidth";
+                size_t at = 0;
+                int index = 0;
+                if (is_width) {
+                    index = take_col(&at);
+                } else {
+                    const SheetSession *cs = GetSheet(sheet_buf);
+                    index = cs ? cs->cursor_row : 0;
+                    int parsed = 0;
+                    if (!words.empty() && ParseSheetColumnArg(words[0], &parsed) && !words[0].empty() &&
+                        std::isdigit(static_cast<unsigned char>(words[0][0]))) {
+                        index = parsed;  // a 1-based row number
+                        at++;
+                    }
+                }
+                if (at >= words.size()) {
+                    status_message_ = "E: :" + base + " [index] <pixels> | +<n> | -<n>" + (is_width ? " | auto" : "");
+                } else if (is_width && words[at] == "auto") {
+                    SheetRequestAutofit(sheet_buf, index);
+                } else {
+                    const SheetView *v = SheetViewFor(sheet_buf);
+                    const int current = !v ? 0
+                                       : is_width ? SheetStoredColWidth(*v, index)
+                                                  : SheetStoredRowHeight(*v, index);
+                    const char lead = words[at][0];
+                    const int n = std::atoi(words[at].c_str());
+                    const int want = (lead == '+' || lead == '-') ? current + n : n;
+                    if (is_width) {
+                        SheetSetColumnWidth(sheet_buf, index, want);
+                        status_message_ = "column " + ColumnIndexToLetters(index) + ": " +
+                                          std::to_string(SheetViewFor(sheet_buf)
+                                                             ? SheetStoredColWidth(*SheetViewFor(sheet_buf), index)
+                                                             : want) +
+                                          "px";
+                    } else {
+                        SheetSetRowHeightPx(sheet_buf, index, want);
+                        status_message_ = "row " + std::to_string(index + 1) + ": " +
+                                          std::to_string(SheetViewFor(sheet_buf)
+                                                             ? SheetStoredRowHeight(*SheetViewFor(sheet_buf), index)
+                                                             : want) +
+                                          "px";
+                    }
+                }
+            } else if (base == "MepSheetAutofit") {
+                int col = -1;
+                if (!words.empty() && words[0] != "all") {
+                    if (!ParseSheetColumnArg(words[0], &col)) {
+                        status_message_ = "E: :MepSheetAutofit [column | all]";
+                        col = -2;
+                    }
+                } else if (words.empty()) {
+                    const SheetSession *cs = GetSheet(sheet_buf);
+                    col = cs ? cs->cursor_col : 0;
+                }
+                if (col != -2) SheetRequestAutofit(sheet_buf, col);
+            } else if (base == "MepSheetStats") {
+                size_t at = 0;
+                SheetReportStats(sheet_buf, words.empty() ? -1 : take_col(&at));
+            } else if (base == "MepSheetFind") {
+                SheetFind(sheet_buf, args, /*forward=*/true);
+            } else if (base == "MepSheetApply") {
+                SheetApplyViewOrder(sheet_buf, bang);
+            } else {
+                status_message_ = "E492: Not an editor command: " + name;
+            }
+        }
     } else if (name == "PresNew" || name == "PresImage" || name == "PresExport" || name == "PresPresent" || name == "PresBackground" ||
                name == "PresMath") {
         const size_t arg_a = args.find_first_not_of(" \t"), arg_z = args.find_last_not_of(" \t");

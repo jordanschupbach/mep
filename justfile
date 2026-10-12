@@ -378,7 +378,7 @@ test: build-native
     # otherwise mean this check never ran at all.
     echo "== check_help"
     python3 scripts/check_help.py {{native_build_dir}}/mep --strict
-    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-office-rtf-test mep-workspace-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then
@@ -516,6 +516,15 @@ test-gui: build-native
     # like the session-restore test it cannot live in `just test`.
     echo "== fold live check"
     python3 tools/fold_live_check.py --build-dir {{native_build_dir}}
+    # The spreadsheet pane's view layer end to end: zoom, Alt+arrow sizing,
+    # sort and filter display order, freeze, autofit, stats, find-in-grid,
+    # and the mouse (edge drag, double-click autofit, click-to-select, the
+    # column-header menu). None of it is reachable from `just test`: the
+    # keystroke and mouse paths need a real window, and autofit needs a
+    # real font to measure. CSV fixtures only -- xlsx/ods open in the same
+    # grid but are out of scope for this phase.
+    echo "== sheet live check"
+    python3 tools/sheet_live_check.py --build-dir {{native_build_dir}}
 
 # Part G.7: the mesher measured against Gmsh, on geometry carried across
 # as STEP written by mep's own writer. Separate from `test` because it

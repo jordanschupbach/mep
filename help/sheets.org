@@ -11,6 +11,8 @@ rows, columns and cell selection.
 * Moving and editing
 
 The usual motions move between cells. Type to edit the selected cell.
+=gg= and =G= go to the first and last row *shown* -- which, once a sort or
+a filter is on, is not the same as the sheet's first and last row.
 
 | Command            | Does                    |
 |--------------------+-------------------------|
@@ -18,6 +20,129 @@ The usual motions move between cells. Type to edit the selected cell.
 | =:MepPrevSheet=    | previous sheet          |
 | =mep.sheet_next()= | the Lua form            |
 | =mep.sheet_prev()= | the Lua form            |
+
+* Zoom
+
+=+= and =-= make the grid bigger and smaller -- cells and text together,
+so nothing clips -- and ~=~ puts it back to 100%. =Ctrl= with the mouse
+wheel does the same. The zoom belongs to the pane, so switching between a
+workbook's sheets keeps it. =:MepSheetZoom in|out|reset|<percent>= sets it
+from the command line, and =<leader>Sz= resets it.
+
+* Column widths and row heights
+
+=Alt-Left= and =Alt-Right= narrow and widen the column the cursor is in;
+=Alt-Up= and =Alt-Down= make its row shorter and taller. Hold =Shift= as
+well to size every column or row at once. (The arrow keys, not =hjkl=:
+=Alt-h/j/k/l= already move between panes.)
+
+With the mouse, drag the edge of a column header -- or of a row number --
+to size it, and double-click that edge to fit the column to its contents.
+
+| Command                       | Does                                      |
+|-------------------------------+-------------------------------------------|
+| =:MepSheetWidth [col] <px>=   | set a width; =+10= / =-10= adjust, =auto= fits |
+| =:MepSheetHeight [row] <px>=  | set a row height                          |
+| =:MepSheetAutofit [col\vert all]= | fit one column, or every column        |
+| =<leader>Sw=                  | prompt for this column's width            |
+| =<leader>Sa=                  | autofit this column                       |
+| =<leader>SA=                  | autofit every column                      |
+
+Autofit measures the widest value it can find, sampling the first few
+thousand rows of a very long file rather than stalling on all of them; it
+says so in the status line when it had to sample.
+
+* Sorting
+
+Sorting is a *view*: it changes the order rows are shown in and nothing
+else. No cell moves, no formula is rewritten, =u= is not involved, and
+=:w= still writes the file in its original order. The row numbers down the
+left stay with their rows, so a sorted sheet shows you exactly which rows
+you are looking at.
+
+Text sorts case-insensitively, numbers sort as numbers, numbers come
+before text in a mixed column, and blanks go last whichever direction you
+sort in. Equal values keep their original order.
+
+| Command                          | Does                                 |
+|----------------------------------+--------------------------------------|
+| =:MepSheetSort [col] [asc\vert desc] [text\vert num\vert auto]= | sort by a column |
+| =:MepSheetSortClear=             | back to the file's own order         |
+| =<leader>Ss= / =<leader>SS=      | sort this column up / down           |
+| =<leader>Sn= / =<leader>SN=      | sort this column numerically, up / down |
+| =<leader>Sc=                     | clear the sort                       |
+
+A column argument can be a letter (=B=, =AB=) or a 1-based number; leave
+it out and the cursor's column is used.
+
+** Making it permanent
+
+=:MepSheetApply= rewrites the cells into the order you are looking at, so
+=:w= saves it. That one *is* an edit -- =u= undoes it. If a filter is on,
+the rows it is hiding are kept, after the visible ones, rather than
+dropped. If moving a row would move a formula with it, the command stops
+and says so, because nothing here rewrites the references inside a
+formula; =:MepSheetApply!= goes ahead anyway. =<leader>Sp= is the same
+thing.
+
+* Filtering
+
+Filters hide rows. Like sorting they are a view: the file is untouched
+until you apply the order. The formula bar shows how many rows survived --
+"12 of 4310 rows" -- so a filtered sheet never looks like the whole file.
+
+: :MepSheetFilter [col] <op> [value]
+
+where =<op>= is one of ~=~, =!=, =~= (contains), =!~= (does not contain),
+=>=, =<=, =empty=, =nonempty=, or =re= (a regular expression). Text
+matching ignores case. =>= and =<= compare as numbers when you give them
+a number, so =:MepSheetFilter C > 100= does not drag text values in with
+it, and as text otherwise.
+
+| Command                      | Does                                |
+|------------------------------+-------------------------------------|
+| =:MepSheetFilterClear [col]= | clear one column's filter, or all of them |
+| =<leader>Sf=                 | prompt for a filter on this column   |
+| =<leader>SF=                 | clear every filter                   |
+
+One filter per column; filters on different columns all have to pass.
+
+* The column menu
+
+Click a column's letter to open a menu on it: sort, autofit, freeze,
+statistics, and a list of the column's values with a tick box each. Tick
+the ones you want and choose "Apply ticked values as a filter". On a
+column with more distinct values than fit, the list scrolls, and says how
+many it is showing -- use =<leader>Sf= to filter by text instead. Clicking
+anywhere else closes the menu.
+
+The column header also shows what is on: =^= or =v= for the sort
+direction, and =*= on a filtered column.
+
+* Freezing headers
+
+=:MepSheetFreeze [rows] [cols]= pins that many leading rows and columns so
+they stay put while the rest scrolls. With no arguments it freezes
+everything above and left of the cursor, which is the quick way to pin a
+header row. Frozen rows are also held out of the sorting and filtering --
+a header is a label, not data. =:MepSheetUnfreeze= and =<leader>SH= undo
+it; =<leader>Sh= freezes at the cursor.
+
+* Statistics
+
+=<leader>St= or =:MepSheetStats [col]= reports the column's row count,
+how many are non-empty, how many distinct values it holds, and -- for the
+numbers in it -- the sum, mean, minimum and maximum. It describes what is
+currently visible, so a filtered view reports the filtered numbers. In
+Visual mode it describes the selected rows instead.
+
+* Finding
+
+=/= prompts for text and jumps to the next cell containing it; =n= and
+=N= go to the next and previous match, wrapping around. It honours
+=:set ignorecase=, searches the values as shown (so a formula is found by
+its result), and never lands on a row a filter is hiding.
+=:MepSheetFind <text>= and =<leader>S/= are the same thing.
 
 * Formulas
 
@@ -27,12 +152,27 @@ change.
 
 * Saving
 
-=:w= writes back in the original format -- =.xlsx= stays =.xlsx=.
+=:w= writes back in the original format -- =.xlsx= stays =.xlsx=. The
+view -- zoom, widths, sort, filters, frozen headers -- is not part of the
+file and is not saved with it.
+
+* From Lua
+
+=mep.sheet_sort(col, kind, descending)=, =mep.sheet_sort_clear()=,
+=mep.sheet_filter(col, op, value)=, =mep.sheet_filter_clear(col)=,
+=mep.sheet_freeze(rows, cols)=, =mep.sheet_zoom(factor)=,
+=mep.sheet_zoom_reset()=, =mep.sheet_autofit(col)=,
+=mep.sheet_col_width(col, px)=, =mep.sheet_row_height(row, px)=,
+=mep.sheet_stats(col)=, =mep.sheet_find(text, forward)=,
+=mep.sheet_apply()=, =mep.sheet_cell(row, col)= and =mep.sheet_info()=,
+which returns the cursor, the zoom, the sort, the filters, the row counts
+and the display order in one table. Rows and columns are 1-based.
 
 * CSV
 
 A =.csv= opens in the same grid, which makes it a comfortable way to read
-data files that are painful as text. Saving writes CSV back.
+data files that are painful as text. Saving writes CSV back -- as values,
+so a formula is saved as its result.
 
 * See also
 

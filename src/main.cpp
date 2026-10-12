@@ -1261,6 +1261,168 @@ void RegisterClickRegion(gfx::Rectangle rect, std::function<void()> action) {
     g_click_regions.push_back({rect, std::move(action)});
 }
 
+// ---- Spreadsheet grid slots ------------------------------------------
+//
+// Which rows and columns a sheet pane is showing, and the exact pixel slot
+// each one occupies: the frozen band first (pinned against the headers,
+// never scrolled), then the scrolling window. Built once per frame by
+// DrawPane and again by UpdateSheetMouseInteraction, from the same
+// function, so where a cell is *drawn* and where a click *lands* cannot
+// disagree -- the failure that two independent copies of this arithmetic
+// produced before (see editor.h's geometry note).
+struct SheetRowSlot {
+    int disp;  // index into the view's display order
+    int row;   // the sheet row shown there
+    float y;
+    float h;
+};
+struct SheetColSlot {
+    int col;
+    float x;
+    float w;
+};
+
+// How many distinct values the column-header menu will list, and how many
+// rows it will scan to find them. Past either cap it says so and offers
+// the typed "contains" filter instead of presenting a partial list as if
+// it were the whole column -- a filter checklist that silently omits
+// values is a filter that lies about the data.
+constexpr int kSheetMenuValueCap = 200;
+constexpr int kSheetMenuRowScanCap = 50000;
+
+/**
+ * @brief Opens (or closes) a sheet column's header dropdown, loading its distinct-value checklist.
+ * @param buffer_id The spreadsheet buffer id.
+ * @param col Column whose menu to open, or -1 to close whatever is open.
+ */
+void OpenSheetColumnMenu(int buffer_id, int col) {
+    SheetSession *sess = g_editor.GetSheetMutable(buffer_id);
+    if (!sess) return;
+    sess->header_menu_col = col;
+    sess->header_menu_scroll = 0;
+    sess->menu_values.clear();
+    sess->menu_checked.clear();
+    sess->menu_values_truncated = false;
+    if (col < 0) return;
+    const SheetView *view = g_editor.SheetViewFor(buffer_id);
+    if (!view) return;
+    // Scanned once, when the menu opens -- one EvaluateCell per visible
+    // row is fine as a one-off and is not a price to pay every frame.
+    bool truncated = false;
+    sess->menu_values = SheetDistinctValues(sess->wb, sess->active_sheet, *view, col, kSheetMenuValueCap,
+                                            kSheetMenuRowScanCap, &truncated);
+    sess->menu_values_truncated = truncated;
+    // Pre-tick to match whatever filter is already on the column, so
+    // opening the menu shows the current state rather than resetting it.
+    const std::vector<std::string> *picked = nullptr;
+    for (const SheetFilter &f : view->filters) {
+        if (f.col == col && f.op == SheetFilterOp::OneOf) picked = &f.values;
+    }
+    sess->menu_checked.assign(sess->menu_values.size(), picked ? char{0} : char{1});
+    if (picked) {
+        for (size_t i = 0; i < sess->menu_values.size(); i++) {
+            for (const std::string &v : *picked) {
+                if (v == sess->menu_values[i].value) sess->menu_checked[i] = 1;
+            }
+        }
+    }
+}
+
+/**
+ * @brief Applies the header menu's ticked values as a filter on its column.
+ * @param buffer_id The spreadsheet buffer id.
+ */
+void ApplySheetColumnMenuFilter(int buffer_id) {
+    SheetSession *sess = g_editor.GetSheetMutable(buffer_id);
+    if (!sess || sess->header_menu_col < 0) return;
+    const int col = sess->header_menu_col;
+    SheetFilter f;
+    f.col = col;
+    f.op = SheetFilterOp::OneOf;
+    size_t ticked = 0;
+    for (size_t i = 0; i < sess->menu_values.size() && i < sess->menu_checked.size(); i++) {
+        if (sess->menu_checked[i]) {
+            f.values.push_back(sess->menu_values[i].value);
+            ticked++;
+        }
+    }
+    // Everything ticked is not a filter, it is the absence of one -- and
+    // leaving it as an OneOf would quietly drop blank cells, which match
+    // none of the listed values.
+    if (ticked == sess->menu_values.size() && !sess->menu_values_truncated) {
+        g_editor.SheetClearFilters(buffer_id, col);
+    } else {
+        g_editor.SheetAddFilter(buffer_id, f);
+    }
+    OpenSheetColumnMenu(buffer_id, -1);
+}
+
+/**
+ * @brief Computes the visible row and column slots of a sheet grid, frozen bands first.
+ * @param sess The pane's session, for its scroll position.
+ * @param view The active sheet's view, for the display order.
+ * @param geom The view bound to the pane's zoom.
+ * @param metrics The pane split computed by SheetMeasurePane.
+ * @param grid_x Left edge of the grid box in screen pixels.
+ * @param grid_y Top edge of the grid box (below the formula bar).
+ * @param grid_w Width of the grid box.
+ * @param grid_h Height of the grid box.
+ * @param rows Receives the row slots, top to bottom.
+ * @param cols Receives the column slots, left to right.
+ */
+void BuildSheetSlots(const SheetSession &sess, const SheetView &view, const SheetGeom &geom,
+                     const SheetPaneMetrics &metrics, float grid_x, float grid_y, float grid_w, float grid_h,
+                     std::vector<SheetRowSlot> *rows, std::vector<SheetColSlot> *cols) {
+    rows->clear();
+    cols->clear();
+    const float col_header_h = static_cast<float>(metrics.col_header_h);
+    const float header_w = static_cast<float>(metrics.header_w);
+    const int display_count = SheetDisplayCount(view);
+    const int freeze_rows = std::max(0, std::min(view.freeze_rows, display_count));
+    const int freeze_cols = std::max(0, view.freeze_cols);
+
+    float ry = grid_y + col_header_h;
+    int used = 0;
+    for (int d = 0; d < freeze_rows; d++) {
+        const int rh = SheetDisplayRowHeight(geom, d);
+        // Stop where SheetMeasurePane stopped: it caps the band so there is
+        // always something left to scroll in, and the two must agree about
+        // how many rows that was.
+        if (used + rh > metrics.frozen_h) break;
+        rows->push_back(SheetRowSlot{d, SheetRowAtDisplay(view, d), ry, static_cast<float>(rh)});
+        ry += static_cast<float>(rh);
+        used += rh;
+    }
+    const float body_top = grid_y + col_header_h + static_cast<float>(metrics.frozen_h);
+    const int visible_rows = SheetVisibleRows(geom, metrics.avail_h, sess.scroll_disp);
+    for (int i = 0; i <= visible_rows; i++) {
+        const int d = sess.scroll_disp + i;
+        if (d >= display_count) break;
+        const float ry2 = body_top + static_cast<float>(SheetRowOffsetY(geom, sess.scroll_disp, d));
+        if (ry2 > grid_y + grid_h) break;
+        rows->push_back(SheetRowSlot{d, SheetRowAtDisplay(view, d), ry2,
+                                     static_cast<float>(SheetDisplayRowHeight(geom, d))});
+    }
+
+    float cx = grid_x + header_w;
+    used = 0;
+    for (int c = 0; c < freeze_cols; c++) {
+        const int cw = SheetColWidth(geom, c);
+        if (used + cw > metrics.frozen_w) break;
+        cols->push_back(SheetColSlot{c, cx, static_cast<float>(cw)});
+        cx += static_cast<float>(cw);
+        used += cw;
+    }
+    const float body_left = grid_x + header_w + static_cast<float>(metrics.frozen_w);
+    const int visible_cols = SheetVisibleCols(geom, metrics.avail_w, sess.scroll_col);
+    for (int i = 0; i <= visible_cols; i++) {
+        const int c = sess.scroll_col + i;
+        const float cx2 = body_left + static_cast<float>(SheetColOffsetX(geom, sess.scroll_col, c));
+        if (cx2 > grid_x + grid_w) break;
+        cols->push_back(SheetColSlot{c, cx2, static_cast<float>(SheetColWidth(geom, c))});
+    }
+}
+
 // Registers a region above the ordinary pane chrome.  DispatchChromeClicks
 // visits this vector from front to back, so controls drawn after the
 // pane-wide focus fallback need this when they overlap it (notably floating
@@ -11558,6 +11720,75 @@ const char *kBuiltinSymbols =
 // the pane, <CR> is just a second, more discoverable way to trigger the
 // exact same jump. (<leader>sS is a *toggle* -- mep.structure_split_toggle
 // below -- so from inside the pane it closes the split instead.)
+// The spreadsheet pane's view layer, as <leader>S bindings and the `/`
+// find prompt. Every one of these calls the same mep.sheet_* binding the
+// :MepSheet* commands and the column-header menu call, so the three
+// surfaces cannot drift apart. <leader>s is already the structure pane's,
+// hence the capital.
+const char *kBuiltinSheet =
+    "mep.leader_group('S', 'sheet', 0xf0ce, 'Green')\n"
+    "mep.leader_map('Ss', 'Sheet: sort this column (ascending)', function() mep.sheet_sort(nil, 'auto', false) end)\n"
+    "mep.leader_map('SS', 'Sheet: sort this column (descending)', function() mep.sheet_sort(nil, 'auto', true) end)\n"
+    "mep.leader_map('Sn', 'Sheet: sort this column numerically', function() mep.sheet_sort(nil, 'number', false) end)\n"
+    "mep.leader_map('SN', 'Sheet: sort this column numerically, descending', function()\n"
+    "  mep.sheet_sort(nil, 'number', true)\n"
+    "end)\n"
+    "mep.leader_map('Sc', 'Sheet: clear the sort', function() mep.sheet_sort_clear() end)\n"
+    "mep.leader_map('Sf', 'Sheet: filter this column', function() mep.sheet_filter_prompt() end)\n"
+    "mep.leader_map('SF', 'Sheet: clear all filters', function() mep.sheet_filter_clear() end)\n"
+    "mep.leader_map('Sh', 'Sheet: freeze rows/columns up to the cursor', function() mep.sheet_freeze() end)\n"
+    "mep.leader_map('SH', 'Sheet: unfreeze', function() mep.sheet_freeze(0, 0) end)\n"
+    "mep.leader_map('Sa', 'Sheet: autofit this column', function() mep.sheet_autofit(mep.sheet_info().cursor_col) end)\n"
+    "mep.leader_map('SA', 'Sheet: autofit every column', function() mep.sheet_autofit() end)\n"
+    "mep.leader_map('St', 'Sheet: column statistics', function() mep.sheet_stats() end)\n"
+    "mep.leader_map('Sw', 'Sheet: set this column width', function() mep.sheet_width_prompt() end)\n"
+    "mep.leader_map('Sz', 'Sheet: reset zoom', function() mep.sheet_zoom_reset() end)\n"
+    "mep.leader_map('Sp', 'Sheet: apply the view order to the data', function() mep.sheet_apply() end)\n"
+    "mep.leader_map('S/', 'Sheet: find in the grid', function() mep.sheet_find_prompt() end)\n"
+    // The prompts. ui_input rather than a mode of their own: a sheet does
+    // not need a second modal input layer when the editor already has one
+    // that draws, edits and cancels correctly.
+    "function mep.sheet_find_prompt()\n"
+    "  mep.ui_input('Find in sheet', '', function(text)\n"
+    "    if text and text ~= '' then mep.sheet_find(text, true) end\n"
+    "  end)\n"
+    "end\n"
+    // The operator vocabulary is the ex-command's, so what is typed here
+    // and what is typed at `:` mean the same thing.
+    "function mep.sheet_filter_prompt()\n"
+    "  local info = mep.sheet_info()\n"
+    "  mep.ui_input('Filter column ' .. mep.sheet_column_letter(info.cursor_col) ..\n"
+    "               \"  (= != ~ !~ > < empty nonempty re)\", '~ ', function(text)\n"
+    "    if not text or text == '' then return end\n"
+    "    local op, value = text:match('^%s*(%S+)%s*(.*)$')\n"
+    "    if not op then return end\n"
+    "    if op == 'clear' then mep.sheet_filter_clear(info.cursor_col) return end\n"
+    "    local ok, err = pcall(mep.sheet_filter, info.cursor_col, op, value)\n"
+    "    if not ok then mep.notify(tostring(err), 'error') end\n"
+    "  end)\n"
+    "end\n"
+    "function mep.sheet_width_prompt()\n"
+    "  local info = mep.sheet_info()\n"
+    "  mep.ui_input('Width of column ' .. mep.sheet_column_letter(info.cursor_col) .. ' (px, or \"auto\")',\n"
+    "               tostring(info.col_width), function(text)\n"
+    "    if not text or text == '' then return end\n"
+    "    if text == 'auto' then mep.sheet_autofit(info.cursor_col) return end\n"
+    "    local n = tonumber(text)\n"
+    "    if n then mep.sheet_col_width(info.cursor_col, math.floor(n)) end\n"
+    "  end)\n"
+    "end\n"
+    // A1-notation column letters, for the prompts above: the same mapping
+    // the grid's own header row draws.
+    "function mep.sheet_column_letter(col)\n"
+    "  local s, n = '', col\n"
+    "  while n > 0 do\n"
+    "    local rem = (n - 1) % 26\n"
+    "    s = string.char(65 + rem) .. s\n"
+    "    n = math.floor((n - 1) / 26)\n"
+    "  end\n"
+    "  return s\n"
+    "end\n";
+
 const char *kBuiltinStructure =
     // Per-kind Nerd Font glyph + named highlight-group color, keyed by
     // TSStructureNode.kind (treesitter_structure_queries.h's own curated
@@ -53585,14 +53816,83 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     }
 
     if (sheet_sess && !sheet_sess->wb.sheets.empty()) {
-        g_editor.ResizeSheetViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
+        // Cell text is drawn at the pane's zoom, so the grid's geometry has
+        // to be too -- a zoom that scaled only the font would just clip it.
+        // The measured line height goes into the model first (it cannot
+        // measure a font itself) so the row height it computes below can be
+        // floored by the text it has to hold.
+        const float cell_font = std::max(6.0f, font_size * sheet_sess->zoom);
+        g_editor.SetSheetFontMetrics(pane.buffer_id, gfx::MeasureTextEx(g_font, "Mg", cell_font, 0).y);
+
+        float bar_h = static_cast<float>(bar_unit);
+        float grid_y = content_y + bar_h;
+        float grid_h = content_h - bar_h;
+        // The GRID box, not the pane's content box: the formula bar is not
+        // part of the grid, and handing this the full content height is what
+        // used to make the editor believe in two or three rows the renderer
+        // never drew (see the geometry note in editor.h where
+        // kSheetRowHeight used to live). This also refreshes the display
+        // order and follows the cursor, so everything read below is current.
+        g_editor.ResizeSheetViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(grid_h));
         const Sheet &sh = sheet_sess->wb.sheets[static_cast<size_t>(sheet_sess->active_sheet)];
+        const SheetView *view = g_editor.SheetViewFor(pane.buffer_id);
+        if (!view) {
+            DrawPaneBorder(x, y, w, h, is_active);
+            return;
+        }
+        // A pending autofit is carried out here, before the geometry is
+        // measured, because only this side can measure text: editor.cpp
+        // parks the request (SheetRequestAutofit) and this consumes it.
+        if (SheetSession *fit = g_editor.GetSheetMutable(pane.buffer_id); fit && fit->autofit_pending) {
+            fit->autofit_pending = false;
+            const int only = fit->autofit_request;
+            const int first = only < 0 ? 0 : only;
+            const int last = only < 0 ? std::min(sh.max_col, first + kSheetAutofitMaxCols - 1) : only;
+            const int display_rows = SheetDisplayCount(*view);
+            bool sampled = false;
+            for (int c = first; c <= last; c++) {
+                // The column letter is part of the column: fitting to the
+                // data alone would clip the header on a narrow column.
+                float widest = gfx::MeasureTextEx(g_font, ColumnIndexToLetters(c).c_str(), cell_font, 0).x + 14.0f;
+                int scanned = 0;
+                for (int d = 0; d < display_rows; d++) {
+                    if (scanned >= kSheetAutofitScanRows) {
+                        sampled = true;
+                        break;
+                    }
+                    const int row = SheetRowAtDisplay(*view, d);
+                    if (row < 0) continue;
+                    scanned++;
+                    if (!sh.FindCell(row, c)) continue;
+                    const std::string t = FormatCellValue(g_editor.EvaluateSheetCell(pane.buffer_id, row, c));
+                    widest = std::max(widest, gfx::MeasureTextEx(g_font, t.c_str(), cell_font, 0).x + 10.0f);
+                }
+                // Widths are stored unzoomed, so a column fitted at 2x
+                // zoom is still the right width at 1x.
+                const float unzoomed = widest / std::max(0.01f, sheet_sess->zoom);
+                g_editor.SheetSetColumnWidth(pane.buffer_id, c, static_cast<int>(std::lround(unzoomed)));
+            }
+            std::string note = only < 0 ? "autofit: " + std::to_string(last - first + 1) + " columns"
+                                        : "autofit: column " + ColumnIndexToLetters(only);
+            if (sampled) note += " (widest of the first " + std::to_string(kSheetAutofitScanRows) + " rows)";
+            g_editor.Notify(note, Editor::NotifyLevel::Info);
+        }
+
+        const SheetGeom geom = MakeSheetGeom(*view, sheet_sess->zoom);
+        const SheetPaneMetrics metrics = SheetMeasurePane(geom, static_cast<int>(w), static_cast<int>(grid_h));
+        // The mouse handler reads this rectangle back next frame rather than
+        // recomputing it -- same handshake as KanbanSession/GanttSession.
+        if (SheetSession *sheet_mut = g_editor.GetSheetMutable(pane.buffer_id)) {
+            sheet_mut->grid_x = x;
+            sheet_mut->grid_y = grid_y;
+            sheet_mut->grid_w = w;
+            sheet_mut->grid_h = grid_h;
+        }
 
         // Formula bar: shows the active cell's raw text (or the live
         // edit buffer while SheetInsert is active) -- doubles as both a
         // real-spreadsheet-familiar "what's actually in this cell"
         // readout and the Insert-mode live-typing display.
-        float bar_h = static_cast<float>(bar_unit);
         gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w), static_cast<int>(bar_h),
                       ResolveHlGroup("MenuBar"));
         std::string bar_text;
@@ -53602,123 +53902,345 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const Cell *cur = sh.FindCell(sheet_sess->cursor_row, sheet_sess->cursor_col);
             bar_text = cur ? cur->raw : "";
         }
-        gfx::DrawTextEx(g_font, bar_text.c_str(), gfx::Vector2{x + 6, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
+        // The cell's own address, so the formula bar says *which* cell it is
+        // showing -- which matters far more once a sort means the cursor's
+        // screen position is no longer its row number.
+        const std::string addr = ColumnIndexToLetters(sheet_sess->cursor_col) + std::to_string(sheet_sess->cursor_row + 1);
+        gfx::Vector2 addr_sz = gfx::MeasureTextEx(g_font, (addr + "  ").c_str(), font_size, 0);
+        gfx::DrawTextEx(g_font, addr.c_str(), gfx::Vector2{x + 6, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
+                   ResolveHlGroup("Comment"));
+        const float bar_text_x = x + 6 + addr_sz.x;
+        gfx::DrawTextEx(g_font, bar_text.c_str(), gfx::Vector2{bar_text_x, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
                    ResolveHlGroup("Normal"));
         if (is_active && sheet_sess->editing) {
             std::string pre = bar_text.substr(0, std::min<size_t>(static_cast<size_t>(sheet_sess->edit_cursor), bar_text.size()));
-            float cx = x + 6 + gfx::MeasureTextEx(g_font, pre.c_str(), font_size, 0).x;
+            float cx = bar_text_x + gfx::MeasureTextEx(g_font, pre.c_str(), font_size, 0).x;
             gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(content_y + (bar_h - font_size) / 2.0f), 2,
                           static_cast<int>(font_size), ResolveHlGroup("Normal"));
         }
-        // Sheet indicator: right-aligned in the formula bar, only shown
-        // once there's more than one sheet to disambiguate (Ctrl-PageDown/
-        // Ctrl-PageUp switch between them -- see HandleSheetNormalInput).
-        // No click-to-switch tab strip in v1 -- same "not attempted this
-        // phase" scope cut the plan's own spreadsheet-pane notes make for
-        // mouse click-to-select-cell.
+        // Right-aligned status: the sheet name when there is more than one
+        // to disambiguate (Ctrl-PageDown/Ctrl-PageUp switch between them --
+        // see HandleSheetNormalInput), the active sort/filter, and how many
+        // rows survived it. The row count is the one thing a filtered view
+        // must never leave implicit: "12 of 4,310 rows" is the difference
+        // between reading a subset and thinking you have read the file.
+        std::string right_text;
+        if (!view->filters.empty() || view->visible_rows != view->total_rows) {
+            right_text = std::to_string(view->visible_rows) + " of " + std::to_string(view->total_rows) + " rows";
+        }
+        const std::string vsummary = SheetViewSummary(*view);
+        if (!vsummary.empty()) right_text = right_text.empty() ? vsummary : vsummary + "  |  " + right_text;
         if (sheet_sess->wb.sheets.size() > 1) {
-            std::string tab_text = sh.name + "  (" + std::to_string(sheet_sess->active_sheet + 1) + "/" +
+            std::string tab_text = sh.name + " (" + std::to_string(sheet_sess->active_sheet + 1) + "/" +
                                     std::to_string(sheet_sess->wb.sheets.size()) + ")";
-            gfx::Vector2 tab_sz = gfx::MeasureTextEx(g_font, tab_text.c_str(), font_size, 0);
-            gfx::DrawTextEx(g_font, tab_text.c_str(), gfx::Vector2{x + w - tab_sz.x - 6, content_y + (bar_h - font_size) / 2.0f},
-                       font_size, 0, ResolveHlGroup("Comment"));
+            right_text = right_text.empty() ? tab_text : tab_text + "  |  " + right_text;
+        }
+        if (!right_text.empty()) {
+            gfx::Vector2 rt = gfx::MeasureTextEx(g_font, right_text.c_str(), font_size, 0);
+            gfx::DrawTextEx(g_font, right_text.c_str(),
+                       gfx::Vector2{x + w - rt.x - 6, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
+                       ResolveHlGroup("Comment"));
         }
 
-        float grid_y = content_y + bar_h;
-        float grid_h = content_h - bar_h;
         gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(grid_y), static_cast<int>(w), static_cast<int>(grid_h));
 
         gfx::Color header_row_bg = ResolveHlGroup("MenuBar");
         gfx::Color text_color = ResolveHlGroup("Normal");
         gfx::Color cursor_bg = ResolveHlGroup("Visual");
         gfx::Color sel_bg = gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 90};
+        gfx::Color grid_line = gfx::Color{text_color.r, text_color.g, text_color.b, 40};
 
-        float col_header_h = static_cast<float>(kSheetRowHeight);
-        float row_header_w = static_cast<float>(kSheetRowHeaderW);
-        float col_w = static_cast<float>(kSheetColWidth);
-        float row_h = static_cast<float>(kSheetRowHeight);
+        const float header_w = static_cast<float>(metrics.header_w);
+        const float col_header_h = static_cast<float>(metrics.col_header_h);
 
-        int visible_rows = std::max(1, static_cast<int>((grid_h - col_header_h) / row_h));
-        int visible_cols = std::max(1, static_cast<int>((w - row_header_w) / col_w));
+        // Every row and column the grid is about to draw, with the pixel
+        // slot it occupies -- built by the same function the mouse handler
+        // uses, so a cell is drawn exactly where a click on it lands.
+        std::vector<SheetRowSlot> row_slots;
+        std::vector<SheetColSlot> col_slots;
+        BuildSheetSlots(*sheet_sess, *view, geom, metrics, x, grid_y, w, grid_h, &row_slots, &col_slots);
 
+        // Column-letter strip, with the view's state shown on the columns
+        // it applies to: an arrow on the sorted column and a funnel on each
+        // filtered one. A sort or filter the user cannot see on the column
+        // itself is a view that lies about the data.
         gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(grid_y), static_cast<int>(w), static_cast<int>(col_header_h),
                       header_row_bg);
-        for (int vc = 0; vc <= visible_cols; vc++) {
-            int col = sheet_sess->scroll_col + vc;
-            float cx = x + row_header_w + static_cast<float>(vc) * col_w;
-            if (cx > x + w) break;
-            std::string letters = ColumnIndexToLetters(col);
-            gfx::Vector2 sz = gfx::MeasureTextEx(g_font, letters.c_str(), font_size, 0);
+        for (const SheetColSlot &cs : col_slots) {
+            std::string letters = ColumnIndexToLetters(cs.col);
+            if (view->sort.col == cs.col && view->sort.kind != SheetSortKind::None) {
+                letters += view->sort.descending ? " v" : " ^";
+            }
+            bool filtered = false;
+            for (const SheetFilter &f : view->filters) {
+                if (f.col == cs.col) filtered = true;
+            }
+            if (filtered) letters += " *";
+            gfx::Vector2 sz = gfx::MeasureTextEx(g_font, letters.c_str(), cell_font, 0);
             gfx::DrawTextEx(g_font, letters.c_str(),
-                       gfx::Vector2{cx + (col_w - sz.x) / 2.0f, grid_y + (col_header_h - font_size) / 2.0f}, font_size, 0,
+                       gfx::Vector2{cs.x + (cs.w - sz.x) / 2.0f, grid_y + (col_header_h - cell_font) / 2.0f}, cell_font, 0,
                        text_color);
         }
 
-        float body_y = grid_y + col_header_h;
-        float body_h = grid_h - col_header_h;
-        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(body_y), static_cast<int>(row_header_w),
-                      static_cast<int>(body_h), header_row_bg);
+        // Row-number gutter. These are SHEET row numbers, not display
+        // positions, so a sorted or filtered view reads the way Excel's
+        // does: the numbers jump, and that is how you can see that what you
+        // are looking at is not the whole file in file order.
+        gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(grid_y + col_header_h), static_cast<int>(header_w),
+                      static_cast<int>(grid_h - col_header_h), header_row_bg);
+        for (const SheetRowSlot &rs : row_slots) {
+            if (rs.row < 0) continue;
+            std::string rownum = std::to_string(rs.row + 1);
+            gfx::Vector2 sz = gfx::MeasureTextEx(g_font, rownum.c_str(), cell_font, 0);
+            gfx::DrawTextEx(g_font, rownum.c_str(),
+                       gfx::Vector2{x + header_w - sz.x - 6, rs.y + (rs.h - cell_font) / 2.0f}, cell_font, 0, text_color);
+        }
 
         bool sheet_visual = is_active && g_editor.CurrentMode() == Mode::SheetVisual && sheet_sess->has_selection;
-        int sel_r0 = 0, sel_r1 = -1, sel_c0 = 0, sel_c1 = -1;
+        int sel_c0 = 0, sel_c1 = -1;
         if (sheet_visual) {
-            sel_r0 = std::min(sheet_sess->sel_anchor_row, sheet_sess->cursor_row);
-            sel_r1 = std::max(sheet_sess->sel_anchor_row, sheet_sess->cursor_row);
             sel_c0 = std::min(sheet_sess->sel_anchor_col, sheet_sess->cursor_col);
             sel_c1 = std::max(sheet_sess->sel_anchor_col, sheet_sess->cursor_col);
         }
 
-        for (int vr = 0; vr <= visible_rows; vr++) {
-            int row = sheet_sess->scroll_row + vr;
-            float ry = body_y + static_cast<float>(vr) * row_h;
-            if (ry > grid_y + grid_h) break;
-            std::string rownum = std::to_string(row + 1);
-            gfx::Vector2 sz = gfx::MeasureTextEx(g_font, rownum.c_str(), font_size, 0);
-            gfx::DrawTextEx(g_font, rownum.c_str(), gfx::Vector2{x + row_header_w - sz.x - 6, ry + (row_h - font_size) / 2.0f},
-                       font_size, 0, text_color);
-
-            for (int vc = 0; vc <= visible_cols; vc++) {
-                int col = sheet_sess->scroll_col + vc;
-                float cx = x + row_header_w + static_cast<float>(vc) * col_w;
-                if (cx > x + w) break;
-
-                bool is_cursor = is_active && row == sheet_sess->cursor_row && col == sheet_sess->cursor_col;
-                bool in_sel = sheet_visual && row >= sel_r0 && row <= sel_r1 && col >= sel_c0 && col <= sel_c1;
+        for (const SheetRowSlot &rs : row_slots) {
+            if (rs.row < 0) continue;
+            // Rows are selected by DISPLAY position, which with a filter
+            // active is not the same set as the sheet rows between the two
+            // corners -- and SheetDisplayRangeContains is the same test
+            // HandleSheetVisualInput's own `x`/`d` uses, so what is
+            // highlighted is exactly what gets cleared.
+            const bool row_in_sel =
+                sheet_visual && SheetDisplayRangeContains(*view, sheet_sess->sel_anchor_row, sheet_sess->cursor_row, rs.row);
+            for (const SheetColSlot &cs : col_slots) {
+                const bool is_cursor = is_active && rs.row == sheet_sess->cursor_row && cs.col == sheet_sess->cursor_col;
+                const bool in_sel = row_in_sel && cs.col >= sel_c0 && cs.col <= sel_c1;
                 if (is_cursor) {
-                    gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
-                                  static_cast<int>(row_h), cursor_bg);
+                    gfx::DrawRectangle(static_cast<int>(cs.x), static_cast<int>(rs.y), static_cast<int>(cs.w),
+                                  static_cast<int>(rs.h), cursor_bg);
                 } else if (in_sel) {
-                    gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
-                                  static_cast<int>(row_h), sel_bg);
+                    gfx::DrawRectangle(static_cast<int>(cs.x), static_cast<int>(rs.y), static_cast<int>(cs.w),
+                                  static_cast<int>(rs.h), sel_bg);
                 }
 
-                if (sh.FindCell(row, col)) {
-                    CellValue v = g_editor.EvaluateSheetCell(pane.buffer_id, row, col);
+                if (sh.FindCell(rs.row, cs.col)) {
+                    CellValue v = g_editor.EvaluateSheetCell(pane.buffer_id, rs.row, cs.col);
                     std::string text = FormatCellValue(v);
-                    // Truncated to the column width, not wrapped/ellipsized
-                    // -- a v1 simplification (no per-column width overrides
-                    // to expand into, unlike a real spreadsheet's
-                    // overflow-into-the-next-empty-cell behavior).
-                    while (!text.empty() && gfx::MeasureTextEx(g_font, text.c_str(), font_size, 0).x > col_w - 6) {
-                        text.pop_back();
+                    // Truncated to the column width, not wrapped and not
+                    // spilling into an empty neighbour -- but the width is
+                    // the user's now (Alt+arrows, a header-edge drag, or
+                    // autofit), so a clipped value is a column to widen
+                    // rather than a limit of the pane. The estimate before
+                    // the pop loop matters for the same reason: user-set
+                    // widths make narrow columns common, and popping one
+                    // character at a time with a MeasureTextEx per
+                    // iteration is O(length) measurements per cell.
+                    const float avail_text = cs.w - 6;
+                    gfx::Vector2 full = gfx::MeasureTextEx(g_font, text.c_str(), cell_font, 0);
+                    if (full.x > avail_text && !text.empty()) {
+                        const float per_char = full.x / static_cast<float>(text.size());
+                        if (per_char > 0.0f) {
+                            const size_t keep = static_cast<size_t>(std::max(0.0f, avail_text / per_char));
+                            if (keep < text.size()) text.resize(keep);
+                        }
+                        while (!text.empty() && gfx::MeasureTextEx(g_font, text.c_str(), cell_font, 0).x > avail_text) {
+                            text.pop_back();
+                        }
                     }
                     gfx::Color cell_color = v.kind == CellKind::Error ? ResolveHlGroup("ErrorText") : text_color;
                     float text_x = (v.kind == CellKind::Number)
-                                        ? cx + col_w - 6 - gfx::MeasureTextEx(g_font, text.c_str(), font_size, 0).x
-                                        : cx + 4;
-                    gfx::DrawTextEx(g_font, text.c_str(), gfx::Vector2{text_x, ry + (row_h - font_size) / 2.0f}, font_size, 0,
+                                        ? cs.x + cs.w - 6 - gfx::MeasureTextEx(g_font, text.c_str(), cell_font, 0).x
+                                        : cs.x + 4;
+                    gfx::DrawTextEx(g_font, text.c_str(), gfx::Vector2{text_x, rs.y + (rs.h - cell_font) / 2.0f}, cell_font, 0,
                                cell_color);
                 }
-                gfx::DrawRectangleLines(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(col_w),
-                                   static_cast<int>(row_h), gfx::Color{text_color.r, text_color.g, text_color.b, 40});
+                gfx::DrawRectangleLines(static_cast<int>(cs.x), static_cast<int>(rs.y), static_cast<int>(cs.w),
+                                   static_cast<int>(rs.h), grid_line);
             }
         }
+
+        // The frozen bands get a solid edge so it reads as a pinned header
+        // rather than as a gridline that happens to be there.
+        if (metrics.frozen_h > 0) {
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(grid_y + col_header_h + static_cast<float>(metrics.frozen_h)) - 1,
+                          static_cast<int>(w), 1, text_color);
+        }
+        if (metrics.frozen_w > 0) {
+            gfx::DrawRectangle(static_cast<int>(x + header_w + static_cast<float>(metrics.frozen_w)) - 1,
+                          static_cast<int>(grid_y), 1, static_cast<int>(grid_h), text_color);
+        }
         gfx::EndScissorMode();
+
+        // The column-header dropdown. Drawn after EndScissorMode so it is
+        // not clipped by the grid, and registered with
+        // RegisterClickRegionOnTop rather than RegisterClickRegion because
+        // the pane-wide focus fallback covers this whole area and
+        // DispatchChromeClicks is first-match-wins -- a plain registration
+        // would be shadowed by it and nothing in the menu would ever be
+        // clickable.
+        //
+        // It exists so the sort and filter are reachable without knowing
+        // that :MepSheetSort or <leader>Ss exist: a column header is where
+        // someone coming from a spreadsheet looks for them.
+        if (sheet_sess->header_menu_col >= 0) {
+            const int menu_col = sheet_sess->header_menu_col;
+            float anchor_x = x + static_cast<float>(metrics.header_w);
+            bool anchored = false;
+            for (const SheetColSlot &cs : col_slots) {
+                if (cs.col == menu_col) {
+                    anchor_x = cs.x;
+                    anchored = true;
+                }
+            }
+            // Scrolled out of sight: a menu with nothing to hang off is
+            // just a floating box, so it closes itself.
+            if (!anchored) {
+                OpenSheetColumnMenu(pane.buffer_id, -1);
+            } else {
+                const float item_h = font_size + 8.0f;
+                // The value checklist takes whatever vertical room is left
+                // after the fixed entries, so the menu always fits inside
+                // the pane. A menu whose last rows are off the bottom edge
+                // is a menu whose Apply button cannot be clicked -- and the
+                // footer is the half that would be lost, because the list
+                // comes first.
+                // 6 actions, the 3 footer buttons, and the "showing N of
+                // M" note that appears whenever the list is clipped --
+                // which it is precisely when this budget is binding, so it
+                // always has to be counted.
+                constexpr int kFixedMenuRows = 10;
+                constexpr float kSeparators = 3.0f * 7.0f;
+                const float menu_budget = (y + h) - (grid_y + static_cast<float>(metrics.col_header_h)) - 12.0f;
+                const int budget_rows = static_cast<int>((menu_budget - kSeparators) / item_h);
+                const int room_for_values = std::max(0, budget_rows - kFixedMenuRows);
+                const int value_rows =
+                    std::min<int>(room_for_values, static_cast<int>(sheet_sess->menu_values.size()));
+                const bool values_clipped =
+                    value_rows < static_cast<int>(sheet_sess->menu_values.size()) || sheet_sess->menu_values_truncated;
+                // The wheel scrolls the checklist when the pointer is over
+                // the menu -- without it, a column with more values than
+                // fit would have the rest of them permanently unreachable.
+                if (SheetSession *ms = g_editor.GetSheetMutable(pane.buffer_id)) {
+                    const int max_scroll = std::max(0, static_cast<int>(ms->menu_values.size()) - value_rows);
+                    if (PointInRect(gfx::GetMousePosition(), gfx::Rectangle{x, grid_y, w, grid_h})) {
+                        const float wheel = gfx::GetMouseWheelMoveV().y;
+                        if (wheel != 0.0f) ms->header_menu_scroll -= static_cast<int>(wheel) * 3;
+                    }
+                    ms->header_menu_scroll = std::max(0, std::min(ms->header_menu_scroll, max_scroll));
+                }
+                struct MenuItem {
+                    std::string label;
+                    std::function<void()> action;
+                    bool separator = false;
+                    bool checked = false;
+                    bool checkbox = false;
+                };
+                std::vector<MenuItem> items;
+                const int bid = pane.buffer_id;
+                // Ascending/descending rather than "A to Z" and "1 to 9":
+                // SheetSortKind::Auto reads the column and picks, so one
+                // pair of entries covers both and the menu does not ask
+                // the user to classify their own data first.
+                items.push_back({"Sort ascending", [bid, menu_col] { g_editor.SheetSortColumn(bid, menu_col, SheetSortKind::Auto, false); OpenSheetColumnMenu(bid, -1); }, false, false, false});
+                items.push_back({"Sort descending", [bid, menu_col] { g_editor.SheetSortColumn(bid, menu_col, SheetSortKind::Auto, true); OpenSheetColumnMenu(bid, -1); }, false, false, false});
+                items.push_back({"Clear sort", [bid] { g_editor.SheetSortClear(bid); OpenSheetColumnMenu(bid, -1); }, false, false, false});
+                items.push_back({"", nullptr, true, false, false});
+                items.push_back({"Autofit width", [bid, menu_col] { g_editor.SheetRequestAutofit(bid, menu_col); OpenSheetColumnMenu(bid, -1); }, false, false, false});
+                items.push_back({"Freeze through this column", [bid, menu_col] { const SheetView *v = g_editor.SheetViewFor(bid); g_editor.SheetFreeze(bid, v ? v->freeze_rows : 0, menu_col + 1); OpenSheetColumnMenu(bid, -1); }, false, false, false});
+                items.push_back({"Column statistics", [bid, menu_col] { g_editor.SheetReportStats(bid, menu_col); OpenSheetColumnMenu(bid, -1); }, false, false, false});
+                items.push_back({"", nullptr, true, false, false});
+                for (int i = 0; i < value_rows; i++) {
+                    const size_t vi = static_cast<size_t>(sheet_sess->header_menu_scroll + i);
+                    if (vi >= sheet_sess->menu_values.size()) break;
+                    const std::string label =
+                        sheet_sess->menu_values[vi].value + "  (" + std::to_string(sheet_sess->menu_values[vi].count) + ")";
+                    items.push_back({label,
+                                     [bid, vi] {
+                                         SheetSession *ms = g_editor.GetSheetMutable(bid);
+                                         if (ms && vi < ms->menu_checked.size()) ms->menu_checked[vi] = ms->menu_checked[vi] ? 0 : 1;
+                                     },
+                                     false, vi < sheet_sess->menu_checked.size() && sheet_sess->menu_checked[vi] != 0, true});
+                }
+                if (values_clipped) {
+                    // Never present a capped list as if it were the whole
+                    // column: say how many were left out, and point at the
+                    // filter that can express what the list cannot.
+                    const int shown = value_rows;
+                    const int known = static_cast<int>(sheet_sess->menu_values.size());
+                    const std::string total = sheet_sess->menu_values_truncated ? std::to_string(known) + "+"
+                                                                                : std::to_string(known);
+                    // A pane too short to show even one value still has to
+                    // say so, rather than printing an empty "1-0 of 13"
+                    // range that reads like a bug.
+                    const std::string note =
+                        shown == 0 ? "(" + total + " values -- no room here; <leader>Sf filters by text)"
+                                   : "(" + std::to_string(sheet_sess->header_menu_scroll + 1) + "-" +
+                                         std::to_string(sheet_sess->header_menu_scroll + shown) + " of " + total +
+                                         " values; scroll, or <leader>Sf)";
+                    items.push_back({note, nullptr, false, false, false});
+                }
+                if (!sheet_sess->menu_values.empty()) {
+                    items.push_back({"", nullptr, true, false, false});
+                    items.push_back({"Apply ticked values as a filter", [bid] { ApplySheetColumnMenuFilter(bid); }, false, false, false});
+                    items.push_back({"Tick all", [bid] { SheetSession *ms = g_editor.GetSheetMutable(bid); if (ms) ms->menu_checked.assign(ms->menu_values.size(), 1); }, false, false, false});
+                    items.push_back({"Tick none", [bid] { SheetSession *ms = g_editor.GetSheetMutable(bid); if (ms) ms->menu_checked.assign(ms->menu_values.size(), 0); }, false, false, false});
+                }
+
+                float menu_w = 240.0f;
+                for (const MenuItem &it : items) {
+                    if (it.separator) continue;
+                    menu_w = std::max(menu_w, gfx::MeasureTextEx(g_font, it.label.c_str(), font_size, 0).x + 46.0f);
+                }
+                menu_w = std::min(menu_w, w - 8.0f);
+                float menu_h = 8.0f;
+                for (const MenuItem &it : items) menu_h += it.separator ? 7.0f : item_h;
+                // Kept inside the pane: a menu opened on the rightmost or
+                // lowest column would otherwise hang off the edge where
+                // half of it cannot be clicked.
+                float menu_x = std::min(anchor_x, x + w - menu_w - 4.0f);
+                menu_x = std::max(menu_x, x + 2.0f);
+                float menu_y = std::min(grid_y + static_cast<float>(metrics.col_header_h), y + h - menu_h - 4.0f);
+                menu_y = std::max(menu_y, grid_y);
+
+                gfx::DrawRectangle(static_cast<int>(menu_x), static_cast<int>(menu_y), static_cast<int>(menu_w),
+                              static_cast<int>(menu_h), ResolveHlGroup("MenuBar"));
+                gfx::DrawRectangleLines(static_cast<int>(menu_x), static_cast<int>(menu_y), static_cast<int>(menu_w),
+                                   static_cast<int>(menu_h), ResolveHlGroup("Normal"));
+                float iy = menu_y + 4.0f;
+                const gfx::Color menu_text = ResolveHlGroup("Normal");
+                for (size_t i = 0; i < items.size(); i++) {
+                    const MenuItem &it = items[i];
+                    if (it.separator) {
+                        gfx::DrawRectangle(static_cast<int>(menu_x + 6), static_cast<int>(iy + 3), static_cast<int>(menu_w - 12), 1,
+                                      gfx::Color{menu_text.r, menu_text.g, menu_text.b, 70});
+                        iy += 7.0f;
+                        continue;
+                    }
+                    const gfx::Rectangle row_rect{menu_x, iy, menu_w, item_h};
+                    if (PointInRect(gfx::GetMousePosition(), row_rect) && it.action) {
+                        gfx::DrawRectangle(static_cast<int>(row_rect.x), static_cast<int>(row_rect.y),
+                                      static_cast<int>(row_rect.width), static_cast<int>(row_rect.height),
+                                      ResolveHlGroup("Visual"));
+                    }
+                    std::string label = it.label;
+                    if (it.checkbox) label = (it.checked ? "[x] " : "[ ] ") + label;
+                    gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{menu_x + 8, iy + (item_h - font_size) / 2.0f}, font_size,
+                               0, it.action ? menu_text : ResolveHlGroup("Comment"));
+                    if (it.action) RegisterClickRegionOnTop(row_rect, it.action);
+                    iy += item_h;
+                }
+                // Clicking the menu's own background must not fall through
+                // to the grid underneath and move the cursor.
+                RegisterClickRegionOnTop(gfx::Rectangle{menu_x, menu_y, menu_w, menu_h}, [] {});
+            }
+        }
+
         DrawPaneBorder(x, y, w, h, is_active);
         return;
     }
 
     int visible_lines = std::max(1, static_cast<int>(content_h / static_cast<float>(line_height)));
+
     // Buffer::footer_hint takes the bottom row away from the text (drawn
     // after the rows below), so the cursor can never scroll under it.
     const bool draw_footer = !buf.footer_hint.empty() && visible_lines > 1;
@@ -60907,6 +61429,181 @@ void UpdateKanbanMouseInteraction() {
 // Kanban's column/row snap-to-slot drop, the live delta is continuous
 // pixels-to-days (rounded), matching DrawGantt's own live preview math
 // exactly so the bar never visibly jumps at release.
+// The spreadsheet grid's mouse: column/row edge drags to resize, a
+// double-click on an edge to autofit, a click to put the cursor on a cell,
+// a drag to select a range, and a click on a column header to open its
+// menu. Modelled on UpdateGanttMouseInteraction below, which already does
+// the divider-drag half of this for the Gantt label column: a 4px grab
+// zone, a latch on the session, and a clamped assignment while the button
+// is held.
+//
+// Everything here reads the slots BuildSheetSlots produced, never its own
+// idea of where a cell is -- which is what makes a click land on the cell
+// it visibly points at even with per-column widths, a zoom, frozen bands
+// and a filtered display order all in play at once.
+double g_sheet_last_edge_click_time = -1.0;
+int g_sheet_last_edge_click_col = -2;
+int g_sheet_last_edge_click_row = -2;
+
+void UpdateSheetMouseInteraction() {
+    const Mode mode = g_editor.CurrentMode();
+    if (mode != Mode::SheetNormal && mode != Mode::SheetVisual) return;
+    const int buffer_id = g_editor.CurrentBufferId();
+    SheetSession *sess = g_editor.GetSheetMutable(buffer_id);
+    if (!sess || sess->grid_w <= 0 || sess->grid_h <= 0) return;
+    const SheetView *view = g_editor.SheetViewFor(buffer_id);
+    if (!view) return;
+    const SheetGeom geom = MakeSheetGeom(*view, sess->zoom);
+    const SheetPaneMetrics metrics =
+        SheetMeasurePane(geom, static_cast<int>(sess->grid_w), static_cast<int>(sess->grid_h));
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+
+    // A drag already in progress owns the pointer until the button comes
+    // up, wherever it has wandered to -- a resize that stopped tracking
+    // the moment the pointer left the header would be unusable.
+    if (sess->resizing_col >= 0) {
+        gfx::SetMouseCursor(gfx::MouseCursor::ResizeEw);
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
+            const float delta = (mouse.x - sess->resize_start_mouse) / std::max(0.01f, sess->zoom);
+            g_editor.SheetSetColumnWidth(buffer_id, sess->resizing_col,
+                                         sess->resize_start_size + static_cast<int>(std::lround(delta)));
+        } else {
+            sess->resizing_col = -1;
+        }
+        return;
+    }
+    if (sess->resizing_row >= 0) {
+        gfx::SetMouseCursor(gfx::MouseCursor::ResizeNs);
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
+            const float delta = (mouse.y - sess->resize_start_mouse) / std::max(0.01f, sess->zoom);
+            g_editor.SheetSetRowHeightPx(buffer_id, sess->resizing_row,
+                                         sess->resize_start_size + static_cast<int>(std::lround(delta)));
+        } else {
+            sess->resizing_row = -1;
+        }
+        return;
+    }
+
+    const gfx::Rectangle grid{sess->grid_x, sess->grid_y, sess->grid_w, sess->grid_h};
+    if (!PointInRect(mouse, grid)) {
+        if (sess->drag_selecting && !gfx::IsMouseButtonDown(gfx::MouseButton::Left)) sess->drag_selecting = false;
+        return;
+    }
+
+    std::vector<SheetRowSlot> row_slots;
+    std::vector<SheetColSlot> col_slots;
+    BuildSheetSlots(*sess, *view, geom, metrics, sess->grid_x, sess->grid_y, sess->grid_w, sess->grid_h, &row_slots,
+                    &col_slots);
+
+    const float header_w = static_cast<float>(metrics.header_w);
+    const float col_header_h = static_cast<float>(metrics.col_header_h);
+    const bool in_col_header = mouse.y < sess->grid_y + col_header_h;
+    const bool in_row_header = mouse.x < sess->grid_x + header_w;
+    const bool pressed = gfx::IsMouseButtonPressed(gfx::MouseButton::Left);
+    const double now = gfx::GetTime();
+
+    // The grab zone straddles each boundary, so a column can be grabbed
+    // from either side of its own edge.
+    constexpr float kEdgeGrab = 4.0f;
+
+    if (in_col_header && !in_row_header) {
+        for (const SheetColSlot &cs : col_slots) {
+            if (std::abs(mouse.x - (cs.x + cs.w)) > kEdgeGrab) continue;
+            gfx::SetMouseCursor(gfx::MouseCursor::ResizeEw);
+            if (pressed) {
+                const bool dbl = g_sheet_last_edge_click_col == cs.col &&
+                                 (now - g_sheet_last_edge_click_time) < kDoubleClickThresholdSec;
+                g_sheet_last_edge_click_col = cs.col;
+                g_sheet_last_edge_click_row = -2;
+                g_sheet_last_edge_click_time = now;
+                if (dbl) {
+                    // Double-clicking a boundary fits the column to its
+                    // content, the gesture every spreadsheet has.
+                    g_editor.SheetRequestAutofit(buffer_id, cs.col);
+                } else {
+                    sess->resizing_col = cs.col;
+                    sess->resize_start_mouse = mouse.x;
+                    sess->resize_start_size = SheetStoredColWidth(*view, cs.col);
+                }
+            }
+            return;
+        }
+        // Not on an edge: a click on the letter opens that column's menu
+        // (and a second click on the same one closes it again).
+        if (pressed) {
+            for (const SheetColSlot &cs : col_slots) {
+                if (mouse.x < cs.x || mouse.x >= cs.x + cs.w) continue;
+                OpenSheetColumnMenu(buffer_id, sess->header_menu_col == cs.col ? -1 : cs.col);
+                return;
+            }
+        }
+        return;
+    }
+
+    if (in_row_header && !in_col_header) {
+        for (const SheetRowSlot &rs : row_slots) {
+            if (rs.row < 0 || std::abs(mouse.y - (rs.y + rs.h)) > kEdgeGrab) continue;
+            gfx::SetMouseCursor(gfx::MouseCursor::ResizeNs);
+            if (pressed) {
+                const bool dbl = g_sheet_last_edge_click_row == rs.row &&
+                                 (now - g_sheet_last_edge_click_time) < kDoubleClickThresholdSec;
+                g_sheet_last_edge_click_row = rs.row;
+                g_sheet_last_edge_click_col = -2;
+                g_sheet_last_edge_click_time = now;
+                if (dbl) {
+                    // There is no "fit a row to its content" -- cell text
+                    // is one line -- so a double-click resets the height.
+                    g_editor.SheetSetRowHeightPx(buffer_id, rs.row, kSheetRowHeight);
+                } else {
+                    sess->resizing_row = rs.row;
+                    sess->resize_start_mouse = mouse.y;
+                    sess->resize_start_size = SheetStoredRowHeight(*view, rs.row);
+                }
+            }
+            return;
+        }
+        return;
+    }
+
+    // The body. A press puts the cursor on the cell under the pointer and
+    // arms a drag; dragging past that first cell turns the selection into
+    // a Visual range, exactly as dragging in a text buffer does.
+    /**
+     * @brief Finds the cell under a screen position, if the pointer is over one.
+     * @param out_row Receives the sheet row.
+     * @param out_col Receives the column.
+     * @return True if a cell was found.
+     */
+    auto cell_under = [&](int *out_row, int *out_col) {
+        int found_row = -1, found_col = -1;
+        for (const SheetRowSlot &rs : row_slots) {
+            if (rs.row >= 0 && mouse.y >= rs.y && mouse.y < rs.y + rs.h) found_row = rs.row;
+        }
+        for (const SheetColSlot &cs : col_slots) {
+            if (mouse.x >= cs.x && mouse.x < cs.x + cs.w) found_col = cs.col;
+        }
+        if (found_row < 0 || found_col < 0) return false;
+        *out_row = found_row;
+        *out_col = found_col;
+        return true;
+    };
+
+    int row = 0, col = 0;
+    if (pressed && cell_under(&row, &col)) {
+        if (sess->header_menu_col >= 0) OpenSheetColumnMenu(buffer_id, -1);
+        g_editor.SheetSetCursorFromMouse(buffer_id, row, col, /*extend=*/false);
+        sess->drag_selecting = true;
+        return;
+    }
+    if (sess->drag_selecting) {
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
+            if (cell_under(&row, &col)) g_editor.SheetSetCursorFromMouse(buffer_id, row, col, /*extend=*/true);
+        } else {
+            sess->drag_selecting = false;
+        }
+    }
+}
+
 void UpdateGanttMouseInteraction() {
     if (g_editor.CurrentMode() != Mode::GanttNormal) return;
     int buffer_id = g_editor.CurrentBufferId();
@@ -61950,6 +62647,8 @@ void UpdateDrawFrame() {
         // cppcheck-suppress duplicateCondition
         if (!hint_consumed && !menu_consumed) UpdateKanbanMouseInteraction();
         // cppcheck-suppress duplicateCondition
+        // cppcheck-suppress duplicateCondition
+        if (!hint_consumed && !menu_consumed) UpdateSheetMouseInteraction();
         if (!hint_consumed && !menu_consumed) UpdateGanttMouseInteraction();
         // cppcheck-suppress duplicateCondition
         if (!hint_consumed && !menu_consumed) UpdateOfficeScrollbarInteraction();
@@ -62845,6 +63544,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinCopilot);
     lua->DoString(kBuiltinSnippets);
     lua->DoString(kBuiltinSymbols);
+    lua->DoString(kBuiltinSheet);
     lua->DoString(kBuiltinStructure);
     lua->DoString(kBuiltinDocs);
     lua->DoString(kBuiltinDap);

@@ -12526,6 +12526,297 @@ int l_sheet_prev(lua_State *L) {
     GetEditor(L)->PrevSheet();
     return 0;
 }
+
+// mep.sheet_* -- the spreadsheet pane's view layer, the same operations
+// the :MepSheet* commands and the column-header menu drive. Rows and
+// columns are 1-based here, as everywhere else in the Lua API, and are
+// converted at this boundary rather than inside the editor.
+//
+// The read-side calls (sheet_info, sheet_col_width, sheet_stats) are not
+// decoration: they are how tools/sheet_live_check.py can assert on what
+// a keystroke actually did, since nothing else can ask a running mep
+// what its grid currently looks like.
+
+/**
+ * @brief Returns the focused pane's spreadsheet session, raising a Lua error if the pane is not one.
+ * @param L Lua state.
+ * @return The session; never null (it raises instead).
+ */
+SheetSession *LuaSheet(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    SheetSession *s = ed->GetSheetMutable(ed->CurrentBufferId());
+    if (!s) luaL_error(L, "not a spreadsheet buffer (open a .csv, .xlsx or .ods)");
+    return s;
+}
+
+/**
+ * @brief Reads an optional 1-based column argument, defaulting to the cursor's column.
+ * @param L Lua state.
+ * @param idx Stack index of the argument.
+ * @return The zero-based column index.
+ */
+int LuaSheetCol(lua_State *L, int idx) {
+    if (lua_isnoneornil(L, idx)) return LuaSheet(L)->cursor_col;
+    return static_cast<int>(luaL_checkinteger(L, idx)) - 1;
+}
+
+// mep.sheet_sort(col, kind, descending): kind is 'auto' (default), 'text'
+// or 'number'.
+int l_sheet_sort(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int col = LuaSheetCol(L, 1);
+    const std::string kind_name = luaL_optstring(L, 2, "auto");
+    SheetSortKind kind = SheetSortKind::Auto;
+    if (kind_name == "text" || kind_name == "alpha") kind = SheetSortKind::Text;
+    else if (kind_name == "number" || kind_name == "num" || kind_name == "numeric") kind = SheetSortKind::Number;
+    ed->SheetSortColumn(ed->CurrentBufferId(), col, kind, lua_toboolean(L, 3) != 0);
+    return 0;
+}
+
+int l_sheet_sort_clear(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->SheetSortClear(ed->CurrentBufferId());
+    return 0;
+}
+
+// mep.sheet_filter(col, op, value): op is one of the ex-command's tokens
+// ('=', '!=', '~', '!~', '>', '<', 'empty', 'nonempty', 're'), or 'oneof'
+// with a table of values for the header menu's checklist.
+int l_sheet_filter(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    SheetFilter f;
+    f.col = LuaSheetCol(L, 1);
+    const std::string op = luaL_checkstring(L, 2);
+    if (op == "oneof") {
+        f.op = SheetFilterOp::OneOf;
+        luaL_checktype(L, 3, LUA_TTABLE);
+        const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 3));
+        for (lua_Integer i = 1; i <= n; i++) {
+            lua_rawgeti(L, 3, i);
+            if (lua_isstring(L, -1)) f.values.push_back(lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+    } else if (!ParseSheetFilterOp(op, &f.op)) {
+        return luaL_error(L, "unknown filter operator '%s'", op.c_str());
+    } else {
+        f.value = luaL_optstring(L, 3, "");
+    }
+    ed->SheetAddFilter(ed->CurrentBufferId(), f);
+    return 0;
+}
+
+int l_sheet_filter_clear(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int col = lua_isnoneornil(L, 1) ? -1 : static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    ed->SheetClearFilters(ed->CurrentBufferId(), col);
+    return 0;
+}
+
+// mep.sheet_freeze(rows, cols): no arguments freezes everything above and
+// left of the cursor.
+int l_sheet_freeze(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int rows = lua_isnoneornil(L, 1) ? -1 : static_cast<int>(luaL_checkinteger(L, 1));
+    const int cols = lua_isnoneornil(L, 2) ? (lua_isnoneornil(L, 1) ? -1 : 0) : static_cast<int>(luaL_checkinteger(L, 2));
+    ed->SheetFreeze(ed->CurrentBufferId(), rows, cols);
+    return 0;
+}
+
+// mep.sheet_zoom([factor]) -- multiplies by `factor`, or resets when given
+// nothing; returns the resulting zoom either way, so it reads as well as
+// it writes.
+int l_sheet_zoom(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    if (!lua_isnoneornil(L, 1)) {
+        const double factor = luaL_checknumber(L, 1);
+        if (factor <= 0) return luaL_error(L, "zoom factor must be positive");
+        ed->SheetZoomBy(ed->CurrentBufferId(), static_cast<float>(factor));
+    }
+    lua_pushnumber(L, static_cast<double>(LuaSheet(L)->zoom));
+    return 1;
+}
+
+int l_sheet_zoom_reset(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->SheetZoomReset(ed->CurrentBufferId());
+    return 0;
+}
+
+// mep.sheet_autofit([col]) -- no argument fits every column.
+int l_sheet_autofit(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int col = lua_isnoneornil(L, 1) ? -1 : static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    ed->SheetRequestAutofit(ed->CurrentBufferId(), col);
+    return 0;
+}
+
+// mep.sheet_col_width(col [, px]) / mep.sheet_row_height(row [, px]) --
+// set when given a size, read otherwise. Sizes are unzoomed pixels.
+int l_sheet_col_width(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int col = LuaSheetCol(L, 1);
+    if (!lua_isnoneornil(L, 2)) ed->SheetSetColumnWidth(ed->CurrentBufferId(), col, static_cast<int>(luaL_checkinteger(L, 2)));
+    const SheetView *v = ed->SheetViewFor(ed->CurrentBufferId());
+    lua_pushinteger(L, v ? SheetStoredColWidth(*v, col) : kSheetColWidth);
+    return 1;
+}
+
+int l_sheet_row_height(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int row = lua_isnoneornil(L, 1) ? LuaSheet(L)->cursor_row : static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    if (!lua_isnoneornil(L, 2)) ed->SheetSetRowHeightPx(ed->CurrentBufferId(), row, static_cast<int>(luaL_checkinteger(L, 2)));
+    const SheetView *v = ed->SheetViewFor(ed->CurrentBufferId());
+    lua_pushinteger(L, v ? SheetStoredRowHeight(*v, row) : kSheetRowHeight);
+    return 1;
+}
+
+// mep.sheet_stats([col]) -> table of counts and, for a numeric column,
+// sum/mean/min/max. Also writes the one-line form to the status area, so
+// the key binding and the Lua call show the same thing.
+int l_sheet_stats(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    SheetSession *sess = LuaSheet(L);
+    const int col = LuaSheetCol(L, 1);
+    ed->SheetReportStats(ed->CurrentBufferId(), col);
+    const SheetView *v = ed->SheetViewFor(ed->CurrentBufferId());
+    if (!v) return 0;
+    const SheetColumnStats st =
+        SheetComputeStats(sess->wb, sess->active_sheet, *v, col, v->freeze_rows, SheetDisplayCount(*v) - 1);
+    lua_newtable(L);
+    /**
+     * @brief Sets one integer field on the table at the top of the stack.
+     * @param key Field name.
+     * @param value Field value.
+     */
+    auto put_int = [&](const char *key, long long value) {
+        lua_pushinteger(L, static_cast<lua_Integer>(value));
+        lua_setfield(L, -2, key);
+    };
+    /**
+     * @brief Sets one number field on the table at the top of the stack.
+     * @param key Field name.
+     * @param value Field value.
+     */
+    auto put_num = [&](const char *key, double value) {
+        lua_pushnumber(L, value);
+        lua_setfield(L, -2, key);
+    };
+    put_int("count", st.count);
+    put_int("nonempty", st.nonempty);
+    put_int("numeric", st.numeric);
+    put_int("distinct", st.distinct);
+    put_num("sum", st.sum);
+    put_num("mean", st.mean);
+    put_num("min", st.min);
+    put_num("max", st.max);
+    return 1;
+}
+
+// mep.sheet_find(query [, forward]) -- moves the cursor to the next
+// matching cell and returns whether one was found.
+int l_sheet_find(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const std::string q = luaL_optstring(L, 1, "");
+    const bool forward = lua_isnoneornil(L, 2) ? true : lua_toboolean(L, 2) != 0;
+    lua_pushboolean(L, ed->SheetFind(ed->CurrentBufferId(), q, forward) ? 1 : 0);
+    return 1;
+}
+
+// mep.sheet_apply([force]) -- rewrites the cells into the order the view
+// is showing. The one mep.sheet_* call that is an edit.
+int l_sheet_apply(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    lua_pushboolean(L, ed->SheetApplyViewOrder(ed->CurrentBufferId(), lua_toboolean(L, 1) != 0) ? 1 : 0);
+    return 1;
+}
+
+// mep.sheet_info() -> everything about the pane's current state, in one
+// call. Rows and columns 1-based; `display_rows` is the sheet row shown at
+// each display position, which is what makes a sort assertable from
+// outside the process.
+int l_sheet_info(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    SheetSession *sess = LuaSheet(L);
+    const SheetView *v = ed->SheetViewFor(ed->CurrentBufferId());
+    lua_newtable(L);
+    /**
+     * @brief Sets one integer field on the table at the top of the stack.
+     * @param key Field name.
+     * @param value Field value.
+     */
+    auto put_int = [&](const char *key, long long value) {
+        lua_pushinteger(L, static_cast<lua_Integer>(value));
+        lua_setfield(L, -2, key);
+    };
+    put_int("sheet", sess->active_sheet + 1);
+    put_int("sheets", static_cast<long long>(sess->wb.sheets.size()));
+    put_int("cursor_row", sess->cursor_row + 1);
+    put_int("cursor_col", sess->cursor_col + 1);
+    put_int("scroll_display", sess->scroll_disp + 1);
+    // Which column-header menu is open (0 == none), so the live check can
+    // assert that a click opened one rather than only screenshotting it.
+    put_int("menu_col", sess->header_menu_col + 1);
+    // Where the grid actually is on screen, and how it is split. Exposed
+    // so a caller driving the mouse can aim at a real column boundary or a
+    // real cell instead of guessing at pane chrome it cannot see -- which
+    // is the difference between a mouse test that checks the feature and
+    // one that checks the tester's arithmetic.
+    put_int("grid_x", static_cast<long long>(std::lround(sess->grid_x)));
+    put_int("grid_y", static_cast<long long>(std::lround(sess->grid_y)));
+    put_int("grid_w", static_cast<long long>(std::lround(sess->grid_w)));
+    put_int("grid_h", static_cast<long long>(std::lround(sess->grid_h)));
+    if (v) {
+        const SheetPaneMetrics pm = SheetMeasurePane(MakeSheetGeom(*v, sess->zoom), static_cast<int>(sess->grid_w),
+                                                     static_cast<int>(sess->grid_h));
+        put_int("header_w", pm.header_w);
+        put_int("col_header_h", pm.col_header_h);
+        put_int("frozen_w", pm.frozen_w);
+        put_int("frozen_h", pm.frozen_h);
+    }
+    put_int("scroll_col", sess->scroll_col + 1);
+    lua_pushnumber(L, static_cast<double>(sess->zoom));
+    lua_setfield(L, -2, "zoom");
+    if (!sess->wb.sheets.empty()) {
+        const Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
+        put_int("max_row", sh.max_row + 1);
+        put_int("max_col", sh.max_col + 1);
+    }
+    if (v) {
+        put_int("visible_rows", v->visible_rows);
+        put_int("total_rows", v->total_rows);
+        put_int("freeze_rows", v->freeze_rows);
+        put_int("freeze_cols", v->freeze_cols);
+        put_int("filters", static_cast<long long>(v->filters.size()));
+        put_int("sort_col", v->sort.col < 0 ? 0 : v->sort.col + 1);
+        lua_pushboolean(L, v->sort.descending ? 1 : 0);
+        lua_setfield(L, -2, "sort_desc");
+        put_int("col_width", SheetStoredColWidth(*v, sess->cursor_col));
+        put_int("row_height", SheetStoredRowHeight(*v, sess->cursor_row));
+        lua_pushstring(L, SheetViewSummary(*v).c_str());
+        lua_setfield(L, -2, "summary");
+        // The display order itself, capped so a 100k-row sheet does not
+        // build a 100k-element Lua table nobody asked for.
+        lua_newtable(L);
+        const int cap = std::min(SheetDisplayCount(*v), 500);
+        for (int d = 0; d < cap; d++) {
+            lua_pushinteger(L, SheetRowAtDisplay(*v, d) + 1);
+            lua_rawseti(L, -2, d + 1);
+        }
+        lua_setfield(L, -2, "display_rows");
+    }
+    return 1;
+}
+
+// mep.sheet_cell(row, col) -> the cell's displayed text, as the grid shows
+// it (a formula's value, not its source).
+int l_sheet_cell(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    SheetSession *sess = LuaSheet(L);
+    const int row = lua_isnoneornil(L, 1) ? sess->cursor_row : static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    const int col = lua_isnoneornil(L, 2) ? sess->cursor_col : static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    lua_pushstring(L, FormatCellValue(ed->EvaluateSheetCell(ed->CurrentBufferId(), row, col)).c_str());
+    return 1;
+}
 // --- The presentation editor (src/editor_pres.cpp) -----------------------------
 // mep.pres_* act on the focused pane's deck (a .pptx/.odp buffer); slide
 // and shape numbers are 1-based, lengths EMU (914400 to the inch).
@@ -15149,6 +15440,21 @@ const luaL_Reg kMepFuncs[] = {
     {"menubar_tap_toggle_set", l_menubar_tap_toggle_set},
     {"menubar_tap_toggle_enabled", l_menubar_tap_toggle_enabled},
     {"sheet_next", l_sheet_next},
+    {"sheet_sort", l_sheet_sort},
+    {"sheet_sort_clear", l_sheet_sort_clear},
+    {"sheet_filter", l_sheet_filter},
+    {"sheet_filter_clear", l_sheet_filter_clear},
+    {"sheet_freeze", l_sheet_freeze},
+    {"sheet_zoom", l_sheet_zoom},
+    {"sheet_zoom_reset", l_sheet_zoom_reset},
+    {"sheet_autofit", l_sheet_autofit},
+    {"sheet_col_width", l_sheet_col_width},
+    {"sheet_row_height", l_sheet_row_height},
+    {"sheet_stats", l_sheet_stats},
+    {"sheet_find", l_sheet_find},
+    {"sheet_apply", l_sheet_apply},
+    {"sheet_info", l_sheet_info},
+    {"sheet_cell", l_sheet_cell},
     {"pres_info", l_pres_info},
     {"pres_new", l_pres_new},
     {"pres_goto", l_pres_goto},

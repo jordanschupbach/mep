@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 173 =<leader>= sequences registered at startup. Press
+All 189 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -19,6 +19,22 @@ the features live.
 | =<leader><CR>= | terminal | [[file:terminals.html][Terminals]] |
 | =<leader><Space>= | Command runner (just > make > ninja > cmake) | [[file:runners.html][The command runner]] |
 | =<leader>?= | Cheatsheet: snippets & symbols | [[file:org-notes.html][Note-taking: snippets and highlights]] |
+| =<leader>S/= | Sheet: find in the grid | [[file:sheets.html][Spreadsheets]] |
+| =<leader>SA= | Sheet: autofit every column | [[file:sheets.html][Spreadsheets]] |
+| =<leader>SF= | Sheet: clear all filters | [[file:sheets.html][Spreadsheets]] |
+| =<leader>SH= | Sheet: unfreeze | [[file:sheets.html][Spreadsheets]] |
+| =<leader>SN= | Sheet: sort this column numerically, descending | [[file:sheets.html][Spreadsheets]] |
+| =<leader>SS= | Sheet: sort this column (descending) | [[file:sheets.html][Spreadsheets]] |
+| =<leader>Sa= | Sheet: autofit this column | [[file:sheets.html][Spreadsheets]] |
+| =<leader>Sc= | Sheet: clear the sort | [[file:sheets.html][Spreadsheets]] |
+| =<leader>Sf= | Sheet: filter this column | [[file:sheets.html][Spreadsheets]] |
+| =<leader>Sh= | Sheet: freeze rows/columns up to the cursor | [[file:sheets.html][Spreadsheets]] |
+| =<leader>Sn= | Sheet: sort this column numerically | [[file:sheets.html][Spreadsheets]] |
+| =<leader>Sp= | Sheet: apply the view order to the data | [[file:sheets.html][Spreadsheets]] |
+| =<leader>Ss= | Sheet: sort this column (ascending) | [[file:sheets.html][Spreadsheets]] |
+| =<leader>St= | Sheet: column statistics | [[file:sheets.html][Spreadsheets]] |
+| =<leader>Sw= | Sheet: set this column width | [[file:sheets.html][Spreadsheets]] |
+| =<leader>Sz= | Sheet: reset zoom | [[file:sheets.html][Spreadsheets]] |
 | =<leader>a<CR>= | AI: Claude Code terminal below | [[file:ai-terminal.html][Claude Code in a pane]] |
 | =<leader>a?= | AI: what can I do with a highlight? | [[file:ai-commands.html][Ask the model]] |
 | =<leader>aa= | Toggle AI agents pane | [[file:ai-agents.html][The AI Agents sidebar]] |

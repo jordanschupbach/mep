@@ -4,6 +4,7 @@
 #include "pdf_doc.h"
 #include "office_doc.h"
 #include "sheet_doc.h"
+#include "sheet_view.h"
 #include "pres_doc.h"
 #include "notebook_doc.h"
 #include "html_doc.h"
@@ -2639,18 +2640,27 @@ Model3DSession::ObjectKeyframe Model3DSampleObjectAtTime(const Model3DSession &s
 // one DrawPane actually renders at drift apart into a visible jump/overlap.
 inline constexpr float kPdfPageGapPx = 16.0f;
 
-// Fixed spreadsheet grid geometry (screen pixels, unscaled) -- shared
-// between Editor::ResizeSheetViewport's scroll-follow arithmetic and
-// main.cpp's DrawPane sheet-grid renderer, same "must agree exactly"
-// reasoning as kPdfPageGapPx above. Deliberately NOT tied to
-// g_font_size/g_char_width the way the rest of the editor's layout is --
-// sheet cells are fixed-size grid slots, not word-wrapped/font-measured
-// text, which is what lets ResizeSheetViewport do its own scroll-follow
-// entirely in this raylib-free file (see SheetSession::scroll_row's own
-// comment).
-inline constexpr int kSheetRowHeaderW = 50;
-inline constexpr int kSheetColWidth = 90;
-inline constexpr int kSheetRowHeight = 22;
+// Spreadsheet grid geometry lives in sheet_view.h now
+// (kSheetRowHeaderW/kSheetColWidth/kSheetRowHeight, plus the clamps and
+// steps), together with the functions that compute with it. It used to be
+// three bare constants here, justified by sheet cells being fixed-size
+// slots so that Editor::ResizeSheetViewport's scroll-follow could be plain
+// integer division in this raylib-free file while main.cpp's renderer did
+// the same division independently -- the kPdfPageGapPx "must agree
+// exactly" convention above.
+//
+// That convention had in fact already failed: ResizeSheetViewport was
+// handed the pane's whole content height while the renderer drew into
+// that height minus the formula bar minus the column-letter row, so the
+// editor believed in two or three rows that were never drawn and holding
+// `j` walked the cursor off the bottom of the visible grid before
+// scroll-follow reacted. Cells are no longer fixed-size anyway (per-column
+// widths, per-row heights, a pane zoom, and rows a filter hides), so the
+// geometry is now computed ONCE, by functions both sides call
+// (SheetMeasurePane, SheetFollowCursor, SheetColOffsetX...), rather than
+// twice by agreement. Scroll-follow is still done entirely in raylib-free
+// code; the one quantity the model genuinely cannot measure, the font's
+// line height, is pushed in by SetSheetFontMetrics.
 
 // One PDF-viewer pane's state, keyed by buffer id the same way ImageSession
 // is (see its comment) -- a PDF buffer's Buffer::lines is also a dummy
@@ -3381,17 +3391,93 @@ struct SheetSession {
     // convention -- pushed once per edit commit, never per keystroke.
     std::vector<Workbook> undo_stack, redo_stack;
 
+    // The grid box the renderer actually draws into: the pane minus the
+    // formula bar. ResizeSheetViewport is handed this, NOT the pane's whole
+    // content height -- passing the latter is what used to make the editor
+    // believe in rows the renderer never drew (see the geometry note where
+    // kSheetRowHeight used to live).
     int viewport_w = 0, viewport_h = 0;
+
     // Top-left visible cell -- unlike Office's vertical-only scroll_para,
-    // a grid scrolls in both dimensions. A real simplification vs. the
-    // Office pane: sheet cells are fixed-width/height grid slots, not
-    // word-wrapped flowing text, so (unlike ResizeOfficeViewport/
-    // SetOfficeScroll, which had to punt scroll-follow into main.cpp
-    // because it needs MeasureTextEx) ResizeSheetViewport can do the
-    // whole scroll-follow job itself, entirely raylib-free, as ordinary
-    // integer row/col arithmetic -- no main.cpp-side follow-up call
-    // needed.
-    int scroll_row = 0, scroll_col = 0;
+    // a grid scrolls in both dimensions.
+    //
+    // scroll_disp is a *display* row index into SheetView::order, not a
+    // sheet row: with a filter or a sort active the two differ, and the
+    // name is deliberately not scroll_row any more so no caller can
+    // quietly treat one as the other. cursor_row/cursor_col above stay
+    // sheet coordinates throughout -- the data is what a cursor points at.
+    //
+    // Cells are no longer the fixed-size slots this comment used to
+    // describe (per-column widths, per-row heights, a pane zoom, hidden
+    // rows), so scroll-follow is no longer integer division. It is still
+    // done entirely here in raylib-free code, and still needs no
+    // main.cpp-side follow-up call the way ResizeOfficeViewport/
+    // SetOfficeScroll do -- it is just a running sum now
+    // (sheet_view.h's SheetFollowCursor), walking only the visible window
+    // rather than the sheet, and the renderer calls the same function
+    // instead of reimplementing it.
+    int scroll_disp = 0, scroll_col = 0;
+
+    // How this sheet is *shown* -- widths, heights, freeze, sort, filters,
+    // and the derived display order. One per sheet, kept parallel to
+    // wb.sheets exactly the way Workbook::xlsx_sheet_paths is, so each
+    // sheet in a workbook keeps its own view instead of sharing one.
+    // Deliberately NOT part of the undo snapshot below: sorting is not an
+    // edit (it changes no cell), and an undo level carrying a 100k-row
+    // derived order vector would cost more than the Workbook it describes.
+    // Undo/redo marks the order stale instead -- an older Workbook can have
+    // a smaller used range, so the order it was built from is genuinely
+    // invalid afterwards.
+    std::vector<SheetView> views;
+
+    // The pane's magnification, multiplying cell sizes and the cell font
+    // together. On the session rather than in SheetView because it belongs
+    // to the pane, not the sheet: flipping between a workbook's sheets must
+    // not change how big everything looks.
+    float zoom = 1.0f;
+
+    // The grid rectangle DrawPane last drew into (screen pixels), refreshed
+    // every frame -- the same convention as KanbanSession/GanttSession::
+    // content_x/y/w/h, and for the same reason: the mouse handler
+    // (UpdateSheetMouseInteraction) runs after the draw pass and must not
+    // recompute pane geometry for itself, since a second copy of that
+    // arithmetic is exactly what drifted apart before.
+    float grid_x = 0, grid_y = 0, grid_w = 0, grid_h = 0;
+
+    // Live column/row edge drag. -1 when nothing is being dragged. The
+    // start size is remembered so the drag tracks the pointer's total
+    // offset rather than accumulating per-frame deltas, which would drift
+    // whenever a frame is dropped.
+    int resizing_col = -1, resizing_row = -1;
+    float resize_start_mouse = 0;
+    int resize_start_size = 0;
+    // A body drag extends a Mode::SheetVisual range; the anchor is already
+    // in sel_anchor_row/col.
+    bool drag_selecting = false;
+
+    // The open column-header dropdown's column, -1 when none. Single-open,
+    // click-away-closes -- the same convention as main.cpp's
+    // g_office_dropdown_open, but per session because the anchor column
+    // belongs to this grid.
+    int header_menu_col = -1;
+    int header_menu_scroll = 0;
+    // The checklist the menu shows: this column's distinct values, fetched
+    // once when the menu opens (scanning them costs one EvaluateCell per
+    // visible row, which is not a per-frame price), plus whether each is
+    // ticked.
+    std::vector<SheetValueCount> menu_values;
+    std::vector<char> menu_checked;
+    bool menu_values_truncated = false;
+
+    // `/` find-in-grid: the last query, so n/N have something to repeat.
+    std::string find_query;
+
+    // A pending autofit, parked here for main.cpp's DrawPane to carry out
+    // on its next frame: fitting a column to its content means measuring
+    // text, which needs a font and a GL context that editor.cpp has
+    // neither of. -1 means every column; >= 0 means that one.
+    bool autofit_pending = false;
+    int autofit_request = -1;
 
     // Insert-mode live edit state (Mode::SheetInsert): editing the
     // current cell's text as a plain string, seeded from its `raw` on
@@ -3507,7 +3593,8 @@ struct NotebookSession {
 
 // Fixed Kanban card/column geometry (screen pixels, unscaled) -- shared
 // between main.cpp's DrawKanban/UpdateKanbanMouseInteraction, same "must
-// agree exactly" reasoning as kSheetRowHeaderW/kSheetColWidth above.
+// agree exactly" reasoning as kPdfPageGapPx above. (These really are
+// fixed, unlike the sheet grid's -- a card is not user-resizable.)
 inline constexpr int kKanbanColumnWidth = 260;
 inline constexpr int kKanbanCardHeight = 64;
 inline constexpr int kKanbanCardGap = 10;
@@ -7146,6 +7233,137 @@ public:
      * @return A const pointer to the SheetSession, or nullptr if none exists.
      */
     const SheetSession *GetSheet(int buffer_id) const;
+    // Non-const sibling of GetSheet, mirroring GetGanttMutable's own
+    // shape -- main.cpp's mouse handler (column/row edge drags,
+    // click-to-select) and the view commands need to write the session,
+    // not just read it.
+    /**
+     * @brief Returns the mutable SheetSession for a buffer, if it is a spreadsheet pane.
+     * @param buffer_id The buffer id to look up.
+     * @return A pointer to the SheetSession, or nullptr if none exists.
+     */
+    SheetSession *GetSheetMutable(int buffer_id);
+    /**
+     * @brief Returns the active sheet's view state for a buffer, growing the per-sheet view list if needed.
+     * @param buffer_id The buffer id to look up.
+     * @return A pointer to the SheetView, or nullptr if the buffer is not a spreadsheet pane.
+     */
+    SheetView *SheetViewMutable(int buffer_id);
+    /**
+     * @brief Returns the active sheet's view state for reading, with its display order brought up to date.
+     * @param buffer_id The buffer id to look up.
+     * @return A const pointer to the SheetView, or nullptr if the buffer is not a spreadsheet pane.
+     */
+    const SheetView *SheetViewFor(int buffer_id);
+    // main.cpp measures the rendered font and pushes the result in here
+    // once per frame. The model cannot do it -- MeasureTextEx needs a GL
+    // context -- but it needs the number, because a row shorter than its
+    // own text clips it. Same "main.cpp computes, a plain setter bridges
+    // it into raylib-free state" split as SetOfficeCursorWrapLines.
+    /**
+     * @brief Records the rendered line height of a sheet pane's cell font, so row heights can be floored by it.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param line_height The font's line height in rendered (post-zoom) pixels.
+     */
+    void SetSheetFontMetrics(int buffer_id, float line_height);
+    // The spreadsheet view operations. Each is the single implementation
+    // behind all three surfaces that offer it -- an ex-command, a <leader>
+    // mapping, and the column-header menu -- so the three cannot drift
+    // apart. None of them touches a Cell: sorting and filtering are
+    // display state, and `:w` writes the file in its original order until
+    // SheetApplyViewOrder is called deliberately.
+    /**
+     * @brief Sorts a sheet column in the view, leaving the cells untouched.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param col Zero-based column to sort by; negative uses the cursor's column.
+     * @param kind Text, numeric, or auto-detect.
+     * @param descending Whether to reverse the order.
+     */
+    void SheetSortColumn(int buffer_id, int col, SheetSortKind kind, bool descending);
+    /**
+     * @brief Removes a sheet's sort, returning the display to the file's own row order.
+     * @param buffer_id The spreadsheet buffer id.
+     */
+    void SheetSortClear(int buffer_id);
+    /**
+     * @brief Adds a row filter to a sheet's view, replacing any filter already on that column.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param filter The predicate to add.
+     */
+    void SheetAddFilter(int buffer_id, const SheetFilter &filter);
+    /**
+     * @brief Removes a sheet's filters.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param col Only clear this column's filter; -1 clears every filter.
+     */
+    void SheetClearFilters(int buffer_id, int col);
+    /**
+     * @brief Pins a sheet's leading rows and columns so they stay put while the rest scrolls.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param rows Number of leading rows to pin; negative pins up to the cursor.
+     * @param cols Number of leading columns to pin; negative pins up to the cursor.
+     */
+    void SheetFreeze(int buffer_id, int rows, int cols);
+    /**
+     * @brief Sets one sheet column's width, in unzoomed pixels.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param col Zero-based column.
+     * @param px Desired width; clamped to the supported range.
+     */
+    void SheetSetColumnWidth(int buffer_id, int col, int px);
+    /**
+     * @brief Sets one sheet row's height, in unzoomed pixels.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param row Zero-based sheet row.
+     * @param px Desired height; clamped to the supported range.
+     */
+    void SheetSetRowHeightPx(int buffer_id, int row, int px);
+    /**
+     * @brief Asks the renderer to size columns to their content on its next frame.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param col Column to fit, or -1 for every column.
+     */
+    void SheetRequestAutofit(int buffer_id, int col);
+    /**
+     * @brief Reports a column's statistics in the status line.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param col Column to summarize; negative uses the cursor's column.
+     */
+    void SheetReportStats(int buffer_id, int col);
+    /**
+     * @brief Finds the next cell whose text contains a query and moves the cursor to it.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param query Text to look for; empty repeats the last query.
+     * @param forward Search direction.
+     * @return True if a match was found.
+     */
+    bool SheetFind(int buffer_id, const std::string &query, bool forward);
+    /**
+     * @brief Rewrites a sheet's cells into the order the view is showing them in.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param force Proceed even when a row holding a formula would move.
+     * @return True if anything changed.
+     */
+    bool SheetApplyViewOrder(int buffer_id, bool force);
+    /**
+     * @brief Moves a sheet cursor to a clicked cell, optionally extending a Visual range to it.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param row Zero-based sheet row that was clicked.
+     * @param col Zero-based column that was clicked.
+     * @param extend Extend the current selection instead of starting a new one (a drag).
+     */
+    void SheetSetCursorFromMouse(int buffer_id, int row, int col, bool extend);
+    /**
+     * @brief Multiplies a sheet pane's zoom by a factor, clamped to the supported range.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param factor Factor to multiply by; below 1 zooms out.
+     */
+    void SheetZoomBy(int buffer_id, float factor);
+    /**
+     * @brief Resets a sheet pane's zoom to 1.0.
+     * @param buffer_id The spreadsheet buffer id.
+     */
+    void SheetZoomReset(int buffer_id);
 
     // --- Jupyter notebook panes (notebook_doc.h) ------------------------
     /**
@@ -7337,10 +7555,18 @@ public:
     // viewport_w/h and clamps scroll_row/scroll_col so the cursor cell
     // stays visible, no main.cpp-side follow-up call needed.
     /**
-     * @brief Records a sheet pane's viewport size and clamps scroll_row/scroll_col so the cursor cell stays visible.
+     * @brief Refreshes a sheet pane's display order and clamps scroll_disp/scroll_col so the cursor cell stays visible.
      * @param buffer_id The spreadsheet buffer id whose viewport changed.
-     * @param w The new viewport width in pixels.
-     * @param h The new viewport height in pixels.
+     * @param w The grid box width in pixels.
+     * @param h The grid box height in pixels -- the pane's content height MINUS the formula bar, not the whole thing.
+     *
+     * `h` excluding the formula bar is the contract, not a detail: the
+     * caller used to pass the pane's full content height while the
+     * renderer drew into that height minus the bar minus the column-letter
+     * row, and the resulting two-or-three-row disagreement let the cursor
+     * walk off the bottom of the drawn grid before scroll-follow noticed.
+     * Both sides now split the box with the same function
+     * (SheetMeasurePane), so there is one answer rather than two.
      */
     void ResizeSheetViewport(int buffer_id, int w, int h);
     // Non-const on purpose, called directly from main.cpp's DrawPane
@@ -13474,9 +13700,51 @@ private:
     // the new session's original_bytes for a future save (Phase 4) to
     // copy untouched ZIP entries from.
     void OpenOfficeInPlace(const std::string &path, const unsigned char *bytes, size_t len);
-    // 2D grid navigation: hjkl/arrows move the active cell one row/col;
-    // gg/G/0/$ jump to the grid's corners (first/last used row, first/last
-    // used column, per Sheet::max_row/max_col). ':' and the leader key are
+    // Ensures `views` has one entry per sheet, and that active_sheet is in
+    // range -- called before anything reads a view rather than at load
+    // time only, since a session can also arrive via an undo swap.
+    /**
+     * @brief Ensures a session has one SheetView per sheet in its workbook.
+     * @param sess The session to fix up.
+     */
+    void EnsureSheetViews(SheetSession &sess);
+    // The cursor must always sit on a row the view actually displays --
+    // `i`/`a` seed the edit buffer from cursor_row/cursor_col and commit
+    // straight back there, so a cursor left on a row a filter hid would
+    // silently edit a cell that is not on screen.
+    /**
+     * @brief Moves a sheet cursor onto a visible row if the display order no longer shows the one it is on.
+     * @param sess The session whose cursor to re-snap.
+     */
+    void ReclampSheetCursor(SheetSession &sess);
+    /**
+     * @brief Moves a sheet session's cursor by a number of display rows, skipping rows the view hides.
+     * @param sess The session whose cursor to move.
+     * @param view The active sheet's view, supplying the display order.
+     * @param delta Display rows to move by; negative moves up.
+     */
+    void MoveSheetCursorRows(SheetSession &sess, SheetView &view, int delta);
+    /**
+     * @brief Widens or narrows a sheet column by one step (Alt+Left/Right).
+     * @param buffer_id The spreadsheet buffer id.
+     * @param delta Unzoomed pixels to add; negative narrows.
+     * @param all_cols Apply to every column in the used range instead of the cursor's.
+     */
+    void SheetStepColWidth(int buffer_id, int delta, bool all_cols);
+    /**
+     * @brief Makes a sheet row taller or shorter by one step (Alt+Up/Down).
+     * @param buffer_id The spreadsheet buffer id.
+     * @param delta Unzoomed pixels to add; negative shortens.
+     * @param all_rows Apply to every row in the used range instead of the cursor's.
+     */
+    void SheetStepRowHeight(int buffer_id, int delta, bool all_rows);
+    // 2D grid navigation: hjkl/arrows move the active cell one row/col --
+    // rows through the *display* order, so a filter's hidden rows are
+    // stepped over rather than landed on; gg/G jump to the first/last row
+    // shown (not Sheet::max_row, which a sort or filter can put anywhere)
+    // and 0/$ to the first/last used column. Alt+arrows resize the
+    // cursor's column/row instead of moving, and `+`/`-`/`=` zoom the
+    // grid, matching the image and PDF panes. ':' and the leader key are
     // forwarded exactly like HandleOfficeNormalInput. 'i'/'a' enter
     // Mode::SheetInsert seeded with the current cell's raw text
     // (PushUndoSheet first); 'v' enters Mode::SheetVisual; 'u'/Ctrl-R

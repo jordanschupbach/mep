@@ -60,7 +60,10 @@ flake on, writes a starter notebook and opens it:
 | /R Markdown notebook/ | ggplot2, plus jsonlite, rmarkdown, knitr and pandoc       | =analysis.Rmd=   |
 
 The R preset's extra packages are the ones the [[file:notebooks.html][R notebook kernel]] and knitting
-need, so they are added even if you untick ggplot2. With the justfile on, it
+need, so they are added even if you untick ggplot2. The new project's
+=.envrc= is allowed and its environment loaded straight away; the starter
+notebook can be run at once -- a chunk waits for the flake to finish
+building rather than needing R installed anywhere else. With the justfile on, it
 also gets a =knit= recipe. An existing file of the same name is never
 overwritten.
 

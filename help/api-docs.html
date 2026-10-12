@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (212)</h1>
+<h1>The bindings (215)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -110,6 +110,7 @@ that it does nothing.</p>
 <tr><td><code>mep.notebook_clear_outputs</code></td><td>--</td></tr>
 <tr><td><code>mep.notebook_default_kernel</code></td><td>the kernel name cells run on when they pick none</td></tr>
 <tr><td><code>mep.notebook_delete_cell</code></td><td>deletes a cell (default: the cursor's). */ int l_notebook_delete_cell(lua_State *L) { GetEditor(L)-&gt;NotebookDeleteCell(NotebookIndexArg(L, 1));...</td></tr>
+<tr><td><code>mep.notebook_figure_path</code></td><td>the file a plot output is exported to, or nil</td></tr>
 <tr><td><code>mep.notebook_format</code></td><td>"ipynb" or "rmd" for the current notebook buffer, nil otherwise</td></tr>
 <tr><td><code>mep.notebook_goto_cell</code></td><td>moves the cursor to a cell's first body row (index clamped)</td></tr>
 <tr><td><code>mep.notebook_insert_cell</code></td><td>inserts an empty cell above/below the cursor's cell and moves into it</td></tr>
@@ -118,6 +119,7 @@ that it does nothing.</p>
 <tr><td><code>mep.notebook_kernels</code></td><td>array of {name, display_name, language} for every registered kernel</td></tr>
 <tr><td><code>mep.notebook_lsp_context</code></td><td>--</td></tr>
 <tr><td><code>mep.notebook_move_cell</code></td><td>swaps the cursor's cell with its neighbor (-1 up, +1 down)</td></tr>
+<tr><td><code>mep.notebook_open_figure</code></td><td>opens a plot output in the image viewer, as clicking it does</td></tr>
 <tr><td><code>mep.notebook_restart_kernel</code></td><td>--</td></tr>
 <tr><td><code>mep.notebook_run_all</code></td><td>queues every code cell of the current notebook in order. */ int l_notebook_run_all(lua_State *L) { Editor *ed  GetEditor(L);...</td></tr>
 <tr><td><code>mep.notebook_run_and_advance</code></td><td>--</td></tr>
@@ -125,6 +127,7 @@ that it does nothing.</p>
 <tr><td><code>mep.notebook_run_cell</code></td><td>queues a code cell (default: the one under the cursor) on the kernel</td></tr>
 <tr><td><code>mep.notebook_set_cell_kernel</code></td><td>sets which kernel a cell runs on</td></tr>
 <tr><td><code>mep.notebook_set_cell_type</code></td><td>--</td></tr>
+<tr><td><code>mep.notebook_set_fig_path</code></td><td>where .Rmd chunk plots are exported (knitr's fig.path; ""  off)</td></tr>
 <tr><td><code>mep.notebook_set_kernels</code></td><td>replaces the code-cell kernel registry</td></tr>
 <tr><td><code>mep.notebook_set_python</code></td><td>sets the interpreter notebook kernels launch with (default "python3")</td></tr>
 <tr><td><code>mep.notebook_status</code></td><td>{status, python, cells, running, queued} for the current notebook, or nil</td></tr>

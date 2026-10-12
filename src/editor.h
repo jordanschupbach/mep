@@ -3577,6 +3577,7 @@ struct NotebookSession {
         std::string status = "not started";
         std::string version;      // the interpreter's own version, from its "ready" message
         std::string last_error;   // last kernel-level stderr line / spawn failure, for the status line
+        std::string spawn_path;   // $PATH it was started under: a later project environment can't reach it
     };
     std::map<std::string, KernelProc> kernels;
     int spawn_generation = 0;
@@ -4285,6 +4286,15 @@ public:
      * @return The number of visual slots the row claims.
      */
     int PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_cols) const;
+    /**
+     * @brief Returns the next row DrawPane would draw after `row`, skipping a closed fold's hidden
+     * interior and a rendered LaTeX fragment's remaining source rows.
+     * @param pane The pane being walked (its cursor row resolves the LaTeX reveal rule).
+     * @param buf The buffer `row` belongs to.
+     * @param row The row to step from.
+     * @return The next drawn row (never <= `row`, so every walk terminates).
+     */
+    int PaneNextDrawnRow(const Pane &pane, const Buffer &buf, int row) const;
     /**
      * @brief Counts the visual slots the rows [from, to) take in a pane, walked the way the draw loop walks them (a closed fold's and a rendering's further rows are not drawn).
      * @param pane The pane the rows are rendered in.
@@ -7502,11 +7512,27 @@ public:
      * @param command The executable name/path.
      */
     void SetNotebookPython(const std::string &command) { notebook_python_ = command; }
+    // Where an .Rmd chunk's plots are written as it finishes, as knitr's
+    // fig.path: a prefix relative to the document ("figures/" -> the
+    // document's figures/<label>-<n>.png, knitr's own names). "" stops it.
+    // mep.opt.notebook_fig_path.
+    void SetNotebookFigPath(const std::string &prefix) { notebook_fig_path_ = prefix; }
+    // The file output `out_index` of cell `cell_index` is exported to
+    // (knitr's <fig.path><label>-<n>.png), "" when it has none (not an
+    // image, not an .Rmd, or export is off).
+    std::string NotebookFigurePath(int buffer_id, int cell_index, int out_index);
+    // A click on a plot: writes it out (to NotebookFigurePath, else a
+    // scratch file) and shows it in the image viewer, in a split to the
+    // right that later clicks reuse.
+    void NotebookOpenFigure(int buffer_id, int cell_index, int out_index);
     // The kernels offered in every code cell's dropdown (see
     // NotebookKernelSpec). Replaces the whole registry; specs whose
     // command can't be found on PATH are dropped so the dropdown only
     // lists kernels that can actually run here. Kernel processes already
     // running keep going under their old spec until restarted.
+    // Also re-run (by kBuiltinNotebook) whenever $PATH changes, since a
+    // project's direnv environment arrives after startup; queued cells
+    // waiting on a kernel then run.
     void SetNotebookKernels(std::vector<NotebookKernelSpec> specs);
     const std::vector<NotebookKernelSpec> &NotebookKernels() const { return notebook_kernels_; }
     // The kernel a notebook's cells run on when they don't pick one
@@ -13178,6 +13204,14 @@ public:
     // handler flips indirectly via mep.direnv_toggle().
     void SetDirenvActive(bool active) { direnv_active_ = active; }
     bool DirenvActive() const { return direnv_active_; }
+    // Whether a `direnv export` for the active project is in flight (the
+    // first one for a flake builds it: minutes). Notebook runs wait for it
+    // rather than starting a kernel from mep's own PATH -- which, for a
+    // project whose R or Python only exists inside its flake, has no such
+    // kernel at all, or has a system one without the project's packages.
+    // Clearing it re-checks which kernels exist and starts what waited.
+    void SetDirenvPending(bool pending);
+    bool DirenvPending() const { return direnv_pending_; }
 
     // --- Winbar breadcrumb click hook (Part II Phase 11 click-dispatch gap) ---
     // The per-pane header (main.cpp's DrawPane) renders the active buffer's
@@ -14260,14 +14294,24 @@ private:
     void NotebookFinishRunning(NotebookSession &sess, NotebookCell &cell);
     void NotebookFailRunning(NotebookSession &sess, const std::string &reason);
     void NotebookFailRunningCell(NotebookCell &cell, const std::string &reason);
+    void NotebookExportFigures(NotebookSession &sess, const NotebookCell &cell);
+    // "<doc dir>/<fig.path><label>-": a chunk's figure names minus the
+    // plot number and ".png"; "" when its plots aren't exported.
+    std::string NotebookFigureBase(int buffer_id, int cell_index);
     void NotebookKillKernels(NotebookSession &sess);
     std::string NotebookKernelCwd(int buffer_id);
     std::string notebook_python_ = "python3";
+    std::string notebook_fig_path_ = "figures/";
+    int notebook_figure_pane_id_ = -1;   // the split NotebookOpenFigure opened, reused while it lives
+    std::unordered_set<std::string> notebook_exported_figures_;   // files NotebookExportFigures wrote: the only ones it removes
     // Kernel registry (SetNotebookKernels). Starts with just the built-in
     // python3 kernel so a notebook works before kBuiltinNotebook's Lua
     // has pushed mep.opt.notebook_kernels.
     std::vector<NotebookKernelSpec> notebook_kernels_ = {
         {"python3", "Python 3", "py", {}, NotebookKernelSpec::Mode::Python}};
+    // Every kernel configured, runnable here or not: tells "R isn't on
+    // PATH" apart from a kernel name nobody registered.
+    std::vector<NotebookKernelSpec> notebook_kernels_configured_;
     // The renderer's current font metrics (SetRenderCharMetrics), in
     // pixels. Defaults match the built-in font at its default size so
     // anything measuring a texture's reserved height before the first
@@ -14548,15 +14592,6 @@ private:
      * @return The slot offset of `row`'s top edge from the pane's own top edge.
      */
     int PaneSlotOffsetOfRow(const Pane &pane, const Buffer &buf, int row, int wrap_cols, int cap) const;
-    /**
-     * @brief Returns the next row DrawPane would draw after `row`, skipping a closed fold's hidden
-     * interior and a rendered LaTeX fragment's remaining source rows.
-     * @param pane The pane being walked (its cursor row resolves the LaTeX reveal rule).
-     * @param buf The buffer `row` belongs to.
-     * @param row The row to step from.
-     * @return The next drawn row (never <= `row`, so every walk terminates).
-     */
-    int PaneNextDrawnRow(const Pane &pane, const Buffer &buf, int row) const;
     /**
      * @brief Returns the previous row DrawPane would draw before `row`, rewinding into a closed
      * fold's start row or a rendered LaTeX fragment's start row when the step lands inside one.
@@ -15475,6 +15510,7 @@ private:
     int pomodoro_work_secs_ = 25 * 60;
     int pomodoro_break_secs_ = 5 * 60;
     bool direnv_active_ = false;
+    bool direnv_pending_ = false;
     int winbar_click_ref_ = 0;
     bool zen_mode_ = false;
     // See IsMenuBarVisible. Off by default -- the editor starts with the

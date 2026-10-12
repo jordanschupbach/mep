@@ -522,6 +522,12 @@ int main() {
         CHECK(!ParseRmdChunkHeader("``{r}", &h, nullptr));
         CHECK(!ParseRmdChunkHeader("```{r} trailing", &h, nullptr));
         CHECK(!ParseRmdChunkHeader("text ```{r}", &h, nullptr));
+        // knitr's engine is [A-Za-z0-9_]+, then a space, a comma or `}`.
+        CHECK(!ParseRmdChunkHeader("```{r.lab}", &h, nullptr));
+        CHECK(!ParseRmdChunkHeader("```{r-1}", &h, nullptr));
+        CHECK(!ParseRmdChunkHeader("```{=html}", &h, nullptr));
+        CHECK(ParseRmdChunkHeader("> ```{r}", &h, nullptr));
+        CHECK(h.indent == "> " && h.fence == "> ```");
     }
 
     // --- R Markdown: scanning chunks and prose
@@ -537,29 +543,70 @@ int main() {
             "```",              // 7
             "Prose with ```r",  // 8
             "```r",             // 9  display fence, not a chunk
-            "```{r}",           // 10 shown inside it -- not a chunk either
+            "```{r}",           // 10 inside it -- still a chunk: knitr runs it
             "```",              // 11
             "```{r, eval=FALSE}",  // 12
             "y",                // 13
-            "````",             // 14 longer close is still a close
+            "````",             // 14 no exact close follows: knitr errors; we close
             "```{python}",      // 15 unclosed: runs to EOF
             "print(1)",         // 16
         };
         std::vector<NotebookCellSpan> spans = ScanRmdChunks(lines);
-        CHECK(spans.size() == 5);
+        CHECK(spans.size() == 6);
         CHECK(spans[0].type == NotebookCellType::Markdown && spans[0].first_row == 0 && spans[0].end_row == 4);
         CHECK(spans[1].type == NotebookCellType::Code);
         CHECK(spans[1].marker_row == 4 && spans[1].first_row == 5 && spans[1].end_row == 7 && spans[1].close_row == 7);
         CHECK(spans[1].engine == "r" && spans[1].label == "setup" && spans[1].eval);
         CHECK(NotebookSpanSource(lines, spans[1]) == "x <- 1");
-        CHECK(spans[2].type == NotebookCellType::Markdown && spans[2].first_row == 8 && spans[2].end_row == 12);
-        CHECK(spans[3].marker_row == 12 && spans[3].close_row == 14 && !spans[3].eval);
-        CHECK(spans[4].engine == "python" && spans[4].end_row == 17 && spans[4].close_row == 16);
+        CHECK(spans[2].type == NotebookCellType::Markdown && spans[2].first_row == 8 && spans[2].end_row == 10);
+        CHECK(spans[3].type == NotebookCellType::Code && spans[3].marker_row == 10 && spans[3].close_row == 11);
+        CHECK(spans[4].marker_row == 12 && spans[4].close_row == 14 && !spans[4].eval);
+        CHECK(spans[5].engine == "python" && spans[5].end_row == 17 && spans[5].close_row == 16);
         CHECK(NotebookSpanAtRow(spans, 7) == 1);   // closing fence belongs to the chunk
         CHECK(NotebookSpanAtRow(spans, 4) == 1);
         CHECK(NotebookSpanAtRow(spans, 8) == 2);
         CHECK(NotebookSpanLastRow(spans[1]) == 7);
         CHECK(NotebookSpanLastRow(spans[0]) == 3);
+
+        // Matched against knitr 1.51's own splitter (knitr:::group_indices).
+        auto code_spans = [](const Lines &ls) {
+            std::vector<std::pair<int, int>> out;   // (header row, close row)
+            for (const NotebookCellSpan &sp : ScanRmdChunks(ls)) {
+                if (sp.type == NotebookCellType::Code) out.emplace_back(sp.marker_row, sp.close_row);
+            }
+            return out;
+        };
+        using Spans = std::vector<std::pair<int, int>>;
+        // A chunk quoted in a 4-backtick or ~~~ block runs.
+        CHECK((code_spans({"a", "````markdown", "```{r}", "x", "```", "````"}) == Spans{{2, 4}}));
+        CHECK((code_spans({"a", "~~~", "```{r}", "x", "```", "~~~"}) == Spans{{2, 4}}));
+        // A fence that doesn't repeat the opener exactly is code when an
+        // exact close follows.
+        CHECK((code_spans({"```{r}", "x", "````", "y", "```"}) == Spans{{0, 4}}));
+        CHECK((code_spans({"```{r}", "x", "  ```", "y", "```"}) == Spans{{0, 4}}));
+        CHECK((code_spans({"````{r}", "cat('```')", "```", "x", "````"}) == Spans{{0, 4}}));
+        // A new opener inside a chunk starts a new one.
+        CHECK((code_spans({"```{r}", "x", "```{r}", "y", "```"}) == Spans{{0, 1}, {2, 4}}));
+        // Indented and blockquoted chunks lose their prefix, as knitr strips it.
+        Lines quoted = {"> ```{r}", "> 1 + 1", ">", "> ```"};
+        std::vector<NotebookCellSpan> qs = ScanRmdChunks(quoted);
+        CHECK(qs.size() == 1 && qs[0].close_row == 3);
+        CHECK(NotebookSpanSource(quoted, qs[0]) == "1 + 1");
+        Lines listed = {"1. item", "", "    ```{python}", "    if True:", "        print(1)", "    ```"};
+        std::vector<NotebookCellSpan> ls = ScanRmdChunks(listed);
+        CHECK(ls.size() == 2 && ls[1].close_row == 5);
+        CHECK(NotebookSpanSource(listed, ls[1]) == "if True:\n    print(1)");
+
+        // The LaTeX preview's view of an .Rmd: prose only.
+        Lines rmd_doc = {"---", "title: \"$x$\"", "---", "Cost $a_i$ in `r x$y` and `df$z`.", "```{r}", "df$a",
+                     "```", "```", "p$q", "```", "$$", "\\sum_k d_k", "$$"};
+        Lines masked = MaskRmdForMath(rmd_doc);
+        CHECK(masked.size() == rmd_doc.size());
+        for (size_t i = 0; i < rmd_doc.size(); i++) CHECK(masked[i].size() == rmd_doc[i].size());
+        CHECK(masked[1].find('$') == std::string::npos);
+        CHECK(masked[3] == "Cost $a_i$ in         and       .");
+        CHECK(masked[5].find('$') == std::string::npos && masked[8].find('$') == std::string::npos);
+        CHECK(masked[10] == "$$" && masked[11] == "\\sum_k d_k" && masked[12] == "$$");
 
         // Blank-only gaps between chunks are not prose cells.
         Lines tight = {"```{r}", "1", "```", "", "```{r}", "2", "```"};

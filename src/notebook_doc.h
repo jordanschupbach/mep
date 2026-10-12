@@ -135,6 +135,7 @@ struct NotebookCellSpan {
     std::string engine;   // R Markdown chunk engine as written ("r", "python", ...)
     std::string label;    // R Markdown chunk label, "" when unnamed
     bool eval = true;     // R Markdown: false for eval=FALSE chunks
+    std::string indent;   // R Markdown: the opener's `[\t >]*` prefix, stripped from the code
 };
 // Every cell in `lines`, in order. A leading run of lines before the
 // first marker is an implicit Code cell only if it has non-blank content;
@@ -192,17 +193,26 @@ struct RmdChunkHeader {
     // Every k=v option in order, values verbatim (quotes kept).
     std::vector<std::pair<std::string, std::string>> options;
     bool eval = true;     // eval=FALSE / eval=F
+    std::string indent;   // what precedes the backticks: spaces, tabs, `>`
+    std::string fence;    // indent plus the backticks; a close repeats it exactly
 };
-// Parses a chunk-opening line (```{engine ...}, three or more backticks,
-// optional leading indentation). False for anything else, including a
-// plain ```r fence. `*fence_len` receives the backtick count.
+// Parses a chunk-opening line as knitr does (```{engine ...}, three or
+// more backticks, optional leading indentation or blockquote `>`s). False
+// for anything else, including a plain ```r fence. `*fence_len` receives
+// the backtick count.
 bool ParseRmdChunkHeader(const std::string &line, RmdChunkHeader *out, int *fence_len);
 // Every chunk and the prose between them, in order: chunks are Code spans
 // (marker_row = header row, close_row = closing fence, or the last row
 // for an unclosed chunk that runs to EOF), each stretch of prose with any
-// non-blank text is one Markdown span (marker_row = -1). A ```{r} inside
-// a plain ``` / ~~~ fence is an example being shown, not a chunk.
+// non-blank text is one Markdown span (marker_row = -1). Chunks are
+// exactly knitr's (see the definition), so a ```{r} quoted inside a
+// plain ```` / ~~~ fence is a chunk, because knitr runs it.
 std::vector<NotebookCellSpan> ScanRmdChunks(const std::vector<std::string> &lines);
+// `lines` with everything that is not prose blanked to spaces (same byte
+// lengths, so columns still line up): YAML front matter, chunks, plain
+// code fences and inline code. What the LaTeX preview scans in an .Rmd,
+// so `results$run` in R is never taken for the start of a formula.
+std::vector<std::string> MaskRmdForMath(const std::vector<std::string> &lines);
 
 // The output cache an .Rmd's session keeps outside the document: one
 // entry per code cell holding its source hash, label, execution count and

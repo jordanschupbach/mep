@@ -98,6 +98,13 @@ buffer is the document's own text, and <code>:w</code> writes it back as-is. Its
 are its knitr chunks -- <code>```{r}</code> ... <code>```</code> -- and everything between them is
 prose. A plain <code>```r</code> fence is code being <i>shown</i>, not a chunk, and never runs
 (knitr would not run it either).</p>
+<p>Which lines are chunks is decided exactly as knitr's own parser decides it,
+so what mep runs is what a knit runs. That includes knitr's surprises: a
+<code>```{r}</code> quoted inside a <code>````</code> or <code>~~~</code> block <i>is</i> a chunk (to show one
+literally, write <code>`r ''`</code> before its fence, as knitr's docs say), and a
+chunk ends only at a fence with exactly its opener's backticks and
+indentation. Indented chunks (in a list) and blockquoted ones (<code>&gt; ```{r}</code>)
+run with that prefix stripped from their code.</p>
 <p>Each chunk is drawn as a card with <code>In [n]:</code>, its engine and a <code>Run</code> chip on
 the header line, which stays editable text. What a chunk prints, and any
 plots it draws, appear under its closing fence. Every R chunk runs in one
@@ -116,6 +123,35 @@ own session.</p>
 <code>Enter</code> never runs anything. A chunk with <code>eval=FALSE</code> is skipped, as knitr
 skips it. The engine in the header picks the kernel, so the kernel dropdown
 only reports it.</p>
+<h2>The project's R</h2>
+<p>A project made by the wizard's <i>R Markdown notebook</i> preset has R only in
+its <code>flake.nix</code>, which mep loads through direnv. Until that environment is
+in (the first time, the flake is built: minutes), the status bar's chip
+reads <i>direnv loading</i>, and a chunk you run waits for it -- <code>In [*]:</code> and
+"waiting for the project environment" -- then runs on the project's R.
+mep does not need R on its own <code>PATH</code>. The kernel list is re-checked
+whenever the environment changes; an R session already running when it
+changes (you added a package to the flake) keeps its old library until you
+restart it (<code>&lt;leader&gt;j0</code>), and mep says so. A chunk whose interpreter is
+nowhere to be found says what is missing rather than failing silently.</p>
+<h2>Plots</h2>
+<p>Every plot a chunk draws is also saved as a PNG beside the document, under
+knitr's own names: <code>figures/&lt;chunk label&gt;-&lt;n&gt;.png</code>, or
+<code>figures/unnamed-chunk-&lt;i&gt;-&lt;n&gt;.png</code> for a chunk without a label. So with
+<code>knitr::opts_chunk$set(fig.path = "figures/")</code> in the setup chunk, knitting
+writes the same files. A chunk's own <code>fig.path=</code> option is honoured, and a
+re-run that draws fewer plots removes the extra files. Set
+<code>mep.opt.notebook_fig_path</code> to another prefix, or to =""= to stop
+exporting.</p>
+<p>Click a plot to open it full size in the image viewer (zoom, pan, and <code>e</code>
+to edit), in a split to the right that later clicks reuse.</p>
+<h2>Maths</h2>
+<p>LaTeX in the prose -- <code>$..$</code>, <code>$$..$$</code>, <code>\[..\]</code> and environments like
+<code>\begin{equation}</code> -- is rendered in place, as in org files (the same
+preview, toggled the same way). The R in chunks and inline code is never
+mistaken for maths, whatever its <code>$</code> signs, and a formula wrapped around
+inline R (<code>$F = `r f`$</code>) stays as source, since its value only exists once
+knitted.</p>
 <p>Outputs never go into the document -- knitr decides what a rendered report
 shows. They are kept in a cache in mep's data directory instead
 (<code>notebook-cache/</code>), so reopening the file brings them back. A chunk edited

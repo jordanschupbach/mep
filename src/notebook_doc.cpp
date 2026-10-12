@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <random>
+#include <string_view>
 
 namespace {
 
@@ -397,16 +398,23 @@ std::vector<NotebookCellSpan> ScanNotebookCells(const std::vector<std::string> &
 }
 
 std::string NotebookSpanSource(const std::vector<std::string> &lines, const NotebookCellSpan &span) {
+    // An indented or blockquoted chunk's code loses its opener's prefix,
+    // as knitr's parse_block strips it (or the prefix without its trailing
+    // spaces, for a bare `>` line).
+    std::string bare = span.indent;
+    while (!bare.empty() && (bare.back() == ' ' || bare.back() == '\t')) bare.pop_back();
+    auto body = [&](int r) -> std::string_view {
+        std::string_view l = lines[static_cast<size_t>(r)];
+        if (!span.indent.empty() && l.starts_with(span.indent)) return l.substr(span.indent.size());
+        if (!bare.empty() && l.starts_with(bare)) return l.substr(bare.size());
+        return l;
+    };
     int end = span.end_row;
-    while (end > span.first_row) {
-        const std::string &l = lines[static_cast<size_t>(end - 1)];
-        if (l.find_first_not_of(" \t\r") != std::string::npos) break;
-        end--;
-    }
+    while (end > span.first_row && body(end - 1).find_first_not_of(" \t\r") == std::string_view::npos) end--;
     std::string out;
     for (int r = span.first_row; r < end; r++) {
         if (r > span.first_row) out += '\n';
-        out += lines[static_cast<size_t>(r)];
+        out += body(r);
     }
     return out;
 }
@@ -488,17 +496,6 @@ bool IsRmdPath(const std::string &path) { return LowerExt(path) == "rmd"; }
 
 namespace {
 
-// Leading indentation, then a run of `fence` characters; returns the run
-// length (0 when the line doesn't start that way) and where it ends.
-int FenceRun(const std::string &line, char fence, size_t *after) {
-    size_t i = 0;
-    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) i++;
-    size_t j = i;
-    while (j < line.size() && line[j] == fence) j++;
-    if (after) *after = j;
-    return static_cast<int>(j - i);
-}
-
 bool BlankFrom(const std::string &line, size_t from) {
     return from >= line.size() || line.find_first_not_of(" \t\r", from) == std::string::npos;
 }
@@ -550,18 +547,34 @@ std::vector<std::string> SplitChunkOptions(const std::string &s) {
     return parts;
 }
 
-// A closing chunk fence: only backticks, at least as many as opened it.
-bool IsRmdChunkClose(const std::string &line, int fence_len) {
-    size_t after = 0;
-    int run = FenceRun(line, '`', &after);
-    return run >= 3 && run >= fence_len && BlankFrom(line, after);
+// knitr's chunk prefix: the indentation, tabs or blockquote markers
+// (`[\t >]*`) before a fence's backticks, and where they end.
+size_t RmdFencePrefixEnd(const std::string &line) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t' || line[i] == '>')) i++;
+    return i;
+}
+
+// knitr's chunk.end: `[\t >]*` then three or more backticks and nothing
+// else. `*opener` receives the prefix and backticks (the part a matching
+// close must repeat exactly).
+bool IsRmdFenceLine(const std::string &line, std::string *opener) {
+    size_t i = RmdFencePrefixEnd(line);
+    size_t j = i;
+    while (j < line.size() && line[j] == '`') j++;
+    if (j - i < 3 || !BlankFrom(line, j)) return false;
+    if (opener) *opener = line.substr(0, j);
+    return true;
 }
 
 }  // namespace
 
 bool ParseRmdChunkHeader(const std::string &line, RmdChunkHeader *out, int *fence_len) {
-    size_t after = 0;
-    int run = FenceRun(line, '`', &after);
+    // knitr's chunk.begin, `^[\t >]*```+\s*\{([a-zA-Z0-9_]+( *[ ,].*)?)\}\s*$`.
+    const size_t prefix_end = RmdFencePrefixEnd(line);
+    size_t after = prefix_end;
+    while (after < line.size() && line[after] == '`') after++;
+    const int run = static_cast<int>(after - prefix_end);
     if (run < 3) return false;
     size_t i = after;
     while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) i++;
@@ -570,10 +583,15 @@ bool ParseRmdChunkHeader(const std::string &line, RmdChunkHeader *out, int *fenc
     if (close == std::string::npos || close < i || !BlankFrom(line, close + 1)) return false;
     std::string inner = line.substr(i + 1, close - i - 1);
     size_t e = 0;
-    while (e < inner.size() && (std::isalnum(static_cast<unsigned char>(inner[e])) || inner[e] == '_' || inner[e] == '.')) e++;
+    while (e < inner.size() && (std::isalnum(static_cast<unsigned char>(inner[e])) || inner[e] == '_')) e++;
     if (e == 0) return false;
+    // The engine ends the braces or is followed by a space or comma:
+    // `{r.x}` or `{r-1}` are not chunks to knitr.
+    if (e < inner.size() && inner[e] != ' ' && inner[e] != ',') return false;
     RmdChunkHeader h;
     h.engine = inner.substr(0, e);
+    h.indent = line.substr(0, prefix_end);
+    h.fence = line.substr(0, after);
     std::string rest = inner.substr(e);
     // `{r label, ...}` and `{r, label, ...}` both name the chunk: drop
     // one leading comma so the label (if any) is the first option.
@@ -601,6 +619,16 @@ bool ParseRmdChunkHeader(const std::string &line, RmdChunkHeader *out, int *fenc
     return true;
 }
 
+// Which lines are chunks is decided exactly as knitr's own splitter
+// (knitr:::group_indices, 1.51) decides it, so what mep runs is what a knit
+// runs -- including where that surprises: knitr knows nothing of plain
+// fences, so a ```{r} quoted inside a ```` or ~~~ block *is* a chunk (the
+// knitr way to show one literally is `r ''` before it). A chunk ends at a
+// fence with exactly its opener's prefix and backticks; another fence
+// line is part of the code if such a close follows (with no new chunk
+// before it). A new opener with the same prefix and backticks inside a
+// chunk starts a new chunk, leaving the first unclosed. Where knitr stops
+// with "does not match the opening fence", any fence line closes the chunk.
 std::vector<NotebookCellSpan> ScanRmdChunks(const std::vector<std::string> &lines) {
     std::vector<NotebookCellSpan> spans;
     const int n = static_cast<int>(lines.size());
@@ -616,49 +644,154 @@ std::vector<NotebookCellSpan> ScanRmdChunks(const std::vector<std::string> &line
         s.type = NotebookCellType::Markdown;
         spans.push_back(s);
     };
+    // A chunk opener whose prefix + backticks are exactly `fence`
+    // (knitr's match_chunk_begin); `more_ticks` also allows longer runs.
+    auto opens_with = [&](int row, const std::string &fence, bool more_ticks) {
+        RmdChunkHeader h;
+        if (!ParseRmdChunkHeader(lines[static_cast<size_t>(row)], &h, nullptr)) return false;
+        if (more_ticks) return h.fence.compare(0, fence.size(), fence) == 0 &&
+                               h.fence.find_first_not_of('`', fence.size()) == std::string::npos;
+        return h.fence == fence;
+    };
+    auto exact_close = [&](int row, const std::string &fence) {
+        std::string f;
+        return IsRmdFenceLine(lines[static_cast<size_t>(row)], &f) && f == fence;
+    };
     int r = 0;
     while (r < n) {
-        const std::string &line = lines[static_cast<size_t>(r)];
         RmdChunkHeader h;
-        int fence_len = 0;
-        if (ParseRmdChunkHeader(line, &h, &fence_len)) {
-            flush_prose(r);
-            NotebookCellSpan s;
-            s.marker_row = r;
-            s.first_row = r + 1;
-            s.type = NotebookCellType::Code;
-            s.engine = h.engine;
-            s.label = h.label;
-            s.eval = h.eval;
-            int e = r + 1;
-            while (e < n && !IsRmdChunkClose(lines[static_cast<size_t>(e)], fence_len)) e++;
-            s.end_row = e;
-            s.close_row = e < n ? e : std::max(r, n - 1);
-            spans.push_back(s);
-            r = e < n ? e + 1 : n;
-            prose_start = r;
+        if (!ParseRmdChunkHeader(lines[static_cast<size_t>(r)], &h, nullptr)) {
+            r++;
             continue;
         }
-        // A plain fenced block in the prose: skip to its close so a chunk
-        // header shown inside it (documentation about Rmd) isn't run.
-        for (char fence : {'`', '~'}) {
-            size_t after = 0;
-            int run = FenceRun(line, fence, &after);
-            if (run < 3) continue;
-            int e = r + 1;
-            while (e < n) {
-                size_t a2 = 0;
-                const std::string &l2 = lines[static_cast<size_t>(e)];
-                if (FenceRun(l2, fence, &a2) >= run && BlankFrom(l2, a2)) break;
-                e++;
+        flush_prose(r);
+        NotebookCellSpan s;
+        s.marker_row = r;
+        s.first_row = r + 1;
+        s.type = NotebookCellType::Code;
+        s.engine = h.engine;
+        s.label = h.label;
+        s.eval = h.eval;
+        s.indent = h.indent;
+        int e = r + 1;
+        int next = n;    // where scanning resumes
+        bool closed = false;
+        for (; e < n; e++) {
+            if (opens_with(e, h.fence, false)) {
+                next = e;   // a new chunk; this one stays unclosed
+                break;
             }
-            r = e;  // the closing fence (or n); the ++ below steps past it
+            if (!IsRmdFenceLine(lines[static_cast<size_t>(e)], nullptr)) continue;
+            if (exact_close(e, h.fence)) {
+                closed = true;
+                break;
+            }
+            int k = e + 1;
+            while (k < n && !exact_close(k, h.fence)) k++;
+            if (k < n) {
+                bool begin_between = false;
+                for (int b = e + 1; b < k && !begin_between; b++) begin_between = opens_with(b, h.fence, true);
+                if (k == e + 1 || !begin_between) continue;   // just a line of code
+            }
+            closed = true;   // knitr would stop here; take it as the close
             break;
         }
-        r++;
+        if (closed) {
+            s.end_row = e;
+            s.close_row = e;
+            next = e + 1;
+        } else {
+            s.end_row = next;
+            s.close_row = std::max(r, next - 1);
+        }
+        spans.push_back(s);
+        r = next;
+        prose_start = r;
     }
     flush_prose(n);
     return spans;
+}
+
+std::vector<std::string> MaskRmdForMath(const std::vector<std::string> &lines) {
+    std::vector<std::string> out = lines;
+    const int n = static_cast<int>(lines.size());
+    auto blank_row = [&](int r) { std::fill(out[static_cast<size_t>(r)].begin(), out[static_cast<size_t>(r)].end(), ' '); };
+    std::vector<bool> masked(lines.size(), false);
+    auto mask_rows = [&](int first, int last) {
+        for (int r = std::max(0, first); r <= last && r < n; r++) {
+            blank_row(r);
+            masked[static_cast<size_t>(r)] = true;
+        }
+    };
+    // YAML front matter.
+    if (n > 0 && TrimAscii(lines[0]) == "---") {
+        int e = 1;
+        while (e < n && TrimAscii(lines[static_cast<size_t>(e)]) != "---" && TrimAscii(lines[static_cast<size_t>(e)]) != "...") e++;
+        if (e < n) mask_rows(0, e);
+    }
+    // Chunks, fences included.
+    for (const NotebookCellSpan &sp : ScanRmdChunks(lines)) {
+        if (sp.type == NotebookCellType::Code) mask_rows(sp.marker_row, std::max(sp.close_row, sp.end_row - 1));
+    }
+    // Plain ``` / ~~~ code shown in the prose.
+    for (int r = 0; r < n; r++) {
+        if (masked[static_cast<size_t>(r)]) continue;
+        const std::string &l = lines[static_cast<size_t>(r)];
+        size_t i = l.find_first_not_of(" \t>");
+        if (i == std::string::npos || (l[i] != '`' && l[i] != '~')) continue;
+        const char fence = l[i];
+        size_t j = i;
+        while (j < l.size() && l[j] == fence) j++;
+        if (j - i < 3) continue;
+        int e = r + 1;
+        for (; e < n; e++) {
+            const std::string &c = lines[static_cast<size_t>(e)];
+            size_t a = c.find_first_not_of(" \t>");
+            size_t b = a;
+            while (b != std::string::npos && b < c.size() && c[b] == fence) b++;
+            if (a != std::string::npos && b - a >= j - i && BlankFrom(c, b)) break;
+        }
+        mask_rows(r, e);
+        r = e;
+    }
+    // Inline code: a run of N backticks to the next run of exactly N
+    // (`r expr` included -- R, not math, whatever its $s).
+    for (int r = 0; r < n; r++) {
+        if (masked[static_cast<size_t>(r)]) continue;
+        std::string &l = out[static_cast<size_t>(r)];
+        size_t i = 0;
+        while (i < l.size()) {
+            if (l[i] != '`') {
+                i++;
+                continue;
+            }
+            size_t j = i;
+            while (j < l.size() && l[j] == '`') j++;
+            const size_t run = j - i;
+            size_t k = j;
+            size_t close = std::string::npos;
+            while (k < l.size()) {
+                if (l[k] != '`') {
+                    k++;
+                    continue;
+                }
+                size_t m = k;
+                while (m < l.size() && l[m] == '`') m++;
+                if (m - k == run) {
+                    close = m;
+                    break;
+                }
+                k = m;
+            }
+            if (close == std::string::npos) {
+                i = j;   // an unmatched run is literal backticks
+                continue;
+            }
+            std::fill(l.begin() + static_cast<std::ptrdiff_t>(i), l.begin() + static_cast<std::ptrdiff_t>(close), ' ');
+            i = close;
+        }
+    }
+    return out;
 }
 
 std::string SerializeNotebookOutputCache(const NotebookDoc &doc, const std::vector<NotebookCellSpan> &spans) {

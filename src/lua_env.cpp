@@ -1591,6 +1591,41 @@ int l_notebook_set_python(lua_State *L) {
     return 0;
 }
 
+/**
+ * @brief Implements mep.notebook_set_fig_path(prefix): where .Rmd chunk plots are exported (knitr's fig.path; "" = off).
+ * @param L Lua state; arg 1 the prefix, relative to the document (default "figures/").
+ * @return Number of values pushed (0).
+ */
+int l_notebook_set_fig_path(lua_State *L) {
+    GetEditor(L)->SetNotebookFigPath(luaL_checkstring(L, 1));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_open_figure(cell, output): opens a plot output in the image viewer, as clicking it does.
+ * @param L Lua state; arg 1 the 0-based cell index, arg 2 the 0-based output index (current buffer).
+ * @return Number of values pushed (0).
+ */
+int l_notebook_open_figure(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->NotebookOpenFigure(ed->CurrentBufferId(), static_cast<int>(luaL_checkinteger(L, 1)),
+                           static_cast<int>(luaL_checkinteger(L, 2)));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.notebook_figure_path(cell, output): the file a plot output is exported to, or nil.
+ * @param L Lua state; arg 1 the 0-based cell index, arg 2 the 0-based output index (current buffer).
+ * @return Number of values pushed (1).
+ */
+int l_notebook_figure_path(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    std::string p = ed->NotebookFigurePath(ed->CurrentBufferId(), static_cast<int>(luaL_checkinteger(L, 1)),
+                                           static_cast<int>(luaL_checkinteger(L, 2)));
+    if (p.empty()) lua_pushnil(L); else lua_pushstring(L, p.c_str());
+    return 1;
+}
+
 namespace {
 // Reads a kernel "mode" string into the enum (default Script -- the
 // safest for an unknown value, since a stateless run can't corrupt a
@@ -3013,6 +3048,28 @@ int l_direnv_set_active(lua_State *L) {
     bool active = lua_toboolean(L, 1) != 0;
     GetEditor(L)->SetDirenvActive(active);
     return 0;
+}
+
+// mep.direnv_set_pending(pending) / mep.direnv_pending(): whether a
+// `direnv export` is in flight -- see Editor::SetDirenvPending.
+/**
+ * @brief Implements mep.direnv_set_pending(pending): marks a direnv export as in flight (notebook runs wait).
+ * @param L Lua state; arg 1 whether an export is running.
+ * @return Number of values pushed (0).
+ */
+int l_direnv_set_pending(lua_State *L) {
+    GetEditor(L)->SetDirenvPending(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.direnv_pending(): whether a direnv export is in flight.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_direnv_pending(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->DirenvPending() ? 1 : 0);
+    return 1;
 }
 
 // mep.activity_test_failure_lines(output) -> array of {index, line}
@@ -15165,6 +15222,9 @@ const luaL_Reg kMepFuncs[] = {
     {"notebook_goto_cell", l_notebook_goto_cell},
     {"notebook_set_python", l_notebook_set_python},
     {"notebook_set_kernels", l_notebook_set_kernels},
+    {"notebook_set_fig_path", l_notebook_set_fig_path},
+    {"notebook_open_figure", l_notebook_open_figure},
+    {"notebook_figure_path", l_notebook_figure_path},
     {"notebook_kernels", l_notebook_kernels},
     {"notebook_cell_kernel", l_notebook_cell_kernel},
     {"notebook_set_cell_kernel", l_notebook_set_cell_kernel},
@@ -15223,6 +15283,8 @@ const luaL_Reg kMepFuncs[] = {
     {"setenv", l_setenv},
     {"unsetenv", l_unsetenv},
     {"direnv_set_active", l_direnv_set_active},
+    {"direnv_set_pending", l_direnv_set_pending},
+    {"direnv_pending", l_direnv_pending},
     {"activity_test_failure_lines", l_activity_test_failure_lines},
     {"ctest_parse_list", l_ctest_parse_list},
     {"ctest_parse_line", l_ctest_parse_line},

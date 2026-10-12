@@ -3964,6 +3964,30 @@ std::string JoinNewline(const std::vector<std::string> &lines) {
 // at the current buffer.
 OrgLatexFragments Editor::OrgLatexScanFragments() const {
     if (IsMepmlBuffer()) return MepmlLatexFragments();
+    // An .Rmd's math is in its prose only; its R is full of `$`.
+    if (IsRmdPath(Buf().filename)) {
+        const std::vector<std::string> &lines = Buf().lines;
+        OrgLatexFragments f = OrgLatexScan(MaskRmdForMath(lines));
+        // Math around inline R (`$F = `r f`$`) has its value only once
+        // knitted: left as source rather than previewed with a hole in it.
+        auto has_code = [&](int row, int col_start, int col_end) {
+            const std::string &l = lines[static_cast<size_t>(row - 1)];
+            const size_t a = static_cast<size_t>(std::max(0, col_start - 1));
+            const size_t b = std::min(l.size(), static_cast<size_t>(std::max(0, col_end - 1)));
+            return a < b && l.find('`', a) < b;
+        };
+        std::erase_if(f.inlines, [&](const OrgLatexInlineFragment &fr) {
+            return std::any_of(fr.parts.begin(), fr.parts.end(),
+                               [&](const OrgLatexInlinePart &p) { return has_code(p.row, p.col_start, p.col_end); });
+        });
+        std::erase_if(f.blocks, [&](const OrgLatexBlockFragment &fr) {
+            for (int r = fr.start_row; r <= fr.end_row; r++) {
+                if (lines[static_cast<size_t>(r - 1)].find('`') != std::string::npos) return true;
+            }
+            return false;
+        });
+        return f;
+    }
     return OrgLatexScan(Buf().lines);
 }
 
@@ -5302,7 +5326,12 @@ int Editor::PaneRowSlots(const Pane &pane, const Buffer &buf, int row, int wrap_
     // image it doesn't replace the row's own text, so it adds to
     // whatever the branches below work out rather than
     // short-circuiting them.
-    const int heading_extra = (org_heading_scale_visible_ && org_buffer && !plain)
+    // Markdown (an .Rmd's prose included) scales its headings too, and
+    // DrawPane's walkers count that room for it (is_heading_buffer):
+    // leaving it out here put scrolling, and every notebook card below a
+    // `## heading`, a row off what was drawn.
+    const bool heading_buffer = org_buffer || IsMarkdownFiletype(LspFiletype(buf.filename));
+    const int heading_extra = (org_heading_scale_visible_ && heading_buffer && !plain)
                                   ? HeadingExtraSlotsForRow(buf, row)
                                   : 0;
     if (org_images_visible_ && !plain) {
@@ -38874,7 +38903,13 @@ void Editor::NotebookApplyRmdKernels(NotebookSession &sess) {
         std::string engine = sess.spans[i].engine;
         for (char &c : engine) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         std::string kernel = engine;
-        for (const NotebookKernelSpec &spec : notebook_kernels_) {
+        // Mapped against every configured kernel, runnable yet or not: an
+        // `r` chunk is the R kernel's even before the project environment
+        // that provides Rscript has loaded (it then waits, or says R is
+        // missing -- not "no kernel named 'r'").
+        const std::vector<NotebookKernelSpec> &specs =
+            notebook_kernels_configured_.empty() ? notebook_kernels_ : notebook_kernels_configured_;
+        for (const NotebookKernelSpec &spec : specs) {
             std::string lang = NotebookKernelLanguageName(spec);
             for (char &c : lang) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             if (lang == engine) {
@@ -39045,6 +39080,136 @@ std::string Editor::NotebookOutputCachePath(int buffer_id) const {
     return data + "/notebook-cache/" + NotebookContentKey(full) + ".json";
 }
 
+namespace {
+// Writes `bytes` to `path` unless it already holds exactly them (a re-run
+// that drew the same plot leaves the file, and its mtime, alone).
+bool WriteFileIfChanged(const std::string &path, const std::vector<unsigned char> &bytes) {
+    std::error_code ec;
+    if (std::filesystem::file_size(path, ec) == bytes.size() && !ec) {
+        std::ifstream in(path, std::ios::binary);
+        std::vector<unsigned char> old((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (old == bytes) return true;
+    }
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return static_cast<bool>(out);
+}
+
+// A chunk label as a file name: knitr keeps letters, digits, `-`, `_`, `.`.
+std::string FigureFileStem(const std::string &label) {
+    std::string out;
+    for (char c : label) out += (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.') ? c : '_';
+    return out;
+}
+}  // namespace
+
+std::string Editor::NotebookFigureBase(int buffer_id, int cell_index) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess || sess->format != NotebookFormat::Rmd || cell_index < 0) return "";
+    const size_t ci = static_cast<size_t>(cell_index);
+    if (ci >= sess->doc.cells.size() || ci >= sess->spans.size()) return "";
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.filename.empty()) return "";
+    // The chunk's own fig.path= wins over the document-wide prefix.
+    std::string prefix = notebook_fig_path_;
+    const NotebookCellSpan &span = sess->spans[ci];
+    RmdChunkHeader h;
+    if (span.marker_row >= 0 && span.marker_row < static_cast<int>(buf.lines.size()) &&
+        ParseRmdChunkHeader(buf.lines[static_cast<size_t>(span.marker_row)], &h, nullptr)) {
+        for (const auto &[key, value] : h.options) {
+            if (key != "fig.path" || value.size() < 2) continue;
+            const char q = value.front();
+            if ((q == '"' || q == '\'') && value.back() == q) prefix = value.substr(1, value.size() - 2);
+        }
+    }
+    if (prefix.empty()) return "";
+    // An unlabeled chunk is knitr's unnamed-chunk-<i>, counting every
+    // unlabeled chunk from the top.
+    std::string label = span.label;
+    if (label.empty()) {
+        int unnamed = 0;
+        for (size_t i = 0; i <= ci; i++) {
+            if (sess->spans[i].type == NotebookCellType::Code && sess->spans[i].label.empty()) unnamed++;
+        }
+        label = "unnamed-chunk-" + std::to_string(unnamed);
+    }
+    std::filesystem::path dir = std::filesystem::path(ResolveBufferPath(buf, buf.filename)).parent_path();
+    return (dir / (prefix + FigureFileStem(label) + "-")).lexically_normal().string();
+}
+
+std::string Editor::NotebookFigurePath(int buffer_id, int cell_index, int out_index) {
+    const std::string base = NotebookFigureBase(buffer_id, cell_index);
+    if (base.empty()) return "";
+    const NotebookCell &cell = GetNotebookMutable(buffer_id)->doc.cells[static_cast<size_t>(cell_index)];
+    if (out_index < 0 || out_index >= static_cast<int>(cell.outputs.size())) return "";
+    if (cell.outputs[static_cast<size_t>(out_index)].image_png.empty()) return "";
+    // knitr numbers a chunk's plots from 1, in the order drawn.
+    int nth = 0;
+    for (int k = 0; k <= out_index; k++) nth += cell.outputs[static_cast<size_t>(k)].image_png.empty() ? 0 : 1;
+    return base + std::to_string(nth) + ".png";
+}
+
+void Editor::NotebookExportFigures(NotebookSession &sess, const NotebookCell &cell) {
+#if defined(__EMSCRIPTEN__)
+    (void)sess;
+    (void)cell;
+#else
+    if (sess.format != NotebookFormat::Rmd) return;
+    int ci = -1;
+    for (size_t i = 0; i < sess.doc.cells.size(); i++) {
+        if (&sess.doc.cells[i] == &cell) ci = static_cast<int>(i);
+    }
+    const std::string base = NotebookFigureBase(sess.buffer_id, ci);
+    if (base.empty()) return;
+    int n = 0;
+    for (const NotebookOutput &out : cell.outputs) {
+        if (out.image_png.empty()) continue;
+        const std::string path = base + std::to_string(++n) + ".png";
+        if (!WriteFileIfChanged(path, Base64Decode(out.image_png))) {
+            status_message_ = "Notebook: could not write " + path;
+            return;
+        }
+        notebook_exported_figures_.insert(path);
+    }
+    // Plots an earlier run of this chunk drew and this one didn't -- only
+    // ever files mep wrote itself, never one that merely shares the name.
+    for (int k = n + 1;; k++) {
+        const std::string stale = base + std::to_string(k) + ".png";
+        if (!notebook_exported_figures_.erase(stale)) break;
+        std::error_code ec;
+        std::filesystem::remove(stale, ec);
+    }
+    if (n > 0) status_message_ = "Notebook: " + std::to_string(n) + (n == 1 ? " plot" : " plots") + " saved as " + base + "*.png";
+#endif
+}
+
+void Editor::NotebookOpenFigure(int buffer_id, int cell_index, int out_index) {
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess || cell_index < 0 || cell_index >= static_cast<int>(sess->doc.cells.size())) return;
+    const NotebookCell &cell = sess->doc.cells[static_cast<size_t>(cell_index)];
+    if (out_index < 0 || out_index >= static_cast<int>(cell.outputs.size())) return;
+    const NotebookOutput &out = cell.outputs[static_cast<size_t>(out_index)];
+    if (out.image_png.empty()) return;
+    std::string path = NotebookFigurePath(buffer_id, cell_index, out_index);
+    // An .ipynb's plots (or an .Rmd's with export off) go to a scratch file.
+    if (path.empty()) path = MepDataDir() + "/notebook-figures/" + NotebookContentKey(out.image_png) + ".png";
+    if (!WriteFileIfChanged(path, Base64Decode(out.image_png))) {
+        status_message_ = "Notebook: could not write " + path;
+        return;
+    }
+    // Reopening a path re-decodes it (OpenImageInPlace), so a re-run's
+    // plot replaces the one shown.
+    if (notebook_figure_pane_id_ >= 0 && notebook_figure_pane_id_ != ActivePaneId() &&
+        FocusPaneByIdForLua(notebook_figure_pane_id_)) {
+        LoadFile(path);
+    } else {
+        SplitPaneRight(path);
+        notebook_figure_pane_id_ = ActivePaneId();
+    }
+    status_message_ = "Notebook: " + path;
+}
+
 void Editor::NotebookWriteOutputCache(int buffer_id) {
 #if defined(__EMSCRIPTEN__)
     (void)buffer_id;
@@ -39143,6 +39308,9 @@ std::string Editor::NotebookKernelCwd(int buffer_id) {
 // resident process (each run spawns its own; see NotebookPumpQueue), and
 // an unknown name has nothing to start.
 NotebookSession::KernelProc *Editor::NotebookEnsureKernel(NotebookSession &sess, const std::string &kernel_name) {
+    // Not from mep's own PATH while the project's is still loading: the
+    // process would outlive the load and never see the project's packages.
+    if (direnv_pending_) return nullptr;
     const NotebookKernelSpec *spec = FindNotebookKernel(notebook_kernels_, kernel_name);
     if (!spec || spec->mode == NotebookKernelSpec::Mode::Script) return nullptr;
     NotebookSession::KernelProc &kp = sess.kernels[kernel_name];
@@ -39180,12 +39348,19 @@ NotebookSession::KernelProc *Editor::NotebookEnsureKernel(NotebookSession &sess,
     cb.on_exit = [this, buffer_id, name, generation](int code) { NotebookKernelExited(buffer_id, name, generation, code); };
     std::vector<std::pair<std::string, std::string>> env = {{"PYTHONUNBUFFERED", "1"}};
     kp.job = JobManager::Instance().Spawn(argv, NotebookKernelCwd(buffer_id), std::move(cb), /*use_pty=*/false, env);
+    const char *path_now = std::getenv("PATH");
+    kp.spawn_path = path_now ? path_now : "";
     kp.status = kp.job != 0 ? "starting" : "dead";
     if (kp.job == 0) kp.last_error = "could not start " + (argv.empty() ? kernel_name : argv.front());
     return &kp;
 }
 
 void Editor::NotebookPumpQueue(NotebookSession &sess) {
+    if (direnv_pending_ && sess.running_uid == 0 && !sess.run_queue.empty()) {
+        // SetDirenvPending(false) pumps again once the environment is in.
+        status_message_ = "Notebook: waiting for the project environment (direnv) to load";
+        return;
+    }
     while (sess.running_uid == 0 && !sess.run_queue.empty()) {
         int uid = sess.run_queue.front();
         NotebookCell *cell = nullptr;
@@ -39208,6 +39383,15 @@ void Editor::NotebookPumpQueue(NotebookSession &sess) {
             err.kind = NotebookOutput::Kind::Error;
             err.ename = "KernelError";
             err.evalue = "no kernel named '" + kernel_name + "' is available";
+            if (const NotebookKernelSpec *want = FindNotebookKernel(notebook_kernels_configured_, kernel_name)) {
+                // Configured, just not runnable: say what is missing.
+                std::string program = want->command.empty()
+                                          ? std::string(want->mode == NotebookKernelSpec::Mode::R ? "Rscript" : "")
+                                          : want->command.front();
+                err.evalue = want->display_name + " is not available here: " + program +
+                             " is not on PATH. Add it to this project's flake.nix (or install it), "
+                             "then reload the environment with :MepDirenvReload.";
+            }
             err.text = "KernelError: " + err.evalue;
             NotebookAppendOutput(cell, std::move(err));
             cell->run_state = NotebookCell::RunState::Idle;
@@ -39311,6 +39495,7 @@ void Editor::NotebookFinishRunning(NotebookSession &sess, NotebookCell &cell) {
     sess.running_kernel.clear();
     sess.running_request_id = 0;
     sess.running_job = 0;
+    NotebookExportFigures(sess, cell);
     NotebookPumpQueue(sess);
     // An .Rmd's outputs live only in its cache: write it once a run (or a
     // Run All) has drained, rather than after every cell of it.
@@ -39484,7 +39669,11 @@ void Editor::NotebookRunAll(int buffer_id) {
     if (!sess) return;
     NotebookSyncFromText(*sess);
     int n = static_cast<int>(sess->doc.cells.size());
+    // Skipping eval=FALSE chunks is what Run All is meant to do (knitr
+    // does too): NotebookRunCell's "not run" note is for running one.
+    const std::string before = status_message_;
     for (int i = 0; i < n; i++) NotebookRunCell(buffer_id, i);
+    if (status_message_ == "Notebook: chunk has eval=FALSE, not run") status_message_ = before;
 }
 
 void Editor::NotebookRunCellAtCursor(bool advance, bool insert_below) {
@@ -39836,6 +40025,10 @@ bool NotebookCommandAvailable(const std::string &program) {
 }  // namespace
 
 void Editor::SetNotebookKernels(std::vector<NotebookKernelSpec> specs) {
+    for (NotebookKernelSpec &spec : specs) {
+        if (spec.display_name.empty()) spec.display_name = spec.name;
+    }
+    notebook_kernels_configured_ = specs;
     std::vector<NotebookKernelSpec> kept;
     for (NotebookKernelSpec &spec : specs) {
         if (spec.name.empty()) continue;
@@ -39848,7 +40041,6 @@ void Editor::SetNotebookKernels(std::vector<NotebookKernelSpec> specs) {
         std::string program = spec.command.empty() ? std::string() : spec.command.front();
         if (spec.mode == NotebookKernelSpec::Mode::R && program.empty()) program = "Rscript";
         if (!builtin_python && !NotebookCommandAvailable(program)) continue;
-        if (spec.display_name.empty()) spec.display_name = spec.name;
         if (spec.mode == NotebookKernelSpec::Mode::R && spec.command.empty()) spec.command = {"Rscript"};
         kept.push_back(std::move(spec));
     }
@@ -39856,6 +40048,32 @@ void Editor::SetNotebookKernels(std::vector<NotebookKernelSpec> specs) {
         kept.push_back({"python3", "Python 3", "py", {}, NotebookKernelSpec::Mode::Python});
     }
     notebook_kernels_ = std::move(kept);
+    // A kernel that just became runnable (its project's environment
+    // arrived) starts whatever was queued for it.
+    for (auto &[id, sess] : notebooks_) NotebookPumpQueue(sess);
+}
+
+void Editor::SetDirenvPending(bool pending) {
+    if (pending == direnv_pending_) return;
+    direnv_pending_ = pending;
+    if (pending) return;
+    // The environment is in (or failed to load): which kernels exist may
+    // have changed with $PATH, and anything queued meanwhile runs now.
+    SetNotebookKernels(notebook_kernels_configured_);
+    // A kernel already running was started from the old $PATH -- an R
+    // whose library lacks what the flake just added, say. Restarting is
+    // the user's call (it drops the session's state), so only say so.
+    const char *path_now = std::getenv("PATH");
+    const std::string now = path_now ? path_now : "";
+    for (const auto &[id, sess] : notebooks_) {
+        for (const auto &[name, kp] : sess.kernels) {
+            if (kp.job != 0 && JobManager::Instance().IsRunning(kp.job) && kp.spawn_path != now) {
+                status_message_ = "Notebook: the project environment changed; restart the kernel (<leader>j0) "
+                                  "to use it";
+                return;
+            }
+        }
+    }
 }
 
 std::string Editor::NotebookDefaultKernelName(int buffer_id) const {

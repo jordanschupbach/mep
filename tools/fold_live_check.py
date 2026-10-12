@@ -176,6 +176,9 @@ class Mep:
     home reads the session file the first one wrote."""
 
     def __init__(self, build_dir, home, display, args, cwd=None):
+        # Absolute: mep is spawned with a scenario's own cwd, so a relative
+        # --build-dir (as `just test-gui` passes it) would not resolve.
+        build_dir = os.path.abspath(build_dir)
         self.build_dir = build_dir
         self.home = home
         self.display = display

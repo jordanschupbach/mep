@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (212)
+* The bindings (215)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -106,6 +106,7 @@ that it does nothing.
 | =mep.notebook_clear_outputs= | -- |
 | =mep.notebook_default_kernel= | the kernel name cells run on when they pick none |
 | =mep.notebook_delete_cell= | deletes a cell (default: the cursor's). */ int l_notebook_delete_cell(lua_State *L) { GetEditor(L)->NotebookDeleteCell(NotebookIndexArg(L, 1));... |
+| =mep.notebook_figure_path= | the file a plot output is exported to, or nil |
 | =mep.notebook_format= | "ipynb" or "rmd" for the current notebook buffer, nil otherwise |
 | =mep.notebook_goto_cell= | moves the cursor to a cell's first body row (index clamped) |
 | =mep.notebook_insert_cell= | inserts an empty cell above/below the cursor's cell and moves into it |
@@ -114,6 +115,7 @@ that it does nothing.
 | =mep.notebook_kernels= | array of {name, display_name, language} for every registered kernel |
 | =mep.notebook_lsp_context= | -- |
 | =mep.notebook_move_cell= | swaps the cursor's cell with its neighbor (-1 up, +1 down) |
+| =mep.notebook_open_figure= | opens a plot output in the image viewer, as clicking it does |
 | =mep.notebook_restart_kernel= | -- |
 | =mep.notebook_run_all= | queues every code cell of the current notebook in order. */ int l_notebook_run_all(lua_State *L) { Editor *ed  GetEditor(L);... |
 | =mep.notebook_run_and_advance= | -- |
@@ -121,6 +123,7 @@ that it does nothing.
 | =mep.notebook_run_cell= | queues a code cell (default: the one under the cursor) on the kernel |
 | =mep.notebook_set_cell_kernel= | sets which kernel a cell runs on |
 | =mep.notebook_set_cell_type= | -- |
+| =mep.notebook_set_fig_path= | where .Rmd chunk plots are exported (knitr's fig.path; ""  off) |
 | =mep.notebook_set_kernels= | replaces the code-cell kernel registry |
 | =mep.notebook_set_python= | sets the interpreter notebook kernels launch with (default "python3") |
 | =mep.notebook_status= | {status, python, cells, running, queued} for the current notebook, or nil |

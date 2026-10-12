@@ -3109,6 +3109,19 @@ std::vector<OfficeFormatRun> BuildOfficeDisplayRuns(const DocParagraph &p, int a
 // non-ASCII byte in a loaded file -- InsertChar only ever produces 32..126
 // itself, but file content read from disk isn't bound by that.
 /**
+ * @brief The font a buffer-text glyph is drawn with: icon, symbol and math codepoints are not in g_font's atlas.
+ * @param cp The codepoint.
+ * @return g_icon_font, g_symbol_font, g_math_font or g_font -- the same routing DrawLineFast's base pass uses, so a
+ * recolor drawn over it lands the same glyph (g_font alone would paint its '?' over, say, a correctly drawn U+2212).
+ */
+const gfx::Font &BufferGlyphFont(int cp) {
+    if (IsIconCodepoint(cp)) return g_icon_font;
+    if (IsSymbolCodepoint(cp)) return g_symbol_font;
+    if (IsMathCodepoint(cp)) return g_math_font;
+    return g_font;
+}
+
+/**
  * @brief Draws one monospace text line using cached glyph indices and fixed per-column advance.
  * @param line Text to draw.
  * @param x Left screen x position of the line's first column.
@@ -5327,15 +5340,12 @@ const char *kBuiltinFileTree =
     "      starter = starter or target\n"
     "    end\n"
     "  end\n"
+    // Allowed before the project opens, so opening it waits for the
+    // allow instead of exporting a still-blocked .envrc.
+    "  if flake_on then mep.direnv_allow_and_load(path) end\n"
     "  mep.project_add(path)\n"
     "  mep.project_open(path)\n"
     "  if starter then mep.open(starter) end\n"
-    "  if flake_on then\n"
-    "    mep.job_start({'direnv', 'allow'}, {cwd = path, on_exit = function(code)\n"
-    "      if code == 0 then mep.notify('direnv: environment ready')\n"
-    "      else mep.notify('direnv allow exited ' .. tostring(code) .. ' (run direnv allow manually)', 'warn') end\n"
-    "    end})\n"
-    "  end\n"
     "  mep.notify('Created project at ' .. path)\n"
     "end\n"
     // Page 2 of the wizard: a checkbox picker (same pattern as
@@ -7059,6 +7069,10 @@ const char *kBuiltinDirenv =
     // first.
     "local mep_direnv_gen = 0\n"
     "local mep_direnv_pending_root = nil\n"
+    // Directories whose `direnv allow` is still running
+    // (mep.direnv_allow_and_load): exporting one now would only fail as
+    // blocked, so activation waits for the allow instead.
+    "local mep_direnv_allowing = {}\n"
     "local function mep_direnv_read(path)\n"
     "  local f = io.open(path, 'r')\n"
     "  if not f then return nil end\n"
@@ -7091,6 +7105,7 @@ const char *kBuiltinDirenv =
     "  mep_direnv_active = false\n"
     "  mep_direnv_root = nil\n"
     "  mep.direnv_set_active(false)\n"
+    "  mep.direnv_set_pending(false)\n"
     "end\n"
     // Puts a loaded environment in force, remembering what each var was.
     "local function mep_direnv_apply(dir, entry)\n"
@@ -7156,6 +7171,13 @@ const char *kBuiltinDirenv =
     "    mep_direnv_gen = mep_direnv_gen + 1\n"
     "    mep_direnv_pending_root = nil\n"
     "    mep.direnv_set_active(false)\n"
+    "    mep.direnv_set_pending(false)\n"
+    "    return\n"
+    "  end\n"
+    "  if mep_direnv_allowing[dir] then\n"
+    "    mep_direnv_gen = mep_direnv_gen + 1\n"
+    "    mep_direnv_pending_root = dir\n"
+    "    mep.direnv_set_pending(true)\n"
     "    return\n"
     "  end\n"
     "  local envrc = mep_direnv_read(dir .. '/.envrc')\n"
@@ -7164,12 +7186,17 @@ const char *kBuiltinDirenv =
     "    mep_direnv_gen = mep_direnv_gen + 1\n"
     "    mep_direnv_pending_root = nil\n"
     "    mep_direnv_apply(dir, cached)\n"
+    "    mep.direnv_set_pending(false)\n"
     "    return\n"
     "  end\n"
     "  if mep_direnv_pending_root == dir and not force then return end\n"
     "  mep_direnv_gen = mep_direnv_gen + 1\n"
     "  local gen = mep_direnv_gen\n"
     "  mep_direnv_pending_root = dir\n"
+    // Notebook runs wait on this (Editor::SetDirenvPending) rather than
+    // start a kernel from mep's own PATH.
+    "  mep.direnv_set_pending(true)\n"
+    "  local started = mep.now()\n"
     "  local out, err = {}, {}\n"
     "  mep.job_start({'direnv', 'export', 'json'}, {\n"
     "    cwd = dir,\n"
@@ -7180,6 +7207,7 @@ const char *kBuiltinDirenv =
     "      mep_direnv_pending_root = nil\n"
     "      if code ~= 0 then\n"
     "        mep.direnv_set_active(false)\n"
+    "        mep.direnv_set_pending(false)\n"
     // 127: direnv isn't installed (job.cpp's exec-failed code) -- not
     // worth a warning on every project switch.
     "        if code ~= 127 then\n"
@@ -7199,6 +7227,10 @@ const char *kBuiltinDirenv =
     "      end\n"
     "      mep_direnv_cache[dir] = entry\n"
     "      mep_direnv_apply(dir, entry)\n"
+    // After the apply: clearing it re-checks kernels against the new PATH.
+    "      mep.direnv_set_pending(false)\n"
+    // A quick export (nix-direnv's cache) is not news; a build is.
+    "      if mep.now() - started > 2 then mep.notify('direnv: environment ready') end\n"
     "      mep_direnv_snapshot_watches(dir, entry)\n"
     "    end,\n"
     "  })\n"
@@ -7219,6 +7251,28 @@ const char *kBuiltinDirenv =
     "  mep_direnv_activate(ws.root, true)\n"
     "end\n"
     "mep.command('MepDirenvReload', function() mep.direnv_reload() end)\n"
+    // The project wizard's .envrc: trust it, then load it. `direnv allow`
+    // only records the trust -- it builds nothing -- so the environment is
+    // exported (and the flake built) right after, and anything waiting on
+    // it (a notebook run) waits until then, not until the next restart.
+    "function mep.direnv_allow_and_load(dir)\n"
+    "  mep_direnv_allowing[dir] = true\n"
+    "  mep.job_start({'direnv', 'allow'}, {cwd = dir, on_exit = function(code)\n"
+    "    mep_direnv_allowing[dir] = nil\n"
+    "    local ws = mep.workspace_current()\n"
+    "    local here = ws and mep_direnv_envrc_dir(ws.root) == dir\n"
+    "    if code ~= 0 then\n"
+    "      if here then mep_direnv_pending_root = nil mep.direnv_set_pending(false) end\n"
+    "      mep.notify(code == 127 and 'direnv is not installed: the project environment (flake.nix) was not loaded'\n"
+    "                 or ('direnv allow exited ' .. tostring(code) .. ' (run direnv allow manually)'), 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    if not here then return end\n"
+    "    mep.notify('direnv: building the project environment (the first time can take a few minutes)')\n"
+    "    mep_direnv_deactivate()\n"
+    "    mep_direnv_activate(ws.root, true)\n"
+    "  end})\n"
+    "end\n"
     // Re-synced on every workspace/project switch: deactivates first if
     // the *previous* activation was for a different .envrc (so switching
     // projects doesn't leak one project's env into another), then
@@ -20188,7 +20242,10 @@ const char *kBuiltinOrgLatex =
     // a definition body means.
     "local function mep_latex_preview_ft(fname)\n"
     "  local ft = mep_lsp_filetype(fname)\n"
-    "  return ft == 'org' or ft == 'tex' or ft == 'mepml'\n"
+    // .Rmd too: its prose is pandoc markdown, whose $..$ / $$..$$ /
+    // \begin{equation} are this scanner's own forms (chunks and inline
+    // code are masked out of the scan, Editor::OrgLatexScanFragments).
+    "  return ft == 'org' or ft == 'tex' or ft == 'mepml' or (fname or ''):lower():match('%.rmd$') ~= nil\n"
     "end\n"
     // The fragment the cursor is in is not rendered at all while the
     // plain-cursor-line rule (<leader>otc) would reveal its source anyway:
@@ -33318,11 +33375,18 @@ const char *kBuiltinNotebook =
     // next (re)start.
     "mep.opt.notebook_python = mep.opt.notebook_python or 'python3'\n"
     "local mep_nb_python_applied = nil\n"
+    "local mep_nb_fig_path_applied = nil\n"
     "local function mep_nb_apply_python()\n"
     "  local want = mep.opt.notebook_python\n"
     "  if want and want ~= mep_nb_python_applied then\n"
     "    mep.notebook_set_python(want)\n"
     "    mep_nb_python_applied = want\n"
+    "  end\n"
+    // Where an .Rmd's plots are exported (knitr's fig.path), "" for nowhere.
+    "  local fig = mep.opt.notebook_fig_path\n"
+    "  if fig and fig ~= mep_nb_fig_path_applied then\n"
+    "    mep.notebook_set_fig_path(fig)\n"
+    "    mep_nb_fig_path_applied = fig\n"
     "  end\n"
     "end\n"
     // Re-applied every frame (a cheap string compare) rather than only
@@ -33351,6 +33415,16 @@ const char *kBuiltinNotebook =
     "end\n"
     "mep_nb_apply_kernels()\n"
     "mep.on_frame(mep_nb_apply_kernels)\n"
+    // Which kernels can run depends on $PATH, and a project's environment
+    // (direnv) changes it after startup: re-check whenever it does.
+    "local mep_nb_kernels_path = os.getenv('PATH')\n"
+    "mep.on_frame(function()\n"
+    "  local path = os.getenv('PATH')\n"
+    "  if path ~= mep_nb_kernels_path then\n"
+    "    mep_nb_kernels_path = path\n"
+    "    mep.notebook_set_kernels(mep.opt.notebook_kernels)\n"
+    "  end\n"
+    "end)\n"
     "function mep.notebook_pick_kernel()\n"
     "  local ks = mep.notebook_kernels()\n"
     "  if not ks or #ks == 0 then mep.notify('No kernels registered', 'warn') return end\n"
@@ -54555,15 +54629,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     std::vector<NbCellBox> nb_cell_boxes;
     if (nb_sess) {
         const int nb_rows = buf.LineCount();
+        // Each row's slots exactly as the row loop below spends them
+        // (Editor::PaneRowSlots, the count the scroll walkers share): a
+        // markdown heading's headroom, a rendered formula's rows and the
+        // like included -- counting only wrap + outputs here put every
+        // card below an .Rmd's `## heading` a row too high. Rows the loop
+        // doesn't draw (inside a closed fold or a rendering) take none.
         std::vector<int> slot_prefix(static_cast<size_t>(nb_rows) + 1, 0);
-        for (int r = 0; r < nb_rows; r++) {
-            int slots = 1;
-            if (wrap_cols > 0) {
-                int len = g_editor.WrapLenForRow(buf, r, pane.cursor.row);
-                slots = std::max(1, (len + wrap_cols - 1) / wrap_cols);
-            }
-            slots += g_editor.NotebookTrailingSlots(pane.buffer_id, r);
-            slot_prefix[static_cast<size_t>(r) + 1] = slot_prefix[static_cast<size_t>(r)] + slots;
+        for (int r = 0; r < nb_rows;) {
+            const int next = std::max(r + 1, std::min(nb_rows, g_editor.PaneNextDrawnRow(pane, buf, r)));
+            const int slots = g_editor.PaneRowSlots(pane, buf, r, wrap_cols);
+            for (int k = r + 1; k <= next; k++) slot_prefix[static_cast<size_t>(k)] = slot_prefix[static_cast<size_t>(r)] + (k == next ? slots : 0);
+            r = next;
         }
         const int scroll_clamped = std::clamp(pane.scroll_row, 0, nb_rows);
         auto nb_screen_top = [&](int r) -> float {
@@ -55462,8 +55539,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 std::string glyph(ps + pi, static_cast<size_t>(cp_size));
                 pi += cp_size;
                 if (cp != ' ' && cp != '\t') {
-                    const gfx::Font &gf = IsIconCodepoint(cp) ? g_icon_font : (IsSymbolCodepoint(cp) ? g_symbol_font : g_font);
-                    gfx::DrawTextEx(gf, glyph.c_str(), gfx::Vector2{dx, fold_ly}, g_font_size, 0, c);
+                    gfx::DrawTextEx(BufferGlyphFont(cp), glyph.c_str(), gfx::Vector2{dx, fold_ly}, g_font_size, 0, c);
                 }
                 dx += g_char_width;
             }
@@ -55880,7 +55956,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                               gfx::Fade(nb_cursor_in_cell ? nb_accent : nb_border, nb_cursor_in_cell ? 0.80f : 0.65f));
                 const float avail_w = std::max(40.0f, w - (text_x - x) - kMarginX);
                 float oy = block_y;
-                for (const NotebookOutput &out : nb_cell->outputs) {
+                for (size_t out_i = 0; out_i < nb_cell->outputs.size(); out_i++) {
+                    const NotebookOutput &out = nb_cell->outputs[out_i];
                     const int out_slots = NotebookOutputSlots(out, g_editor.RenderCharAspect());
                     if (out_slots <= 0) continue;
                     const float out_h = static_cast<float>(out_slots * line_height);
@@ -55890,6 +55967,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             float target_w = std::min(avail_w, static_cast<float>(kNotebookImageWidthChars) * g_char_width);
                             float scale = std::min(target_w / static_cast<float>(tex->width), out_h / static_cast<float>(tex->height));
                             gfx::DrawTextureEx(*tex, gfx::Vector2{text_x, oy}, 0.0f, scale, gfx::White);
+                            // A click opens the plot full size in the image viewer.
+                            const int fig_buffer = pane.buffer_id, fig_cell = nb_cell_idx, fig_out = static_cast<int>(out_i);
+                            RegisterClickRegionOnTop(gfx::Rectangle{text_x, oy, static_cast<float>(tex->width) * scale,
+                                                                    static_cast<float>(tex->height) * scale},
+                                                     [fig_buffer, fig_cell, fig_out] {
+                                                         g_editor.NotebookOpenFigure(fig_buffer, fig_cell, fig_out);
+                                                     });
                         } else {
                             gfx::DrawTextEx(g_font, "[image/png: could not decode]", gfx::Vector2{text_x, oy}, g_font_size, 0,
                                             ResolveHlGroup("Warn"));
@@ -56694,6 +56778,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             disp_line.append(raw_line, static_cast<size_t>(pos));
         }
         const std::string &draw_line = conceal_runs.empty() ? raw_line : disp_line;
+        /**
+         * @brief A decoration's byte offset (tree-sitter, LSP, spell: all byte offsets) as the column it sits at.
+         * @param byte The byte offset into the raw row.
+         * @return Its codepoint column. A row with concealed markup keeps the byte-as-column equivalence the
+         * concealment tables are built on (see the comment above), which is exact for its ASCII markup.
+         */
+        auto SpanCol = [&](int byte) -> int {
+            return conceal_runs.empty() ? ByteOffsetToColumn(raw_line, byte) : byte;
+        };
         // draw_line's byte offset for each column (ColumnToByteOffset,
         // answered from a table), built the first time a decoration asks.
         // The recolor pass converts both ends of every wrap piece of every
@@ -57397,14 +57490,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         } else {
             const std::string &wline = draw_line;
             for (int s = 0; s < row_wrap_slots; s++) {
-                const size_t piece_at = static_cast<size_t>(s) * static_cast<size_t>(row_wrap_cols);
+                // Split by column (codepoint), as the recolor passes'
+                // ForEachWrapPiece and the cursor's WrapPos do: a byte
+                // split put a row's continuation a character early after
+                // any multi-byte text, and the recolor drew it again at
+                // the right place -- two offset copies.
+                const size_t piece_at = static_cast<size_t>(DrawLineByteAt(s * row_wrap_cols));
                 // The slot count came from the row's *raw* length (it has
                 // to -- three other walkers count it the same way without
                 // any access to decorations), so a row whose concealed
                 // text collapsed past a wrap boundary has a trailing slot
                 // with nothing left to put on it.
                 if (piece_at >= wline.size()) break;
-                DrawLineFast(wline.substr(piece_at, static_cast<size_t>(row_wrap_cols)), text_x, ly + static_cast<float>(s * row_pitch), g_font_size,
+                const size_t piece_end = static_cast<size_t>(DrawLineByteAt((s + 1) * row_wrap_cols));
+                DrawLineFast(wline.substr(piece_at, piece_end - piece_at), text_x, ly + static_cast<float>(s * row_pitch), g_font_size,
                              ResolveHlGroup("Normal"));
             }
         }
@@ -57447,15 +57546,16 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 const int b = std::min(static_cast<int>(line.size()), d.col_end);
                 const gfx::Color tint = gfx::Fade(ResolveHlGroup(d.hl_group.empty() ? "Yellow" : d.hl_group), 0.28f);
                 if (b > a) {
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
+                    ForEachWrapPiece(DispCol(SpanCol(a)), DispCol(SpanCol(b)), row_wrap_cols, text_x, ly, row_pitch,
                                      [&](float py, float x0, float x1, int, int) {
                                          gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
                                                             static_cast<int>(x1 - x0), line_height, tint);
                                      });
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
+                    ForEachWrapPiece(DispCol(SpanCol(a)), DispCol(SpanCol(b)), row_wrap_cols, text_x, ly, row_pitch,
                                      [&](float py, float px, float, int pa, int pb) {
-                                         std::string part = draw_line.substr(static_cast<size_t>(pa),
-                                                                             static_cast<size_t>(pb - pa));
+                                         const int byte_a = DrawLineByteAt(pa);
+                                         std::string part = draw_line.substr(static_cast<size_t>(byte_a),
+                                                                             static_cast<size_t>(DrawLineByteAt(pb) - byte_a));
                                          gfx::DrawTextEx(g_font, part.c_str(), gfx::Vector2{px, py}, g_font_size, 0,
                                                          ResolveHlGroup("Normal"));
                                      });
@@ -57507,8 +57607,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     // right of them. Identity on every row with nothing
                     // concealed, which is every row a terminal-color run can
                     // appear on.
-                    int col_a = DispCol(d.has_fg_color ? d.col_start : a);
-                    int col_b = DispCol(d.has_fg_color ? d.col_end : b);
+                    int col_a = DispCol(d.has_fg_color ? d.col_start : SpanCol(a));
+                    int col_b = DispCol(d.has_fg_color ? d.col_end : SpanCol(b));
                     // Draws this decoration span's recolored text for each wrapped piece of it.
                     ForEachWrapPiece(col_a, col_b, row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float px, float, int pa, int pb) {
@@ -57551,9 +57651,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                               std::string glyph(ps + pi, static_cast<size_t>(cp_size));
                                               pi += cp_size;
                                               if (cp != ' ' && cp != '\t') {
-                                                  const gfx::Font &gf =
-                                                      IsIconCodepoint(cp) ? g_icon_font : (IsSymbolCodepoint(cp) ? g_symbol_font : g_font);
-                                                  gfx::DrawTextEx(gf, glyph.c_str(), gfx::Vector2{dx, py}, g_font_size, 0, c);
+                                                  gfx::DrawTextEx(BufferGlyphFont(cp), glyph.c_str(), gfx::Vector2{dx, py}, g_font_size, 0, c);
                                               }
                                               dx += g_char_width;
                                           }
@@ -57584,7 +57682,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (b > a) {
                     gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws the underline rectangle for each wrapped piece of this span.
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
+                    ForEachWrapPiece(DispCol(SpanCol(a)), DispCol(SpanCol(b)), row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float x0, float x1, int, int) {
                                           gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) - 2),
                                                         static_cast<int>(x1 - x0), 1, c);
@@ -57601,7 +57699,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (b > a) {
                     gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws the strikethrough rectangle for each wrapped piece of this span.
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
+                    ForEachWrapPiece(DispCol(SpanCol(a)), DispCol(SpanCol(b)), row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float x0, float x1, int, int) {
                                           gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py + static_cast<float>(line_height) / 2),
                                                         static_cast<int>(x1 - x0), 1, c);
@@ -57621,7 +57719,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (b > a) {
                     gfx::Color c = d.hl_group.empty() ? ResolveHlGroup("Normal") : ResolveHlGroup(d.hl_group);
                     // Draws each wrapped piece of this span twice, offset 1px right, to fake bold.
-                    ForEachWrapPiece(DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch,
+                    ForEachWrapPiece(DispCol(SpanCol(a)), DispCol(SpanCol(b)), row_wrap_cols, text_x, ly, row_pitch,
                                       [&](float py, float px, float, int pa, int pb) {
                                           std::string piece = draw_line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
                                           gfx::DrawTextEx(g_font, piece.c_str(), gfx::Vector2{px, py}, g_font_size, 0, c);
@@ -57657,7 +57755,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     float pad = static_cast<float>(line_height) * 0.25f;
                     // Covers then redraws each wrapped piece of this span sheared, to fake italics.
                     ForEachWrapPiece(
-                        DispCol(a), DispCol(b), row_wrap_cols, text_x, ly, row_pitch, [&](float py, float px0, float px1, int pa, int pb) {
+                        DispCol(SpanCol(a)), DispCol(SpanCol(b)), row_wrap_cols, text_x, ly, row_pitch, [&](float py, float px0, float px1, int pa, int pb) {
                             std::string piece = draw_line.substr(static_cast<size_t>(pa), static_cast<size_t>(pb - pa));
                             float span_w = px1 - px0;
                             float baseline_y = py + static_cast<float>(line_height);
@@ -60439,8 +60537,13 @@ void DrawEditor() {
         // click handler does.
         {
             bool active = g_editor.DirenvActive();
-            std::string icon = Utf8FromCodepoint(active ? 0xf205 : 0xf204);  // nf-fa-toggle_on / nf-fa-toggle_off
-            std::string chip = icon + "  direnv";
+            bool pending = g_editor.DirenvPending();
+            // While an export runs (a flake's first build: minutes), an
+            // hourglass -- so a notebook waiting on it isn't a mystery.
+            std::string icon = Utf8FromCodepoint(pending  ? 0xf252   // nf-fa-hourglass_half
+                                                 : active ? 0xf205   // nf-fa-toggle_on
+                                                          : 0xf204); // nf-fa-toggle_off
+            std::string chip = icon + (pending ? "  direnv loading" : "  direnv");
             float chip_w = MeasureUiText(chip, status_font_size) + 14.0f;
             gfx::Rectangle chip_rect{chip_left - chip_w, static_cast<float>(status_y + 2), chip_w,
                                 static_cast<float>(status_bar_height - 4)};

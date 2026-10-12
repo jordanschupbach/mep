@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (236)
+* The bindings (237)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -165,6 +165,7 @@ that it does nothing.
 | =mep.reload_changed_buffers= | reloaded_count, conflicts |
 | =mep.replace_lines= | replaces a 1-indexed, end-exclusive line range with a new set of lines |
 | =mep.reveal_buffer= | brings a buffer to the front of its own pane without moving focus |
+| =mep.rmd_chunks= | the knitr chunks of an R Markdown text (ScanRmdChunks) |
 | =mep.set_cursor= | moves the cursor to a 1-indexed position |
 | =mep.set_line= | replaces the content of a 1-indexed line |
 | =mep.set_on_quit_unsaved= | fn(scope) where scope is "all" (:qa/:wqa) or |

@@ -244,7 +244,10 @@ void Editor::DocTableLook(OrgTableGrid *grid, const std::string &media) const {
 
 bool Editor::IsMepmlBuffer() const { return LspFiletype(Buf().filename) == "mepml"; }
 
-bool IsMarkdownFiletype(const std::string &ft) { return ft == "md" || ft == "markdown"; }
+// R Markdown is Markdown with knitr chunks in it: headings, conceal,
+// tables and images all apply as written (LspFiletype keeps the
+// extension's own case, hence both spellings).
+bool IsMarkdownFiletype(const std::string &ft) { return ft == "md" || ft == "markdown" || ft == "Rmd" || ft == "rmd"; }
 
 int MdHeadingLevel(const std::string &line) {
     // An ATX heading: up to three spaces of indent, one to six `#`, then a

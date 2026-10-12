@@ -525,6 +525,15 @@ test-gui: build-native
     # grid but are out of scope for this phase.
     echo "== sheet live check"
     python3 tools/sheet_live_check.py --build-dir {{native_build_dir}}
+    # R Markdown notebooks: the R kernel's protocol on its own (state,
+    # streams, plots, errors, SIGINT), then an .Rmd driven by real keys --
+    # Shift+Enter / C-c C-c in a chunk, nothing in the prose, :w leaving
+    # the document untouched, outputs back from the cache on reopen, the
+    # R language server inside chunks. Both skip without Rscript.
+    echo "== R kernel check"
+    python3 tools/r_kernel_check.py
+    echo "== rmd live check"
+    python3 tools/rmd_live_check.py --build-dir {{native_build_dir}}
 
 # Part G.7: the mesher measured against Gmsh, on geometry carried across
 # as STEP written by mep's own writer. Separate from `test` because it

@@ -3550,6 +3550,10 @@ struct PresSession {
 // table-driven.
 struct NotebookSession {
     int buffer_id = -1;
+    // Ipynb: the buffer is percent-format text standing in for the JSON
+    // file. Rmd: the buffer IS the file (saved verbatim); cells are its
+    // knitr chunks, and outputs persist only to a cache outside it.
+    NotebookFormat format = NotebookFormat::Ipynb;
     NotebookDoc doc;
     std::vector<NotebookCellSpan> spans;
     // Buffer row -> visual slots the code cell ending on that row claims
@@ -7549,6 +7553,21 @@ public:
      * @param buffer_id The notebook buffer.
      */
     void NotebookCloseSession(int buffer_id);
+    /**
+     * @brief Attaches an R Markdown notebook session to an already-loaded .Rmd text
+     * buffer (a no-op when it has one) and restores its cached outputs.
+     * @param buffer_id The .Rmd buffer.
+     */
+    void OpenRmdSession(int buffer_id);
+    // True for a notebook session over an .Rmd buffer (NotebookFormat::Rmd).
+    bool IsRmdNotebook(int buffer_id) const;
+    // The code chunk containing the active pane's cursor in an .Rmd
+    // notebook (header, body or closing fence), else -1 -- what decides
+    // whether Shift+Enter / C-c C-c run a chunk or keep their usual meaning.
+    int NotebookRmdChunkAtCursor();
+    // Writes (or, with no outputs left, removes) an .Rmd notebook's output
+    // cache file. A no-op for .ipynb, whose outputs live in the file itself.
+    void NotebookWriteOutputCache(int buffer_id);
     // Unlike ResizeOfficeViewport, this DOES do the full scroll-follow
     // job itself (see SheetSession::scroll_row's own comment for why --
     // fixed-size grid cells need no font measurement) -- records
@@ -14218,6 +14237,12 @@ private:
 
     // Notebook internals (see the public Notebook* block above).
     NotebookSession *GetNotebookMutable(int buffer_id);
+    // The session's cells read off its buffer: `# %%` markers or knitr chunks.
+    std::vector<NotebookCellSpan> NotebookScan(const NotebookSession &sess) const;
+    // Rmd: each code cell runs on the kernel its chunk engine names.
+    void NotebookApplyRmdKernels(NotebookSession &sess);
+    std::string NotebookOutputCachePath(int buffer_id) const;
+    int NotebookInsertRmdChunk(int cell_index, bool below);
     void NotebookSyncFromText(NotebookSession &sess);
     void NotebookRebuildSlotCache(NotebookSession &sess);
     // Starts (if needed) the resident process for a Python/Protocol

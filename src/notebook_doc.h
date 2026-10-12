@@ -2,6 +2,7 @@
 #define MEP_NOTEBOOK_DOC_H
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "json.h"
@@ -126,6 +127,14 @@ struct NotebookCellSpan {
     int first_row = 0;    // first body row
     int end_row = 0;      // one past the last body row (== first_row for an empty body)
     NotebookCellType type = NotebookCellType::Code;
+    // R Markdown only (ScanRmdChunks): a code chunk's closing ``` row,
+    // which belongs to the chunk but not to its body -- the row its
+    // output block hangs under. -1 for percent-format cells, whose last
+    // body row (end_row - 1) plays that part.
+    int close_row = -1;
+    std::string engine;   // R Markdown chunk engine as written ("r", "python", ...)
+    std::string label;    // R Markdown chunk label, "" when unnamed
+    bool eval = true;     // R Markdown: false for eval=FALSE chunks
 };
 // Every cell in `lines`, in order. A leading run of lines before the
 // first marker is an implicit Code cell only if it has non-blank content;
@@ -134,8 +143,12 @@ std::vector<NotebookCellSpan> ScanNotebookCells(const std::vector<std::string> &
 // The span's body joined by '\n' with trailing blank lines dropped (the
 // blank separator line NotebookToLines emits between cells isn't source).
 std::string NotebookSpanSource(const std::vector<std::string> &lines, const NotebookCellSpan &span);
-// Index of the span containing `row` (marker or body row), or -1.
+// Index of the span containing `row` (marker, body or closing-fence
+// row), or -1.
 int NotebookSpanAtRow(const std::vector<NotebookCellSpan> &spans, int row);
+// The last row a span owns: an R Markdown chunk's closing fence, else its
+// last body row (the marker row for an empty body).
+int NotebookSpanLastRow(const NotebookCellSpan &span);
 
 // Re-attaches doc->cells to the text's current cells. Same cell count:
 // each cell just takes its span's source/type in place (an in-place edit
@@ -150,6 +163,60 @@ int NotebookSpanAtRow(const std::vector<NotebookCellSpan> &spans, int row);
 // outputs.
 void SyncNotebookFromLines(NotebookDoc *doc, const std::vector<std::string> &lines,
                            const std::vector<NotebookCellSpan> &spans, int *next_uid);
+
+// --- R Markdown (.Rmd) ---------------------------------------------------
+// An .Rmd buffer is a notebook too (editor.cpp's NotebookSession with
+// NotebookFormat::Rmd), but its text is never rewritten: Buffer::lines is
+// the file exactly as on disk, cells are read off its knitr chunk fences
+// rather than `# %%` markers, `:w` writes the text as-is, and outputs live
+// only in the session plus a cache file outside the document
+// (SerializeNotebookOutputCache) -- knitr owns what a rendered document
+// shows, the way RStudio's notebook mode leaves the .Rmd alone.
+//
+//     ---                       <- prose (Markdown span), YAML included
+//     title: "x"
+//     ---
+//     ```{r setup, echo=FALSE}  <- marker_row: the chunk header
+//     x <- 1                    <- body: first_row .. end_row - 1
+//     ```                       <- close_row; outputs draw below it
+//
+// A fence without braces (```r) is a code *display*, not a chunk -- knitr
+// never runs it, so neither does this. Quarto (.qmd) uses the same chunk
+// syntax and is the one-line extension of IsRmdPath, left out for now.
+enum class NotebookFormat { Ipynb, Rmd };
+bool IsRmdPath(const std::string &path);
+
+struct RmdChunkHeader {
+    std::string engine;   // first word inside the braces, as written
+    std::string label;    // `{r label}`, `{r, label}` or `label="..."`
+    // Every k=v option in order, values verbatim (quotes kept).
+    std::vector<std::pair<std::string, std::string>> options;
+    bool eval = true;     // eval=FALSE / eval=F
+};
+// Parses a chunk-opening line (```{engine ...}, three or more backticks,
+// optional leading indentation). False for anything else, including a
+// plain ```r fence. `*fence_len` receives the backtick count.
+bool ParseRmdChunkHeader(const std::string &line, RmdChunkHeader *out, int *fence_len);
+// Every chunk and the prose between them, in order: chunks are Code spans
+// (marker_row = header row, close_row = closing fence, or the last row
+// for an unclosed chunk that runs to EOF), each stretch of prose with any
+// non-blank text is one Markdown span (marker_row = -1). A ```{r} inside
+// a plain ``` / ~~~ fence is an example being shown, not a chunk.
+std::vector<NotebookCellSpan> ScanRmdChunks(const std::vector<std::string> &lines);
+
+// The output cache an .Rmd's session keeps outside the document: one
+// entry per code cell holding its source hash, label, execution count and
+// outputs (nbformat output JSON, so PNGs stay base64). `spans` must be the
+// scan `doc` was synced from (labels come from there).
+std::string SerializeNotebookOutputCache(const NotebookDoc &doc, const std::vector<NotebookCellSpan> &spans);
+// (The label is recorded for a human reading the file; matching is by
+// source alone.)
+// Puts cached outputs back on `doc`'s code cells: each takes the first
+// unused entry whose source hash matches its current source, so identical
+// chunks pair up in order. Unmatched entries are dropped -- a chunk edited
+// while the file was closed comes back without its now-stale output.
+// Returns how many cells got outputs back; unparsable input is a no-op.
+int ApplyNotebookOutputCache(NotebookDoc *doc, const std::string &json_text);
 
 // --- Per-cell kernels ----------------------------------------------------
 // One runnable kernel as offered in each code cell's kernel dropdown
@@ -167,6 +234,11 @@ struct NotebookKernelSpec {
         // wire protocol at the bottom of this header (a user-supplied
         // driver for some other language).
         Protocol,
+        // `command` (just the interpreter, "Rscript" when empty) runs
+        // NotebookRKernelScript() as a persistent R session: state
+        // carries across cells, every graphics page a cell draws comes
+        // back inline as a PNG.
+        R,
         // Stateless: every run spawns `command` afresh with the cell's
         // code on stdin and shows its stdout/stderr (Rscript, node, bash,
         // ...). Nothing carries over between cells.
@@ -271,5 +343,15 @@ std::string NotebookKernelShutdownRequest();
 // trimming, and an inline matplotlib backend that ships figures back as
 // PNG display_data at the end of each cell (or on plt.show()).
 const char *NotebookKernelScript();
+// The R program run as `Rscript --no-save --no-restore -e <script>`: the
+// same protocol from one persistent R session. Each request is parsed and
+// evaluated expression by expression in the global environment, visible
+// values auto-printed (so a ggplot draws); stdout is sunk away from the
+// protocol stream and sent as stdout streams, message()/warning() as
+// stderr streams, the first error stops the cell as an `error`; every
+// page drawn on the per-request png() device is sent as display_data
+// before `done`. SIGINT interrupts the running cell and leaves the
+// session alive.
+const char *NotebookRKernelScript();
 
 #endif  // MEP_NOTEBOOK_DOC_H

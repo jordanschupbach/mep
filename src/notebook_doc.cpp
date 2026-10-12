@@ -415,9 +415,16 @@ int NotebookSpanAtRow(const std::vector<NotebookCellSpan> &spans, int row) {
     for (size_t i = 0; i < spans.size(); i++) {
         int start = spans[i].marker_row >= 0 ? spans[i].marker_row : spans[i].first_row;
         int end = std::max(spans[i].end_row, start + 1);
+        if (spans[i].close_row >= 0) end = std::max(end, spans[i].close_row + 1);
         if (row >= start && row < end) return static_cast<int>(i);
     }
     return -1;
+}
+
+int NotebookSpanLastRow(const NotebookCellSpan &span) {
+    if (span.close_row >= 0) return span.close_row;
+    if (span.end_row > span.first_row) return span.end_row - 1;
+    return span.marker_row >= 0 ? span.marker_row : span.first_row;
 }
 
 void SyncNotebookFromLines(NotebookDoc *doc, const std::vector<std::string> &lines,
@@ -473,6 +480,238 @@ void SyncNotebookFromLines(NotebookDoc *doc, const std::vector<std::string> &lin
         if (!matched) fresh.push_back(fresh_cell(span, std::move(source), fresh.empty() ? nullptr : &fresh.back()));
     }
     doc->cells = std::move(fresh);
+}
+
+// --- R Markdown (.Rmd) ---------------------------------------------------
+
+bool IsRmdPath(const std::string &path) { return LowerExt(path) == "rmd"; }
+
+namespace {
+
+// Leading indentation, then a run of `fence` characters; returns the run
+// length (0 when the line doesn't start that way) and where it ends.
+int FenceRun(const std::string &line, char fence, size_t *after) {
+    size_t i = 0;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) i++;
+    size_t j = i;
+    while (j < line.size() && line[j] == fence) j++;
+    if (after) *after = j;
+    return static_cast<int>(j - i);
+}
+
+bool BlankFrom(const std::string &line, size_t from) {
+    return from >= line.size() || line.find_first_not_of(" \t\r", from) == std::string::npos;
+}
+
+std::string TrimAscii(const std::string &s) {
+    size_t b = s.find_first_not_of(" \t\r");
+    if (b == std::string::npos) return "";
+    size_t e = s.find_last_not_of(" \t\r");
+    return s.substr(b, e - b + 1);
+}
+
+std::string Unquote(const std::string &s) {
+    if (s.size() >= 2 && (s.front() == '"' || s.front() == '\'') && s.back() == s.front()) return s.substr(1, s.size() - 2);
+    return s;
+}
+
+// knitr option lists are R argument lists: split on commas outside
+// (), [], {} and quotes, so `fig.dim=c(5, 3)` stays one option.
+std::vector<std::string> SplitChunkOptions(const std::string &s) {
+    std::vector<std::string> parts;
+    std::string cur;
+    int depth = 0;
+    char quote = 0;
+    for (size_t i = 0; i < s.size(); i++) {
+        char c = s[i];
+        if (quote) {
+            cur += c;
+            if (c == '\\' && i + 1 < s.size()) {
+                cur += s[++i];
+            } else if (c == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            quote = c;
+        } else if (c == '(' || c == '[' || c == '{') {
+            depth++;
+        } else if ((c == ')' || c == ']' || c == '}') && depth > 0) {
+            depth--;
+        } else if (c == ',' && depth == 0) {
+            parts.push_back(TrimAscii(cur));
+            cur.clear();
+            continue;
+        }
+        cur += c;
+    }
+    parts.push_back(TrimAscii(cur));
+    return parts;
+}
+
+// A closing chunk fence: only backticks, at least as many as opened it.
+bool IsRmdChunkClose(const std::string &line, int fence_len) {
+    size_t after = 0;
+    int run = FenceRun(line, '`', &after);
+    return run >= 3 && run >= fence_len && BlankFrom(line, after);
+}
+
+}  // namespace
+
+bool ParseRmdChunkHeader(const std::string &line, RmdChunkHeader *out, int *fence_len) {
+    size_t after = 0;
+    int run = FenceRun(line, '`', &after);
+    if (run < 3) return false;
+    size_t i = after;
+    while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) i++;
+    if (i >= line.size() || line[i] != '{') return false;
+    size_t close = line.find_last_of('}');
+    if (close == std::string::npos || close < i || !BlankFrom(line, close + 1)) return false;
+    std::string inner = line.substr(i + 1, close - i - 1);
+    size_t e = 0;
+    while (e < inner.size() && (std::isalnum(static_cast<unsigned char>(inner[e])) || inner[e] == '_' || inner[e] == '.')) e++;
+    if (e == 0) return false;
+    RmdChunkHeader h;
+    h.engine = inner.substr(0, e);
+    std::string rest = inner.substr(e);
+    // `{r label, ...}` and `{r, label, ...}` both name the chunk: drop
+    // one leading comma so the label (if any) is the first option.
+    rest = TrimAscii(rest);
+    if (!rest.empty() && rest[0] == ',') rest = TrimAscii(rest.substr(1));
+    if (!rest.empty()) {
+        std::vector<std::string> parts = SplitChunkOptions(rest);
+        for (size_t k = 0; k < parts.size(); k++) {
+            const std::string &part = parts[k];
+            if (part.empty()) continue;
+            size_t eq = part.find('=');
+            if (eq == std::string::npos) {
+                if (k == 0) h.label = Unquote(part);
+                continue;
+            }
+            std::string key = TrimAscii(part.substr(0, eq));
+            std::string value = TrimAscii(part.substr(eq + 1));
+            if (key == "label") h.label = Unquote(value);
+            if (key == "eval" && (value == "FALSE" || value == "F")) h.eval = false;
+            h.options.emplace_back(key, value);
+        }
+    }
+    if (out) *out = std::move(h);
+    if (fence_len) *fence_len = run;
+    return true;
+}
+
+std::vector<NotebookCellSpan> ScanRmdChunks(const std::vector<std::string> &lines) {
+    std::vector<NotebookCellSpan> spans;
+    const int n = static_cast<int>(lines.size());
+    int prose_start = 0;
+    auto flush_prose = [&](int end) {
+        bool content = false;
+        for (int r = prose_start; r < end && !content; r++) content = !BlankFrom(lines[static_cast<size_t>(r)], 0);
+        if (!content) return;
+        NotebookCellSpan s;
+        s.marker_row = -1;
+        s.first_row = prose_start;
+        s.end_row = end;
+        s.type = NotebookCellType::Markdown;
+        spans.push_back(s);
+    };
+    int r = 0;
+    while (r < n) {
+        const std::string &line = lines[static_cast<size_t>(r)];
+        RmdChunkHeader h;
+        int fence_len = 0;
+        if (ParseRmdChunkHeader(line, &h, &fence_len)) {
+            flush_prose(r);
+            NotebookCellSpan s;
+            s.marker_row = r;
+            s.first_row = r + 1;
+            s.type = NotebookCellType::Code;
+            s.engine = h.engine;
+            s.label = h.label;
+            s.eval = h.eval;
+            int e = r + 1;
+            while (e < n && !IsRmdChunkClose(lines[static_cast<size_t>(e)], fence_len)) e++;
+            s.end_row = e;
+            s.close_row = e < n ? e : std::max(r, n - 1);
+            spans.push_back(s);
+            r = e < n ? e + 1 : n;
+            prose_start = r;
+            continue;
+        }
+        // A plain fenced block in the prose: skip to its close so a chunk
+        // header shown inside it (documentation about Rmd) isn't run.
+        for (char fence : {'`', '~'}) {
+            size_t after = 0;
+            int run = FenceRun(line, fence, &after);
+            if (run < 3) continue;
+            int e = r + 1;
+            while (e < n) {
+                size_t a2 = 0;
+                const std::string &l2 = lines[static_cast<size_t>(e)];
+                if (FenceRun(l2, fence, &a2) >= run && BlankFrom(l2, a2)) break;
+                e++;
+            }
+            r = e;  // the closing fence (or n); the ++ below steps past it
+            break;
+        }
+        r++;
+    }
+    flush_prose(n);
+    return spans;
+}
+
+std::string SerializeNotebookOutputCache(const NotebookDoc &doc, const std::vector<NotebookCellSpan> &spans) {
+    Json root = Json::Object();
+    root["version"] = Json(1);
+    Json cells = Json::Array();
+    for (size_t i = 0; i < doc.cells.size(); i++) {
+        const NotebookCell &cell = doc.cells[i];
+        if (cell.type != NotebookCellType::Code) continue;
+        if (cell.outputs.empty() && cell.execution_count < 0) continue;
+        Json c = Json::Object();
+        c["hash"] = Json(NotebookContentKey(cell.source));
+        c["label"] = Json(i < spans.size() ? spans[i].label : std::string());
+        c["execution_count"] = cell.execution_count >= 0 ? Json(cell.execution_count) : Json(nullptr);
+        Json outputs = Json::Array();
+        for (const NotebookOutput &o : cell.outputs) outputs.push_back(OutputToJson(o));
+        c["outputs"] = outputs;
+        cells.push_back(std::move(c));
+    }
+    root["cells"] = cells;
+    return root.dump();
+}
+
+int ApplyNotebookOutputCache(NotebookDoc *doc, const std::string &json_text) {
+    Json root;
+    if (json_text.empty() || !Json::Parse(json_text, &root) || !root.is_object()) return 0;
+    if (root.get("version").as_int(0) != 1) return 0;
+    const std::vector<Json> &entries = root.get("cells").items();
+    std::vector<bool> used(entries.size(), false);
+    auto take = [&](NotebookCell &cell, size_t k) {
+        used[k] = true;
+        const Json &e = entries[k];
+        cell.outputs.clear();
+        for (const Json &o : e.get("outputs").items()) {
+            if (o.is_object()) cell.outputs.push_back(ParseOutput(o));
+        }
+        const Json &ec = e.get("execution_count");
+        cell.execution_count = ec.is_number() ? ec.as_int() : -1;
+    };
+    int restored = 0;
+    for (size_t i = 0; i < doc->cells.size(); i++) {
+        NotebookCell &cell = doc->cells[i];
+        if (cell.type != NotebookCellType::Code) continue;
+        const std::string hash = NotebookContentKey(cell.source);
+        size_t pick = entries.size();
+        for (size_t k = 0; k < entries.size() && pick == entries.size(); k++) {
+            if (!used[k] && entries[k].get("hash").as_string("") == hash) pick = k;
+        }
+        if (pick == entries.size()) continue;
+        take(cell, pick);
+        restored++;
+    }
+    return restored;
 }
 
 // --- Per-cell kernels ----------------------------------------------------
@@ -895,5 +1134,128 @@ while True:
     elif op == "shutdown":
         break
 )PYKERNEL";
+    return kScript;
+}
+
+const char *NotebookRKernelScript() {
+    // Raw literal, like NotebookKernelScript(). Needs only base R plus
+    // jsonlite (which rmarkdown itself depends on, so any setup that can
+    // knit an .Rmd has it); exits with a stderr line naming it otherwise,
+    // which KernelProc::last_error puts on the status line.
+    static const char *const kScript = R"RKERNEL(
+local({
+    if (!requireNamespace("jsonlite", quietly = TRUE)) {
+        cat("mep R kernel: the jsonlite package is required (install.packages('jsonlite'))\n", file = stderr())
+        quit(save = "no", status = 1)
+    }
+    # The protocol goes to the process's real stdout. User output goes to
+    # R's stdout() connection, which each run sinks into a text
+    # connection, so a cat() in a chunk can never corrupt a protocol line.
+    proto <- file("/dev/stdout", "w", raw = TRUE)
+    input <- file("stdin", "r")
+    emit <- function(msg) {
+        writeLines(jsonlite::toJSON(msg, auto_unbox = TRUE, null = "null", digits = NA), proto)
+        flush(proto)
+    }
+    count <- 0L
+    fig_dir <- ""
+    png_type <- if (isTRUE(capabilities("cairo"))) "cairo" else getOption("bitmapType")
+    open_device <- function() {
+        grDevices::png(file.path(fig_dir, "fig_%03d.png"), width = 7, height = 5, units = "in",
+                       res = 100, type = png_type)
+    }
+    # A plot after the chunk's own dev.off() would otherwise open
+    # Rplots.pdf; route any new device into this run's figure folder.
+    options(device = function(...) open_device(), width = 80)
+
+    run <- function(id, code) {
+        count <<- count + 1L
+        fig_dir <<- file.path(tempdir(), sprintf("mep_fig_%d", id))
+        dir.create(fig_dir, showWarnings = FALSE)
+        open_device()
+        captured <- character()
+        out <- textConnection("captured", "w", local = TRUE)
+        sink(out)
+        sent <- 0L
+        flush_out <- function(final = FALSE) {
+            if (final) {
+                while (sink.number() > 0) sink()
+                close(out)
+            }
+            if (length(captured) > sent) {
+                text <- paste0(paste(captured[(sent + 1L):length(captured)], collapse = "\n"), "\n")
+                sent <<- length(captured)
+                emit(list(type = "stream", id = id, name = "stdout", text = text))
+            }
+        }
+        stderr_text <- function(text) {
+            flush_out()
+            emit(list(type = "stream", id = id, name = "stderr", text = text))
+        }
+        report_error <- function(e) {
+            flush_out()
+            msg <- conditionMessage(e)
+            call <- conditionCall(e)
+            # A top-level stop() reports the driver's own eval() as its
+            # call; R's console says plain "Error:" there, and so does this.
+            if (is.call(call) && identical(call[[1]], quote(eval))) call <- NULL
+            head <- if (is.null(call)) "Error: " else paste0("Error in ", deparse(call, nlines = 1L), ": ")
+            emit(list(type = "error", id = id, ename = "Error", evalue = msg, traceback = list(paste0(head, msg))))
+        }
+        exprs <- tryCatch(parse(text = code, keep.source = FALSE), error = function(e) {
+            report_error(simpleError(conditionMessage(e)))
+            NULL
+        })
+        for (ex in exprs) {
+            ok <- withCallingHandlers(
+                tryCatch({
+                    r <- withVisible(eval(ex, envir = globalenv()))
+                    if (r$visible) print(r$value)
+                    TRUE
+                }, error = function(e) {
+                    report_error(e)
+                    FALSE
+                }, interrupt = function(i) {
+                    flush_out()
+                    emit(list(type = "error", id = id, ename = "Interrupted", evalue = "",
+                              traceback = list("Interrupted")))
+                    FALSE
+                }),
+                message = function(m) {
+                    stderr_text(conditionMessage(m))
+                    invokeRestart("muffleMessage")
+                },
+                warning = function(w) {
+                    stderr_text(paste0("Warning: ", conditionMessage(w), "\n"))
+                    invokeRestart("muffleWarning")
+                })
+            if (!isTRUE(ok)) break
+        }
+        flush_out(final = TRUE)
+        grDevices::graphics.off()
+        for (f in sort(list.files(fig_dir, pattern = "\\.png$", full.names = TRUE))) {
+            size <- file.info(f)$size
+            if (!is.na(size) && size > 0) {
+                emit(list(type = "display_data", id = id, text = NULL,
+                          png = jsonlite::base64_enc(readBin(f, "raw", size))))
+            }
+        }
+        unlink(fig_dir, recursive = TRUE)
+        emit(list(type = "done", id = id, execution_count = count))
+    }
+
+    emit(list(type = "ready", python = R.version.string))
+    repeat {
+        line <- tryCatch(readLines(input, n = 1L, warn = FALSE), interrupt = function(i) "")
+        if (length(line) == 0L) break
+        if (!nzchar(line)) next
+        req <- tryCatch(jsonlite::fromJSON(line, simplifyVector = FALSE), error = function(e) NULL)
+        if (is.null(req)) next
+        if (identical(req$op, "shutdown")) break
+        if (identical(req$op, "execute")) run(as.integer(req$id), paste(unlist(req$code), collapse = "\n"))
+    }
+    quit(save = "no")
+})
+)RKERNEL";
     return kScript;
 }

@@ -488,6 +488,144 @@ int main() {
         CHECK(NotebookCellKernel(d.cells[1]) == "ir");
     }
 
+    // --- R Markdown: extension, chunk headers
+    {
+        CHECK(IsRmdPath("report.Rmd"));
+        CHECK(IsRmdPath("a/b/x.rmd"));
+        CHECK(!IsRmdPath("x.md"));
+        CHECK(!IsRmdPath("x.R"));
+
+        RmdChunkHeader h;
+        int fence = 0;
+        CHECK(ParseRmdChunkHeader("```{r}", &h, &fence));
+        CHECK(h.engine == "r" && h.label.empty() && h.eval && fence == 3);
+        CHECK(ParseRmdChunkHeader("```{r setup}", &h, nullptr));
+        CHECK(h.engine == "r" && h.label == "setup");
+        CHECK(ParseRmdChunkHeader("```{r, setup}", &h, nullptr));
+        CHECK(h.label == "setup");
+        CHECK(ParseRmdChunkHeader("```{r lab, echo=FALSE, fig.dim=c(5, 3)}", &h, nullptr));
+        CHECK(h.label == "lab");
+        CHECK(h.options.size() == 2);
+        CHECK(h.options[0].first == "echo" && h.options[0].second == "FALSE");
+        CHECK(h.options[1].first == "fig.dim" && h.options[1].second == "c(5, 3)");
+        CHECK(ParseRmdChunkHeader("```{r eval=F}", &h, nullptr));
+        CHECK(!h.eval && h.label.empty());
+        CHECK(ParseRmdChunkHeader("```{r, eval = FALSE, label='named'}", &h, nullptr));
+        CHECK(!h.eval && h.label == "named");
+        CHECK(ParseRmdChunkHeader("  ````{python}  ", &h, &fence));
+        CHECK(h.engine == "python" && fence == 4);
+        CHECK(ParseRmdChunkHeader("``` {r}", &h, nullptr));
+        CHECK(ParseRmdChunkHeader("```{r fig.cap=\"a, b\"}", &h, nullptr));
+        CHECK(h.options.size() == 1 && h.options[0].second == "\"a, b\"");
+        CHECK(!ParseRmdChunkHeader("```r", &h, nullptr));
+        CHECK(!ParseRmdChunkHeader("```", &h, nullptr));
+        CHECK(!ParseRmdChunkHeader("``{r}", &h, nullptr));
+        CHECK(!ParseRmdChunkHeader("```{r} trailing", &h, nullptr));
+        CHECK(!ParseRmdChunkHeader("text ```{r}", &h, nullptr));
+    }
+
+    // --- R Markdown: scanning chunks and prose
+    {
+        Lines lines = {
+            "---",              // 0
+            "title: x",         // 1
+            "---",              // 2
+            "",                 // 3
+            "```{r setup}",     // 4
+            "x <- 1",           // 5
+            "",                 // 6
+            "```",              // 7
+            "Prose with ```r",  // 8
+            "```r",             // 9  display fence, not a chunk
+            "```{r}",           // 10 shown inside it -- not a chunk either
+            "```",              // 11
+            "```{r, eval=FALSE}",  // 12
+            "y",                // 13
+            "````",             // 14 longer close is still a close
+            "```{python}",      // 15 unclosed: runs to EOF
+            "print(1)",         // 16
+        };
+        std::vector<NotebookCellSpan> spans = ScanRmdChunks(lines);
+        CHECK(spans.size() == 5);
+        CHECK(spans[0].type == NotebookCellType::Markdown && spans[0].first_row == 0 && spans[0].end_row == 4);
+        CHECK(spans[1].type == NotebookCellType::Code);
+        CHECK(spans[1].marker_row == 4 && spans[1].first_row == 5 && spans[1].end_row == 7 && spans[1].close_row == 7);
+        CHECK(spans[1].engine == "r" && spans[1].label == "setup" && spans[1].eval);
+        CHECK(NotebookSpanSource(lines, spans[1]) == "x <- 1");
+        CHECK(spans[2].type == NotebookCellType::Markdown && spans[2].first_row == 8 && spans[2].end_row == 12);
+        CHECK(spans[3].marker_row == 12 && spans[3].close_row == 14 && !spans[3].eval);
+        CHECK(spans[4].engine == "python" && spans[4].end_row == 17 && spans[4].close_row == 16);
+        CHECK(NotebookSpanAtRow(spans, 7) == 1);   // closing fence belongs to the chunk
+        CHECK(NotebookSpanAtRow(spans, 4) == 1);
+        CHECK(NotebookSpanAtRow(spans, 8) == 2);
+        CHECK(NotebookSpanLastRow(spans[1]) == 7);
+        CHECK(NotebookSpanLastRow(spans[0]) == 3);
+
+        // Blank-only gaps between chunks are not prose cells.
+        Lines tight = {"```{r}", "1", "```", "", "```{r}", "2", "```"};
+        std::vector<NotebookCellSpan> t = ScanRmdChunks(tight);
+        CHECK(t.size() == 2);
+        CHECK(t[0].type == NotebookCellType::Code && t[1].type == NotebookCellType::Code);
+
+        // Percent-format spans keep their old last row.
+        Lines pct = {"# %%", "a", "b", "", "# %%"};
+        std::vector<NotebookCellSpan> p = ScanNotebookCells(pct);
+        CHECK(NotebookSpanLastRow(p[0]) == 3);
+        CHECK(NotebookSpanLastRow(p[1]) == 4);
+    }
+
+    // --- R Markdown: outputs survive edits, and the cache round trip
+    {
+        Lines lines = {"Intro", "```{r a}", "x <- 1", "```", "```{r b}", "x + 1", "```"};
+        NotebookDoc d;
+        int uid = 1;
+        std::vector<NotebookCellSpan> spans = ScanRmdChunks(lines);
+        SyncNotebookFromLines(&d, lines, spans, &uid);
+        CHECK(d.cells.size() == 3);
+        NotebookOutput o;
+        o.kind = NotebookOutput::Kind::Stream;
+        o.name = "stdout";
+        o.text = "[1] 2\n";
+        NotebookAppendOutput(&d.cells[2], o);
+        d.cells[2].execution_count = 2;
+        NotebookOutput img;
+        img.kind = NotebookOutput::Kind::DisplayData;
+        img.image_png = kTinyPng;
+        img.image_key = NotebookContentKey(img.image_png);
+        NotebookAppendOutput(&d.cells[2], img);
+
+        // Edit the prose and add a new chunk above: chunk b keeps its outputs.
+        lines = {"Intro, longer", "", "```{r new}", "z", "```", "```{r a}", "x <- 1", "```", "```{r b}", "x + 1", "```"};
+        spans = ScanRmdChunks(lines);
+        SyncNotebookFromLines(&d, lines, spans, &uid);
+        CHECK(d.cells.size() == 4);
+        CHECK(d.cells[3].source == "x + 1");
+        CHECK(d.cells[3].outputs.size() == 2);
+
+        std::string cache = SerializeNotebookOutputCache(d, spans);
+        NotebookDoc fresh;
+        int uid2 = 1;
+        SyncNotebookFromLines(&fresh, lines, spans, &uid2);
+        CHECK(ApplyNotebookOutputCache(&fresh, cache) == 1);
+        CHECK(fresh.cells[3].outputs.size() == 2);
+        CHECK(fresh.cells[3].execution_count == 2);
+        CHECK(fresh.cells[3].outputs[0].text == "[1] 2\n");
+        CHECK(fresh.cells[3].outputs[1].image_png == kTinyPng);
+        CHECK(fresh.cells[3].outputs[1].image_width == 1);
+
+        // A chunk edited while closed comes back without its stale output.
+        Lines edited = lines;
+        edited[9] = "x + 2";
+        std::vector<NotebookCellSpan> es = ScanRmdChunks(edited);
+        NotebookDoc again;
+        int uid3 = 1;
+        SyncNotebookFromLines(&again, edited, es, &uid3);
+        CHECK(ApplyNotebookOutputCache(&again, cache) == 0);
+        CHECK(again.cells[3].outputs.empty());
+        CHECK(ApplyNotebookOutputCache(&again, "not json") == 0);
+        CHECK(ApplyNotebookOutputCache(&again, "") == 0);
+    }
+
     std::printf("notebook_doc tests passed\n");
     return 0;
 }

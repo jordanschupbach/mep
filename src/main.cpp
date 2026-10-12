@@ -3254,7 +3254,7 @@ struct ScopeGuide {
 // spanned 51 rows of prose that way).  These files are scanned only inside
 // a fenced code block instead -- see FindScopeGuides.
 bool IsProseGuideFiletype(const std::string &filetype) {
-    static const char *const kProseFiletypes[] = {"org", "md", "markdown", "mepml", "rst", "txt", "text", "adoc", "asciidoc"};
+    static const char *const kProseFiletypes[] = {"org", "md", "markdown", "Rmd", "rmd", "mepml", "rst", "txt", "text", "adoc", "asciidoc"};
     for (const char *ft : kProseFiletypes) {
         if (filetype == ft) return true;
     }
@@ -3298,7 +3298,7 @@ bool ProseFenceOpen(const std::string &filetype, const std::string &line, std::s
         *fence = "```";
         return true;
     }
-    if (filetype == "md" || filetype == "markdown") {
+    if (IsMarkdownFiletype(filetype)) {
         if (ProseMatchAt(line, i, "```")) {
             *fence = "```";
             return true;
@@ -5110,6 +5110,70 @@ const char *kBuiltinFileTree =
     "}\n"
     // .envrc body: byte-for-byte the repo's own .envrc / the `envrc` snippet
     // (kBuiltinSnippets) so nix-direnv caching behaves identically.
+    // Notebook presets: one checkbox that ticks a working set of the
+    // package rows above (so they stay visible and can be unticked one by
+    // one) and, on create, adds what a notebook needs that isn't in that
+    // catalogue -- `extra` R packages / top-level `tools` -- plus a starter
+    // notebook. The R set is what mep's own R kernel and the Run button's
+    // knit need: jsonlite (the kernel's protocol), rmarkdown + knitr +
+    // pandoc (rmarkdown::render).
+    "mep.new_project_presets = {\n"
+    "  {id = 'python-notebook', label = 'Python notebook (analysis.ipynb)',\n"
+    "   pkgs = {'ipython', 'matplotlib', 'numpy', 'pandas'}, lang = 'python', file = 'analysis.ipynb'},\n"
+    "  {id = 'r-notebook', label = 'R Markdown notebook (analysis.Rmd)',\n"
+    "   pkgs = {'ggplot2'}, lang = 'r', extra = {'jsonlite', 'rmarkdown', 'knitr'}, tools = {'pandoc'},\n"
+    "   file = 'analysis.Rmd'},\n"
+    "}\n"
+    "function mep.new_project_preset_text(id, name)\n"
+    "  if id == 'python-notebook' then\n"
+    // A JSON string literal: the starter text is plain ASCII, so quote,
+    // backslash and newline are the only characters that need escaping.
+    "    local function jstr(t)\n"
+    "      return '\"' .. t:gsub('\\\\', '\\\\\\\\'):gsub('\"', '\\\\\"'):gsub('\\n', '\\\\n') .. '\"'\n"
+    "    end\n"
+    "    local function cell(kind, src)\n"
+    "      local lines = {}\n"
+    "      for i, l in ipairs(src) do lines[i] = '    ' .. jstr(l .. (i < #src and '\\n' or '')) end\n"
+    "      local head = '  {\\n   \"cell_type\": \"' .. kind .. '\",\\n'\n"
+    "      if kind == 'code' then head = head .. '   \"execution_count\": null,\\n' end\n"
+    "      head = head .. '   \"metadata\": {},\\n'\n"
+    "      if kind == 'code' then head = head .. '   \"outputs\": [],\\n' end\n"
+    "      return head .. '   \"source\": [\\n' .. table.concat(lines, ',\\n') .. '\\n   ]\\n  }'\n"
+    "    end\n"
+    "    local cells = {\n"
+    "      cell('markdown', {'# ' .. name, '', 'Run a cell with Enter (Shift+Enter runs it and moves on).'}),\n"
+    "      cell('code', {'import numpy as np', 'import pandas as pd', 'import matplotlib.pyplot as plt'}),\n"
+    "      cell('code', {'df = pd.DataFrame({\"x\": np.arange(10), \"y\": np.arange(10) ** 2})', 'df.describe()'}),\n"
+    "      cell('code', {'plt.plot(df[\"x\"], df[\"y\"])', 'plt.title(\"y = x^2\")'}),\n"
+    "    }\n"
+    "    return '{\\n \"cells\": [\\n' .. table.concat(cells, ',\\n') .. '\\n ],\\n' ..\n"
+    "      ' \"metadata\": {\\n  \"kernelspec\": {\\n   \"display_name\": \"Python 3\",\\n   \"language\": \"python\",\\n   \"name\": \"python3\"\\n  }\\n },\\n' ..\n"
+    "      ' \"nbformat\": 4,\\n \"nbformat_minor\": 5\\n}\\n'\n"
+    "  elseif id == 'r-notebook' then\n"
+    "    return table.concat({\n"
+    "      '---',\n"
+    "      'title: \"' .. name .. '\"',\n"
+    "      'output: html_document',\n"
+    "      '---',\n"
+    "      '',\n"
+    "      'Run a chunk with Shift+Enter (or C-c C-c) with the cursor inside it.',\n"
+    "      'The Run button knits the whole document.',\n"
+    "      '',\n"
+    "      '```{r setup}',\n"
+    "      'library(ggplot2)',\n"
+    "      '```',\n"
+    "      '',\n"
+    "      '```{r summary}',\n"
+    "      'summary(mtcars[, c(\"mpg\", \"wt\")])',\n"
+    "      '```',\n"
+    "      '',\n"
+    "      '```{r plot}',\n"
+    "      'ggplot(mtcars, aes(wt, mpg)) + geom_point()',\n"
+    "      '```',\n"
+    "    }, '\\n') .. '\\n'\n"
+    "  end\n"
+    "  return ''\n"
+    "end\n"
     "function mep.new_project_envrc_text()\n"
     "  return table.concat({\n"
     "    '# shellcheck shell=bash',\n"
@@ -5128,6 +5192,7 @@ const char *kBuiltinFileTree =
     "  local pkg_lines = {}\n"
     "  for _, attr in ipairs(by_lang.java) do pkg_lines[#pkg_lines + 1] = '            pkgs.' .. attr end\n"
     "  for _, attr in ipairs(by_lang.cpp) do pkg_lines[#pkg_lines + 1] = '            pkgs.' .. attr end\n"
+    "  for _, attr in ipairs(by_lang.tools or {}) do pkg_lines[#pkg_lines + 1] = '            pkgs.' .. attr end\n"
     "  if #by_lang.python > 0 then\n"
     "    pkg_lines[#pkg_lines + 1] = '            (pkgs.python3.withPackages (ps: with ps; [ ' .. table.concat(by_lang.python, ' ') .. ' ]))'\n"
     "  end\n"
@@ -5168,7 +5233,7 @@ const char *kBuiltinFileTree =
     // package selected. Recipe names stay unsuffixed for a single language and
     // gain a -<lang> suffix when several are active (so `run`/`build` never
     // collide). `default` always lists the recipes.
-    "function mep.new_project_justfile_text(langs)\n"
+    "function mep.new_project_justfile_text(langs, presets)\n"
     "  local active = {}\n"
     "  for _, l in ipairs({'python', 'cpp', 'r', 'java'}) do if langs[l] then active[#active + 1] = l end end\n"
     "  local multi = #active > 1\n"
@@ -5184,6 +5249,11 @@ const char *kBuiltinFileTree =
     "    elseif lang == 'cpp' then emit('cpp', 'build', 'cmake -S . -B build && cmake --build build') emit('cpp', 'run', './build/main')\n"
     "    elseif lang == 'r' then emit('r', 'run', 'Rscript main.R')\n"
     "    elseif lang == 'java' then emit('java', 'build', 'mvn -q package') emit('java', 'run', 'mvn -q exec:java') end\n"
+    "  end\n"
+    "  if presets and presets['r-notebook'] then\n"
+    "    out[#out + 1] = 'knit:'\n"
+    "    out[#out + 1] = \"    Rscript -e 'rmarkdown::render(\\\"analysis.Rmd\\\")'\"\n"
+    "    out[#out + 1] = ''\n"
     "  end\n"
     "  if #active == 0 then out[#out + 1] = 'run:' out[#out + 1] = '    echo \"configure me\"' out[#out + 1] = '' end\n"
     "  return table.concat(out, '\\n')\n"
@@ -5203,17 +5273,30 @@ const char *kBuiltinFileTree =
     "end\n"
     "function mep.new_project_generate(path, rows)\n"
     "  local flake_on, just_on = false, false\n"
-    "  local by_lang = {python = {}, java = {}, r = {}, cpp = {}}\n"
+    "  local by_lang = {python = {}, java = {}, r = {}, cpp = {}, tools = {}}\n"
     "  local langs = {}\n"
     "  local files = {}\n"
+    "  local presets = {}\n"
+    "  local function add(list, attr)\n"
+    "    for _, a in ipairs(list) do if a == attr then return end end\n"
+    "    list[#list + 1] = attr\n"
+    "  end\n"
     "  for _, r in ipairs(rows) do\n"
     "    if r.kind == 'flake' then flake_on = r.enabled\n"
     "    elseif r.kind == 'justfile' then just_on = r.enabled\n"
     "    elseif r.kind == 'file' and r.enabled then files[#files + 1] = r\n"
+    "    elseif r.kind == 'preset' and r.enabled then presets[r.preset.id] = r.preset\n"
     "    elseif r.kind == 'pkg' and r.enabled then\n"
-    "      table.insert(by_lang[r.lang], r.attr)\n"
+    "      add(by_lang[r.lang], r.attr)\n"
     "      langs[r.lang] = true\n"
     "    end\n"
+    "  end\n"
+    // A preset's own extras ride along even if its package rows were
+    // unticked afterwards: they are what makes the notebook run at all.
+    "  for _, pr in pairs(presets) do\n"
+    "    langs[pr.lang] = true\n"
+    "    for _, attr in ipairs(pr.extra or {}) do add(by_lang[pr.lang], attr) end\n"
+    "    for _, attr in ipairs(pr.tools or {}) do add(by_lang.tools, attr) end\n"
     "  end\n"
     "  if flake_on then\n"
     "    local f = io.open(path .. '/flake.nix', 'w')\n"
@@ -5224,15 +5307,29 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  if just_on then\n"
     "    local j = io.open(path .. '/justfile', 'w')\n"
-    "    if j then j:write(mep.new_project_justfile_text(langs)) j:close() end\n"
+    "    if j then j:write(mep.new_project_justfile_text(langs, presets)) j:close() end\n"
     "  end\n"
     "  local name = path:match('([^/]+)/*$') or 'project'\n"
     "  for _, r in ipairs(files) do\n"
     "    local fh = io.open(path .. '/' .. r.fname, 'w')\n"
     "    if fh then fh:write(mep.new_project_base_text(r.ftype, name)) fh:close() end\n"
     "  end\n"
+    // Starter notebooks: never over an existing file of the same name
+    // (\"Create project in this folder\" can target a folder with work in it).
+    "  local starter\n"
+    "  for _, pr in ipairs(mep.new_project_presets) do\n"
+    "    if presets[pr.id] then\n"
+    "      local target = path .. '/' .. pr.file\n"
+    "      if not mep.fs_exists(target) then\n"
+    "        local fh = io.open(target, 'w')\n"
+    "        if fh then fh:write(mep.new_project_preset_text(pr.id, name)) fh:close() end\n"
+    "      end\n"
+    "      starter = starter or target\n"
+    "    end\n"
+    "  end\n"
     "  mep.project_add(path)\n"
     "  mep.project_open(path)\n"
+    "  if starter then mep.open(starter) end\n"
     "  if flake_on then\n"
     "    mep.job_start({'direnv', 'allow'}, {cwd = path, on_exit = function(code)\n"
     "      if code == 0 then mep.notify('direnv: environment ready')\n"
@@ -5257,6 +5354,9 @@ const char *kBuiltinFileTree =
     "  rows[#rows + 1] = {id = 'file-readme-md', kind = 'file', label = 'README.md', fname = 'README.md', ftype = 'readme_md', enabled = false}\n"
     "  rows[#rows + 1] = {id = 'file-readme-org', kind = 'file', label = 'README.org', fname = 'README.org', ftype = 'readme_org', enabled = false}\n"
     "  rows[#rows + 1] = {id = 'file-todo-org', kind = 'file', label = 'TODO.org', fname = 'TODO.org', ftype = 'todo_org', enabled = false}\n"
+    "  for _, pr in ipairs(mep.new_project_presets) do\n"
+    "    rows[#rows + 1] = {id = 'preset-' .. pr.id, kind = 'preset', label = pr.label, preset = pr, enabled = false}\n"
+    "  end\n"
     "  for i, p in ipairs(mep.new_project_packages) do\n"
     "    rows[#rows + 1] = {id = 'pkg-' .. i, kind = 'pkg', label = p.label, lang = p.lang, attr = p.attr, enabled = false}\n"
     "  end\n"
@@ -5292,6 +5392,19 @@ const char *kBuiltinFileTree =
     "    local i, r = index_of(id)\n"
     "    if not r or r.kind == 'create' then return end\n"
     "    r.enabled = not r.enabled\n"
+    // A preset ticks (or unticks) its package rows, and a notebook needs
+    // the flake that carries them, so ticking one turns the flake on too.
+    "    if r.kind == 'preset' then\n"
+    "      for _, row in ipairs(rows) do\n"
+    "        if row.kind == 'pkg' and row.lang == r.preset.lang then\n"
+    "          for _, attr in ipairs(r.preset.pkgs) do\n"
+    "            if row.attr == attr then row.enabled = r.enabled end\n"
+    "          end\n"
+    "        elseif row.kind == 'flake' and r.enabled then\n"
+    "          row.enabled = true\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
     "    highlighted = id\n"
     "    if reopen then show(i) else mep.picker_set_items(build_items()) end\n"
     "  end\n"
@@ -11554,7 +11667,9 @@ const char *kBuiltinSnippets =
     "local function mep_snippet_md_fence_lang(row)\n"
     "  local lang\n"
     "  for i = 1, row - 1 do\n"
-    "    local fence = mep.get_line(i):match('^%s*```+%s*([^%s`]*)')\n"
+    // `{?` and the stop set: a knitr header ```{r label, echo=FALSE} is
+    // language `r`, not `{r` (MdFenceLang's own rule).
+    "    local fence = mep.get_line(i):match('^%s*```+%s*{?([^%s`,{}]*)')\n"
     "    if fence then\n"
     "      if lang then lang = nil else lang = fence end\n"
     "    end\n"
@@ -11576,7 +11691,7 @@ const char *kBuiltinSnippets =
     "    for _, b in ipairs(mep.mepml_code_blocks()) do\n"
     "      if row >= b.first and row <= b.last then lang = b.lang break end\n"
     "    end\n"
-    "  elseif ft == 'md' or ft == 'markdown' or ft == 'mepml' then\n"
+    "  elseif ft == 'md' or ft == 'markdown' or ft == 'Rmd' or ft == 'rmd' or ft == 'mepml' then\n"
     "    lang = mep_snippet_md_fence_lang(row)\n"
     "  elseif ft == 'ipynb' then\n"
     "    local ctx = mep.notebook_lsp_context(row)\n"
@@ -12175,7 +12290,7 @@ const char *kBuiltinStructure =
     "  local items\n"
     "  if ft == 'tex' then\n"
     "    items = mep_structure_tex_items(lines)\n"
-    "  elseif ft == 'md' or ft == 'markdown' then\n"
+    "  elseif ft == 'md' or ft == 'markdown' or ft == 'Rmd' or ft == 'rmd' then\n"
     "    items = mep_structure_md_items(lines)\n"
     "  elseif ft == 'org' then\n"
     "    items = mep_structure_org_items(lines)\n"
@@ -13770,6 +13885,28 @@ const char *kBuiltinSyntax =
     "    end\n"
     "    return\n"
     "  end\n"
+    // R Markdown: the document is Markdown, and each knitr chunk body is
+    // then highlighted in its engine's language over the top (later spans
+    // win), the same per-block treatment mepml and org src blocks get.
+    // Chunks come from mep.rmd_chunks -- the scanner that also decides
+    // what runs -- so what is coloured as R is exactly what R will run.
+    "  if ft:lower() == 'rmd' then\n"
+    "    local bufid = mep.current_buffer()\n"
+    "    mep.ts_highlight(mep_syntax_ns, 'md', table.concat(lines, '\\n'), mep.ts_capture_hl, 0, 'rmd:' .. bufid)\n"
+    "    local nth = {}\n"
+    "    for _, ch in ipairs(mep.rmd_chunks(lines)) do\n"
+    "      local engine = ch.engine:lower()\n"
+    "      local embed_ft = mep_org_babel_lang_ts_ft and mep_org_babel_lang_ts_ft[engine] or engine\n"
+    "      if embed_ft ~= '' and ch.last >= ch.first then\n"
+    "        nth[embed_ft] = (nth[embed_ft] or 0) + 1\n"
+    "        local body = {}\n"
+    "        for k = ch.first, ch.last do body[#body + 1] = lines[k] end\n"
+    "        mep.ts_highlight(mep_syntax_ns, embed_ft, table.concat(body, '\\n'), mep.ts_capture_hl, ch.first - 1,\n"
+    "                         'rmd-block:' .. bufid .. ':' .. embed_ft .. ':' .. nth[embed_ft])\n"
+    "      end\n"
+    "    end\n"
+    "    return\n"
+    "  end\n"
     // Real grammar available: parse + run its highlights.scm query
     // (mep.ts_captures, backed by src/treesitter.cpp) and stop -- this
     // *is* Treesitter syntax highlighting, not a fallback path.
@@ -13870,7 +14007,7 @@ const char *kBuiltinSpell =
     // the current buffer regardless (clears spell_prose_only). A buffer with
     // no extension (READMEs, commit messages, scratch) counts as prose.
     "mep.spell_prose_only = true\n"
-    "local mep_spell_prose = {txt=true,text=true,md=true,markdown=true,mkd=true,\n"
+    "local mep_spell_prose = {txt=true,text=true,md=true,markdown=true,mkd=true,rmd=true,\n"
     "  org=true,tex=true,latex=true,rst=true,adoc=true,asciidoc=true,mepml=true,wiki=true,eml=true}\n"
     "local function mep_spell_active_here()\n"
     "  if not mep.spell_ready() or not mep.spell_enabled() then return false end\n"
@@ -15220,7 +15357,7 @@ const char *kBuiltinMarkdown =
     "  mep.ns_clear(mep_md_conceal_ns)\n"
     "  if not mep.md_conceal_auto then return end\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
-    "  if ft ~= 'md' and ft ~= 'markdown' then return end\n"
+    "  if ft ~= 'md' and ft ~= 'markdown' and ft ~= 'Rmd' and ft ~= 'rmd' then return end\n"
     "  mep.md_conceal_scan(mep_md_conceal_ns)\n"
     "end\n"
     "mep.command('MepMdConceal', mep.md_conceal)\n"
@@ -15229,7 +15366,7 @@ const char *kBuiltinMarkdown =
     // of a document drawn as the document is, from the same default sheet.
     "function mep.markdown_view_toggle_ui()\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
-    "  if ft ~= 'md' and ft ~= 'markdown' then mep.notify('Not a markdown buffer', 'warn') return end\n"
+    "  if ft ~= 'md' and ft ~= 'markdown' and ft ~= 'Rmd' and ft ~= 'rmd' then mep.notify('Not a markdown buffer', 'warn') return end\n"
     "  local view = mep.doc_view_toggle()\n"
     "  mep.notify('Markdown view mode: ' .. (view and 'on (rendered on every line)' or 'off (the cursor line shows its source)'))\n"
     "  mep.md_conceal()\n"
@@ -15243,7 +15380,7 @@ const char *kBuiltinMarkdown =
     "  if not mep.md_conceal_auto then return end\n"
     "  mep.md_conceal()\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
-    "  if ft == 'md' or ft == 'markdown' then mep.org_table_wrap_scan(true) end\n"
+    "  if ft == 'md' or ft == 'markdown' or ft == 'Rmd' or ft == 'rmd' then mep.org_table_wrap_scan(true) end\n"
     "end)\n"
     "local mep_md_conceal_last_row, mep_md_conceal_last_file = nil, nil\n"
     // Frame-polled (same idiom as mep.syntax_auto's own file-switch
@@ -15259,7 +15396,7 @@ const char *kBuiltinMarkdown =
     "    mep_md_conceal_last_file, mep_md_conceal_last_row = fname, row\n"
     "    mep.md_conceal()\n"
     "    local ft = mep_lsp_filetype(fname)\n"
-    "    if ft == 'md' or ft == 'markdown' then mep.org_table_wrap_scan() end\n"
+    "    if ft == 'md' or ft == 'markdown' or ft == 'Rmd' or ft == 'rmd' then mep.org_table_wrap_scan() end\n"
     "  end\n"
     "end)\n";
 
@@ -18609,13 +18746,32 @@ const char *kBuiltinOrgPolyglot =
     "local function mep_polyglot_is_mepml()\n"
     "  return mep_lsp_filetype(mep.filename() or '') == 'mepml'\n"
     "end\n"
+    // ...and R Markdown's knitr chunks (mep.rmd_chunks, the scanner that
+    // also decides what runs), in the same shape: start_row/end_row the
+    // header and closing-fence rows, the engine lowercased to the babel
+    // key (`{R}` and `{r}` are both L.r). knitr options aren't babel
+    // header arguments, so none are passed on.
+    "local function mep_polyglot_is_rmd()\n"
+    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  return ft == 'Rmd' or ft == 'rmd'\n"
+    "end\n"
+    "local function mep_polyglot_rmd_blocks()\n"
+    "  local lines = {}\n"
+    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
+    "  local blocks = {}\n"
+    "  for _, ch in ipairs(mep.rmd_chunks(lines)) do\n"
+    "    blocks[#blocks + 1] = {lang = ch.engine:lower(), start_row = ch.header, end_row = ch.close, args_str = ''}\n"
+    "  end\n"
+    "  return blocks\n"
+    "end\n"
     "local function mep_polyglot_blocks_all()\n"
     "  if mep_polyglot_is_mepml() then return mep_polyglot_mepml_blocks() end\n"
+    "  if mep_polyglot_is_rmd() then return mep_polyglot_rmd_blocks() end\n"
     "  return mep_org_src_blocks_all()\n"
     "end\n"
     "local function mep_polyglot_block_at(row)\n"
-    "  if not mep_polyglot_is_mepml() then return mep_org_src_block_at(row) end\n"
-    "  for _, blk in ipairs(mep_polyglot_mepml_blocks()) do\n"
+    "  if not mep_polyglot_is_mepml() and not mep_polyglot_is_rmd() then return mep_org_src_block_at(row) end\n"
+    "  for _, blk in ipairs(mep_polyglot_blocks_all()) do\n"
     "    if row >= blk.start_row and row <= blk.end_row then return blk end\n"
     "  end\n"
     "  return nil\n"
@@ -18978,7 +19134,7 @@ const char *kBuiltinOrgPolyglot =
     "  end\n"
     "  if not mep.org_polyglot_enabled then return nil end\n"
     "  local doc_ft = mep_lsp_filetype(mep.filename())\n"
-    "  if doc_ft ~= 'org' and doc_ft ~= 'mepml' then return nil end\n"
+    "  if doc_ft ~= 'org' and doc_ft ~= 'mepml' and doc_ft ~= 'Rmd' and doc_ft ~= 'rmd' then return nil end\n"
     "  local blk = mep_polyglot_block_at(row)\n"
     "  if not blk or not blk.lang or blk.lang == '' then return nil end\n"
     "  local lang_def = mep.org_babel_langs[blk.lang]\n"
@@ -19071,7 +19227,8 @@ const char *kBuiltinOrgPolyglot =
     "function mep_polyglot_resync()\n"
     "  local org_file = mep.filename()\n"
     "  local notebook = mep_lsp_filetype(org_file) == 'ipynb'\n"
-    "  if not notebook and mep_lsp_filetype(org_file) ~= 'org' and mep_lsp_filetype(org_file) ~= 'mepml' then return end\n"
+    "  local resync_ft = mep_lsp_filetype(org_file)\n"
+    "  if not notebook and resync_ft ~= 'org' and resync_ft ~= 'mepml' and resync_ft ~= 'Rmd' and resync_ft ~= 'rmd' then return end\n"
     "  local org_abspath = mep_lsp_abspath(org_file)\n"
     "  for _, key in ipairs(mep_polyglot_shadows_by_file[org_abspath] or {}) do\n"
     "    local shadow = mep_polyglot_shadows[key]\n"
@@ -33176,7 +33333,11 @@ const char *kBuiltinNotebook =
     "mep.on_frame(mep_nb_apply_python)\n"
     "mep.opt.notebook_kernels = mep.opt.notebook_kernels or {\n"
     "  {name='python3', display_name='Python 3', language='py', mode='python'},\n"
-    "  {name='ir', display_name='R', language='r', mode='script', command={'R', '--slave', '--no-save'}},\n"
+    // `ir` is one persistent R session (NotebookRKernelScript: state and
+    // inline plots); `ir-script` the old stateless runner, a fresh R per
+    // cell, for code that must not see an earlier cell's state.
+    "  {name='ir', display_name='R', language='r', mode='r', command={'Rscript'}},\n"
+    "  {name='ir-script', display_name='R (fresh process per cell)', language='r', mode='script', command={'R', '--slave', '--no-save'}},\n"
     "  {name='javascript', display_name='JavaScript', language='js', mode='script', command={'node'}},\n"
     "  {name='ruby', display_name='Ruby', language='', mode='script', command={'ruby'}},\n"
     "  {name='bash', display_name='Bash', language='', mode='script', command={'bash'}},\n"
@@ -33205,19 +33366,22 @@ const char *kBuiltinNotebook =
     "local function mep_nb_guard(fn, quiet)\n"
     "  return function(...)\n"
     "    if not mep.notebook_is_buffer() then\n"
-    "      if not quiet then mep.notify('Not a Jupyter notebook buffer (.ipynb)', 'warn') end\n"
+    "      if not quiet then mep.notify('Not a notebook buffer (.ipynb or .Rmd)', 'warn') end\n"
     "      return\n"
     "    end\n"
     "    mep_nb_apply_python()\n"
     "    return fn(...)\n"
     "  end\n"
     "end\n"
+    // In an .Rmd, ]j / [j step chunk to chunk, skipping the prose between.
     "local function mep_nb_step(delta)\n"
     "  local i = mep.notebook_cell_index()\n"
     "  local n = mep.notebook_cell_count()\n"
     "  if n == 0 then return end\n"
     "  if i < 0 then i = delta > 0 and -1 or n end\n"
+    "  local rmd = mep.notebook_format() == 'rmd'\n"
     "  local target = i + delta\n"
+    "  while rmd and target >= 0 and target < n and mep.notebook_cell_type(target) ~= 'code' do target = target + delta end\n"
     "  if target < 0 or target >= n then mep.notify(delta > 0 and 'Last cell' or 'First cell') return end\n"
     "  mep.notebook_goto_cell(target)\n"
     "end\n"
@@ -49309,20 +49473,27 @@ void DrawNotebookToolbar(const Pane &pane, float x, float ty, float w, float th)
         const char *color;
         std::function<void()> action;
     };
-    const std::vector<TbBtn> btns = {
-        {"+ Code", "Green", [pane_id] {
-             g_editor.FocusPaneById(pane_id);
-             g_editor.NotebookInsertCell(-1, /*below=*/true, NotebookCellType::Code);
-         }},
-        {"+ Markdown", "Purple", [pane_id] {
-             g_editor.FocusPaneById(pane_id);
-             g_editor.NotebookInsertCell(-1, /*below=*/true, NotebookCellType::Markdown);
-         }},
+    // An .Rmd's cells are its chunks (prose is just text), so its toolbar
+    // offers "+ Chunk" where a notebook has "+ Code" / "+ Markdown".
+    const bool rmd = g_editor.IsRmdNotebook(buffer_id);
+    std::vector<TbBtn> btns;
+    btns.push_back({rmd ? "+ Chunk" : "+ Code", "Green", [pane_id] {
+                        g_editor.FocusPaneById(pane_id);
+                        g_editor.NotebookInsertCell(-1, /*below=*/true, NotebookCellType::Code);
+                    }});
+    if (!rmd) {
+        btns.push_back({"+ Markdown", "Purple", [pane_id] {
+                            g_editor.FocusPaneById(pane_id);
+                            g_editor.NotebookInsertCell(-1, /*below=*/true, NotebookCellType::Markdown);
+                        }});
+    }
+    const std::vector<TbBtn> rest = {
         {"Run All", "Cyan", [buffer_id] { g_editor.NotebookRunAll(buffer_id); }},
         {"Interrupt", "Yellow", [buffer_id] { g_editor.NotebookInterrupt(buffer_id); }},
         {"Restart", "Red", [buffer_id] { g_editor.NotebookRestartKernel(buffer_id); }},
         {"Clear", "Comment", [buffer_id] { g_editor.NotebookClearOutputs(buffer_id, -1); }},
     };
+    btns.insert(btns.end(), rest.begin(), rest.end());
     float bx = x + 6.0f;
     for (const TbBtn &b : btns) {
         const float bw = MeasureUiText(b.label, font_size) + 14.0f;
@@ -54402,11 +54573,17 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         };
         const int nb_cursor_cell = is_active ? NotebookSpanAtRow(nb_sess->spans, pane.cursor.row) : -1;
         const int nspans = static_cast<int>(nb_sess->spans.size());
+        const bool nb_rmd = nb_sess->format == NotebookFormat::Rmd;
         for (int i = 0; i < nspans; i++) {
             const NotebookCellSpan &sp = nb_sess->spans[static_cast<size_t>(i)];
+            // An .Rmd is a document with chunks in it, not a stack of
+            // cells: only the chunks get a card, the prose reads as prose.
+            if (nb_rmd && sp.type != NotebookCellType::Code) continue;
             const int mrow = sp.marker_row >= 0 ? sp.marker_row : sp.first_row;
             int next_mrow = nb_rows;
-            if (i + 1 < nspans) {
+            if (nb_rmd) {
+                next_mrow = NotebookSpanLastRow(sp) + 1;   // through the closing fence and its outputs
+            } else if (i + 1 < nspans) {
                 const NotebookCellSpan &nx = nb_sess->spans[static_cast<size_t>(i + 1)];
                 next_mrow = nx.marker_row >= 0 ? nx.marker_row : nx.first_row;
             }
@@ -54414,7 +54591,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // End the card short of the next marker so the blank separator
             // line between cells becomes a visible gutter between cards,
             // rather than the cards butting together into one striped slab.
-            float bottom = nb_screen_top(next_mrow) - (static_cast<float>(line_height) * 0.5f + 4.0f);
+            // (An .Rmd card ends exactly where its chunk does.)
+            float bottom = nb_rmd ? nb_screen_top(next_mrow) - 2.0f
+                                  : nb_screen_top(next_mrow) - (static_cast<float>(line_height) * 0.5f + 4.0f);
             if (bottom < top + static_cast<float>(line_height)) bottom = top + static_cast<float>(line_height);
             if (bottom < content_y || top > content_y + content_h) continue;   // fully off-screen
             // Left edge sits just right of the line-number gutter (keyed off
@@ -55906,7 +56085,9 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             gfx::DrawTriangle(gfx::Vector2{tx + 3.5f, ty - 2.0f}, gfx::Vector2{tx - 3.5f, ty - 2.0f},
                                               gfx::Vector2{tx, ty + 2.5f}, chip_fg);
                         }
-                        if (is_active) {
+                        // An .Rmd chunk's engine is its kernel: the chip
+                        // reports it but opens no menu.
+                        if (is_active && nb_sess->format != NotebookFormat::Rmd) {
                             const int chip_buffer = pane.buffer_id, chip_cell = nb_cell_idx;
                             const gfx::Rectangle anchor_rect = chip_rect;
                             // DrawPane registered its pane-wide focus region

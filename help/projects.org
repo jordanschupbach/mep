@@ -50,6 +50,20 @@ tick, .envrc, justfile, README, TODO; also =:MepNewProject=) and
 "new" is =C-t= and "by path" is =C-f=.) =:MepProjectAdd= adds the current
 directory without opening the picker at all.
 
+The wizard's options page has two notebook presets. Each one ticks a
+working set of packages (you can still untick them one by one), turns the
+flake on, writes a starter notebook and opens it:
+
+| Preset                | Packages                                                  | Starter          |
+|-----------------------+-----------------------------------------------------------+------------------|
+| /Python notebook/     | ipython, matplotlib, numpy, pandas                        | =analysis.ipynb= |
+| /R Markdown notebook/ | ggplot2, plus jsonlite, rmarkdown, knitr and pandoc       | =analysis.Rmd=   |
+
+The R preset's extra packages are the ones the [[file:notebooks.html][R notebook kernel]] and knitting
+need, so they are added even if you untick ggplot2. With the justfile on, it
+also gets a =knit= recipe. An existing file of the same name is never
+overwritten.
+
 =C-f= (also =:MepProjectAddPath=) opens a picker whose
 prompt is the path itself, starting at the current directory. As you type it
 lists the matching subfolders; =Tab= completes like a shell (the highlighted

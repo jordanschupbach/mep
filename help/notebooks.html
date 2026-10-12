@@ -61,8 +61,11 @@ commands too.</p>
 <p>Each code cell picks its own kernel, from the dropdown at its top right (or
 <code>&lt;leader&gt;jK</code>). Out of the box the list offers Python 3 plus whichever of R,
 JavaScript (Node), Ruby and Bash are on <code>$PATH</code>.</p>
-<p>Python 3 is one <b>persistent</b> process, so state and inline figures carry
-across cells. The others are stateless "script" kernels: each run is a fresh
+<p>Python 3 and R are each one <b>persistent</b> process, so state and inline
+figures carry across cells: R sends back every page a cell draws (base
+graphics or an auto-printed <code>ggplot</code>) as an inline PNG. R needs the <code>jsonlite</code>
+package, which anything that can knit an <code>.Rmd</code> already has. The others are
+stateless "script" kernels: each run is a fresh
 process fed the cell's code on stdin.</p>
 <p>A cell with no explicit choice follows the notebook default, and a new cell
 inherits the previous cell's kernel -- so a block of cells keeps running on
@@ -73,20 +76,55 @@ execute one at a time in order, so a mixed "run all" still goes top to
 bottom.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.notebook_kernels = {
   {name=<span class="tok-green">'python3'</span>, display_name=<span class="tok-green">'Python 3'</span>, language=<span class="tok-green">'py'</span>, mode=<span class="tok-green">'python'</span>},
-  <span class="tok-blue">{</span>name=<span class="tok-green">'ir'</span>, display_name=<span class="tok-green">'R'</span>, language=<span class="tok-green">'r'</span>, mode=<span class="tok-green">'script'</span>,
-   command={<span class="tok-green">'R'</span>, <span class="tok-green">'--slave'</span>, <span class="tok-green">'--no-save'</span>}<span class="tok-blue">}</span>,
+  <span class="tok-blue">{</span>name=<span class="tok-green">'ir'</span>, display_name=<span class="tok-green">'R'</span>, language=<span class="tok-green">'r'</span>, mode=<span class="tok-green">'r'</span>, command=<span class="tok-blue">{</span><span class="tok-green">'Rscript'</span>}},
   <span class="tok-blue">{</span>name=<span class="tok-green">'deno'</span>, display_name=<span class="tok-green">'Deno'</span>, language=<span class="tok-green">'js'</span>, mode=<span class="tok-green">'script'</span>,
    command=<span class="tok-blue">{</span><span class="tok-green">'deno'</span>, <span class="tok-green">'run'</span>, <span class="tok-green">'-'</span>}},
 }</code></pre></div>
 <p><code>mode</code> is one of:</p>
 <table>
 <tr><th>Mode</th><th>Means</th></tr>
-<tr><td><code>python</code></td><td>the built-in persistent kernel; no <code>command</code></td></tr>
+<tr><td><code>python</code></td><td>the built-in persistent Python kernel; no <code>command</code></td></tr>
+<tr><td><code>r</code></td><td>the built-in persistent R kernel; <code>command</code> is the <code>Rscript</code> to use</td></tr>
 <tr><td><code>protocol</code></td><td>your own long-lived process speaking mep's JSON-line kernel protocol</td></tr>
 <tr><td><code>script</code></td><td>a fresh process per run, code on stdin</td></tr>
 </table>
 <p><code>language</code> is the Treesitter filetype the cell body is highlighted with.</p>
+<p>The old stateless R runner is still in the list as /R (fresh process per
+cell)/ (<code>ir-script</code>), for code that must not see an earlier cell's state.</p>
 <p><code>examples/notebook_example.ipynb</code> is a ready-made notebook to try.</p>
+<h1>R Markdown (<code>.Rmd</code>)</h1>
+<p>An <code>.Rmd</code> opens as a notebook too, but it stays exactly the file it is: the
+buffer is the document's own text, and <code>:w</code> writes it back as-is. Its cells
+are its knitr chunks -- <code>```{r}</code> ... <code>```</code> -- and everything between them is
+prose. A plain <code>```r</code> fence is code being <i>shown</i>, not a chunk, and never runs
+(knitr would not run it either).</p>
+<p>Each chunk is drawn as a card with <code>In [n]:</code>, its engine and a <code>Run</code> chip on
+the header line, which stays editable text. What a chunk prints, and any
+plots it draws, appear under its closing fence. Every R chunk runs in one
+persistent R session (the kernel above), so a chunk sees what the chunks
+before it defined. A <code>```{python}</code> chunk runs on the Python kernel, in its
+own session.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Shift+Enter</code></td><td>inside a chunk: run it (Normal or Insert mode)</td></tr>
+<tr><td><code>Ctrl-C Ctrl-C</code></td><td>inside a chunk: run it</td></tr>
+<tr><td><code>]j</code> <code>[j</code></td><td>next / previous chunk</td></tr>
+<tr><td><code>&lt;leader&gt;jA</code></td><td>run every chunk, top to bottom</td></tr>
+<tr><td><code>&lt;leader&gt;jb</code></td><td>insert a new chunk below</td></tr>
+</table>
+<p>Outside a chunk those keys do what they do in any text file, and plain
+<code>Enter</code> never runs anything. A chunk with <code>eval=FALSE</code> is skipped, as knitr
+skips it. The engine in the header picks the kernel, so the kernel dropdown
+only reports it.</p>
+<p>Outputs never go into the document -- knitr decides what a rendered report
+shows. They are kept in a cache in mep's data directory instead
+(<code>notebook-cache/</code>), so reopening the file brings them back. A chunk edited
+while the file was closed comes back without its now-stale output.</p>
+<p>The Run button (top right) still knits the whole document with
+<code>rmarkdown::render</code> and shows the result. The R language server works inside
+R chunks (hover, completion, diagnostics, go to definition), across all the
+chunks of the document at once, and markdown highlighting, headings and
+spell checking apply to the prose (never to the code).</p>
 <h1>See also</h1>
 <ul>
 <li><a href="repl.html">REPL and send-to-terminal</a> -- lighter, for a plain script.</li>

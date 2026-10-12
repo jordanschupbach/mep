@@ -2123,6 +2123,19 @@ const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
         for (int row = 0; row < n; row++) {
             std::string fence, info;
             if (!MdFenceOpenLine(buf.lines[static_cast<size_t>(row)], &fence, &info)) continue;
+            // In an .Rmd notebook a knitr chunk is drawn as a notebook
+            // cell card (header left as editable text, In[n]/Run on it),
+            // so it gets no fence card -- whose title bar would cover the
+            // ```{r} line. Plain ``` fences in the prose keep theirs.
+            if (IsRmdNotebook(buffer_id) && ParseRmdChunkHeader(buf.lines[static_cast<size_t>(row)], nullptr, nullptr)) {
+                for (int r = row + 1; r < n; r++) {
+                    if (MdFenceCloseLine(buf.lines[static_cast<size_t>(r)], fence)) {
+                        row = r;
+                        break;
+                    }
+                }
+                continue;
+            }
             OrgBlockCard card;
             card.begin_row = row;
             card.meta_row = row;
@@ -6534,8 +6547,63 @@ std::vector<SpellTok> TokenizeSpellWords(const std::string &line, int a, int b) 
 // Replaces each misspelled word whose start is in [a, b) on `row` with its top
 // suggestion, right-to-left so earlier columns stay valid. Assumes the caller
 // already pushed one undo entry. Returns how many words were changed.
+namespace {
+// A Markdown document's literal spans: every row of a fenced code block,
+// its fences included (an .Rmd's knitr chunks are these), and each inline
+// `code` span. The same "identifiers are not words" rule OrgLiteralSpans
+// applies to org, so the spell checker leaves code alone.
+std::vector<OrgLiteralSpan> MarkdownLiteralSpans(const std::vector<std::string> &lines) {
+    std::vector<OrgLiteralSpan> out;
+    const int n = static_cast<int>(lines.size());
+    auto whole_row = [&](int r) {
+        out.push_back({r + 1, 1, static_cast<int>(lines[static_cast<size_t>(r)].size()) + 1});
+    };
+    for (int r = 0; r < n; r++) {
+        const std::string &line = lines[static_cast<size_t>(r)];
+        std::string fence, info;
+        if (MdFenceOpenLine(line, &fence, &info)) {
+            whole_row(r);
+            int e = r + 1;
+            while (e < n && !MdFenceCloseLine(lines[static_cast<size_t>(e)], fence)) whole_row(e++);
+            if (e < n) whole_row(e);
+            r = e;
+            continue;
+        }
+        // Inline code: a run of N backticks to the next run of exactly N.
+        for (size_t i = 0; i < line.size();) {
+            if (line[i] != '`') {
+                i++;
+                continue;
+            }
+            size_t run = 0;
+            while (i + run < line.size() && line[i + run] == '`') run++;
+            size_t j = i + run;
+            size_t close = std::string::npos;
+            while (j < line.size()) {
+                if (line[j] != '`') {
+                    j++;
+                    continue;
+                }
+                size_t k = 0;
+                while (j + k < line.size() && line[j + k] == '`') k++;
+                if (k == run) {
+                    close = j;
+                    break;
+                }
+                j += k;
+            }
+            if (close == std::string::npos) break;
+            out.push_back({r + 1, static_cast<int>(i) + 1, static_cast<int>(close + run) + 1});
+            i = close + run;
+        }
+    }
+    return out;
+}
+}  // namespace
+
 std::vector<OrgLiteralSpan> Editor::BufferLiteralSpans() const {
     if (IsMepmlBuffer()) return MepmlLiteralSpans();
+    if (IsMarkdownFiletype(LspFiletype(Buf().filename))) return MarkdownLiteralSpans(Buf().lines);
     if (!IsOrgBuffer()) return {};
     return OrgLiteralSpans(Buf().lines);
 }
@@ -22970,7 +23038,10 @@ bool Editor::HandleMod1Shortcuts() {
         // A notebook buffer claims mod1+Enter for "run cell and insert a
         // new one below" (Jupyter's Alt+Enter) ahead of the default
         // terminal-send binding, which has no terminal to target here.
-        if (IsNotebookBuffer(CurPane().buffer_id) && (mode_ == Mode::Normal || mode_ == Mode::Insert)) {
+        // (.ipynb only: an .Rmd is prose first, and runs a chunk only on
+        // Shift+Enter / C-c C-c with the cursor inside it.)
+        if (IsNotebookBuffer(CurPane().buffer_id) && !IsRmdNotebook(CurPane().buffer_id) &&
+            (mode_ == Mode::Normal || mode_ == Mode::Insert)) {
             if (mode_ == Mode::Insert) ProcessInsertKey(kReplayEscape);
             NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/true);
             while (gfx::GetCharPressed() > 0) {
@@ -23244,7 +23315,12 @@ void Editor::HandleNormalInput() {
             // Jupyter notebook buffer -- Emacs' own C-c C-c in both
             // org-mode and EIN. HandleInsertInput honors the same chord
             // for notebooks so it works mid-typing too.
-            if (IsNotebookBuffer(CurPane().buffer_id)) {
+            // An .Rmd runs the chunk around the cursor; outside one the
+            // chord keeps its ordinary (org-babel) meaning.
+            const int rmd_chunk = IsRmdNotebook(CurPane().buffer_id) ? NotebookRmdChunkAtCursor() : -1;
+            if (rmd_chunk >= 0) {
+                NotebookRunCell(CurPane().buffer_id, rmd_chunk);
+            } else if (IsNotebookBuffer(CurPane().buffer_id) && !IsRmdNotebook(CurPane().buffer_id)) {
                 NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/false);
             } else {
                 TryRunOrgBabelAtCursor();
@@ -23345,8 +23421,17 @@ void Editor::HandleNormalInput() {
     if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) &&
         IsNotebookBuffer(CurPane().buffer_id)) {
         bool shift_held = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
-        NotebookRunCellAtCursor(/*advance=*/shift_held, /*insert_below=*/false);
-        return;
+        if (!IsRmdNotebook(CurPane().buffer_id)) {
+            NotebookRunCellAtCursor(/*advance=*/shift_held, /*insert_below=*/false);
+            return;
+        }
+        // .Rmd: only Shift+Enter, and only inside a chunk, runs (in place);
+        // plain Enter keeps whatever it does in any other text buffer.
+        const int rmd_chunk = shift_held ? NotebookRmdChunkAtCursor() : -1;
+        if (rmd_chunk >= 0) {
+            NotebookRunCell(CurPane().buffer_id, rmd_chunk);
+            return;
+        }
     }
 
     // Bare h/j/k/l: confirmed sustained holds move via a per-frame
@@ -25032,7 +25117,11 @@ void Editor::HandleInsertInput() {
     if (ctrl_c && IsNotebookBuffer(CurPane().buffer_id)) {
         if (pending_ctrl_c_ && (now_ - pending_ctrl_c_time_) < kCtrlCChordTimeoutSec) {
             pending_ctrl_c_ = false;
-            NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/false);
+            if (!IsRmdNotebook(CurPane().buffer_id)) {
+                NotebookRunCellAtCursor(/*advance=*/false, /*insert_below=*/false);
+            } else if (int chunk = NotebookRmdChunkAtCursor(); chunk >= 0) {
+                NotebookRunCell(CurPane().buffer_id, chunk);
+            }
             return;
         }
         pending_ctrl_c_ = true;
@@ -25195,10 +25284,18 @@ void Editor::HandleInsertInput() {
     // Notebook buffer: Shift+Enter runs the cell and steps to the next one
     // in Normal mode (Jupyter's edit-mode Shift+Enter), Ctrl+Enter runs it
     // in place and keeps typing. Plain Enter stays a newline.
-    if (enter && (shift_down || ctrl) && IsNotebookBuffer(CurPane().buffer_id)) {
+    if (enter && (shift_down || ctrl) && IsNotebookBuffer(CurPane().buffer_id) && !IsRmdNotebook(CurPane().buffer_id)) {
         if (shift_down) ProcessInsertKey(kReplayEscape);
         NotebookRunCellAtCursor(/*advance=*/shift_down, /*insert_below=*/false);
         return;
+    }
+    // .Rmd: Shift+Enter inside a chunk runs it and keeps typing (no
+    // advance, no mode change); anywhere else it is an ordinary newline.
+    if (enter && shift_down && IsRmdNotebook(CurPane().buffer_id)) {
+        if (int chunk = NotebookRmdChunkAtCursor(); chunk >= 0) {
+            NotebookRunCell(CurPane().buffer_id, chunk);
+            return;
+        }
     }
     if (enter || gfx::IsKeyPressedRepeat(gfx::Key::Enter)) ProcessInsertKey(kReplayEnter);
     if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) ProcessInsertKey(kReplayBackspace);
@@ -33888,7 +33985,8 @@ bool Editor::BufferTextIsFileBytes(int buffer_id) const {
     // and `:w` writes it back, so diffing it is meaningful), but its lines
     // are the percent-format cell sources while the file is nbformat JSON --
     // re-reading the file as text would replace the cells with raw JSON.
-    if (IsNotebookBuffer(buffer_id)) return false;
+    // (An .Rmd notebook's lines ARE its file, so it reloads like any text.)
+    if (IsNotebookBuffer(buffer_id) && !IsRmdNotebook(buffer_id)) return false;
     // Same shape: a deck's lines are not its .pptx/.odp bytes.
     if (IsPresBuffer(buffer_id)) return false;
     // A generated view of a deck's current slide, which `:w` already refuses.
@@ -37958,7 +38056,11 @@ bool Editor::WriteBufferToPath(Buffer &buf, const std::string &path) {
         return true;
 #endif
     }
-    if (IsNotebookBuffer(buffer_id)) {
+    // An .Rmd notebook's buffer is the file itself: it falls through to
+    // the ordinary text write below, and only its output cache (never the
+    // document) is written here.
+    if (IsRmdNotebook(buffer_id)) NotebookWriteOutputCache(buffer_id);
+    if (IsNotebookBuffer(buffer_id) && !IsRmdNotebook(buffer_id)) {
         // The buffer's lines are cell sources in percent format, not the
         // file's bytes -- SaveNotebook re-serializes text + stored outputs
         // as nbformat JSON (see notebook_doc.h).
@@ -38560,6 +38662,9 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
     CurPane().scroll_row = 0;
     status_message_ = existed ? "\"" + path + "\" " + std::to_string(buffers_[static_cast<size_t>(id)].LineCount()) + "L loaded"
                                : "\"" + path + "\" [New]";
+    // An .Rmd is ordinary text with a notebook session on top (chunks run
+    // in place; see notebook_doc.h). `:e` (force_text) skips the session.
+    if (IsRmdPath(path) && !force_text) OpenRmdSession(id);
     SyncModeToActivePaneBuffer();
 }
 
@@ -38744,9 +38849,41 @@ NotebookSession *Editor::GetNotebookMutable(int buffer_id) {
 void Editor::NotebookSyncFromText(NotebookSession &sess) {
     if (sess.buffer_id < 0 || sess.buffer_id >= static_cast<int>(buffers_.size())) return;
     const Buffer &buf = buffers_[static_cast<size_t>(sess.buffer_id)];
-    sess.spans = ScanNotebookCells(buf.lines);
+    sess.spans = NotebookScan(sess);
     SyncNotebookFromLines(&sess.doc, buf.lines, sess.spans, &sess.next_uid);
+    NotebookApplyRmdKernels(sess);
     NotebookRebuildSlotCache(sess);
+}
+
+std::vector<NotebookCellSpan> Editor::NotebookScan(const NotebookSession &sess) const {
+    if (sess.buffer_id < 0 || sess.buffer_id >= static_cast<int>(buffers_.size())) return {};
+    const Buffer &buf = buffers_[static_cast<size_t>(sess.buffer_id)];
+    return sess.format == NotebookFormat::Rmd ? ScanRmdChunks(buf.lines) : ScanNotebookCells(buf.lines);
+}
+
+void Editor::NotebookApplyRmdKernels(NotebookSession &sess) {
+    if (sess.format != NotebookFormat::Rmd) return;
+    // A chunk's engine picks its kernel: the first registered one whose
+    // language is that engine (`r` -> ir, `python` -> python3, `bash` ->
+    // bash). An engine with none keeps its own name, which running then
+    // reports as "no kernel named ...". Re-derived on every sync, so the
+    // header is the only way to choose -- as in knitr itself.
+    size_t n = std::min(sess.spans.size(), sess.doc.cells.size());
+    for (size_t i = 0; i < n; i++) {
+        if (sess.spans[i].type != NotebookCellType::Code) continue;
+        std::string engine = sess.spans[i].engine;
+        for (char &c : engine) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        std::string kernel = engine;
+        for (const NotebookKernelSpec &spec : notebook_kernels_) {
+            std::string lang = NotebookKernelLanguageName(spec);
+            for (char &c : lang) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (lang == engine) {
+                kernel = spec.name;
+                break;
+            }
+        }
+        if (NotebookCellKernel(sess.doc.cells[i]) != kernel) ::NotebookSetCellKernel(&sess.doc.cells[i], kernel);
+    }
 }
 
 void Editor::NotebookRebuildSlotCache(NotebookSession &sess) {
@@ -38758,6 +38895,12 @@ void Editor::NotebookRebuildSlotCache(NotebookSession &sess) {
         int slots = NotebookCellOutputSlots(sess.doc.cells[i], RenderCharAspect());
         if (slots <= 0) continue;
         const NotebookCellSpan &span = sess.spans[i];
+        // An .Rmd chunk's block hangs under its closing fence, so the
+        // chunk reads as code, fence, then what it printed.
+        if (span.close_row >= 0) {
+            if (span.close_row < buf.LineCount()) sess.trailing_slots[span.close_row] += slots;
+            continue;
+        }
         // The block hangs under the cell's last non-blank body row, so the
         // blank separator line NotebookToLines writes between cells stays
         // *below* the outputs rather than wedged between code and output.
@@ -38776,7 +38919,7 @@ const NotebookSession *Editor::NotebookRefresh(int buffer_id) {
     NotebookSession *sess = GetNotebookMutable(buffer_id);
     if (!sess) return nullptr;
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-    sess->spans = ScanNotebookCells(buf.lines);
+    sess->spans = NotebookScan(*sess);
     if (sess->spans.size() != sess->doc.cells.size()) {
         SyncNotebookFromLines(&sess->doc, buf.lines, sess->spans, &sess->next_uid);
     } else {
@@ -38795,6 +38938,7 @@ const NotebookSession *Editor::NotebookRefresh(int buffer_id) {
             }
         }
     }
+    NotebookApplyRmdKernels(*sess);
     NotebookRebuildSlotCache(*sess);
     return sess;
 }
@@ -38851,6 +38995,94 @@ void Editor::OpenNotebookInPlace(const std::string &path, const std::string &jso
     pending_g_ = false;
     const NotebookSession &sess = notebooks_[buffer_id];
     status_message_ = "\"" + path + "\" " + std::to_string(sess.doc.cells.size()) + " cells loaded";
+}
+
+bool Editor::IsRmdNotebook(int buffer_id) const {
+    auto it = notebooks_.find(buffer_id);
+    return it != notebooks_.end() && it->second.format == NotebookFormat::Rmd;
+}
+
+void Editor::OpenRmdSession(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size()) || notebooks_.count(buffer_id)) return;
+    NotebookSession sess;
+    sess.buffer_id = buffer_id;
+    sess.format = NotebookFormat::Rmd;
+    sess.doc.metadata = Json::Object();
+    notebooks_[buffer_id] = std::move(sess);
+    NotebookSession &live = notebooks_[buffer_id];
+    NotebookSyncFromText(live);
+#if !defined(__EMSCRIPTEN__)
+    const std::string cache = NotebookOutputCachePath(buffer_id);
+    if (!cache.empty()) {
+        std::ifstream in(cache, std::ios::binary);
+        if (in) {
+            std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (ApplyNotebookOutputCache(&live.doc, text) > 0) {
+                // In[N] carries on after the highest restored count, so a
+                // fresh run never repeats a number already on screen.
+                for (const NotebookCell &c : live.doc.cells) {
+                    live.next_execution_count = std::max(live.next_execution_count, c.execution_count + 1);
+                }
+            }
+        }
+    }
+#endif
+    NotebookRebuildSlotCache(live);
+}
+
+std::string Editor::NotebookOutputCachePath(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return "";
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.filename.empty()) return "";
+    const std::string data = MepDataDir();
+    if (data.empty()) return "";
+    // Keyed by the document's absolute path: outputs follow the file, not
+    // whichever project or cwd it was opened from.
+    std::string full = ResolveBufferPath(buf, buf.filename);
+    std::error_code ec;
+    std::filesystem::path abs = std::filesystem::weakly_canonical(full, ec);
+    if (!ec) full = abs.string();
+    return data + "/notebook-cache/" + NotebookContentKey(full) + ".json";
+}
+
+void Editor::NotebookWriteOutputCache(int buffer_id) {
+#if defined(__EMSCRIPTEN__)
+    (void)buffer_id;
+#else
+    NotebookSession *sess = GetNotebookMutable(buffer_id);
+    if (!sess || sess->format != NotebookFormat::Rmd) return;
+    const std::string path = NotebookOutputCachePath(buffer_id);
+    if (path.empty()) return;
+    NotebookSyncFromText(*sess);
+    bool any = false;
+    for (const NotebookCell &c : sess->doc.cells) any = any || !c.outputs.empty() || c.execution_count >= 0;
+    std::error_code ec;
+    if (!any) {
+        std::filesystem::remove(path, ec);
+        return;
+    }
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    // Written beside and renamed over, so a crash mid-write can't leave a
+    // half file that silently drops every cached output next time.
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return;
+        out << SerializeNotebookOutputCache(sess->doc, sess->spans);
+        if (!out) return;
+    }
+    std::filesystem::rename(tmp, path, ec);
+#endif
+}
+
+int Editor::NotebookRmdChunkAtCursor() {
+    const int buffer_id = CurPane().buffer_id;
+    if (!IsRmdNotebook(buffer_id)) return -1;
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return -1;
+    int idx = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+    if (idx < 0 || sess->spans[static_cast<size_t>(idx)].type != NotebookCellType::Code) return -1;
+    return idx;
 }
 
 bool Editor::SaveNotebook(int buffer_id, const std::string &io_path, std::string *error) {
@@ -38929,6 +39161,9 @@ NotebookSession::KernelProc *Editor::NotebookEnsureKernel(NotebookSession &sess,
         // keeps steering the default interpreter.
         std::string interpreter = spec->command.empty() ? notebook_python_ : spec->command.front();
         argv = {interpreter, "-u", "-c", NotebookKernelScript()};
+    } else if (spec->mode == NotebookKernelSpec::Mode::R) {
+        std::string interpreter = spec->command.empty() ? std::string("Rscript") : spec->command.front();
+        argv = {interpreter, "--no-save", "--no-restore", "-e", NotebookRKernelScript()};
     } else {
         argv = spec->command;   // Protocol: a user driver speaking the JSON-line protocol
     }
@@ -39077,6 +39312,11 @@ void Editor::NotebookFinishRunning(NotebookSession &sess, NotebookCell &cell) {
     sess.running_request_id = 0;
     sess.running_job = 0;
     NotebookPumpQueue(sess);
+    // An .Rmd's outputs live only in its cache: write it once a run (or a
+    // Run All) has drained, rather than after every cell of it.
+    if (sess.format == NotebookFormat::Rmd && sess.running_uid == 0 && sess.run_queue.empty()) {
+        NotebookWriteOutputCache(sess.buffer_id);
+    }
 }
 
 void Editor::NotebookHandleKernelLine(int buffer_id, const std::string &kernel_name, int generation, const std::string &line) {
@@ -39218,6 +39458,12 @@ bool Editor::NotebookRunCell(int buffer_id, int cell_index) {
     NotebookCell &cell = sess->doc.cells[static_cast<size_t>(cell_index)];
     if (cell.type != NotebookCellType::Code) return false;
     if (cell.run_state != NotebookCell::RunState::Idle) return true;
+    if (sess->format == NotebookFormat::Rmd && cell_index < static_cast<int>(sess->spans.size()) &&
+        !sess->spans[static_cast<size_t>(cell_index)].eval) {
+        // knitr would skip it too; say so rather than silently not running.
+        status_message_ = "Notebook: chunk has eval=FALSE, not run";
+        return false;
+    }
     cell.outputs.clear();
     cell.execution_count = -1;
     cell.run_state = NotebookCell::RunState::Queued;
@@ -39327,6 +39573,11 @@ void Editor::NotebookClearOutputs(int buffer_id, int cell_index) {
         clear(sess->doc.cells[static_cast<size_t>(cell_index)]);
     }
     NotebookRebuildSlotCache(*sess);
+    if (sess->format == NotebookFormat::Rmd) {
+        // Outputs aren't part of an .Rmd: the text is untouched, only the cache changes.
+        NotebookWriteOutputCache(buffer_id);
+        return;
+    }
     // Cleared outputs are a document change the file doesn't have yet.
     buffers_[static_cast<size_t>(buffer_id)].modified = true;
 }
@@ -39334,6 +39585,7 @@ void Editor::NotebookClearOutputs(int buffer_id, int cell_index) {
 void Editor::NotebookCloseSession(int buffer_id) {
     auto it = notebooks_.find(buffer_id);
     if (it == notebooks_.end()) return;
+    if (it->second.format == NotebookFormat::Rmd) NotebookWriteOutputCache(buffer_id);
     NotebookKillKernels(it->second);
     notebooks_.erase(it);
 }
@@ -39348,6 +39600,7 @@ int Editor::NotebookInsertCell(int cell_index, bool below, NotebookCellType type
     int buffer_id = CurPane().buffer_id;
     const NotebookSession *sess = NotebookRefresh(buffer_id);
     if (!sess) return -1;
+    if (sess->format == NotebookFormat::Rmd) return NotebookInsertRmdChunk(cell_index, below);
     Buffer &buf = Buf();
     const std::string marker = NotebookCellMarker(type);
     int at = 0;
@@ -39398,6 +39651,38 @@ int Editor::NotebookInsertCell(int cell_index, bool below, NotebookCellType type
     return new_index;
 }
 
+int Editor::NotebookInsertRmdChunk(int cell_index, bool below) {
+    int buffer_id = CurPane().buffer_id;
+    const NotebookSession *sess = NotebookRefresh(buffer_id);
+    if (!sess) return -1;
+    Buffer &buf = Buf();
+    if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
+    // The new chunk uses the engine of the chunk it's next to (or r).
+    std::string engine = "r";
+    int at = buf.LineCount();
+    int new_index = static_cast<int>(sess->spans.size());
+    if (cell_index >= 0 && cell_index < static_cast<int>(sess->spans.size())) {
+        const NotebookCellSpan &span = sess->spans[static_cast<size_t>(cell_index)];
+        if (span.type == NotebookCellType::Code && !span.engine.empty()) engine = span.engine;
+        at = below ? NotebookSpanLastRow(span) + 1 : (span.marker_row >= 0 ? span.marker_row : span.first_row);
+        new_index = below ? cell_index + 1 : cell_index;
+    } else if (cell_index < 0 && !sess->spans.empty() && CurPane().cursor.row < sess->spans.front().first_row) {
+        at = CurPane().cursor.row;
+        new_index = 0;
+    }
+    std::vector<std::string> lines;
+    if (at > 0 && !NotebookLineBlank(buf.lines[static_cast<size_t>(at - 1)])) lines.emplace_back("");
+    const int header = static_cast<int>(lines.size());
+    lines.push_back("```{" + engine + "}");
+    lines.emplace_back("");
+    lines.emplace_back("```");
+    if (at < buf.LineCount() && !NotebookLineBlank(buf.lines[static_cast<size_t>(at)])) lines.emplace_back("");
+    ReplaceLinesForLua(at, at, lines);
+    CurPane().cursor = {at + header + 1, 0};
+    NotebookRefresh(buffer_id);
+    return new_index;
+}
+
 void Editor::NotebookDeleteCell(int cell_index) {
     int buffer_id = CurPane().buffer_id;
     const NotebookSession *sess = NotebookRefresh(buffer_id);
@@ -39405,6 +39690,22 @@ void Editor::NotebookDeleteCell(int cell_index) {
     if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
     if (cell_index < 0 || cell_index >= static_cast<int>(sess->spans.size())) return;
     NotebookCellSpan span = sess->spans[static_cast<size_t>(cell_index)];
+    if (sess->format == NotebookFormat::Rmd) {
+        // Only a chunk is a "cell" to delete; prose is edited as text.
+        if (span.type != NotebookCellType::Code) {
+            status_message_ = "Notebook: not inside a chunk";
+            return;
+        }
+        int start = span.marker_row;
+        int end = NotebookSpanLastRow(span) + 1;
+        // Take one blank line after the chunk along with it, so deleting
+        // doesn't leave a double gap behind.
+        if (end < Buf().LineCount() && NotebookLineBlank(Buf().lines[static_cast<size_t>(end)])) end++;
+        ReplaceLinesForLua(start, end, {});
+        CurPane().cursor = {std::min(start, std::max(0, Buf().LineCount() - 1)), 0};
+        NotebookRefresh(buffer_id);
+        return;
+    }
     int start = span.marker_row >= 0 ? span.marker_row : span.first_row;
     int end = span.end_row;
     std::vector<std::string> replacement;
@@ -39426,6 +39727,10 @@ void Editor::NotebookSetCellType(int cell_index, NotebookCellType type) {
     if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
     if (cell_index < 0 || cell_index >= static_cast<int>(sess->spans.size())) return;
     NotebookCellSpan span = sess->spans[static_cast<size_t>(cell_index)];
+    if (sess->format == NotebookFormat::Rmd) {
+        status_message_ = "Notebook: an R Markdown cell's type is its text (prose, or a ```{r} chunk)";
+        return;
+    }
     if (span.type == type) return;
     CursorPos keep = CurPane().cursor;
     if (span.marker_row >= 0) {
@@ -39450,6 +39755,26 @@ void Editor::NotebookMoveCell(int cell_index, int delta) {
     int a_idx = std::min(cell_index, other), b_idx = std::max(cell_index, other);
     NotebookCellSpan a = sess->spans[static_cast<size_t>(a_idx)];
     NotebookCellSpan b = sess->spans[static_cast<size_t>(b_idx)];
+    if (sess->format == NotebookFormat::Rmd) {
+        // Swap the two spans' row ranges (header to closing fence for a
+        // chunk), leaving whatever blank lines sat between them in place.
+        Buffer &buf = Buf();
+        int a_start = a.marker_row >= 0 ? a.marker_row : a.first_row, a_end = NotebookSpanLastRow(a) + 1;
+        int b_start = b.marker_row >= 0 ? b.marker_row : b.first_row, b_end = NotebookSpanLastRow(b) + 1;
+        std::vector<std::string> block_a(buf.lines.begin() + a_start, buf.lines.begin() + a_end);
+        std::vector<std::string> gap(buf.lines.begin() + a_end, buf.lines.begin() + b_start);
+        std::vector<std::string> block_b(buf.lines.begin() + b_start, buf.lines.begin() + b_end);
+        int cursor_offset = CurPane().cursor.row - (cell_index == a_idx ? a_start : b_start);
+        std::vector<std::string> merged = block_b;
+        merged.insert(merged.end(), gap.begin(), gap.end());
+        merged.insert(merged.end(), block_a.begin(), block_a.end());
+        ReplaceLinesForLua(a_start, b_end, merged);
+        int new_start = cell_index == a_idx ? a_start + static_cast<int>(block_b.size() + gap.size()) : a_start;
+        CurPane().cursor = {std::max(0, new_start + std::max(0, cursor_offset)), CurPane().cursor.col};
+        ClampCursor();
+        NotebookRefresh(buffer_id);
+        return;
+    }
     // The implicit leading cell has no marker line to move with it; give it one first.
     if (a.marker_row < 0) {
         NotebookSetCellType(a_idx, a.type == NotebookCellType::Code ? NotebookCellType::Markdown : NotebookCellType::Code);
@@ -39520,8 +39845,11 @@ void Editor::SetNotebookKernels(std::vector<NotebookKernelSpec> specs) {
         // other kernel is dropped when its program isn't on PATH so the
         // dropdown never offers a kernel that can't run.
         bool builtin_python = spec.mode == NotebookKernelSpec::Mode::Python && spec.command.empty();
-        if (!builtin_python && !NotebookCommandAvailable(spec.command.empty() ? std::string() : spec.command.front())) continue;
+        std::string program = spec.command.empty() ? std::string() : spec.command.front();
+        if (spec.mode == NotebookKernelSpec::Mode::R && program.empty()) program = "Rscript";
+        if (!builtin_python && !NotebookCommandAvailable(program)) continue;
         if (spec.display_name.empty()) spec.display_name = spec.name;
+        if (spec.mode == NotebookKernelSpec::Mode::R && spec.command.empty()) spec.command = {"Rscript"};
         kept.push_back(std::move(spec));
     }
     if (kept.empty()) {
@@ -39549,6 +39877,10 @@ std::string Editor::NotebookCellKernelName(int buffer_id, int cell_index) {
 bool Editor::NotebookSetCellKernel(int buffer_id, int cell_index, const std::string &name) {
     NotebookSession *sess = GetNotebookMutable(buffer_id);
     if (!sess) return false;
+    if (sess->format == NotebookFormat::Rmd) {
+        status_message_ = "Notebook: an R Markdown chunk's engine ({r}, {python}, ...) picks its kernel";
+        return false;
+    }
     NotebookSyncFromText(*sess);
     if (cell_index < 0) cell_index = NotebookSpanAtRow(sess->spans, CurPane().cursor.row);
     if (cell_index < 0 || cell_index >= static_cast<int>(sess->doc.cells.size())) return false;

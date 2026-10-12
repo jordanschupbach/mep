@@ -1538,6 +1538,40 @@ int l_notebook_cell_count(lua_State *L) {
 }
 
 /**
+ * @brief Implements mep.notebook_format(): "ipynb" or "rmd" for the current notebook buffer, nil otherwise.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_notebook_format(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const NotebookSession *sess = ed->GetNotebook(ed->CurrentBufferId());
+    if (!sess) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushstring(L, sess->format == NotebookFormat::Rmd ? "rmd" : "ipynb");
+    return 1;
+}
+
+/**
+ * @brief Implements mep.notebook_cell_type(index): "code", "markdown" or "raw" for a cell of the current notebook.
+ * @param L Lua state; arg 1 is a 0-based cell index.
+ * @return Number of values pushed (1: the type, or nil when out of range / not a notebook).
+ */
+int l_notebook_cell_type(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const NotebookSession *sess = ed->NotebookRefresh(ed->CurrentBufferId());
+    const lua_Integer i = luaL_checkinteger(L, 1);
+    if (!sess || i < 0 || i >= static_cast<lua_Integer>(sess->spans.size())) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const NotebookCellType t = sess->spans[static_cast<size_t>(i)].type;
+    lua_pushstring(L, t == NotebookCellType::Code ? "code" : t == NotebookCellType::Markdown ? "markdown" : "raw");
+    return 1;
+}
+
+/**
  * @brief Implements mep.notebook_goto_cell(index): moves the cursor to a cell's first body row (index clamped).
  * @param L Lua state; arg 1 is a 0-based cell index.
  * @return Number of values pushed (1: true if the cursor moved).
@@ -1565,6 +1599,7 @@ NotebookKernelSpec::Mode NotebookModeFromString(const char *s) {
     std::string m = s ? s : "";
     if (m == "python") return NotebookKernelSpec::Mode::Python;
     if (m == "protocol") return NotebookKernelSpec::Mode::Protocol;
+    if (m == "r") return NotebookKernelSpec::Mode::R;
     return NotebookKernelSpec::Mode::Script;
 }
 }  // namespace
@@ -3458,6 +3493,48 @@ int l_mepml_ts_code_blocks(lua_State *L) {
         lua_setfield(L, -2, "first");
         lua_pushinteger(L, b.last_row + 1);
         lua_setfield(L, -2, "last");
+        lua_rawseti(L, -2, k++);
+    }
+    return 1;
+}
+
+/**
+ * @brief Implements mep.rmd_chunks(lines): the knitr chunks of an R Markdown text (ScanRmdChunks).
+ * @param L Lua state; arg 1 an array of line strings.
+ * @return Number of values pushed (1: an array of {engine=, label=, eval=, header=, first=, last=, close=} with
+ * 1-based rows: header the ```{...} line, first..last the body (last < first when empty), close the closing fence).
+ */
+int l_rmd_chunks(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> lines;
+    const lua_Integer n = luaL_len(L, 1);
+    lines.reserve(static_cast<size_t>(n));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        size_t len = 0;
+        const char *line = lua_tolstring(L, -1, &len);
+        lines.emplace_back(line ? std::string(line, len) : std::string());
+        lua_pop(L, 1);
+    }
+    lua_newtable(L);
+    lua_Integer k = 1;
+    for (const NotebookCellSpan &sp : ScanRmdChunks(lines)) {
+        if (sp.type != NotebookCellType::Code) continue;
+        lua_createtable(L, 0, 7);
+        lua_pushstring(L, sp.engine.c_str());
+        lua_setfield(L, -2, "engine");
+        lua_pushstring(L, sp.label.c_str());
+        lua_setfield(L, -2, "label");
+        lua_pushboolean(L, sp.eval);
+        lua_setfield(L, -2, "eval");
+        lua_pushinteger(L, sp.marker_row + 1);
+        lua_setfield(L, -2, "header");
+        lua_pushinteger(L, sp.first_row + 1);
+        lua_setfield(L, -2, "first");
+        lua_pushinteger(L, sp.end_row);
+        lua_setfield(L, -2, "last");
+        lua_pushinteger(L, sp.close_row + 1);
+        lua_setfield(L, -2, "close");
         lua_rawseti(L, -2, k++);
     }
     return 1;
@@ -15082,6 +15159,9 @@ const luaL_Reg kMepFuncs[] = {
     {"notebook_move_cell", l_notebook_move_cell},
     {"notebook_cell_index", l_notebook_cell_index},
     {"notebook_cell_count", l_notebook_cell_count},
+    {"notebook_format", l_notebook_format},
+    {"rmd_chunks", l_rmd_chunks},
+    {"notebook_cell_type", l_notebook_cell_type},
     {"notebook_goto_cell", l_notebook_goto_cell},
     {"notebook_set_python", l_notebook_set_python},
     {"notebook_set_kernels", l_notebook_set_kernels},

@@ -5,7 +5,7 @@
 
 * Every command
 
-All 419 ex commands mep defines: 147 built in and 273 registered from Lua.
+All 420 ex commands mep defines: 147 built in and 274 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -176,6 +176,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepmlTabPrev= | [[file:mepml.html][mepml]] |
 | =:MepmlTerminal= | [[file:mepml.html][mepml]] |
 | =:MepmlViewToggle= | [[file:mepml.html][mepml]] |
+| =:MepNewProject= | [[file:projects.html][Projects]] |
 | =:MepNextSheet= | [[file:sheets.html][Spreadsheets]] |
 | =:MepNotifyClear= | [[file:notifications.html][Notifications]] |
 | =:MepNotifyDismiss= | [[file:notifications.html][Notifications]] |

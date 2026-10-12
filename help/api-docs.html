@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (210)</h1>
+<h1>The bindings (212)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -106,9 +106,11 @@ that it does nothing.</p>
 <tr><td><code>mep.notebook_cell_kernel</code></td><td>the kernel name a cell effectively runs on (its own or the default)</td></tr>
 <tr><td><code>mep.notebook_cell_language</code></td><td>the treesitter filetype for the cell containing a 1-based buffer row</td></tr>
 <tr><td><code>mep.notebook_cell_outputs</code></td><td>array of {kind, name, text, has_image, execution_count} for a cell's outputs (cell_type/execution_count/source on the table too), or nil -- what...</td></tr>
+<tr><td><code>mep.notebook_cell_type</code></td><td>"code", "markdown" or "raw" for a cell of the current notebook</td></tr>
 <tr><td><code>mep.notebook_clear_outputs</code></td><td>--</td></tr>
 <tr><td><code>mep.notebook_default_kernel</code></td><td>the kernel name cells run on when they pick none</td></tr>
 <tr><td><code>mep.notebook_delete_cell</code></td><td>deletes a cell (default: the cursor's). */ int l_notebook_delete_cell(lua_State *L) { GetEditor(L)-&gt;NotebookDeleteCell(NotebookIndexArg(L, 1));...</td></tr>
+<tr><td><code>mep.notebook_format</code></td><td>"ipynb" or "rmd" for the current notebook buffer, nil otherwise</td></tr>
 <tr><td><code>mep.notebook_goto_cell</code></td><td>moves the cursor to a cell's first body row (index clamped)</td></tr>
 <tr><td><code>mep.notebook_insert_cell</code></td><td>inserts an empty cell above/below the cursor's cell and moves into it</td></tr>
 <tr><td><code>mep.notebook_interrupt</code></td><td>--</td></tr>

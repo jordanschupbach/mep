@@ -65,8 +65,11 @@ Each code cell picks its own kernel, from the dropdown at its top right (or
 =<leader>jK=). Out of the box the list offers Python 3 plus whichever of R,
 JavaScript (Node), Ruby and Bash are on =$PATH=.
 
-Python 3 is one *persistent* process, so state and inline figures carry
-across cells. The others are stateless "script" kernels: each run is a fresh
+Python 3 and R are each one *persistent* process, so state and inline
+figures carry across cells: R sends back every page a cell draws (base
+graphics or an auto-printed =ggplot=) as an inline PNG. R needs the =jsonlite=
+package, which anything that can knit an =.Rmd= already has. The others are
+stateless "script" kernels: each run is a fresh
 process fed the cell's code on stdin.
 
 A cell with no explicit choice follows the notebook default, and a new cell
@@ -81,8 +84,7 @@ bottom.
 #+begin_src lua
 mep.opt.notebook_kernels = {
   {name='python3', display_name='Python 3', language='py', mode='python'},
-  {name='ir', display_name='R', language='r', mode='script',
-   command={'R', '--slave', '--no-save'}},
+  {name='ir', display_name='R', language='r', mode='r', command={'Rscript'}},
   {name='deno', display_name='Deno', language='js', mode='script',
    command={'deno', 'run', '-'}},
 }
@@ -92,13 +94,56 @@ mep.opt.notebook_kernels = {
 
 | Mode       | Means                                              |
 |------------+----------------------------------------------------|
-| =python=   | the built-in persistent kernel; no =command=       |
+| =python=   | the built-in persistent Python kernel; no =command= |
+| =r=        | the built-in persistent R kernel; =command= is the =Rscript= to use |
 | =protocol= | your own long-lived process speaking mep's JSON-line kernel protocol |
 | =script=   | a fresh process per run, code on stdin             |
 
 =language= is the Treesitter filetype the cell body is highlighted with.
 
+The old stateless R runner is still in the list as /R (fresh process per
+cell)/ (=ir-script=), for code that must not see an earlier cell's state.
+
 =examples/notebook_example.ipynb= is a ready-made notebook to try.
+
+* R Markdown (=.Rmd=)
+
+An =.Rmd= opens as a notebook too, but it stays exactly the file it is: the
+buffer is the document's own text, and =:w= writes it back as-is. Its cells
+are its knitr chunks -- =```{r}= ... =```= -- and everything between them is
+prose. A plain =```r= fence is code being /shown/, not a chunk, and never runs
+(knitr would not run it either).
+
+Each chunk is drawn as a card with =In [n]:=, its engine and a =Run= chip on
+the header line, which stays editable text. What a chunk prints, and any
+plots it draws, appear under its closing fence. Every R chunk runs in one
+persistent R session (the kernel above), so a chunk sees what the chunks
+before it defined. A =```{python}= chunk runs on the Python kernel, in its
+own session.
+
+| Key             | Does                                               |
+|-----------------+----------------------------------------------------|
+| =Shift+Enter=   | inside a chunk: run it (Normal or Insert mode)     |
+| =Ctrl-C Ctrl-C= | inside a chunk: run it                             |
+| =]j= =[j=       | next / previous chunk                              |
+| =<leader>jA=    | run every chunk, top to bottom                     |
+| =<leader>jb=    | insert a new chunk below                           |
+
+Outside a chunk those keys do what they do in any text file, and plain
+=Enter= never runs anything. A chunk with =eval=FALSE= is skipped, as knitr
+skips it. The engine in the header picks the kernel, so the kernel dropdown
+only reports it.
+
+Outputs never go into the document -- knitr decides what a rendered report
+shows. They are kept in a cache in mep's data directory instead
+(=notebook-cache/=), so reopening the file brings them back. A chunk edited
+while the file was closed comes back without its now-stale output.
+
+The Run button (top right) still knits the whole document with
+=rmarkdown::render= and shows the result. The R language server works inside
+R chunks (hover, completion, diagnostics, go to definition), across all the
+chunks of the document at once, and markdown highlighting, headings and
+spell checking apply to the prose (never to the code).
 
 * See also
 

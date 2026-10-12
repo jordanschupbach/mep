@@ -94,7 +94,41 @@ bool VaultUnlocked();
 bool VaultUnlock(const std::string &passphrase, bool create, std::string *error);
 /** @brief Forgets the key and the decrypted secrets. */
 void VaultLock();
-/** @brief Drops every cached access token (with VaultLock, :MailLock). */
+/**
+ * @brief Downloads each (url, path) pair -- http(s) only, no redirects elsewhere, size- and time-capped, in
+ * parallel through one curl. For a message's remote images, once asked for. Returns the pairs that arrived.
+ */
+std::vector<std::pair<std::string, std::string>> DownloadFiles(const std::vector<std::pair<std::string, std::string>> &files,
+                                                               const std::atomic<bool> *cancel);
+
+/**
+ * @brief The message count last seen in a mailbox (key: "email|mailbox"), 0 if unknown -- kept in
+ * MailDataDir()/counts.json so even the first open after a restart can SELECT and FETCH in one go.
+ */
+uint32_t LoadMailboxCount(const std::string &key);
+void SaveMailboxCount(const std::string &key, uint32_t count);
+
+// Snapshots in MailDataDir()/cache (private files): a mailbox's newest page
+// of summaries and an account's folder list, so :Mail shows them at once
+// and the server's answer replaces them when it comes. Some servers (Gmail,
+// when it throttles an account) take seconds per command.
+/** @brief The saved newest page of `mailbox` (key: "email|mailbox"); false when there is none. */
+bool LoadListSnapshot(const std::string &key, std::vector<MessageSummary> *msgs, uint32_t *exists);
+void SaveListSnapshot(const std::string &key, const std::vector<MessageSummary> &msgs, uint32_t exists);
+/** @brief The saved folder list of the account with this email; `*saved_at` is when (Unix time). */
+bool LoadFolderSnapshot(const std::string &email, std::vector<Folder> *folders, long long *saved_at);
+void SaveFolderSnapshot(const std::string &email, const std::vector<Folder> &folders);
+
+// Raw messages in MailDataDir()/cache/messages (private files, capped in
+// size), so one read or prefetched once opens at once afterwards -- after a
+// restart too -- instead of waiting on the server. `key` is the in-memory
+// cache's ("account id|mailbox|uid"); the Message-ID (when known on both
+// sides) catches a UID that names another message now.
+bool HaveCachedMessage(const std::string &key);
+bool LoadCachedMessage(const std::string &key, const std::string &message_id, std::string *raw);
+void SaveCachedMessage(const std::string &key, const std::string &message_id, const std::string &raw);
+
+/** @brief Drops every cached access token and Keychain password (with VaultLock, :MailLock). */
 void ForgetAllAccessTokens();
 
 /** @brief Removes a stored secret (best effort). */
@@ -128,9 +162,23 @@ ImapResult RunImap(const Session &s, const std::vector<ImapStep> &steps, bool tr
 bool ListFolders(const Session &s, std::vector<Folder> *out, std::string *error, const std::atomic<bool> *cancel);
 bool SelectMailbox(const Session &s, const std::string &mailbox, SelectInfo *out, std::string *error,
                    const std::atomic<bool> *cancel);
-/** @brief FETCHes summaries for `set` -- sequence numbers, or UIDs when `by_uid`. */
+/** @brief LIST plus selecting `mailbox`, over one connection (one login instead of two). */
+bool ListFoldersAndSelect(const Session &s, const std::string &mailbox, std::vector<Folder> *folders, SelectInfo *sel,
+                          std::string *error, const std::atomic<bool> *cancel);
+/**
+ * @brief FETCHes summaries for `set` -- sequence numbers, or UIDs when `by_uid`. `sel`, when given, gets what
+ * the SELECT before the FETCH said (EXISTS etc.), so a caller that guessed the range can check its guess.
+ */
 bool FetchSummaries(const Session &s, const std::string &mailbox, const std::string &set, bool by_uid,
-                    std::vector<MessageSummary> *out, std::string *error, const std::atomic<bool> *cancel);
+                    std::vector<MessageSummary> *out, std::string *error, const std::atomic<bool> *cancel,
+                    SelectInfo *sel = nullptr);
+/**
+ * @brief Several whole raw messages by UID, over one connection, with BODY.PEEK[] -- they stay unread (a
+ * prefetch, not a reading). `out` gets (uid, raw) for each message the server sent.
+ */
+bool PeekMessages(const Session &s, const std::string &mailbox, const std::vector<uint32_t> &uids,
+                  std::vector<std::pair<uint32_t, std::string>> *out, std::string *error,
+                  const std::atomic<bool> *cancel);
 /** @brief The whole raw message (marks it \\Seen on the server, as reading it should). */
 bool FetchMessage(const Session &s, const std::string &mailbox, uint32_t uid, std::string *raw, std::string *error,
                   const std::atomic<bool> *cancel);

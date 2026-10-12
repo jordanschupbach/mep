@@ -5125,13 +5125,21 @@ void Editor::HandleInput() {
     MaybeDismissHover();
     {
         gfx::Vector2 wheel = gfx::GetMouseWheelMoveV();
-        if (wheel.x != 0.0f || wheel.y != 0.0f) HandleMouseWheel(wheel.x, wheel.y);
+        // (A program mep draws itself takes the pointer, and the wheel over it.)
+        const bool wheel_taken = HandleEmbeddedPointer(wheel);
+        if (!wheel_taken && (wheel.x != 0.0f || wheel.y != 0.0f)) HandleMouseWheel(wheel.x, wheel.y);
     }
     if (HandleMod1Shortcuts()) return;
     if (HandleTabShortcuts()) return;
+    // A program mep draws itself holding the keyboard: everything mep's
+    // own chords above left is its.
+    if (HandleEmbeddedKeys()) return;
     // A mepml presentation's slide keys (h/l, arrows ...) come before
     // Normal mode's, unless its caret mode is on.
     if (mode_ == Mode::Normal && HandleMepmlPresentInput()) return;
+    // A mail message shown as HTML takes the html pane's keys, whatever left
+    // the mode at Normal meanwhile (`:normal`, a finished `:` command).
+    if (mode_ == Mode::Normal && IsMailBuffer(CurPane().buffer_id) && IsHtmlBuffer(CurPane().buffer_id)) mode_ = Mode::Html;
     switch (mode_) {
         case Mode::Normal:
             HandleNormalInput();
@@ -12452,8 +12460,17 @@ void Editor::HandleHtmlInput() {
         }
         return;
     }
+    // A mail message rendered as HTML: Ctrl-E flips it back to text (the
+    // mail pane's `v`), and its keys reach the mail pane first.
+    if (IsMailBuffer(CurPane().buffer_id)) {
+        if (ctrl && gfx::IsKeyPressed(gfx::Key::E)) {
+            while (gfx::GetCharPressed() > 0) {}
+            MailHtmlKey('v');
+            return;
+        }
+    }
     // Ctrl-L, the browser convention, joins 'o' as a way into the omnibar.
-    if (ctrl && gfx::IsKeyPressed(gfx::Key::L)) {
+    if (ctrl && sess->chrome && gfx::IsKeyPressed(gfx::Key::L)) {
         BeginHtmlOmnibarEdit(CurPane().buffer_id);
         while (gfx::GetCharPressed() > 0) {}
         return;
@@ -12474,6 +12491,11 @@ void Editor::HandleHtmlInput() {
     // below is skipped. Ctrl chords, ':' and the leader stay the editor's.
     std::vector<int> chars;
     for (int ch = gfx::GetCharPressed(); ch > 0; ch = gfx::GetCharPressed()) chars.push_back(ch);
+    if (!ctrl && IsMailBuffer(CurPane().buffer_id)) {
+        for (const int ch : chars) {
+            if (MailHtmlKey(ch)) return;  // the mail pane's key: its html view may be gone now
+        }
+    }
     std::vector<int> page_chars;
     std::vector<gfx::Key> page_keys;
     if (sess->js && !ctrl && ScriptsHaveListeners(*sess->js)) {
@@ -33757,6 +33779,8 @@ void Editor::RunNormalKeys(const std::string &keys) {
             // too, so e.g. the file tree's read-only guard can't be
             // sidestepped with `:normal dd`.
             if (!TryBufferKeyHook(static_cast<int>(c))) ProcessNormalKey(static_cast<int>(c));
+        } else if (mode_ == Mode::Html && IsMailBuffer(CurPane().buffer_id)) {
+            MailHtmlKey(static_cast<int>(c));  // a mail message shown as HTML: its keys (q, J/K, v, i...)
         } else {
             break;  // Visual/Command/Search mid-:normal: not supported, bail (see header comment)
         }

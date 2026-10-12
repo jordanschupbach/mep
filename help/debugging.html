@@ -16,9 +16,9 @@
 <p>Everything is on the <code>&lt;leader&gt;d</code> group.</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
-<tr><td><code>&lt;leader&gt;dd</code></td><td>start, or continue</td></tr>
+<tr><td><code>&lt;leader&gt;dc</code></td><td>start, or continue</td></tr>
 <tr><td><code>&lt;leader&gt;db</code></td><td>toggle a breakpoint on this line</td></tr>
-<tr><td><code>&lt;leader&gt;dc</code></td><td>clear every breakpoint in the file</td></tr>
+<tr><td><code>&lt;leader&gt;dC</code></td><td>clear every breakpoint in the file</td></tr>
 <tr><td><code>&lt;leader&gt;dn</code></td><td>step over</td></tr>
 <tr><td><code>&lt;leader&gt;di</code></td><td>step into</td></tr>
 <tr><td><code>&lt;leader&gt;do</code></td><td>step out</td></tr>
@@ -27,8 +27,9 @@
 <tr><td><code>&lt;leader&gt;dt</code></td><td>terminate</td></tr>
 <tr><td><code>&lt;leader&gt;du</code></td><td>show or hide the debug UI</td></tr>
 </table>
-<p><code>&lt;leader&gt;dd</code> is the one key to remember: it starts a session if there is
-none and continues if there is.</p>
+<p><code>&lt;leader&gt;dc</code> is the one key to remember: it starts a session if there is
+none and continues if there is. (The group's <code>dd</code> is not a debug key: it
+is the <a href="lsp.html">diagnostics picker</a>.)</p>
 <p>Commands: <code>:MepDapBreakpoint</code>, <code>:MepDapContinue</code>, <code>:MepDapTerminate</code>.</p>
 <h1>Breakpoints</h1>
 <p>A breakpoint shows as a sign in the gutter column, alongside git marks and

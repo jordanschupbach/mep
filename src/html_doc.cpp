@@ -66,6 +66,35 @@ size_t FindCloseTagCI(const std::string &html, const std::string &tag, size_t fr
     return pos == std::string::npos ? std::string::npos : from + pos;
 }
 
+// Characters the text fonts have no glyph for and that only ever mean
+// "a space" or "nothing": the spaces of U+2000-U+200A / U+202F / U+205F
+// (and a literal no-break space, which &nbsp; already decodes to a plain
+// one) become ' ', and the invisible ones -- zero-width space/joiners, the
+// word joiner, a BOM, the soft hyphen, the combining grapheme joiner email
+// pads its preheaders with -- go. Left alone they drew as '?' boxes
+// ("10:56?PM").
+std::string NormalizeSpecialSpaces(std::string s) {
+    if (s.find_first_of("\xC2\xCD\xE2\xEF") == std::string::npos) return s;
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        const auto b0 = static_cast<unsigned char>(s[i]);
+        const auto b1 = i + 1 < s.size() ? static_cast<unsigned char>(s[i + 1]) : 0;
+        const auto b2 = i + 2 < s.size() ? static_cast<unsigned char>(s[i + 2]) : 0;
+        if (b0 == 0xC2 && b1 == 0xA0) { out += ' '; i += 2; continue; }   // U+00A0
+        if (b0 == 0xC2 && b1 == 0xAD) { i += 2; continue; }               // U+00AD soft hyphen
+        if (b0 == 0xCD && b1 == 0x8F) { i += 2; continue; }               // U+034F
+        if (b0 == 0xE2 && b1 == 0x80 && b2 <= 0x8A) { out += ' '; i += 3; continue; }  // U+2000-U+200A
+        if (b0 == 0xE2 && b1 == 0x80 && b2 >= 0x8B && b2 <= 0x8D) { i += 3; continue; }  // U+200B-U+200D
+        if (b0 == 0xE2 && b1 == 0x80 && b2 == 0xAF) { out += ' '; i += 3; continue; }  // U+202F
+        if (b0 == 0xE2 && b1 == 0x81 && b2 == 0x9F) { out += ' '; i += 3; continue; }  // U+205F
+        if (b0 == 0xE2 && b1 == 0x81 && b2 == 0xA0) { i += 3; continue; }  // U+2060
+        if (b0 == 0xEF && b1 == 0xBB && b2 == 0xBF) { i += 3; continue; }  // U+FEFF
+        out += s[i++];
+    }
+    return out;
+}
+
 // &name; and &#NN;/&#xHH; -- the common subset real-world pages actually
 // use, not the full HTML5 named-character-reference table (over 2000
 // entries, almost all obscure symbols this monospace-only renderer has no
@@ -77,11 +106,46 @@ size_t FindCloseTagCI(const std::string &html, const std::string &tag, size_t fr
  * @return `s` with recognized entities replaced by their literal characters; unrecognized ones are left as-is.
  */
 std::string DecodeEntities(const std::string &s) {
+    // Real characters, as numeric references already decode to (the text
+    // fonts cover Latin-1 and the common punctuation); the invisible
+    // joiners and soft hyphen email pads its preheaders with decode to
+    // nothing.
     static const std::unordered_map<std::string, std::string> kNamed = {
-        {"amp", "&"},     {"lt", "<"},        {"gt", ">"},     {"quot", "\""}, {"apos", "'"},
-        {"nbsp", " "},    {"copy", "(c)"},    {"reg", "(R)"},  {"mdash", "--"}, {"ndash", "-"},
-        {"hellip", "..."},{"rsquo", "'"},     {"lsquo", "'"},  {"rdquo", "\""}, {"ldquo", "\""},
-        {"trade", "(TM)"},{"deg", " deg"},
+        {"amp", "&"}, {"lt", "<"}, {"gt", ">"}, {"quot", "\""},
+        {"apos", "'"}, {"nbsp", " "}, {"zwnj", ""}, {"zwj", ""},
+        {"shy", ""}, {"lrm", ""}, {"rlm", ""}, {"copy", "\xc2\xa9"},
+        {"reg", "\xc2\xae"}, {"trade", "\xe2\x84\xa2"}, {"mdash", "\xe2\x80\x94"}, {"ndash", "\xe2\x80\x93"},
+        {"hellip", "\xe2\x80\xa6"}, {"rsquo", "\xe2\x80\x99"}, {"lsquo", "\xe2\x80\x98"}, {"rdquo", "\xe2\x80\x9d"},
+        {"ldquo", "\xe2\x80\x9c"}, {"sbquo", "\xe2\x80\x9a"}, {"bdquo", "\xe2\x80\x9e"}, {"deg", "\xc2\xb0"},
+        {"middot", "\xc2\xb7"}, {"bull", "\xe2\x80\xa2"}, {"times", "\xc3\x97"}, {"divide", "\xc3\xb7"},
+        {"euro", "\xe2\x82\xac"}, {"pound", "\xc2\xa3"}, {"yen", "\xc2\xa5"}, {"cent", "\xc2\xa2"},
+        {"sect", "\xc2\xa7"}, {"para", "\xc2\xb6"}, {"laquo", "\xc2\xab"}, {"raquo", "\xc2\xbb"},
+        {"lsaquo", "\xe2\x80\xb9"}, {"rsaquo", "\xe2\x80\xba"}, {"larr", "\xe2\x86\x90"}, {"rarr", "\xe2\x86\x92"},
+        {"uarr", "\xe2\x86\x91"}, {"darr", "\xe2\x86\x93"}, {"harr", "\xe2\x86\x94"}, {"hearts", "\xe2\x99\xa5"},
+        {"check", "\xe2\x9c\x93"}, {"star", "\xe2\x98\x86"}, {"starf", "\xe2\x98\x85"}, {"plusmn", "\xc2\xb1"},
+        {"frac12", "\xc2\xbd"}, {"frac14", "\xc2\xbc"}, {"frac34", "\xc2\xbe"}, {"sup1", "\xc2\xb9"},
+        {"sup2", "\xc2\xb2"}, {"sup3", "\xc2\xb3"}, {"iexcl", "\xc2\xa1"}, {"iquest", "\xc2\xbf"},
+        {"prime", "\xe2\x80\xb2"}, {"Prime", "\xe2\x80\xb3"}, {"dagger", "\xe2\x80\xa0"}, {"Dagger", "\xe2\x80\xa1"},
+        {"permil", "\xe2\x80\xb0"}, {"micro", "\xc2\xb5"}, {"ordf", "\xc2\xaa"}, {"ordm", "\xc2\xba"},
+        {"not", "\xc2\xac"}, {"macr", "\xc2\xaf"}, {"acute", "\xc2\xb4"}, {"cedil", "\xc2\xb8"},
+        {"uml", "\xc2\xa8"}, {"brvbar", "\xc2\xa6"}, {"curren", "\xc2\xa4"}, {"ensp", " "},
+        {"emsp", " "}, {"thinsp", " "}, {"hairsp", " "}, {"numsp", " "},
+        {"agrave", "\xc3\xa0"}, {"aacute", "\xc3\xa1"}, {"acirc", "\xc3\xa2"}, {"atilde", "\xc3\xa3"},
+        {"auml", "\xc3\xa4"}, {"aring", "\xc3\xa5"}, {"aelig", "\xc3\xa6"}, {"ccedil", "\xc3\xa7"},
+        {"egrave", "\xc3\xa8"}, {"eacute", "\xc3\xa9"}, {"ecirc", "\xc3\xaa"}, {"euml", "\xc3\xab"},
+        {"igrave", "\xc3\xac"}, {"iacute", "\xc3\xad"}, {"icirc", "\xc3\xae"}, {"iuml", "\xc3\xaf"},
+        {"eth", "\xc3\xb0"}, {"ntilde", "\xc3\xb1"}, {"ograve", "\xc3\xb2"}, {"oacute", "\xc3\xb3"},
+        {"ocirc", "\xc3\xb4"}, {"otilde", "\xc3\xb5"}, {"ouml", "\xc3\xb6"}, {"oslash", "\xc3\xb8"},
+        {"ugrave", "\xc3\xb9"}, {"uacute", "\xc3\xba"}, {"ucirc", "\xc3\xbb"}, {"uuml", "\xc3\xbc"},
+        {"yacute", "\xc3\xbd"}, {"thorn", "\xc3\xbe"}, {"yuml", "\xc3\xbf"}, {"szlig", "\xc3\x9f"},
+        {"Agrave", "\xc3\x80"}, {"Aacute", "\xc3\x81"}, {"Acirc", "\xc3\x82"}, {"Atilde", "\xc3\x83"},
+        {"Auml", "\xc3\x84"}, {"Aring", "\xc3\x85"}, {"AElig", "\xc3\x86"}, {"Ccedil", "\xc3\x87"},
+        {"Egrave", "\xc3\x88"}, {"Eacute", "\xc3\x89"}, {"Ecirc", "\xc3\x8a"}, {"Euml", "\xc3\x8b"},
+        {"Igrave", "\xc3\x8c"}, {"Iacute", "\xc3\x8d"}, {"Icirc", "\xc3\x8e"}, {"Iuml", "\xc3\x8f"},
+        {"ETH", "\xc3\x90"}, {"Ntilde", "\xc3\x91"}, {"Ograve", "\xc3\x92"}, {"Oacute", "\xc3\x93"},
+        {"Ocirc", "\xc3\x94"}, {"Otilde", "\xc3\x95"}, {"Ouml", "\xc3\x96"}, {"Oslash", "\xc3\x98"},
+        {"Ugrave", "\xc3\x99"}, {"Uacute", "\xc3\x9a"}, {"Ucirc", "\xc3\x9b"}, {"Uuml", "\xc3\x9c"},
+        {"Yacute", "\xc3\x9d"}, {"THORN", "\xc3\x9e"},
     };
     std::string out;
     out.reserve(s.size());
@@ -134,7 +198,7 @@ std::string DecodeEntities(const std::string &s) {
         }
         out += s[i++];  // unrecognized -- keep the literal '&', try again from the next char
     }
-    return out;
+    return NormalizeSpecialSpaces(out);
 }
 
 struct TagParseResult {
@@ -595,7 +659,7 @@ void ParseHtml(const std::string &html, HtmlDoc &out, bool full_document, bool c
         for (auto &c : cur->children) queue.push_back(c.get());
     }
 
-    ExtractMathSpans(out);
+    if (out.extract_math) ExtractMathSpans(out);
     if (compute_styles) ComputeStyles(out);
 }
 
@@ -693,6 +757,10 @@ namespace {
 ComputedStyle TagDefaults(const std::string &tag) {
     ComputedStyle s;
     s.block = true;
+    if (tag == "table") s.table_role = HtmlTableRole::Table;
+    else if (tag == "tr") s.table_role = HtmlTableRole::Row;
+    else if (tag == "td" || tag == "th") s.table_role = HtmlTableRole::Cell;
+    else if (tag == "thead" || tag == "tbody" || tag == "tfoot") s.table_role = HtmlTableRole::RowGroup;
     if (tag == "p" || tag == "blockquote") {
         s.margin_top_lines = 1;
         s.margin_bottom_lines = 1;
@@ -761,7 +829,7 @@ ComputedStyle TagDefaults(const std::string &tag) {
         s.color_g = 170;
         s.color_b = 60;
         s.bold = true;
-    } else if (tag == "span" || tag == "small" || tag == "label" || tag == "td" || tag == "th" || tag == "br" ||
+    } else if (tag == "span" || tag == "font" || tag == "big" || tag == "small" || tag == "label" || tag == "td" || tag == "th" || tag == "br" ||
                tag == "img" || tag == "audio" || tag == "video" || tag == "input" || tag == "button" || tag == "select" || tag == "textarea" || tag == "option" ||
                tag == "sub" || tag == "sup" || tag == "abbr" || tag == "cite" || tag == "q" || tag == "time" ||
                tag == "var" || tag == "dfn" || tag == "ins" || tag == "wbr" || tag == "bdi" || tag == "output") {
@@ -1112,7 +1180,19 @@ std::unordered_map<std::string, std::string> ParseDeclarations(const std::string
         };
         prop = ToLower(trim(prop));
         val = ToLower(trim(val));
-        if (!prop.empty()) out[prop] = val;
+        // `!important` is not part of the value (left in, "#fff !important"
+        // parsed as no color at all -- and HTML email marks most of its
+        // declarations so). The flag is kept as a second entry under
+        // "!prop", which ApplyMatchingRules applies after every normal one.
+        bool important = false;
+        if (const size_t bang = val.rfind('!'); bang != std::string::npos && trim(val.substr(bang + 1)) == "important") {
+            val = trim(val.substr(0, bang));
+            important = true;
+        }
+        if (!prop.empty()) {
+            out[prop] = val;
+            if (important) out["!" + prop] = val;
+        }
         i = (semi == std::string::npos) ? n : semi + 1;
     }
     return out;
@@ -1134,6 +1214,14 @@ bool ParseColor(const std::string &raw, unsigned char *r, unsigned char *g, unsi
                 unsigned char *a = nullptr) {
     std::string v = raw;
     if (a) *a = 255;
+    // Only meaningful where alpha is (a background): elsewhere it would
+    // read as black.
+    if (v == "transparent") {
+        if (!a) return false;
+        *r = *g = *b = 0;
+        *a = 0;
+        return true;
+    }
     // rgb(r, g, b) / rgba(r, g, b, alpha) -- the alpha channel matters for
     // shadows and dimming backdrops (`--shadow: rgba(0,0,0,.5)`); callers
     // that pass no `a` slot just get the opaque components.
@@ -1219,7 +1307,7 @@ bool ParseColor(const std::string &raw, unsigned char *r, unsigned char *g, unsi
 void ParseBorderEdge(const std::string &val, ComputedStyle::BorderEdge &edge) {
     std::istringstream iss(val);
     std::string tok;
-    bool any = false;
+    bool styled = false, zero_width = false;
     edge.width_px = 1.0f;
     while (iss >> tok) {
         if (tok == "none" || tok == "hidden") {
@@ -1230,23 +1318,40 @@ void ParseBorderEdge(const std::string &val, ComputedStyle::BorderEdge &edge) {
         double num = std::strtod(tok.c_str(), &end);
         if (end != tok.c_str()) {
             edge.width_px = static_cast<float>(num);
-            any = true;
+            zero_width = num <= 0.0;
+            continue;
+        }
+        if (tok == "thin" || tok == "medium" || tok == "thick") {
+            edge.width_px = tok == "thin" ? 1.0f : tok == "medium" ? 3.0f : 5.0f;
             continue;
         }
         unsigned char r, g, b;
+        if (tok == "transparent") {
+            edge.clear = true;
+            continue;
+        }
         if (ParseColor(tok, &r, &g, &b)) {
             edge.r = r;
             edge.g = g;
             edge.b = b;
-            any = true;
+            edge.clear = false;
             continue;
         }
-        // Otherwise a style keyword (solid/dashed/double/groove/...) --
-        // recognized as "this token belongs to a border value" but not
-        // otherwise distinguished, see this function's own header comment.
-        any = true;
+        // A style keyword (solid/dashed/double/groove/...) -- not otherwise
+        // distinguished, see this function's own header comment.
+        static const char *const kStyles[] = {"solid", "dashed", "dotted", "double", "groove", "ridge", "inset", "outset"};
+        for (const char *st : kStyles) styled = styled || tok == st;
     }
-    if (any) edge.present = true;
+    // As in CSS, a border needs a style to be drawn at all (its default is
+    // none: `border: 1px #ccc` shows nothing), and `border: 0` is none.
+    edge.styled = styled;
+    if (zero_width) edge.width_px = 0.0f;
+    edge.present = edge.styled && edge.width_px > 0.0f && !edge.clear;
+}
+
+bool IsBorderStyle(const std::string &v) {
+    return v == "solid" || v == "dashed" || v == "dotted" || v == "double" || v == "groove" || v == "ridge" ||
+           v == "inset" || v == "outset";
 }
 
 // `allow_negative` is for the properties CSS itself allows below zero
@@ -1374,9 +1479,28 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         s.color_g = g;
         s.color_b = b;
     }
-    for (const char *key : {"background-color", "background"}) {
+    // The `background` shorthand's color is one token among others
+    // ("#fff url(x.png) no-repeat center"): the first that parses as one.
+    auto background_color = [&](const std::string &value, unsigned char *alpha) {
+        if (ParseColor(value, &r, &g, &b, alpha)) return true;
+        int depth = 0;
+        std::string tok;
+        for (size_t i = 0; i <= value.size(); i++) {
+            const char c = i < value.size() ? value[i] : ' ';
+            if (c == '(') depth++;
+            if (c == ')') depth = std::max(0, depth - 1);
+            if (depth == 0 && (c == ' ' || c == '\t' || c == ',')) {
+                if (!tok.empty() && ParseColor(tok, &r, &g, &b, alpha)) return true;
+                tok.clear();
+            } else {
+                tok.push_back(c);
+            }
+        }
+        return false;
+    };
+    for (const char *key : {"background", "background-color"}) {
         unsigned char bg_alpha = 255;
-        if (auto it = decls.find(key); it != decls.end() && ParseColor(it->second, &r, &g, &b, &bg_alpha)) {
+        if (auto it = decls.find(key); it != decls.end() && background_color(it->second, &bg_alpha)) {
             s.has_bg = true;
             s.bg_r = r;
             s.bg_g = g;
@@ -1423,45 +1547,69 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
     if (auto it = decls.find("border-right"); it != decls.end()) ParseBorderEdge(it->second, s.border_right);
     if (auto it = decls.find("border-bottom"); it != decls.end()) ParseBorderEdge(it->second, s.border_bottom);
     if (auto it = decls.find("border-left"); it != decls.end()) ParseBorderEdge(it->second, s.border_left);
+    ComputedStyle::BorderEdge *const edges[4] = {&s.border_top, &s.border_right, &s.border_bottom, &s.border_left};
+    // The 1-4 value box shorthand: which value each edge (top, right,
+    // bottom, left) takes.
+    auto box_index = [](size_t n, int edge) -> size_t {
+        if (n == 1) return 0;
+        if (n == 2) return static_cast<size_t>(edge % 2);
+        if (n == 3) return edge == 3 ? 1 : static_cast<size_t>(edge);
+        return static_cast<size_t>(edge);
+    };
+    auto border_width = [](const std::string &v, float *out) {
+        if (v == "thin") return *out = 1.0f, true;
+        if (v == "medium") return *out = 3.0f, true;
+        if (v == "thick") return *out = 5.0f, true;
+        CssLength width;
+        if (!ParseCssLength(v, width) || width.unit != CssLength::Unit::Px) return false;
+        *out = width.value;
+        return true;
+    };
+    auto words = [](const std::string &v) {
+        std::vector<std::string> out;
+        std::istringstream stream(v);
+        for (std::string t; stream >> t;) out.push_back(t);
+        return out;
+    };
     if (auto it = decls.find("border-width"); it != decls.end()) {
-        CssEdges widths;
-        ParseCssEdges(it->second, widths, false);
-        const CssLength *v[4] = {&widths.top, &widths.right, &widths.bottom, &widths.left};
-        ComputedStyle::BorderEdge *e[4] = {&s.border_top, &s.border_right, &s.border_bottom, &s.border_left};
-        for (int i = 0; i < 4; ++i) if (v[i]->set && v[i]->unit == CssLength::Unit::Px) { e[i]->present = true; e[i]->width_px = v[i]->value; }
+        const auto vals = words(it->second);
+        for (int i = 0; i < 4 && !vals.empty() && vals.size() <= 4; ++i) border_width(vals[box_index(vals.size(), i)], &edges[i]->width_px);
+    }
+    if (auto it = decls.find("border-style"); it != decls.end()) {
+        const auto vals = words(it->second);
+        for (int i = 0; i < 4 && !vals.empty() && vals.size() <= 4; ++i) edges[i]->styled = IsBorderStyle(vals[box_index(vals.size(), i)]);
     }
     if (auto it = decls.find("border-color"); it != decls.end()) {
         std::istringstream stream(it->second);
         struct Rgb { unsigned char r, g, b; };
         std::vector<Rgb> colors;
         std::string token;
+        std::vector<bool> clear;
         while (stream >> token && colors.size() < 4) {
-            unsigned char cr, cg, cb;
-            if (!ParseColor(token, &cr, &cg, &cb)) { colors.clear(); break; }
+            unsigned char cr = 0, cg = 0, cb = 0;
+            const bool is_clear = token == "transparent";
+            if (!is_clear && !ParseColor(token, &cr, &cg, &cb)) { colors.clear(); break; }
             colors.push_back(Rgb{cr, cg, cb});
+            clear.push_back(is_clear);
         }
         if (!colors.empty()) {
-            ComputedStyle::BorderEdge *e[4] = {&s.border_top, &s.border_right, &s.border_bottom, &s.border_left};
             for (int i = 0; i < 4; ++i) {
-                size_t index = 0;
-                if (i == 1 || i == 3) index = std::min<size_t>(1, colors.size() - 1);
-                else if (i == 2) index = std::min<size_t>(2, colors.size() - 1);
-                if (i == 3 && colors.size() == 4) index = 3;
-                const Rgb c = colors[index];
-                e[i]->present = true; e[i]->r = c.r; e[i]->g = c.g; e[i]->b = c.b;
+                const size_t k = box_index(colors.size(), i);
+                edges[i]->r = colors[k].r; edges[i]->g = colors[k].g; edges[i]->b = colors[k].b;
+                edges[i]->clear = clear[k];
             }
         }
     }
-    for (const auto &[name, edge] : std::initializer_list<std::pair<const char *, ComputedStyle::BorderEdge *>>{
-             {"border-top", &s.border_top}, {"border-right", &s.border_right},
-             {"border-bottom", &s.border_bottom}, {"border-left", &s.border_left}}) {
-        if (auto it = decls.find(std::string(name) + "-width"); it != decls.end()) {
-            CssLength width;
-            if (ParseCssLength(it->second, width) && width.unit == CssLength::Unit::Px) { edge->present = true; edge->width_px = width.value; }
+    const char *const edge_names[4] = {"border-top", "border-right", "border-bottom", "border-left"};
+    for (int i = 0; i < 4; ++i) {
+        ComputedStyle::BorderEdge *edge = edges[i];
+        if (auto it = decls.find(std::string(edge_names[i]) + "-width"); it != decls.end()) border_width(it->second, &edge->width_px);
+        if (auto it = decls.find(std::string(edge_names[i]) + "-style"); it != decls.end()) edge->styled = IsBorderStyle(it->second);
+        if (auto it = decls.find(std::string(edge_names[i]) + "-color"); it != decls.end()) {
+            if (it->second == "transparent") edge->clear = true;
+            else if (ParseColor(it->second, &r, &g, &b)) { edge->r = r; edge->g = g; edge->b = b; edge->clear = false; }
         }
-        if (auto it = decls.find(std::string(name) + "-color"); it != decls.end() && ParseColor(it->second, &r, &g, &b)) {
-            edge->present = true; edge->r = r; edge->g = g; edge->b = b;
-        }
+        edge->present = edge->styled && edge->width_px > 0.0f && !edge->clear;
     }
     if (auto it = decls.find("margin"); it != decls.end()) ParseCssEdges(it->second, s.margin, true);
     if (auto it = decls.find("padding"); it != decls.end()) ParseCssEdges(it->second, s.padding, false);
@@ -1478,6 +1626,17 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         else if (it->second == "right" || it->second == "end") s.text_align = HtmlTextAlign::Right;
         else if (it->second == "justify") s.text_align = HtmlTextAlign::Justify;
         else s.text_align = HtmlTextAlign::Left;
+    }
+    if (decls.count("text-align")) s.block_align = HtmlTextAlign::Left;
+    if (auto it = decls.find("-mep-block-align"); it != decls.end()) {
+        s.block_align = it->second == "center" ? HtmlTextAlign::Center
+                        : it->second == "right" ? HtmlTextAlign::Right : HtmlTextAlign::Left;
+    }
+    if (auto it = decls.find("vertical-align"); it != decls.end()) {
+        if (it->second == "top" || it->second == "text-top") s.vertical_align = HtmlVerticalAlign::Top;
+        else if (it->second == "middle") s.vertical_align = HtmlVerticalAlign::Middle;
+        else if (it->second == "bottom" || it->second == "text-bottom") s.vertical_align = HtmlVerticalAlign::Bottom;
+        else s.vertical_align = HtmlVerticalAlign::Unset;
     }
     if (auto it = decls.find("white-space"); it != decls.end()) {
         if (it->second == "pre" || it->second == "pre-wrap") s.white_space = HtmlWhiteSpace::Pre;
@@ -1510,19 +1669,43 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
     if (auto it = decls.find("font-family"); it != decls.end()) {
         std::string family = ToLower(it->second);
         // CSS font-family is an ordered fallback list.  We only ship the
-        // three generic faces, so select the first generic family we know;
-        // an otherwise unknown name lands on the standard sans fallback.
-        if (family.find("monospace") != std::string::npos) s.font_family = HtmlFontFamily::Mono;
-        else if (family.find("sans-serif") != std::string::npos || family.find("sans") != std::string::npos)
-            s.font_family = HtmlFontFamily::Sans;
-        else if (family.find("serif") != std::string::npos) s.font_family = HtmlFontFamily::Serif;
-        else s.font_family = HtmlFontFamily::Sans;
+        // three generic faces, so the first entry we can place -- a generic
+        // family, or a well-known face of one ("Courier New", Georgia) --
+        // picks one; a list of only unknown names lands on sans.
+        auto classify = [](std::string name) -> int {  // 0 unknown, 1 sans, 2 serif, 3 mono
+            name.erase(std::remove_if(name.begin(), name.end(), [](char c) { return c == '"' || c == '\''; }), name.end());
+            const size_t a = name.find_first_not_of(" \t"), b = name.find_last_not_of(" \t");
+            name = a == std::string::npos ? std::string() : name.substr(a, b - a + 1);
+            if (name == "monospace" || name.find("courier") != std::string::npos || name.find("mono") != std::string::npos ||
+                name == "consolas" || name == "monaco" || name == "menlo" || name == "lucida console" || name.find(" code") != std::string::npos)
+                return 3;
+            if (name == "sans-serif" || name.find("sans") != std::string::npos || name == "arial" || name == "helvetica" ||
+                name.find("helvetica") == 0 || name == "verdana" || name == "tahoma" || name == "segoe ui" || name == "roboto" ||
+                name == "system-ui" || name == "-apple-system" || name == "trebuchet ms" || name == "calibri")
+                return 1;
+            if (name == "serif" || name.find("times") != std::string::npos || name == "georgia" || name == "garamond" ||
+                name == "palatino" || name.find("palatino") == 0 || name == "cambria" || name == "baskerville" || name == "book antiqua")
+                return 2;
+            return 0;
+        };
+        int kind = 0;
+        size_t start = 0;
+        while (kind == 0 && start <= family.size()) {
+            const size_t comma = family.find(',', start);
+            kind = classify(family.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+            if (comma == std::string::npos) break;
+            start = comma + 1;
+        }
+        s.font_family = kind == 3 ? HtmlFontFamily::Mono : kind == 2 ? HtmlFontFamily::Serif : HtmlFontFamily::Sans;
     }
     if (auto it = decls.find("font-weight"); it != decls.end()) {
         const std::string &v = it->second;
-        if (v == "bold" || v == "bolder" || (!v.empty() && std::isdigit(static_cast<unsigned char>(v[0])) && v >= "600")) {
+        // A numeric weight past 500 matches the bold face (CSS font
+        // matching rounds 550 up, there being no semibold to pick).
+        const bool numeric = !v.empty() && std::isdigit(static_cast<unsigned char>(v[0]));
+        if (v == "bold" || v == "bolder" || (numeric && std::atoi(v.c_str()) > 500)) {
             s.bold = true;
-        } else if (v == "normal") {
+        } else if (v == "normal" || v == "lighter" || (numeric && std::atoi(v.c_str()) <= 500)) {
             s.bold = false;
         }
     }
@@ -1547,6 +1730,14 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         // leave it latched from the earlier layer.
         s.display_none = it->second == "none";
         s.flex_container = it->second == "flex" || it->second == "inline-flex";
+        s.inline_block = it->second == "inline-block" || it->second == "inline-table";
+        // Only a table value changes the role: a <td> made inline-block (an
+        // email's nav items) is still its row's cell here.
+        if (it->second == "table" || it->second == "inline-table") s.table_role = HtmlTableRole::Table;
+        else if (it->second == "table-row") s.table_role = HtmlTableRole::Row;
+        else if (it->second == "table-cell") s.table_role = HtmlTableRole::Cell;
+        else if (it->second == "table-row-group" || it->second == "table-header-group" || it->second == "table-footer-group")
+            s.table_role = HtmlTableRole::RowGroup;
         if (it->second == "block" || it->second == "list-item" || it->second == "flex" ||
             it->second == "grid" || it->second == "table")
             s.block = true;
@@ -1599,13 +1790,25 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
         char *end = nullptr;
         double num = std::strtod(v.c_str(), &end);
         if (end != v.c_str()) {
-            if (v.find("em") != std::string::npos) s.font_scale = static_cast<float>(num);
-            else if (v.find("px") != std::string::npos)
+            const std::string unit = v.substr(static_cast<size_t>(end - v.c_str()));
+            if (unit.find("em") != std::string::npos) s.font_scale = static_cast<float>(num);
+            else if (unit.find("px") != std::string::npos)
                 s.font_scale = static_cast<float>(num / 16.0);  // 16px is the common CSS default root size
-            else if (v == "larger")
-                s.font_scale *= 1.2f;
-            else if (v == "smaller")
-                s.font_scale *= 0.85f;
+            else if (unit.find("pt") != std::string::npos)
+                s.font_scale = static_cast<float>(num * 4.0 / 3.0 / 16.0);
+            else if (unit == "%")
+                s.font_scale *= static_cast<float>(num / 100.0);  // of the inherited size
+            else if (unit.empty() && num == 0.0)
+                s.font_scale = 0.0f;  // font-size:0 -- how email hides the gaps between inline-block columns
+        } else {
+            static const std::pair<const char *, float> kKeywords[] = {
+                {"xx-small", 9.0f / 16.0f}, {"x-small", 10.0f / 16.0f}, {"small", 13.0f / 16.0f}, {"medium", 1.0f},
+                {"large", 18.0f / 16.0f},   {"x-large", 1.5f},         {"xx-large", 2.0f},       {"xxx-large", 3.0f}};
+            for (const auto &[name, scale] : kKeywords) {
+                if (v == name) s.font_scale = scale;
+            }
+            if (v == "larger") s.font_scale *= 1.2f;
+            else if (v == "smaller") s.font_scale *= 0.85f;
         }
     }
     if (auto it = decls.find("max-width"); it != decls.end()) {
@@ -1665,11 +1868,18 @@ void ApplyDeclarations(ComputedStyle &s, const std::unordered_map<std::string, s
     if (auto it = decls.find("text-overflow"); it != decls.end() && it->second.find("ellipsis") != std::string::npos)
         s.text_overflow_ellipsis = true;
     if (auto it = decls.find("border-radius"); it != decls.end()) {
-        // Only the shorthand's first value (uniform corners) is modelled.
+        // One radius for all four corners is all that is modelled: differing
+        // corners ("24px 24px 0 0", a card's rounded top) take the smallest,
+        // a square-ish box rather than a pill.
         std::istringstream toks(it->second);
-        std::string first;
-        toks >> first;
-        ParseCssLength(first, s.border_radius);
+        std::string tok;
+        CssLength smallest;
+        while (toks >> tok && tok != "/") {
+            CssLength l;
+            if (!ParseCssLength(tok, l)) continue;
+            if (!smallest.set || (l.unit == smallest.unit && l.value < smallest.value) || l.value == 0.0f) smallest = l;
+        }
+        if (smallest.set) s.border_radius = smallest;
     }
     if (auto it = decls.find("box-shadow"); it != decls.end()) {
         if (it->second == "none") {
@@ -2146,6 +2356,17 @@ void ApplyMatchingRules(const DomNode *n, ComputedStyle &style, const std::vecto
         }
         ApplyDeclarations(style, resolved);
     }
+    // `!important` declarations (ParseDeclarations' "!prop" entries) beat
+    // every normal one, so they go last -- in the same layer order, an
+    // inline style's own important one still winning over a rule's.
+    std::unordered_map<std::string, std::string> important;
+    for (const auto *decls : layers) {
+        for (const auto &[key, val] : *decls) {
+            if (key.size() < 2 || key[0] != '!' || key[1] == '-') continue;
+            important[key.substr(1)] = val.find("var(") != std::string::npos ? ResolveCssVars(val, vars) : val;
+        }
+    }
+    if (!important.empty()) ApplyDeclarations(style, important);
 }
 
 // Whether a display-math span is the entirety of its parent block -- the
@@ -2169,6 +2390,86 @@ bool MathIsOnlyChild(const DomNode *n) {
         return false;
     }
     return true;
+}
+
+// The CSS a browser derives from an element's presentational attributes
+// (HTML's "presentational hints"): the legacy table/font markup that HTML
+// email still lays itself out with, since mail clients strip or ignore much
+// of real CSS.
+std::unordered_map<std::string, std::string> PresentationalHints(const DomNode *n) {
+    std::unordered_map<std::string, std::string> h;
+    if (n->tag == "center") h["text-align"] = h["-mep-block-align"] = "center";
+    if (n->attrs.empty()) return h;
+    auto attr = [&](const char *name) -> std::string {
+        auto it = n->attrs.find(name);
+        if (it == n->attrs.end()) return std::string();
+        const size_t a = it->second.find_first_not_of(" \t\r\n");
+        const size_t b = it->second.find_last_not_of(" \t\r\n");
+        return a == std::string::npos ? std::string() : ToLower(it->second.substr(a, b - a + 1));
+    };
+    // A legacy color may lack its '#' ("ffffff").
+    auto color = [](std::string v) {
+        if ((v.size() == 6 || v.size() == 3) && v.find_first_not_of("0123456789abcdef") == std::string::npos) v = "#" + v;
+        return v;
+    };
+    // "600" -> "600px", "100%" stays; anything else is no length.
+    auto length = [](const std::string &v) -> std::string {
+        if (v.empty()) return "";
+        char *end = nullptr;
+        const double d = std::strtod(v.c_str(), &end);
+        if (end == v.c_str() || d < 0) return "";
+        if (*end == '%') return v.substr(0, static_cast<size_t>(end - v.c_str())) + "%";
+        return std::to_string(static_cast<long>(d)) + "px";
+    };
+    const std::string &tag = n->tag;
+    const bool cell = tag == "td" || tag == "th";
+    const bool table_part = tag == "table" || tag == "tr" || tag == "tbody" || tag == "thead" || tag == "tfoot" || cell;
+    if (table_part || tag == "body") {
+        if (std::string v = attr("bgcolor"); !v.empty()) h["background-color"] = color(v);
+    }
+    if (tag == "table" || cell || tag == "img" || tag == "col" || tag == "hr") {
+        if (std::string v = length(attr("width")); !v.empty() && !(tag == "img" && v.back() != '%')) h["width"] = v;
+    }
+    if (cell || tag == "table" || tag == "tr") {
+        if (std::string v = length(attr("height")); !v.empty() && v.back() != '%') h["min-height"] = v;
+    }
+    if (std::string v = attr("align"); !v.empty()) {
+        if (tag == "table") {
+            // A table's align places the table, not its text.
+            if (v == "center") h["margin-left"] = h["margin-right"] = "auto";
+            else if (v == "right") h["margin-left"] = "auto";
+        } else if (table_part || tag == "div" || tag == "p" || (tag.size() == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6')) {
+            if (v == "center" || v == "middle") h["text-align"] = h["-mep-block-align"] = "center";
+            else if (v == "right" || v == "left" || v == "justify") h["text-align"] = v;
+            if (v == "right") h["-mep-block-align"] = "right";
+        }
+    }
+    if (table_part && tag != "table") {
+        if (std::string v = attr("valign"); !v.empty()) h["vertical-align"] = v;
+    }
+    if (tag == "table") {
+        // border="N": a frame round the table (each cell gets its own in
+        // HtmlLayoutTable).
+        if (std::string v = attr("border"); !v.empty() && std::atoi(v.c_str()) > 0) {
+            h["border"] = std::to_string(std::atoi(v.c_str())) + "px solid #808080";
+        }
+    }
+    if (tag == "body") {
+        if (std::string v = attr("text"); !v.empty()) h["color"] = color(v);
+    }
+    if (tag == "font") {
+        if (std::string v = attr("color"); !v.empty()) h["color"] = color(v);
+        if (std::string v = attr("face"); !v.empty()) h["font-family"] = v;
+        if (std::string v = attr("size"); !v.empty()) {
+            // <font size=1..7>, or relative to the default 3 ("+1", "-2").
+            int sz = std::atoi(v.c_str() + (v[0] == '+' ? 1 : 0));
+            if (v[0] == '+' || v[0] == '-') sz += 3;
+            static const char *const kSizes[] = {"10px", "13px", "16px", "18px", "24px", "32px", "48px"};
+            h["font-size"] = kSizes[std::clamp(sz, 1, 7) - 1];
+        }
+    }
+    if (n->attrs.count("hidden")) h["display"] = "none";
+    return h;
 }
 
 /**
@@ -2225,6 +2526,15 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
     s.monospace = s.monospace || parent.monospace;
     if (!s.monospace) s.font_family = parent.font_family;
     s.text_align = parent.text_align;
+    s.block_align = parent.block_align;
+    // Alignment that came from an align="" attribute (block_align set: a
+    // browser's -webkit-center / -moz-center) stops at a table: the text
+    // inside a table nested in <td align="center"> starts left again. CSS
+    // text-align is inherited into it as usual.
+    if (n->tag == "table" && s.block_align != HtmlTextAlign::Left) {
+        s.text_align = HtmlTextAlign::Left;
+        s.block_align = HtmlTextAlign::Left;
+    }
     s.line_height_multiplier = parent.line_height_multiplier;
     s.line_height_length = parent.line_height_length;
     s.letter_spacing = parent.letter_spacing;
@@ -2246,6 +2556,9 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
         }
     }
 
+    // Presentational attributes (bgcolor, width, align...) under every
+    // stylesheet rule, as in a browser: what HTML email is laid out with.
+    if (auto hints = PresentationalHints(n); !hints.empty()) ApplyDeclarations(s, hints);
     std::unordered_map<std::string, std::string> inline_decls;
     if (auto it = n->attrs.find("style"); it != n->attrs.end()) inline_decls = ParseDeclarations(it->second);
     ApplyMatchingRules(n, s, rules, inline_decls, vars_ptr, own_vars);
@@ -2265,7 +2578,12 @@ void WalkAndStyle(DomNode *n, const ComputedStyle &parent, const std::vector<Css
         int element_kids = 0;
         for (const auto &sib : n->parent->children)
             if (sib->type == DomNodeType::Element) ++element_kids;
-        if (element_kids >= 2) s.block = false;
+        if (element_kids >= 2) {
+            // A block-level item (a card, a table) keeps its insides: one
+            // box in the row (inline-block), not its text poured into it.
+            if (s.block && !s.display_none) s.inline_block = true;
+            s.block = false;
+        }
     }
     n->style = s;
 

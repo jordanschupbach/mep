@@ -101,7 +101,8 @@ the vault; the next mail action asks again.
 - mep's mail folder (drafts, the vault, temporary files) is readable by
   your user only. Temporary files (forwarded attachments) are removed after
   sending, or after a day otherwise.
-- HTML mail is never rendered or run, and remote images are never fetched.
+- HTML mail is shown but never run (no scripts, frames or outside
+  stylesheets), and remote images are fetched only when you ask (=i=).
   Attachments open in mep only for formats it just displays (PDF, images,
   text, office documents, media); anything else is saved to Downloads.
 - Browser sign-in uses PKCE and a random =state= from the system's secure
@@ -283,11 +284,54 @@ message, =r= one you have answered and =@= one with attachments.
 | =r R f=       | reply, reply to all, forward                                    |
 | =dd x a M s U= | as in the list -- deleting or moving goes on to the next message |
 | =Enter=       | on an =Attach:= line: save the file to Downloads and open it   |
+| =v=           | rendered HTML / plain text                                      |
+| =i=           | load the message's remote images                                |
 
-Everything else is ordinary Vim: move around, search, select and yank.
-HTML-only mail is shown as text, with its links numbered under the
-message (=[1] https://...=). Its HTML is never run or rendered, so remote
-images (tracking pixels) are never loaded.
+A message with an HTML version is shown rendered, the way its sender laid
+it out: =j= / =k=, =Ctrl-d= / =Ctrl-u= and =gg= / =G= scroll, =Ctrl-R=
+switches to your editor colours, and the mail keys above all still work.
+Clicking a link opens it in your web browser (a =mailto:= link starts a
+draft), and clicking an attachment's name in the header saves and opens
+it. =v= flips to the plain-text view -- ordinary Vim, where you can search,
+select and yank -- and back; mep remembers which you prefer.
+
+Nothing in a message runs or reaches out on its own: scripts, frames and
+stylesheets from elsewhere are dropped, and images embedded in the
+message show, but remote images stay blocked -- they are how senders
+track whether, when and where a message was read. The header says how
+many were blocked; =i= (or clicking /load them/) fetches them for that
+message only.
+
+** Speed
+
+A folder you have opened before shows at once: mep keeps a copy of each
+folder's newest page and of each account's folder list (in =mail/cache=,
+readable only by you), and the header says /syncing.../ until the server's
+answer replaces it. Older messages (=+=) load once the sync is done. A
+saved folder list is re-read from the server once it is a day old, or with
+=$= in the folder list.
+
+Messages open from a saved copy too. When a folder loads, its newest 25
+messages are fetched in the background (without marking them read), and
+opening one also fetches the next few, so =J= reads on without waiting.
+Every message fetched is kept in =mail/cache/messages= (readable only by
+you, oldest dropped past 256 MB), so it opens at once later, even after a
+restart. Delete that directory to clear it.
+
+mep stays signed in between operations: a few connections per account are
+kept open (for up to ten minutes unused), each remembering which folder it
+has selected, so reading, refreshing, deleting or moving in the folder you
+are in costs the server one command, without a new login or a new
+selection. A connection the server dropped meanwhile is replaced on the
+spot. (These connections need mep built with OpenSSL, as it is on macOS
+and Linux; elsewhere, or with =MEP_MAIL_CURL=1= in the environment, each
+operation runs =curl= as before.)
+
+Once a list is up, its newest messages are fetched in the background --
+without marking them read -- and so are the neighbours of the one you are
+reading, so =Enter=, =J= and =K= usually show a message at once.
+=:MailLog= records how long each server round trip took, and whether it
+reused a connection.
 
 ** The folder list
 
@@ -359,6 +403,10 @@ send from another of your accounts.
   Google, see the 7-day note under the Browser sign-in section.
 - *Google says "access blocked" or "not a test user"*: add your address
   as a test user (step 3 of the Google setup), or publish the app.
+- *Everything takes seconds*: if =:MailLog= says /server throttling/,
+  the server is holding back each command (Gmail does this to an account
+  it considers busy). Folders and messages you opened (or that were
+  fetched ahead) before still show at once from the saved copy.
 - *"cannot connect"* / *"timed out"*: no network, or a firewall blocking
   the mail ports (993 for IMAP, 465/587 for SMTP).
 - *"Mail needs curl on PATH"*: install curl. It is preinstalled on

@@ -22,6 +22,8 @@ work without servers fighting over one project.
 | =gd=           | go to definition              |
 | =Q=            | this line's diagnostics, in a popup |
 | =]e= / =[e=    | next / previous error, then its popup |
+| =]d= / =[d=    | next / previous diagnostic (any severity) |
+| =<leader>dd=   | every diagnostic in the file, in a picker |
 | =<leader>li=   | go to implementation          |
 | =<leader>lt=   | go to type definition         |
 | =<leader>lk=   | signature help                |
@@ -72,9 +74,15 @@ sign column. =Q= shows the current line's diagnostics in a popup, and
 
 =]e= and =[e= jump to the next and previous *error* in the file (wrapping
 at either end), then pop up that line's errors. For diagnostics of any
-severity there are =mep.lsp_next_diagnostic= and =mep.lsp_prev_diagnostic=,
-unbound by default -- =mep.map_bracket_next('d', mep.lsp_next_diagnostic)=
-puts them on =]d=/=[d=.
+severity -- info, hints and warnings too -- use =]d= and =[d=
+(=mep.lsp_next_diagnostic= / =mep.lsp_prev_diagnostic=), which just move
+the cursor, with no popup.
+
+=<leader>dd= (=:MepDiagPicker=) lists every diagnostic in the file in the
+fuzzy picker, like =/= does for lines: one row per diagnostic, sorted by
+position, with its severity and first line of the message. Type to filter,
+=C-n= / =C-p= to move; the preview shows the full message and the code
+around it, and =Enter= jumps to its line and column.
 
 The popup is a list, one entry per diagnostic -- long messages are wrapped
 but stay a single entry:

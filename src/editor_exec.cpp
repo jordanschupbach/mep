@@ -13,6 +13,7 @@
 #include "editor.h"
 #include "gfx/input.h"
 #include "gui_embed.h"
+#include "lua_env.h"
 
 namespace {
 
@@ -32,7 +33,7 @@ void Editor::OpenExecInPlace(const std::string &args) {
         status_message_ = "Usage: :exec <program> [arguments] -- e.g. :exec firefox";
         return;
     }
-    if (!gui_backend_) gui_backend_ = mep::gui_embed::CreateBackend(native_window_handle_);
+    EnsureGuiBackend();
     std::string why;
     if (!gui_backend_->Usable(&why)) {
         status_message_ = "Cannot show a program's window here: " + why;
@@ -98,7 +99,11 @@ bool Editor::ExecAppViewOf(int buffer_id, ExecAppView *out) const {
     }
     switch (sess.app->GetState()) {
         case State::Starting: out->status = "starting " + sess.label + " ..."; break;
-        case State::NoWindow: out->status = sess.label + " is running but has not opened a window -- :bd stops it"; break;
+        case State::NoWindow: {
+            const std::string why = gui_backend_ ? gui_backend_->WhyNoWindow() : std::string();
+            out->status = sess.label + " is running but has not opened a window" + (why.empty() ? "" : " (" + why + ")") + " -- :bd stops it";
+            break;
+        }
         case State::Shown: out->shown = true; out->status.clear(); break;
         case State::Exited:
             if (sess.app->HandedOff() || sess.app->ExitCode() == 0) {
@@ -117,7 +122,14 @@ void Editor::ExecAppPlace(int buffer_id, const mep::gui_embed::Rect &full, const
     auto it = exec_apps_.find(buffer_id);
     if (it == exec_apps_.end() || !it->second.app) return;
     it->second.placed = full;
+    it->second.pointer.clip = clip;
+    it->second.pointer.placed_now = true;
     it->second.app->Place(full, clip);
+}
+
+mep::gui_embed::EmbeddedApp *Editor::ExecAppOf(int buffer_id) {
+    auto it = exec_apps_.find(buffer_id);
+    return it == exec_apps_.end() ? nullptr : it->second.app.get();
 }
 
 void Editor::ExecAppFocus(int buffer_id) {
@@ -191,6 +203,10 @@ void Editor::ExecAppsTick(bool allow_unowned) {
             ++it;
         }
     }
+    // A chord of mep's own the program was kept from: run once the loop is
+    // done (it may close a pane, and with it an entry of exec_apps_).
+    std::string chord;
+    unsigned chord_mods = 0;
     for (auto &kv : exec_apps_) {
         const int buffer_id = kv.first;
         ExecAppSession &sess = kv.second;
@@ -231,6 +247,7 @@ void Editor::ExecAppsTick(bool allow_unowned) {
             if (lost) {
                 exec_app_focus_ = -1;
                 status_message_ = "Back in mep";
+                app.TakeReservedChord(&chord, &chord_mods);
             }
         }
         if (state == State::Exited && before != State::Exited) {
@@ -238,10 +255,13 @@ void Editor::ExecAppsTick(bool allow_unowned) {
             status_message_ = sess.label + " has closed";
         }
     }
+    if (!chord.empty()) RunReservedChord(chord, chord_mods);
 }
 
 void Editor::ExecAppsEndFrame() {
     for (auto &kv : exec_apps_) {
+        kv.second.pointer.visible = kv.second.pointer.placed_now;
+        kv.second.pointer.placed_now = false;
         if (!kv.second.app) continue;
         kv.second.app->EndFrame();
         if (exec_app_focus_ == kv.first && kv.second.app->TakeFocusLost()) {
@@ -276,4 +296,252 @@ void Editor::HandleExecAppInput() {
         // Anything else is the program's to have, once it has the keyboard.
         cp = gfx::GetCharPressed();
     }
+}
+
+// --- Windows mep draws itself (EmbeddedWindow::DrawnByMep) -------------------
+// A program on a private display (gui_embed_xvfb.cpp) is shown only as the
+// picture DrawPane / DrawMepmlGui draw, so mep is what gets its pointer and
+// keys: they are passed on from here. The keyboard never leaves mep, which
+// is what keeps mep's own chords (mod1 pane moves, tabs) mep's while a
+// program "has" it.
+
+namespace {
+
+// The X11 keysym of a key mep reads as a key rather than as text (0: none).
+unsigned KeysymOf(gfx::Key key) {
+    using K = gfx::Key;
+    if (key >= K::A && key <= K::Z) return 'a' + static_cast<unsigned>(key - K::A);
+    if (key >= K::Zero && key <= K::Nine) return '0' + static_cast<unsigned>(key - K::Zero);
+    switch (key) {
+        case K::Escape: return 0xff1b;
+        case K::Enter: return 0xff0d;
+        case K::KpEnter: return 0xff8d;
+        case K::Backspace: return 0xff08;
+        case K::Tab: return 0xff09;
+        case K::Delete: return 0xffff;
+        case K::Insert: return 0xff63;
+        case K::Home: return 0xff50;
+        case K::End: return 0xff57;
+        case K::PageUp: return 0xff55;
+        case K::PageDown: return 0xff56;
+        case K::Left: return 0xff51;
+        case K::Up: return 0xff52;
+        case K::Right: return 0xff53;
+        case K::Down: return 0xff54;
+        case K::Space: return ' ';
+        case K::Minus: return '-';
+        case K::Equal: return '=';
+        case K::LeftBracket: return '[';
+        case K::RightBracket: return ']';
+        case K::Backslash: return '\\';
+        default: return 0;
+    }
+}
+
+// Keys that are never text: always passed on as keys (letters, digits and
+// the like only with a modifier -- plain, they come as text).
+bool NeverText(gfx::Key key) {
+    using K = gfx::Key;
+    switch (key) {
+        case K::Escape: case K::Enter: case K::KpEnter: case K::Backspace: case K::Tab: case K::Delete: case K::Insert:
+        case K::Home: case K::End: case K::PageUp: case K::PageDown: case K::Left: case K::Up: case K::Right: case K::Down:
+            return true;
+        default: return false;
+    }
+}
+
+bool Within(const mep::gui_embed::Rect &r, float x, float y) {
+    return x >= static_cast<float>(r.x) && y >= static_cast<float>(r.y) && x < static_cast<float>(r.x + r.w) && y < static_cast<float>(r.y + r.h);
+}
+
+mep::gui_embed::Rect Intersect(const mep::gui_embed::Rect &a, const mep::gui_embed::Rect &b) {
+    mep::gui_embed::Rect c;
+    c.x = std::max(a.x, b.x);
+    c.y = std::max(a.y, b.y);
+    c.w = std::min(a.x + a.w, b.x + b.w) - c.x;
+    c.h = std::min(a.y + a.h, b.y + b.h) - c.y;
+    return c;
+}
+
+// One program's share of this frame's pointer. `wheel_ok`: the wheel over
+// it is its own (else it scrolls what is under it, the document).
+// `covered`: one of mep's popups is up, maybe over it -- clicks are the
+// popup's.
+bool FeedPointer(mep::gui_embed::EmbeddedApp &app, const mep::gui_embed::Rect &full, Editor::EmbeddedPointerState &p, gfx::Vector2 wheel,
+                 bool wheel_ok, bool covered) {
+    if (!app.DrawnByMep() || !p.visible) {
+        p.held = 0;
+        return false;
+    }
+    const gfx::Vector2 m = gfx::GetMousePosition();
+    const bool inside = Within(Intersect(full, p.clip), m.x, m.y);
+    // A drag that began on it keeps going to it outside, until let go.
+    if (!inside && p.held == 0) return false;
+    const int x = std::clamp(static_cast<int>(m.x) - full.x, 0, std::max(0, full.w - 1));
+    const int y = std::clamp(static_cast<int>(m.y) - full.y, 0, std::max(0, full.h - 1));
+    if (x != p.x || y != p.y) {
+        app.PointerMove(x, y);
+        p.x = x;
+        p.y = y;
+    }
+    static const std::pair<gfx::MouseButton, int> kButtons[] = {
+        {gfx::MouseButton::Left, 1}, {gfx::MouseButton::Middle, 2}, {gfx::MouseButton::Right, 3}};
+    for (const auto &[button, n] : kButtons) {
+        const int bit = 1 << n;
+        if (inside && !covered && gfx::IsMouseButtonPressed(button)) {
+            app.PointerButton(n, true);
+            p.held |= bit;
+        }
+        if ((p.held & bit) && !gfx::IsMouseButtonDown(button)) {
+            app.PointerButton(n, false);
+            p.held &= ~bit;
+        }
+    }
+    if (!inside || covered || !wheel_ok || (wheel.x == 0.0f && wheel.y == 0.0f)) return false;
+    // Whole notches only: a trackpad's small steps add up to one.
+    auto notches = [&app](float *acc, float move, int up, int down) {
+        *acc += move;
+        for (; *acc >= 1.0f; *acc -= 1.0f) {
+            app.PointerButton(up, true);
+            app.PointerButton(up, false);
+        }
+        for (; *acc <= -1.0f; *acc += 1.0f) {
+            app.PointerButton(down, true);
+            app.PointerButton(down, false);
+        }
+    };
+    notches(&p.wheel_y, wheel.y, 4, 5);
+    notches(&p.wheel_x, wheel.x, 6, 7);
+    return true;
+}
+
+}  // namespace
+
+bool Editor::HandleEmbeddedPointer(gfx::Vector2 wheel) {
+    bool wheel_taken = false;
+    const bool covered = mode_ == Mode::Picker || mode_ == Mode::Command || mode_ == Mode::WhichKey || mode_ == Mode::Prompt ||
+                         mode_ == Mode::Confirm;
+    for (auto &kv : exec_apps_)
+        if (kv.second.app) wheel_taken |= FeedPointer(*kv.second.app, kv.second.placed, kv.second.pointer, wheel, !wheel_taken, covered);
+    // A document's block takes the wheel only while it has the keyboard:
+    // otherwise the wheel scrolls the document past it.
+    for (auto &kv : mepml_guis_)
+        if (kv.second.app)
+            wheel_taken |=
+                FeedPointer(*kv.second.app, kv.second.placed, kv.second.pointer, wheel, !wheel_taken && mepml_gui_focus_ == kv.first, covered);
+    return wheel_taken;
+}
+
+void Editor::ReleaseDrawnAppKeyboard() {
+    if (exec_app_focus_ >= 0) {
+        if (mep::gui_embed::EmbeddedApp *app = ExecAppOf(exec_app_focus_)) app->Focus(false);
+        exec_app_focus_ = -1;
+    }
+    if (mepml_gui_focus_ >= 0) {
+        if (mep::gui_embed::EmbeddedApp *app = MepmlGuiAppOf(mepml_gui_focus_)) app->Focus(false);
+        mepml_gui_focus_ = -1;
+    }
+}
+
+bool Editor::HandleEmbeddedKeys() {
+    mep::gui_embed::EmbeddedApp *app = nullptr;
+    bool still_there = false;  // its pane (or document) is still the one being worked in
+    if (exec_app_focus_ >= 0) {
+        app = ExecAppOf(exec_app_focus_);
+        still_there = CurPane().buffer_id == exec_app_focus_;
+    } else if (mepml_gui_focus_ >= 0) {
+        app = MepmlGuiAppOf(mepml_gui_focus_);
+        auto it = mepml_guis_.find(mepml_gui_focus_);
+        still_there = it != mepml_guis_.end() && it->second.buffer_id == CurrentBufferId();
+    }
+    if (!app || !app->DrawnByMep()) return false;
+    // Moved away (a mod1 pane move, a buffer switch): the keyboard stays
+    // with mep.
+    if (!still_there) {
+        ReleaseDrawnAppKeyboard();
+        status_message_ = "Back in mep";
+        return false;
+    }
+    // Something of mep's own is up (a picker, the command line): its keys.
+    if (mode_ != Mode::Normal && mode_ != Mode::ExecApp) return false;
+    const bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+    const bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+    const bool super = gfx::IsKeyDown(gfx::Key::LeftSuper) || gfx::IsKeyDown(gfx::Key::RightSuper);
+    const unsigned mods = (shift ? mep::gui_embed::kModShift : 0u) | (ctrl ? mep::gui_embed::kModCtrl : 0u) |
+                          (alt ? mep::gui_embed::kModAlt : 0u) | (super ? mep::gui_embed::kModSuper : 0u);
+    const bool chord = ctrl || alt || super;
+    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
+        if (ctrl && key == gfx::Key::Backslash) {
+            ReleaseDrawnAppKeyboard();
+            while (gfx::GetCharPressed() > 0) {
+            }
+            status_message_ = "Back in mep";
+            return true;
+        }
+        if (!NeverText(key) && !chord) continue;  // (comes as text, below)
+        if (const unsigned sym = KeysymOf(key)) app->Key(sym, mods);
+    }
+    // Held keys that are never text repeat here (text repeats by itself).
+    // Only a genuine repeat: IsKeyPressedRepeat is also true on the press
+    // the loop above already passed on.
+    static const gfx::Key kRepeating[] = {gfx::Key::Backspace, gfx::Key::Delete, gfx::Key::Left, gfx::Key::Right,
+                                          gfx::Key::Up,        gfx::Key::Down,   gfx::Key::PageUp, gfx::Key::PageDown};
+    for (gfx::Key key : kRepeating)
+        if (gfx::IsKeyPressedRepeat(key) && !gfx::IsKeyPressed(key)) app->Key(KeysymOf(key), mods);
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        // A chord was passed on as its key; Tab as a key already.
+        if (chord || cp == '\t') continue;
+        app->Text(static_cast<char32_t>(cp));
+    }
+    return true;
+}
+
+// --- mep's own chords, kept from a program that has the keyboard -----------
+// Where the windowing system hands a program the keys itself (a Mac app's
+// own window), the backend keeps mep's mod1 chords from it and hands them
+// back with the keyboard (EmbeddedWindow::TakeReservedChord): mod1+h moves
+// to the pane on the left whether or not a program has the keyboard.
+
+void Editor::EnsureGuiBackend() {
+    if (gui_backend_) return;
+    gui_backend_ = mep::gui_embed::CreateBackend(native_window_handle_);
+    gui_backend_->SetReservedChords([this](const std::string &key, unsigned mods) { return IsReservedChord(key, mods); });
+}
+
+namespace {
+// The name HandleMod1Shortcuts looks a chord up by ("C-S-h"), "" when the
+// chord does not hold mod1 (`mod1`: its KeyMod bit).
+std::string ChordMappingName(unsigned mod1, const std::string &key, unsigned mods) {
+    using namespace mep::gui_embed;
+    if (!(mods & mod1)) return "";
+    const bool ctrl = mod1 != kModCtrl && (mods & kModCtrl);
+    const bool shift = mod1 != kModShift && (mods & kModShift);
+    if (ctrl && shift) return "C-S-" + key;
+    if (ctrl) return "C-" + key;
+    if (shift) return "S-" + key;
+    return key;
+}
+}  // namespace
+
+unsigned Editor::Mod1Bit() const {
+    switch (mod1_) {
+        case ModKey::Alt: return mep::gui_embed::kModAlt;
+        case ModKey::Control: return mep::gui_embed::kModCtrl;
+        case ModKey::Shift: return mep::gui_embed::kModShift;
+        case ModKey::Super: return mep::gui_embed::kModSuper;
+    }
+    return mep::gui_embed::kModAlt;
+}
+
+bool Editor::IsReservedChord(const std::string &key, unsigned mods) const {
+    const std::string name = ChordMappingName(Mod1Bit(), key, mods);
+    if (name.empty()) return false;
+    auto it = mod1_mappings_.find(name);
+    return it != mod1_mappings_.end() && !it->second.normal_only;
+}
+
+void Editor::RunReservedChord(const std::string &key, unsigned mods) {
+    auto it = mod1_mappings_.find(ChordMappingName(Mod1Bit(), key, mods));
+    if (it != mod1_mappings_.end() && lua_) lua_->CallRef(it->second.lua_ref);
 }

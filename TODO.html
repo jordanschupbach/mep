@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Untitled</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+</head>
+<body>
+<h1>todo management</h1>
+<h1>fix test sidebar for mep</h1>
+<h1>Create basic music player</h1>
+<h1>Fix bindings in yt player</h1>
+<h1>Add mail client</h1>
+<h1>Add TODO management to mepml docs</h1>
+<h1>Add</h1>
+<h1>lua formatter</h1>
+<p>I'd like an inhouse version of a formatter for lua. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).</p>
+<h1>java formatter</h1>
+<p>I'd like an inhouse version of a formatter for java. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).</p>
+<h1>c formatter</h1>
+<p>I'd like an inhouse version of a formatter for c. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).</p>
+<h1>octave lsp engine</h1>
+<p>I'd like an inhouse LSP engine for octave. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)</p>
+<h1>java lsp engine</h1>
+<p>I'd like an inhouse LSP engine for Java. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)</p>
+<h1>link formatting</h1>
+<p>Change links in org mode to be rendered to have an underline underneath it. </p>
+<h1>add themes</h1>
+<p>investigate what themes there and which ones appear to be missing and then
+implement them. The more the better.</p>
+<h1>fix exiting sidebar bug (specifically when exiting todo editor)</h1>
+<p>  :LOGBOOK:
+  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:46] =&gt;  0:03
+  CLOCK: [2026-09-19 Sat 09:43]--[2026-09-19 Sat 09:43] =&gt;  0:00
+  :END:</p>
+<h1>fix buffer sidebar</h1>
+<p>    The buffer sidebar has some behavior, where, if I click on a buffer, it opens
+    that buffer within the current pane (which is the buffer sidebar). Instead,
+    I'd like that behavior on double click, except opening to a buffer to its
+    right (i.e not inside the buffer sidebar buffer). Then, I'd also like
+    click-hold and drag capabilities to drag and drop those buffers into panes
+    visible in the windows. We have this capability for the filetree, so maybe we
+    can reuse some of that logic there. Can you implement these?</p>
+<h1>Add a 'gd' binding for 'go debug' to start a debugging session for the current file</h1>
+<p>  in the language's debugger. This should be language specific, and should use
+  the language's debugger (e.g. for R, it should use R's built-in debugger to
+  start a debugging session for the current file). Can you implement this? In
+  python it should use pdb, and in C/C++ it should use gdb or lldb. Can you
+  implement these?</p>
+<h1>Add C++ language mode</h1>
+<p>I'd like a C++ language mode that has a terminal for running the current file's
+executable, a compiler explorer like sidebar, and a hex exploration like sidebar. Can you implement these?</p>
+<h1>have ability to create folds</h1>
+<h1>Get browser working </h1>
+<h1>deleting a tab is just deleting four spaces, not a tab</h1>
+<p>One Backspace press in a line's leading whitespace now eats the whole soft
+tab -- back to the previous 4-column tab stop, not one space -- and Delete
+does the same forwards. A literal <code>\t</code> was always one press, so only the
+soft-tab case changed. Spaces that are not indentation (between words, after
+text) still go one at a time, since it is the leading run that is an indent.
+<code>:set nosmarttab</code> puts the old one-space-per-press behaviour back.</p>
+<p>Pasting was the other half of the same complaint (code arriving with the
+indentation of wherever it was copied from): a multi-line paste is now
+re-aligned onto the indent of where it lands, keeping its own internal
+nesting -- <code>p=/=P</code> align it with the line it lands on (Vim's <code>]p</code> rule, the
+one that leaves <code>yyp</code> duplicating a line exactly), and an Insert-mode paste
+(Ctrl-Shift-V, Ctrl-R) uses the indent the cursor already sits at, so opening
+a line with <code>o</code> and pasting puts the block at that line's auto-indent. Tabs in the pasted text are measured
+as four columns and re-emitted in whatever the target line indents with.
+<code>:set nopasteindent</code> pastes byte for byte again. The policy itself is in
+<code>src/indent.cpp</code> (<code>ReindentPastedText</code>, <code>IndentBackspaceWidth</code>,
+<code>IndentDeleteWidth</code>), unit-tested in <code>src/indent_test.cpp</code>.</p>
+<h1>commit popup binding</h1>
+<p>In commit messages, I can quit by pressing escape. I'd like this to not be the case. To abort, I can press mod+d (alt+d), or do :bd. Implement this.</p>
+<p>Done: <code>mep.float_open</code> grew an <code>escape_dismiss</code> option (default true, so
+every other float is untouched) and the git commit float passes false, so
+<code>Escape</code> there only leaves Insert mode. Aborting is <code>mod1+d</code> (which already
+closed the float, via <code>pane_close_buffer</code>) or <code>:bd</code> -- the latter no longer
+stops at "E37: No write since last change", since a float that never writes
+its buffer leaves the file on disk untouched either way. <code>ZZ</code> still commits.</p>
+<h1>org table formatting</h1>
+<p>There's a bug in org table formatting, where, links dont get properly formatted. May be related to precedence when formatting org tables between link formatting and column formatting (w auto page wrapping).  Investigate and fix.</p>
+<ul>
+<li>It was exactly the precedence you guessed: column formatting ran first. The over-wide-table wrap (`Editor::OrgTableWrapScan` -&gt; `PlanOrgTableWrap`) measured, re-budgeted and wrapped each cell as its <b>raw markup</b>, so a cell holding `[[file:docs/lua-api.org][Lua API]]` was billed fifty columns for the seven it draws as. Two visible symptoms, both on this repo's own README: the Documentation table (155 raw columns, 78 rendered) was wrapped although it fits, and once wrapped its cells were hard-split mid-URL (`<a href="docs/architecture.org">Architectu` / `re</a>`) and drawn as plain unstyled text, because a wrapped row's own decorations are skipped -- its stored columns aren't the drawn ones.</li>
+<li>Link formatting now runs first. `OrgTableCellDisplayText` (org_doc.h) renders a cell the way the row itself is rendered -- each `<a href="target">desc</a>` stood down to `desc` while concealment is on, a bare URL left alone either way -- and the planner lays the columns out around <b>that</b>, so the widths and the wrap points are the ones the reader sees. The README table stops wrapping entirely; one that genuinely is too wide now wraps on word boundaries in the description instead of through the middle of a URL.</li>
+<li>The links survive the wrap rather than being flattened into it: the plan carries each one through as an `OrgTableWrapLink` in the rendered line's own columns (one span per line a description spans, with the word-break pieces merged back), so DrawPane paints the same Blue underline every other org link gets and registers a click region for it. Clicking a link inside a wrapped table follows it now -- by target, via `Editor::OrgFollowLinkTargetOn`, since there is no stored column to hand `OrgFollowLinkAt`. `&lt;leader&gt;otm` re-plans the table on the spot, because concealment is what decides a link cell's width.</li>
+<li>The other half, once the wrapped case was right: a link table that <b>fits</b> still drew badly. The file pads such a table to its markup's width and the renderer holds every `|` at the column the raw text puts it (the cell-local conceal collapse), so the README's own Documentation table rendered as a 24-column description followed by 31 columns of dead gutter before the pipe. `OrgTableWrapScan` now draws a table from its layout whenever that layout is genuinely narrower than the stored rows, not only when the table overflows `:set textwidth` -- so the columns close up to what they draw as. A table already as tight as its layout, and an unaligned one whose layout comes out <b>wider</b>, are both left alone, so nothing about a link-free table changes.</li>
+<li>Concealed links draw with the Blue face and no underline, which is what `OrgLinkScan`'s concealing overlay does; raw markup and bare URLs keep the underline. The layout carries the distinction as `OrgTableWrapLink::concealed` so the two renderers can't drift.</li>
+<li>`:MepOrgTableAlign` is deliberately untouched: it pads the <b>file</b>, which the raw-column renderer needs, so raw widths stay the right thing to write -- the tightening is display-only, and `&lt;leader&gt;otw` turns it off along with the rest of the layout. The row the cursor is on still steps aside to its stored columns (the caret has to land on the character it is editing), so that one row shows its markup and its own wider pipes -- the same trade-off over-wide tables already made. Covered by new `PlanOrgTableWrap`/`OrgTableCellDisplayText` cases in org_doc_test.cpp, including the link-free table that must not move.</li>
+</ul>
+<h1>org table render</h1>
+<p>I'd like org tables to render better. Should have slightly different backgrounds
+one row after the other. I'd also like there to be a rounded border, similar to
+the style that org code blocks have.</p>
+<h1>c++ formatter</h1>
+<p>I'd like an inhouse version of a formatter for c++. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).</p>
+<ul>
+<li>Done: `src/cpp_format.{h,cpp}`, a dependency-free clang-format-shaped formatter. It includes `&lt;string&gt;`, `&lt;vector&gt;`, `&lt;algorithm&gt;` and `&lt;cctype&gt;` and nothing else, spawns nothing, links no LLVM and needs no `.clang-format`, so `gf` on a C++ buffer works in a fresh checkout with no toolchain at all and answers instantly. `mep.format_languages.cpp = {builtin = 'format_cpp', name = ..., width = 100}` (kBuiltinFormat, src/main.cpp), the same `spec.builtin` dispatch the Python and R formatters use; `.cc/.cxx/.h/.hpp/.hh/.hxx/.ipp/.inl/.cu/.cuh` alias onto it, and `#+begin_src cpp` org blocks get it for free. `mep.format_cpp(text[, width])` is the Lua binding. `c` itself is still on clang-format -- the C formatter entry above is its own task, and this engine handles C already, so that one is mostly a wiring decision.</li>
+<li>Style target is clang-format in the dialect mep's own source is written in: 4-space indents, `Type *name`, `if (x)` spaced and `foo(x)` not, namespace bodies unindented, access specifiers flush with the class, `case` labels a level inside the switch, continuations aligned under the open bracket and bin-packed, runs of trailing `//` comments lined up in one column with two spaces in front of them, a braced initializer with a trailing comma left exploded, 100 columns. Calibrated against clang-format run with the matching style: **89% of output lines over mep's own 217 C++ sources are byte-identical** to it, 82% over 300 real files from the nix store, and the remainder are the deliberate differences cpp_format.h lists.</li>
+<li>It reformats the <b>token stream</b> rather than parsing to a tree: lex, group into unwrapped lines at `;`/`{`/`}`/labels, re-render each under a spacing table, split the too-long ones greedily at their member-init colon, assignment, lowest-precedence top-level operator or brackets. cpp_format.h lists the known gaps (no macro-body formatting, no comment reflow, no `#include` sorting, no `}  // namespace foo` fixups, greedy rather than optimal breaking, and short forms preserved rather than imposed -- `if (c) return;` stays on one line if that is how it was written, and nothing is ever <b>joined</b> that the input had apart).</li>
+<li>Safety is exact here in a way it could not be for Python: the formatter only moves whitespace, so the output is re-lexed and compared to the input token for token with <b>no</b> tolerance beyond trailing whitespace inside comments. That makes every C++ ambiguity a token stream cannot settle -- `&lt;` template vs less-than, `*` pointer vs multiply, `{` block vs braced-init -- cosmetic by construction: a wrong guess moves a space and the check proves it moved nothing else. The one place whitespace is genuinely semantic, `#define X(a)` vs `#define X (a)`, is carried over from the source rather than re-derived, because no re-lexing can see it.</li>
+<li>Covered by `mep-cpp-format-test` (src/cpp_format_test.cpp, in `just test`): the spacing table, templates/operators/braces, indentation, braceless bodies, the splitter, the preprocessor, comments, blank lines, lexer corners, refusals, the 20k-nested-paren guard, a token-shape property test over 40 awkward snippets at three widths, and idempotency asserted on every expectation. Beyond that it was run over **25k real C++ files** from the nix store (plus every one of mep's own), checking three things per file: clang's own raw lexer (`clang -cc1 -dump-raw-tokens`) agrees the token streams of input and output are identical, formatting twice is a fixed point, and anything it cannot prove is a refusal rather than a rewrite. The only refusals left in that corpus are two bison `.cc` m4 skeletons, which are not C++.</li>
+</ul>
+<h1>python formatter</h1>
+<p>I'd like an inhouse version of a formatter for python. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).</p>
+<ul>
+<li>Done: `src/python_format.{h,cpp}`, a dependency-free black-shaped formatter. It includes `&lt;string&gt;`/`&lt;vector&gt;` and nothing else, spawns nothing, and needs no `black`/`ruff`/Python on PATH -- `gf` in a .py buffer now works in a fresh checkout. Wired as `mep.format_languages.py = {builtin = 'format_python', name = ..., width = 88}` (kBuiltinFormat, src/main.cpp), the same `spec.builtin` dispatch the R formatter uses, so `#+begin_src python` org blocks get it for free. `mep.format_python(text[, width])` is the Lua binding.</li>
+<li>It reformats the <b>token stream</b> rather than parsing to a tree the way black does: tokenize, group into logical lines, re-render under a spacing table, split the too-long ones at their brackets. That covers 4-space indents, double quotes, 88 columns, kwarg/annotation/slice/`**` spacing, `;` and one-line-suite splitting, blank-line rules, the magic trailing comma and black's two-stage bracket split. python_format.h lists what it deliberately does not do -- no invented parentheses, no `match` statement handling (soft keywords need a real parser), comments normalized but not relocated.</li>
+<li>Safety is the design point, since `gf` overwrites a live buffer: every result is re-tokenized and compared against the input before it is returned (`VerifyEquivalent`), tolerating only the changes the formatter is entitled to make -- and only <b>inert</b> added trailing commas, so a comma that would turn `(a + b)` into a tuple or `case (A | B):` into a sequence pattern is caught rather than waved through. Any mismatch, or any syntax error, refuses with a message and leaves the buffer alone.</li>
+<li>Verified against a real corpus: 51k .py files from the nix store, each checked for ast.parse equality (with the `u` prefix normalized, since dropping it is intended) and byte-identical idempotency, plus `mep-python-format-test`. Bugs it found and that are fixed: `;` splitting across a one-line suite header (moved a statement out of its `if`), comments stranded between implicitly concatenated strings (swallowed the rest of the line, and were emitted twice), the soft-keyword `case (...)` pattern bug above, PEP 701 nested f-strings, t-strings, and raw-string `\'`. Per the recipe's in-process rule there is a `kMaxNest` cap: 20k nested parens segfaulted the editor before it.</li>
+</ul>
+<h1>r formatter</h1>
+<p>I'd like an inhouse version of a formatter for R. Can you implement one? I'd
+like it to run without previously exisiting linters (i.e. entirely inhouse).</p>
+<ul>
+<li>Landed as src/r_format.{h,cpp}: a complete R formatter of mep's own -- lexer, recursive-descent parser over R's real precedence table (?Syntax), and a width-driven printer -- with no dependency on `air`, `styler` or an R installation. `gf` on an R buffer now runs it in-process: mep.format_languages.R is `{builtin = 'format_r', width = 80}`, a third entry shape alongside the existing filter/`mode = 'file'` ones, dispatched at the top of mep_format_run (kBuiltinFormat, main.cpp) and exposed to Lua as mep.format_r(text[, width]). Org `#+begin_src R` blocks get it through the same table.</li>
+<li>The style is tidyverse/air's: two-space indent, spaces around binary operators except the tight ones (^ : :: ::: $ @), statement `=` to `&lt;-`, single- to double-quoted strings, `#comment` to `# comment` (roxygen `#'` and shebangs untouched), and an 80-column margin that argument lists, operator chains and pipelines break to respect -- with the "hug" rule that keeps a trailing block on the call's own line (`test_that("x", {`). On the samples checked against real `air`, the only layout difference is a mixed `&amp;&amp;`/`||` condition, which air breaks at every operator and this breaks only where it has to.</li>
+<li>Deliberately <b>not</b> done: it never adds braces to a brace-less if/for body (air does) and never rewrites `%&gt;%` to `|&gt;`. Both change the code rather than its layout.</li>
+<li>Comments survive wherever they were written -- above a statement, trailing it, after the operator they follow (`x &lt;- a + # why`), or alone before a closing delimiter -- as do single blank lines between statements (runs of them collapse to one).</li>
+<li>Two safety properties, because this rewrites the buffer in place and runs inside the editor: Format() re-tokenizes its own output and compares it token-for-token against the input (Signature), returning the input untouched if anything but its own intended rewrites moved; and nesting deeper than kMaxNest is refused rather than recursed into, so a pathological file is an error message instead of a stack overflow. A file that does not parse comes back byte-identical with the failing line reported.</li>
+<li>Covered by mep-r-format-test (src/r_format_test.cpp, in `just test`), every case asserted for both output and idempotency. Beyond that, the formatter was run over 153 real R files (base R's own demos/scripts plus package sources) and each result fed to R itself: `parse()` of the input and of the output are `identical` for all 153, and formatting twice is a no-op for all 153.</li>
+</ul>
+<h1>smooth scroll</h1>
+<p>I'd like smooth scrolling in org files. When going over a figure, I'd like j,k
+to scroll one line at a time until the position of the top or bottom of the
+figure scrolls past the center of the height of the window (i.e. where the
+cursor should be emulated from (but not visible, while going over the image),
+depending how on which way the user is scrolling.</p>
+<ul>
+<li>A pane's scroll position now has a sub-row part (Pane::scroll_sub, editor.h): how many of the top row's own visual slots are above the top of the pane. It is 0 everywhere except over an org inline image, which is one buffer row drawn many line-heights tall (OrgImageLayoutFor), and DrawPane applies it once as a shift of the slot grid all four of its walkers share, so nothing else had to learn about a partial top row. Editor::ScrollFigureStep is the rule this task asked for: while the cursor is on a figure, j/k (and each mouse-wheel step) move the <b>view</b> by one visual line and leave the cursor where it is, until the edge the press is travelling toward -- the figure's bottom going down, its top going up -- has passed the middle of the pane, which is where the caret conceptually rides while it is over a figure; the next press then steps the cursor off the figure as it would off any other row. Stepping onto a figure from the row above or below reveals exactly one line of it, at the edge it came from, so the slide starts from there rather than from a screenful already scrolled past, and stepping off it scrolls the remainder away one line per press instead of jerking it off in one go. A counted "10j", an operator's motion ("dj"), Visual mode and the explicit scroll commands (Ctrl-D/zz/zt/zb, which reset the sub-row offset) all behave exactly as before. Verified in a spawned instance over the agent socket, on a 13-slot figure in a 12-line pane: j held the cursor on the figure row for 18 presses while scroll_row/scroll_sub advanced one slot each, released it once the bottom edge crossed the middle, and k retraced the same path in reverse; state.dump now reports `scroll_sub` alongside `scroll_row` so this is observable.</li>
+</ul>
+<h1>error binding</h1>
+<p>I'd like a binding for going to the next error, should be [e and ]e. Once the
+error has been jumped to, id like a popup to show the error message(s). Should
+be able to select error in popup (ctrl+n, ctrl+p) and yank the error message to
+the clipboard (y).</p>
+<h1>lsp status</h1>
+<p>I'd like org mode code blocks to give status of running lsp at the bottom of a
+code block (separated by a horizontal line (from the code part of the block).</p>
+<ul>
+<li>Landed on the `#+end_src` row itself -- the block card already conceals that row and paints it as blank floor, so the status line costs no extra slot and none of the four slot walkers that must agree on a row's height had to change. A rule across the card's inner width separates it from the code above; a severity dot plus one line of text sits under it.</li>
+<li>Five states, in the block's own terms: `LSP: no server for &lt;lang&gt;` / `LSP: no language set` when nothing can ever attach, `&lt;server&gt;: idle (attaches on first use)` for a block no LSP feature has run in yet, `&lt;server&gt;: starting...`, `&lt;server&gt;: not running` (spawn failed, or the client died), and `&lt;server&gt;: ready, 2 errors, 1 warning` counting only diagnostics inside that block's own body rows. The dot is green/yellow/ red; counts outrank state, so a healthy client reporting errors reads red.</li>
+<li>Split the way the rest of the org render stack is: Lua owns the facts (mep.org_lsp_status_scan in kBuiltinOrgPolyglot -- shadows, clients, mep.lsp_servers and mep_lsp_diagnostics are all Lua-side), C++ owns the wording (FormatOrgLspStatus/OrgLspStatusToneOf, org_doc.cpp, covered by mep-org-doc-test) and the drawing (DrawPane). The scan is not per-frame: it reruns on a buffer change, a file change or a new mep_polyglot_epoch, with a 2s floor so a <b>dying</b> server (which has no event to hook) still stops reading "ready".</li>
+<li>Toggled with &lt;leader&gt;ots / :MepOrgLspStatusToggle, on by default, and revealed like every other concealed row: put the cursor on `#+end_src` and the raw text comes back in place of the status.</li>
+<li>Also fixed, found while building this: mep_polyglot_restart_shadow_client called mep_polyglot_server_for without the block's lang_def, so the extension-based lookup that function exists for degraded to a bare language-name lookup and resolved "no server" for every language whose name and extension differ. Latent, not live -- its only caller is the c/cpp compile-database rewrite, and those two languages happen to have name == extension.</li>
+</ul>
+<h1>c++ lsp engine</h1>
+<p>I'd like an inhouse LSP engine for C++. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)</p>
+<ul>
+<li><code>mep-cpp-lsp</code> (src/cpp_lsp_server.cpp) now ships beside <code>mep</code> the way <code>mep-org-lsp</code>, <code>mep-r-lsp</code> and <code>mep-python-lsp</code> do, and attaches to every C++ buffer by itself (<code>cpp_ls</code> in <code>kBuiltinLsp</code>; clangd keeps its entry and <code>c</code>, and one line in init.lua swaps them back). Entirely in-house: no compiler, no <code>compile_commands.json</code>, no clangd, nothing to install.</li>
+<li>The front end is a real C++ front end, in three parts. <code>src/cpp_ast.cpp</code> is the tokenizer (line splices, raw strings, digit separators, every literal prefix and user-defined suffix) <b>and</b> a modelled preprocessor: directives are parsed, <code>#if</code> groups are evaluated against the macros the file itself defines plus a host-shaped predefined set (<code>__cplusplus</code>, <code>__GNUC__</code>, <code>__linux__</code>, the <code>__cpp_*</code> feature-test macros, <code>__FILE__</code>), and macros are expanded -- object-like and function-like, with <code>#</code>, <code>##</code> and <code>__VA_OPT__</code>. Only the surviving branch reaches the parser, which is what keeps <code>#ifdef __cplusplus</code> / <code>extern "C" {</code> from unbalancing every header.</li>
+<li><code>src/cpp_parse.cpp</code> is a recursive-descent parser for C++20: templates with packs and <code>requires</code> clauses, concepts, lambdas with capture lists, structured bindings, coroutines, attributes, <code>operator</code> overloads, pointers to members, fold expressions, designated initializers, <code>if</code> with an init-statement. The three things C++ cannot decide without a symbol table each get a documented heuristic: declaration vs expression (and a <b>rollback</b> to expression when the declaration does not parse), template argument list vs less-than (<code>a &lt; b &amp;&amp; c &gt; d</code> stays two comparisons; a name used as a template elsewhere in the file relaxes the rule), and what an unknown SHOUTED identifier means in declaration position -- which is what makes <code>MEP_EXPORT void f();</code>, <code>Q_OBJECT</code>, <code>TEST_F(F, N) { }</code> and <code>_GLIBCXX_VISIBILITY(default)</code> parse rather than light up red.</li>
+<li>Verified against three corpora rather than by eye: mep's own ~210 sources and headers (79k lines) parse with <b>*zero*</b> syntax errors, 589 libstdc++ headers with 515 (a third of them in one header that is not a translation unit at all), and a 1,500-file sample of nix-store C++ with 677 -- nearly all of them Boost-style macro metaprogramming or SWIG-generated wrappers. A 49,000-line file parses in ~250 ms.</li>
+<li>The analysis half is a real scope model (<code>src/cpp_lsp.cpp</code>): namespaces that re-open, classes with their bases, functions whose out-of-class definitions see both the class's members <b>and</b> the file they were written in, blocks, using-directives, and two resolution passes so a member function's body can use a member declared below it. It is also the one mep server that reads another file: a quoted <code>#include</code> that resolves next to the document is parsed too and cached by modification time, so a name from your own header resolves and go to definition lands in it.</li>
+<li>Diagnostics (<code>src/cpp_lsp_diagnostics.cpp</code>) report only what a reader could confirm from the file: syntax and preprocessor errors, unused local, unused static function, shadowed declaration, assignment in a condition, empty <code>if</code> body, self-assignment, duplicated condition, unreachable code, an expression with no effect, a member initializer list out of declaration order, virtual functions with a public non-virtual destructor, a member a fully-visible class does not have, a call with the wrong number of arguments, an undefined name, plus header-shaped checks (missing include guard, <code>using namespace</code> at file scope) and two calibrated hints (<code>NULL</code> in a file that uses <code>nullptr</code>, and an opt-in line length). Calibration against mep's own sources took it from 1,423 reports to 170, of which 87 are the "cannot find this quoted header" hint that a project's <code>includeDirs</code> setting answers.</li>
+<li>Completion (scope names, members after <code>.=/</code>-&gt;=/=::=, <code>std::</code> from a 4,000-name list generated from the real headers by <code>scripts/gen_cpp_std_names.sh</code>, standard headers inside <code>#include &lt;&gt;</code>, sibling headers inside =#include ""=), hover with the comment above the declaration, document symbols, folding (braces, comment runs, the include block, <code>#if</code> groups), definition, references, document highlight, rename and signature help -- all in <code>src/cpp_lsp_features.cpp</code>.</li>
+<li><code>mep-cpp-lsp-test</code> (src/cpp_lsp_test.cpp) drives every one of those directly, and asserts as carefully that ordinary C++ produces <b>no</b> diagnostics as that broken C++ produces them. Documented in help/cpp-lsp.org.</li>
+</ul>
+<h1>c lsp engine</h1>
+<p>I'd like an inhouse LSP engine for C. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)</p>
+<ul>
+<li><code>mep-c-lsp</code> now ships beside <code>mep</code> the way <code>mep-org-lsp</code>, <code>mep-r-lsp</code> and <code>mep-python-lsp</code> do, and attaches to any <code>.c</code> or <code>.h</code> file by itself (<code>c_ls</code> in <code>kBuiltinLsp</code>). Entirely in-house: no compiler, no <code>-I</code> flags, no <code>compile_commands.json</code>, nothing on <code>$PATH</code>. clangd keeps its entry and every C++ filetype but no longer claims <code>c=/=h</code>; swapping them back is a <code>filetypes</code> edit in <code>init.lua</code>.</li>
+<li>The front end is <code>src/c_ast.cpp</code>: a lexer that follows backslash splices, a <b>model</b> of the preprocessor, and a recursive-descent parser. The preprocessor is the part that has no counterpart in the Python server and the part the whole design turns on -- it is never run. Each <code>#if</code> group contributes exactly one arm, chosen by evaluating the condition where the file itself settles it (<code>#if 0</code>, a macro this file <code>#define=s earlier, =__cplusplus</code> which is false by construction) and by bracket balance where it does not. That last rule is what keeps the <code>#ifdef __cplusplus</code> / <code>extern "C" {</code> prologue of every public header from unbalancing the file.</li>
+<li>Verified against 2,281 hand-written C files from the nix store (generated Nim output excluded, since one generator's idioms would otherwise drive the whole calibration): 97.5% parse with no syntax error at all, and the remainder are macro-hostile long tail -- MinGW's declarator macros, C++ in a <code>.c</code> file, template files with <code>{placeholders}</code> in them.</li>
+<li>Accepting valid code proves nothing about reporting invalid code, so the parser is also mutation-tested: delete one token from a file <code>gcc -fsyntax-only</code> accepts, keep the mutants gcc then rejects, and require a diagnostic on each. 69% caught, the misses being type errors and platform-header questions this server says outright it does not answer.</li>
+<li>28 diagnostics, calibrated against the same corpus rather than against taste: 574 reports over 275,000 lines with 2,111 of the 2,281 files completely silent, and 1,028 reports with 1,885 files silent once =#include "sibling.h"= resolution is on too (the mode a real editor session runs in). The rules that got it there are in help/c-lsp.org -- the undeclared-name check switches off for a file that includes a header with no table, for a file with a syntax error, and for a file with six or more distinct unplaceable names; a function-like macro's arguments are text, not values; a name used four or more times and declared nowhere came from a macro rather than a typo; a name mentioned in a <code>#if</code> arm this server did not take is never unused; a return type that came out of a macro gets no return checking; and a quoted include that does not resolve is only mentioned when another one in the same file did.</li>
+<li>The standard library is <b>generated</b>, not remembered (<code>scripts/gen_c_names.py</code> -&gt; <code>src/c_lsp_std_names.cpp</code>, committed): 10,738 names and 7,483 real declarations read out of the real headers of 92 standard and POSIX headers with =gcc -E -dD -D_GNU_SOURCE=. So hover over <code>memcpy</code> shows the signature glibc actually declares, and nothing had to be typed from memory.</li>
+<li>Everything else the client asks for: completion (scope, struct members through typedefs and chains, tags, directives, standard and sibling headers), hover, signature help (in-file functions, function-like macros, and the standard library), document symbols, folding, go-to-definition (including into a resolved =#include "sibling.h"=), references, and rename that refuses what it cannot rename safely.</li>
+<li><code>mep-c-lsp-test</code> (<code>src/c_lsp_test.cpp</code>, in <code>just test</code>) drives all of it directly -- no process, no client, no compiler -- and asserts the silence as deliberately as the reports, including that a realistic <code>.c</code> file and a realistic <code>.h</code> file both lint completely silent. Documented in help/c-lsp.org.</li>
+</ul>
+<h1>python lsp engine</h1>
+<p>I'd like an inhouse LSP engine for python. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)</p>
+<ul>
+<li>`mep-python-lsp` (src/python_lsp_server.cpp), built and installed beside `mep` and registered as `mep.lsp_servers.python_ls` for `py` and `pyi`. Same three-file shape as the org server: a JSON-RPC wire half, a pure analysis half (src/python_lsp.cpp) and a windowless CHECK() suite (src/python_lsp_test.cpp, `mep-python-lsp-test`, in `just test`). Nothing external: no pyright, no pyflakes, no `pip`, no node -- and no Python interpreter either, at build time or at run time.</li>
+<li>Unlike org_lsp.cpp, which deliberately stays a line scanner, this one has a real front end (src/python_ast.h/.cpp): a Python 3.12+ tokenizer -- significant indentation, implicit and explicit line joining, every string prefix, PEP 701 nested f-strings, PEP 750 `t""` -- and a recursive-descent parser over it. It has to: "this name is never defined", "this import is unused", "this local is never read" are questions about <b>scopes</b>, and a scope is exactly what a line-oriented scan cannot see. f-string `{...}` fields are parsed as real expressions and positioned back inside the literal, so a typo in one is found like any other.</li>
+<li>Verified against a corpus rather than by inspection: 3,399 real files (CPython 3.13's stdlib plus numpy/pandas/matplotlib/fontTools out of the nix store, every one of which CPython itself compiles) -- zero false syntax errors, and 367 of 367 mutants (one `:` deleted per file, each confirmed a SyntaxError by CPython) caught. Five genuine parser gaps turned up that way and are fixed: nested same-quote f-strings, `t""` template strings, `case x if guard:`, PEP 617 parenthesized `with (a as b,):` item lists, and PEP 758 `except A, B:` (which is spelled exactly like Python 2's `except E, err:`, so the two are told apart by whether the last item reads as a capture name).</li>
+<li>Diagnostics: syntax (with Python 2 constructs named as such rather than reported as "invalid syntax"), scope (undefined name, unused import, unused local, redefinition), the statements Python itself would refuse (`return`/`yield`/`break`/`await`/`nonlocal` out of place, duplicate parameter), and the mistakes that compile and still bite (mutable default argument, `is` against a literal, `assert (cond, msg)`, bare `except:`, duplicate dict key, `return` inside `finally`, `raise NotImplemented`, `__init__` returning a value, a method with no `self`, dead code after `return`). There is no type checking and there will not be one here: a single file cannot see the modules it imports.</li>
+<li>The false-positive work was the bulk of it, and each suppression is tested as deliberately as the findings: the same corpus run took undefined-name from 596 reports to 60 (the survivors are mostly ssl.py/calendar.py's own runtime namespace injection, which pyflakes reports too) and unused-variable from 49,383 to 313. The five that mattered: a read marks <b>every</b> binding of that name in the scope it resolved to (not just the last, or `if/else: colno = ...` reports the first branch); a comprehension's outermost iterable is evaluated in the enclosing scope (which is the only way one in a class body can see a class variable); a string annotation counts as a <b>use</b> but never as a claim that the name exists (`Literal["w"]` must not invent one); a file with a syntax error gets no scope diagnostics at all, since mid-edit is when invented errors are least welcome; and `with pytest.raises(...): a + b` is a test, not a dead expression.</li>
+<li>Everything the server knows about the standard library is a table compiled into it (src/python_lsp_vocab.cpp, 4,417 entries: builtins, exceptions, dunders, the members of ~80 modules and of every builtin type, each with its signature and a one-line doc). Generated once by introspecting CPython 3.13 and committed, which is what lets Python support work on a machine with no Python on it.</li>
+<li>Features beyond diagnostics: context-aware completion (scope names, `os.`, `self.` including inherited members, `text.` for a local assigned a literal, `import`, `from x import`, `raise`, `def` in a class body, `@`; nothing at all inside a comment or a string, but an f-string field is code), hover, signature help (with `self` dropped for a method called through an instance, and live while typing a string argument), document symbols, folding (suites, comment runs, the import block, multi-line strings), definition (including `self.field` and an import of a sibling module, resolved to the <b>definition</b> line in that file), references, document highlight and rename -- the last two scoped to the binding under the cursor, so a local `value` and a module-level `value` stay separate.</li>
+<li>Two things outside the server itself: the tokenizer re-runs in a recovery mode when a file ends with a bracket still open, so one unfinished `f(` while typing no longer swallows every symbol, fold and diagnostic below it into one logical line; and the LSP client now passes a registry entry's `init_options` as `initializationOptions` (mep.lsp_servers.python_ls.init_options = {maxLineLength = 100} turns on the one style check, which is off by default).</li>
+<li>pyright keeps its registry entry but no longer claims `py`; handing it back is one line in init.lua, documented on the new help/python-lsp.org page.</li>
+</ul>
+<h1>R lsp engine</h1>
+<p>I'd like an inhouse LSP engine for R. Can you implement one? I'd like it to run without previously exisiting linters (i.e. entirely inhouse)</p>
+<ul>
+<li><code>mep-r-lsp</code> now ships beside <code>mep</code> the way <code>mep-org-lsp</code> does, and attaches to any <code>.R</code> file by itself (<code>r_ls</code> in <code>kBuiltinLsp</code>). Entirely in-house: it never starts R, never loads <code>languageserver</code> or <code>lintr</code>, and needs no R installed -- so it answers instantly, and opening a script cannot run it. R's own server stays registered as <code>r_languageserver</code> with no file types claimed, one line in init.lua away if you want the thing that <b>can</b> see inside installed packages.</li>
+<li>The reader is hand-written (<code>src/r_lsp_parse.cpp</code>): a lexer plus a precedence-climbing parser over R's real operator table, covering every assignment form, <code>[[</code> subscripts closed by two <code>]</code>, <code>\(x)</code> lambdas, formulas, <code>%op%</code>, raw strings and backquoted names. Newline suppression lives in the <b>parser</b>, not the lexer, so an unclosed <code>(</code> costs one statement instead of every statement boundary in the rest of the file -- a half-typed file still has an outline.</li>
+<li>On top of that, R's actual scope rules (only functions open a scope, bindings resolve position-independently, <code>&lt;&lt;-</code> reaches outward), and from those: diagnostics, completion, hover, document symbols, folding, definition, references, document highlight and signature help.</li>
+<li>Around 25 checks, each with a stable code: syntax errors, unknown names with a spelling suggestion, unused locals, <code>x =</code> NA=, <code>if (a &amp; b)</code>, <code>if (x = 1)</code>, <code>1:length(x)</code>, <code>T=/=F</code>, <code>attach()</code>, <code>library()</code> in a function, duplicate/unknown/too many arguments against real signatures, <code>break</code> outside a loop, unreachable code, and roxygen2 <code>@param</code> that names an argument the function does not have.</li>
+<li>The thing that makes a linter survive contact with real code is what it refuses to say, so: a <code>library()</code> of anything outside base R (or <code>source()=/=attach()=/a computed =get()</code>) switches the unknown-name and unused checks off for the whole file rather than reporting every tidyverse verb as undefined; both sides of a <code>~</code> formula and the quoted arguments of <code>quote=/=with=/=subset=/=aes</code> are never resolved but do still count as uses; and a function whose formals end in <code>...</code> is never argument-checked. A realistic 35-line script lints completely silent, which <code>mep-r-lsp-test</code> asserts as strictly as it asserts the true positives.</li>
+<li>Two vocabularies, both checked against a real R 4.6: 329 curated functions with their actual formals and a one-line explanation (<code>src/r_lsp_vocab.cpp</code>, verified with <code>formals(args(fn))</code>), and the full 2782-name export list of the base distribution plus its data sets, generated by <code>scripts/gen_r_names.R</code> and committed so neither the build nor the server ever needs R. The curated table is for <b>positive</b> knowledge only -- a name missing from it is never reported, which is why <code>diff()</code> and <code>iris</code> are fine.</li>
+<li>Deliberately no formatting provider: styler and air already disagree, and a third opinion inside the editor would be a liability. Documented in help/r-lsp.org, along with everything above.</li>
+</ul>
+<h1>org export</h1>
+<p>I'd like a button at the top of an org mode buffer (pane bar) for exporting the
+org document. I should be able to press the button and for the export button to
+have a dropdown menu with options: html, pdf, odt, markdown,
+ascii, etc... When I select one of these options, it should export the org document to
+that format and open it in a new pane. Can you implement this?</p>
+<ul>
+<li>An Export button (share glyph) now sits leftmost in an org buffer's pane header, under the same conditions as the `&lt;/&gt;` insert-block button next to it (a plain .org text pane, no viewer session on the buffer). Clicking it drops down HTML / PDF / ODT / Markdown / LaTeX / ASCII text; picking one writes the buffer, exports it and opens the result in a right-hand vsplit -- HTML in the browser pane, PDF in the PDF viewer, ODT in the office pane, the rest as text buffers. Exporting again refreshes that pane in place instead of stacking up new splits, reusing the Run button's own mep_run_button_show_org_output.</li>
+<li>Same thing without the mouse: `&lt;leader&gt;oee` (a format picker) and `:MepOrgExportOpen [format]`, which with no argument falls back to the document's `#+EXPORT:` keyword exactly like the Run button does.</li>
+<li>LaTeX is a new export backend of its own (mep.org_export_latex, `:MepOrgExportLatex`, `&lt;leader&gt;oel`): the same .tex the PDF backend writes, without the tectonic step, factored into one shared writer so the two can't drift.</li>
+<li>The two org header dropdowns now share one body (DrawPaneHeaderMenu, main.cpp) instead of a second hand-rolled copy of the same anchoring/ clamping/click-away logic. Documented in help/org-export.org.</li>
+</ul>
+<h1>org insert block</h1>
+<p>I'd like a button at the top of an org mode buffer (pane bar), I'd like to be
+able to insert a code block (e.g. R, python, C/C++, etc.) into the org mode buffer. Can you implement this?</p>
+<ul>
+<li>A `&lt;/&gt;` button now sits in an org buffer's pane header, left of the Run button and shown under the same conditions (a plain .org text pane, no viewer session on the buffer). Clicking it drops down twelve common languages -- Python, R, C, C++, Rust, Go, Lua, JavaScript, TypeScript, Java, Shell, Julia -- plus an "Other language..." row; picking one writes an empty `#+begin_src &lt;lang&gt;` / `#+end_src` pair at the cursor and leaves the cursor on its body line. The same insert is reachable without the mouse as `&lt;leader&gt;oi` and `:MepOrgInsertBlock` (a picker over every language org-babel registers, with a free-text entry for one it doesn't), or directly as `:MepOrgInsertBlock rust`. A blank cursor line becomes the block itself, any other line keeps its text and the block goes below it, and with the cursor already inside a block the new one lands after that block's `#+end_src` instead of nesting inside it. The insert itself is Lua (kBuiltinOrgInsertBlock, main.cpp) so any language tag works, listed or not; the button and its dropdown are DrawPane's header controls and DrawOrgInsertBlockMenu, built the same way the Run button's Setup menu and a notebook cell's kernel dropdown already were. Documented in help/org-babel.org.</li>
+</ul>
+<h1>org play</h1>
+<p>Add a play button to org mode code blocks that will run the code block in the appropriate language mode.</p>
+<ul>
+<li>Every <code>src</code> block card's title bar now ends with a play button, docked against the bar's right edge so a page of blocks lines its buttons up in one column rather than at each block's own title length. Clicking it runs that block: `Editor::RunOrgBabelBlockAt` (editor.cpp) moves the cursor into the block and calls the same `TryRunOrgBabelAtCursor` that `C-c C-c` already goes through, so there is one execution path, not a second copy of it -- `#+RESULTS:`, `:cache`, `:session`, `mep-lua` blocks and the `:eval` gate all behave exactly as they do from the keyboard.</li>
+<li>The cursor lands on the block's <b>first body row</b>, not on `#+begin_src`: the babel path is "at the cursor" from `mep_org_src_block_at` down, and a cursor on the header row would reveal the raw line and pull the card's whole title bar (button included) out from under the pointer mid-click. An empty block has no body row, and `Editor::OrgSrcBlockAt` refuses a row on the closer, so that one case stays on the header.</li>
+<li>Split the way the rest of the org render stack is: the pure decision lives in org_doc.cpp (`OrgBlockPlayFor`/`OrgBlockPlayHint`, covered by mep-org-doc-test), the card -&gt; decision projection in editor.h (`OrgBlockPlayInputOf`), and only the drawing in DrawPane. The button is drawn live (accent) when the header says the block can run, and muted when it can't -- no language tag, or `:eval no`/`:eval never`, which are exactly the two values `mep.org_babel_execute` itself refuses, matched the same literal way so the button can't promise a run that path would then decline. A muted button is still clickable: the click produces the warn toast saying which of the two it is, which beats a control that does nothing.</li>
+<li>Hovering any button explains it through the shared pane-control tooltip ("Run this python block (C-c C-c)", "Blocked by :eval no", "No language on this block -- nothing to run"). No button at all for a non-=src= block or one still being typed with no `#+end_src` yet, and on a card too narrow for both the button and the language chip the chip wins -- `C-c C-c` is unaffected either way. Registered with `RegisterClickRegionOnTop` (the pane's own click-to-focus region covers every row underneath it) and it focuses the clicked pane first, so a click in a background split runs <b>that</b> split's block.</li>
+<li>Verified live against a detached instance on its own X display: the four states render as described, the tooltip and hover fill appear, and clicking the runnable block wrote `#+RESULTS:` / `: hello from sh` into the buffer. Documented in help/org-visuals.org (a new "The play button" section) with a pointer from help/org-babel.org.</li>
+</ul>
+<h1>org settings</h1>
+<p>Add a settings button to orgmode code blocks that will allow the user to set the settings for the code block (e.g. results, exports, etc.). On click, it should bring up an options setting popup with any possible options for the language specific (or options for other types of blocks) options. This should allow for changing numbers, input string, or dropdown selection, depending on the type of option. Id like the popup to list all options, with the appropriate input. Make sure to add keyboard navigation in normal mode, h,j,k,l for selecting option by direction, ctrl+n and ctrl+p for selecting from dropdown, i to insert mode on text input, and j,k for incrementing/decrementing number.</p>
+<ul>
+<li>Every <code>src</code> (and <code>example</code>) block card's title bar now carries a gear button, left of the play button and dropped under the same too-narrow-a-card rule. Clicking it -- or `&lt;leader&gt;os` / `:MepOrgBlockSettings` with the cursor in the block -- opens that block's header arguments as a modal list (`Mode::OrgBlockSettings`), one row per argument org honours for it: the common set grouped into Results/Execution/Output/Tangle/Noweb, then the language's own (R's `:width`/`:height`/`:units`/`:res`/`:pointsize`/`:bg`, Python's `:return`/`:preamble`, C/C++'s `:includes`/`:flags`/`:libs`/`:main`, shell's `:cmdline`/`:stdin`, SQL's engine/connection args, LaTeX's ImageMagick args), then the `-n`/`+n`/`-r`/`-k` line switches. A `quote`/`verse`/`export` block has no arguments to set and gets no gear.</li>
+<li>Each row is typed: a dropdown over the words org accepts, a number with its own range and step, or free text. `:results` is four rows, not one -- its value is up to four words from four independent classes, and writing one facet recomposes the value the other three still read (`OrgResultsWithFacet`), which is what makes "set output without losing `table replace`" a single keystroke rather than a retype.</li>
+<li>Navigation is the normal-mode idiom the request asked for: h/j/k/l between rows, Enter or `i` to open the focused one, and inside it j/k step a number or cycle a dropdown (Ctrl-N/Ctrl-P too, and those also work straight from the list without opening a row), typing edits a text field, Enter/Escape commits back to the list. `d`/`x` clears an argument off the block entirely -- deliberately distinct from setting it to `no`, since an absent argument is what lets a `#+PROPERTY:` line or org's own default decide, and the popup draws `--` for that state. The mouse works as well: a row click focuses, a value click opens.</li>
+<li>Every committed change is written into the buffer immediately, as one undo entry per option, so the popup and the file can never disagree and `u` takes the last change back. A value is written where it already lives -- an argument set on a `#+HEADER:` line is edited there, a new one goes on the `#+begin_src` line -- and an existing argument is replaced in place, leaving the rest of the line byte-for-byte alone.</li>
+<li>Split the way the rest of the org stack is: the catalog and every line rewrite are pure and GL-free in org_doc.cpp (`OrgHeaderArgSpecsFor`, `OrgSetHeaderArgOnLine`, `OrgSetBlockSwitchOnLine`, the `:results` facet split, the number stepper -- all covered by mep-org-doc-test), the state machine is editor.cpp (`BeginOrgBlockSettings`/`HandleOrgBlockSettingsInput`), and only the drawing is main.cpp (the gear in DrawPane's card title bar plus `DrawOrgBlockSettingsOverlay`).</li>
+<li>Verified live against a detached instance on its own X display: opening from both the gear and the command, the popup's rendering and scrolling, a facet write (`:results output table`), a text field (`:wrap example`), `d` clearing it again, Ctrl-N in the list (`:results ... replace`), a number stepped to `:width 8`, a `:var` edit landing on the `#+HEADER:` line it was written on, the example block's `-n` switch toggling on and off, and the warn toast for a quote block. Documented in help/org-babel.org ("Setting them from a popup") and help/org-visuals.org ("The settings button").</li>
+</ul>
+<h1>language modes</h1>
+<p>  We've added 'ui modes' for languages before (I think just R so far). I'd like
+  &lt;leader&gt;rr to run the current document in language modes (and there to be a ui
+  mode with a terminal associated to it for running the code in). I'd like to
+  add other languages. Let's focus on C/C++ and python. For C/C++, I know I'd
+  like a compiler explorer like buffer sidebar and a hex exploration as well.
+  I'd also like a terminal that we can run the current file's executable in. For
+  python, I'd like object introspection sidebars (like R) and a terminal to run
+  the code in and ideally a figure sidebar for matplotlib/seaborn like figures
+  to show up in (e.g. that appear when running .show() methods). Can you
+  implement these?</p>
+<h1>Add a 'gr' binding for 'go run' to run the current file in the language's</h1>
+<p>  interpreter or compiler. This should be language specific, and should use the
+  language's interpreter or compiler (e.g. for R, it should use Rscript to run
+  the current file). Can you implement this? In python it should use python, and
+  in C/C++ it should use gcc or clang. Can you implement these?</p>
+<ul>
+<li>Landed as a mep.map_g('r', mep.run_button_run) binding in kBuiltinRunButton (main.cpp), i.e. the same per-language run the pane Run button and &lt;leader&gt;rr already do: Rscript for .R, python3 for .py, cc/c++ compile-to-temp-then-run for .c/.cpp (all overridable per project via the button's Setup popup, or globally via mep.opt.run_button_defaults), plus the document pipelines (org export, tectonic, rmarkdown/knitr, notebook run-all) and, when a language UI mode is open on the tab, sourcing into its live console instead of a second process. Verified against a spawned instance over its agent socket (:normal gr on a .py file wrote the buffer, opened the tab terminal and actually ran the script), with gg/G/bare-r left unaffected.</li>
+</ul>
+<h1>Add a 'gt' binding for 'go test' to run the tests for the current file in the</h1>
+<p>  language's testing framework. This should be language specific, and should use
+  the language's testing framework (e.g. for R, it should use testthat to run
+  the tests for the current file). Can you implement this? In python it should
+  use unittest or pytest, and in C/C++ it should use googletest or catch2. Can
+  you implement these?</p>
+<ul>
+<li>Landed as kBuiltinLangTest (main.cpp): `gt` (mep.map_g, same shape as gd/gh) and :MepLangTest resolve the <b>test</b> file covering the current buffer, then run it in this tab's popup terminal (mep.tab_terminal_run), wrapped in a `(cd &lt;root&gt; &amp;&amp; ...)` subshell. Per language: go test -v on the file's package, narrowed to the Test/Fuzz/Example functions in a _test.go buffer (-run '^(TestA|TestB)$'); pytest when the tree has any pytest marker, else `python3 -m unittest discover -p &lt;file&gt;` (mep.opt.lang_test_python forces either); testthat::test_file() on tests/testthat/test-&lt;name&gt;.R, falling back to test_local() over the DESCRIPTION package; for C/C++ the file's own test binary -- the CMake target is found via &lt;build&gt;/CMakeFiles/&lt;target&gt;.dir (present whether or not it was ever built, Ninja and Make alike), built, then run, with an already-built binary or `ctest -R &lt;name&gt;` as fallbacks and mep.opt.lang_test_build_dirs as the override; plus cargo test &lt;module&gt;, vitest/jest/mocha/npm test, busted, rspec/minitest, Pkg.test() and zig test. mep.lang_test_command(path) exposes the resolution without running anything. Verified in a spawned instance (xdotool key --window, no focus steal): `gt` in cproj/src/pdf_text.cpp resolved pdf_text_test.cpp -&gt; mep-pdf-text-test and really executed it, and the emitted go/unittest/ C++ commands were each run in a shell and passed (mep's own src/vterm.cpp -&gt; `cmake --build build/native --target mep-vterm-test &amp;&amp; .../mep-vterm-test` -&gt; "vterm_test: all checks passed"). testthat isn't installed in this sandbox, so the R command shape is unverified at runtime.</li>
+</ul>
+<h1>org code block formatting</h1>
+<p>  I currently can show docs within code blocks, but, I'd also like formatting
+  to work (e.g. 'gf').</p>
+<ul>
+<li>`gf` (and `:MepFormat`) in an org buffer now means "format the code", not "format the prose": with the cursor inside a `#+begin_src &lt;lang&gt;` block it reformats that block's body, and anywhere else in the file it sweeps every block that has a formatter (`:MepOrgFormatBlock` / `:MepOrgFormatBlocks` are the same two by name). Added to kBuiltinFormat (main.cpp), reusing what org's other per-block tooling already has: mep_org_src_block_at finds the block, mep.org_babel_langs' extension translates the block's <b>language name</b> into the extension key mep.format_languages is keyed by (`python` -&gt; `py` -&gt; black, `R` -&gt; styler, `cpp` -&gt; clang-format), and a block with no entry at all falls back to its own polyglot language server -- textDocument/rangeFormatting over just the block's rows, with anything the server wants to change outside them refused rather than half-applied. That closes the "no formatting bridging" gap polyglot shipped with. A block indented under a heading is dedented before the formatter sees it and re-indented after (a uniformly indented body is a syntax error to black and gets flattened by the others); a body with no shared indent is passed through as written. The sweep formats the <b>last</b> block first so each application can't shift the rows of the blocks still to come, and runs them one at a time for the same reason. Nothing is applied if the block was edited or the buffer left while the formatter ran, and an already-formatted block is left clean rather than rewritten.</li>
+<li>Verified in a spawned instance (real `gf` keystrokes, own agent socket): styler over an indented R block (indentation preserved), clang-format over a cpp block, lua-language-server's rangeFormatting over a lua block with no formatter entry, the whole-file sweep ("formatted 2 of 3 blocks (no formatter for lua blocks)"), plus a Lua-level harness covering the failure/staleness/idempotence paths. Two real bugs were caught that way and fixed: routing the server's edits through mep_polyglot_translate_edits collapsed a whole-body replacement into a zero-width insert (the formatted body pasted in <b>above</b> the original), and asking for a range that reached the `#+end_src` row got back an edit one row too long, which the safety check then refused.</li>
+<li>Also fixed, found while testing this: mep_lsp_diagnostics was a `local` in kBuiltinLsp, so kBuiltinOrgPolyglot's own publish handler raised "attempt to index a nil value" on every diagnostic and none ever reached an org buffer. It is a bare global now, like mep_lsp_server_capabilities beside it, and diagnostics render inside code blocks.</li>
+</ul>
+<h1>gf binding</h1>
+<p>  Add a 'gf' binding for 'go format' to format the current buffer. This should
+  be language specific, and should use the language's formatter (e.g. for R, it
+  should use styler::style_file() to format the current file). In python it
+  should use black, and in C/C++ it should use clang-format.</p>
+<ul>
+<li>Landed as kBuiltinFormat (main.cpp): `gf` is a mep.map_g binding (also `:MepFormat`) calling mep.format_buffer(), which looks the buffer's filetype up in a new mep.format_languages table -- clang-format for C/C++ (c/h/cc/cpp/cxx/hh/hpp/hxx/ipp/inl/cu/cuh), black for Python (py/pyi), styler::style_file() for R (R/r) -- the same "one filetype -&gt; argv table a config can extend" shape kBuiltinRun's mep.run_languages already uses. Two formatter shapes are supported: a stdin/stdout filter (the default) and an in-place file rewriter (mode = 'file', what styler needs), so either way it is the <b>buffer's</b> text that gets formatted, unsaved edits included, and nothing is written to the real file. '{}' in an argv element expands to the buffer's absolute path (filter mode) or the temp file (file mode) -- that is what lets clang-format/black find the project's .clang-format/pyproject.toml even though they are reading stdin. Nothing is applied if the formatter fails, is not installed (its own error message), prints nothing, or if the buffer was edited/left while it ran; an already-formatted buffer is left clean rather than re-written. Filetypes with no entry fall back to mep.lsp_format when a server is attached. Verified against a spawned instance on its own Xvfb display: real clang-format (honouring a fixture .clang-format's IndentWidth), real black, real styler, the gf keystroke itself, unsaved-buffer text, missing/failing formatters, and the LSP fallback -- which turned up a pre-existing mep.lsp_format bug (it applied clangd's mid-line edits as whole-line replacements and collapsed the file to a single space), fixed here by routing it through mep.lsp_apply_edits_current_buffer.</li>
+<li>Later change, same entry: R's formatter is now `air format --stdin-file-path={}` (filter mode), not styler::style_file() as this task asked for. styler has no line width at all -- it fixes spacing, indentation and `=` vs `&lt;-` but never breaks a long call across lines, at any width, so R was the one language here where gf could not bring an over-long line back inside a margin. air is Posit's own tidyverse formatter and the only R one with a line width; it still does the `=` -&gt; `&lt;-` rewrite styler was wanted for, wraps at 80, and reads its margin from the nearest air.toml ([format] line-width) the same way clang-format and black read .clang-format/pyproject.toml -- hence the switch from mode = 'file' to a plain stdin filter, and the air.toml at the repository root. flake.nix gained pkgs.air-formatter; styler had never been listed there at all, arriving transitively as one of languageserver's dependencies.</li>
+</ul>
+<h1>go help binding</h1>
+<p>  Add a 'gh' binding for 'go help' to open the help for the current function
+  under the cursor in the help sidebar. This should be language specific, and
+  should use the language's help system (e.g. for R, it should use help() to
+  open the help for the current function). Can you implement this? In python it
+  should use pydoc, and in C/C++ it should use man pages. Can you implement
+  these?</p>
+<ul>
+<li>`gh` is now a language dispatch (kBuiltinGoHelp, main.cpp) instead of the R-only binding the r-help-format branch left behind: each language UI mode registers a provider (mep.help_register_provider) that gates on its own per-tab state and returns true once it has handled the lookup, and when none claims the buffer the chain ends at mep.lsp_hover -- the same popup K already gave. Also :MepGoHelp and &lt;leader&gt;hs (mep.map_g takes no description, so the leader spelling is what makes it discoverable in the keymaps picker).</li>
+<li>R: unchanged behavior (help('sym') / help('sym', package = 'pkg') into the Help tab), now registered as the 'r' provider and sharing the new mep.help_symbol_at_cursor scanner.</li>
+<li>Python: mep_help('sym') into the console, a new helper in the session's init script that evaluates the name in the console's own namespace first (so `sorted` and a dotted `os.path.join` both resolve) and falls back to handing pydoc the bare string; it flows through the same overridden help() -&gt; pydoc -&gt; help.txt -&gt; poll path as a typed help(x), and the Help tab is revealed immediately.</li>
+<li>C/C++: the mode grew a Help tab (Assembly/Build/Help top-right now), and gh runs `man 3 sym || man 2 sym || man sym` (piped through `col -bx` when installed) into it, MANWIDTH set to the tab's own width; the identifier scan takes ':' too, so std::vector stays one topic.</li>
+<li>Verified on a spawned instance on its own Xvfb display, driving real `gh` keystrokes (xdotool --window) and the agent socket: printf(3)/strcpy(3) into the C mode's Help tab, "No man page for buf." for a local variable, sorted + os.path.join in the Python mode, stats::lm -&gt; help('lm', package = 'stats') in the R mode, and "No LSP attached" for gh in a plain buffer with no mode open.</li>
+</ul>
+<h1>r help format</h1>
+<p>  The formatting of help documentation in R help sidebar looks off. It looks
+  good when in the popup though when I press 'K' over a function name in an R
+  document. Can you fix the sidebar formatting to match that of the help popup?
+  Also, I'd like gh to be added as a keybinding to 'go to help' that, when in ui mode
+  in R will open the help for that function in the help sidebar (and move
+  visibility to the help pane if not an actively viewable pane). Can you implement these?</p>
+<h1>r gh binding</h1>
+<p>  In R, I'd like 'gh' when in ui mode and over a function name to send that
+  function the the help (and appear in the help sidebar). Can you implement this?</p>
+<ul>
+<li>Already landed with the r-help-format branch (kBuiltinLanguageUiR, main.cpp): `gh` is a mep.map_g binding calling mep.r_ui_help_at_cursor(), which, while the tab's R UI mode is open, reads the R identifier under the cursor ([%w_.], so spline.des stays whole; a `pkg::sym` prefix becomes package = 'pkg'), writes help('sym') into the session console (same overridden help() -&gt; help.txt -&gt; poll path as a typed ?topic, choice list for an ambiguous topic included) and mep.jump_to_buffer()s the Help tab so it is revealed even when hidden behind Data/Objects/... or after a repeat lookup of the same topic. Outside an R UI mode it falls back to mep.lsp_hover(). Verified in this branch's fresh build against a spawned instance over its agent socket (:normal gh, so no X focus needed): plot (choice list), lines, spline.des, stats::lm -&gt; help('lm', package = 'stats'), and the "no R symbol under the cursor" warning on a blank line.</li>
+</ul>
+<h1>r help: run lines + vim modal editing</h1>
+<p>  I'd like to be able to run lines of code from the R help. On a line, I should
+  be able to run the line of code with mod+&lt;return&gt;. Also, I'd like to be able to
+  use vim modal editing here too, so I can see the cursor and enter visual,
+  visual-block mode, etc.</p>
+<ul>
+<li>The R UI mode's Help tab is now a real text buffer (mep.pane_open of a session-dir file named `Help`, so the tab title stays "Help"; same idiom as the editable file tree) instead of a sidebar widget list, so it has a real cursor and every Normal/Visual/Visual-block/search/yank motion for free. It is registered as a mep.termsend source aimed at the session's console, so the stock mod1+Enter (kBuiltinTermSend) runs the line under the cursor in R and steps down, or sends the Visual selection. Rd2txt text (width 500) is laid out by mep_r_ui_help_lines (main.cpp): prose word-wrapped to the pane's real width with hanging indents, Usage:/ Examples: lines verbatim so mod1+Enter runs exactly what R printed, title/section highlights via buffer decorations, header collapsed to `topic  {pkg}`. The pane width comes from a new mep.buffer_text_cols(id) (Pane::text_cols, set by DrawPane; Editor::TextColsForBuffer), and the poll loop re-wraps whenever it changes. An ambiguous topic renders its candidates as literal `help('topic', package = 'pkg')` lines, so picking one is just mod1+Enter on it (.mep_help_pick is gone). gh still reveals the tab and puts the cursor at its top on new content; closing the mode deletes the buffer. Verified on a spawned instance over its agent socket: gh -&gt; lines/plot (choice list), running the base choice with the termsend line sender, resize re-wrap, close cleanup.</li>
+</ul>
+<h1>fix pdf rendering</h1>
+<p>  While pdf rendering works, there are some pdfs it fails spectacularly on, in
+  particular, ones with math. I think this used to work when we were using
+  pdfium to do this. I'd like to fix it eventually, but in the short run, would
+  like it to just work. Can you fix the backend so that we can swap out our
+  inhouse pdf rendering engine with the pdfium rendering engin. Maybe we need a
+  bridge pattern or something so these can be swapped in and out easily.</p>
+<h1>git sidebar binding</h1>
+<p>  I'd like in the status tab in the git sidebar, for pressing P to push.
+  Can you implement this?</p>
+<h1>add jupyter notebook mode</h1>
+<p>  I'd like the ability to edit jupiter notebook files, much like the interface
+  of standard web-based jupyter interface. CAn you add these capabilities? Add a
+  jupyter notebook file in the in the examples folder to test things out</p>
+<ul>
+<li>Opening a `.ipynb` (Editor::LoadFile -&gt; OpenNotebookInPlace) shows it as an ordinary editable text buffer in the "percent" cell format (`# %%` / `# %% [markdown]` markers, raw markdown bodies -- src/notebook_doc.h's top comment), so every vim motion/edit/undo/search works on cell sources; outputs, execution counts, ids and metadata live in a NotebookSession side model (Editor::notebooks_) re-attached to the text by cell index/source (SyncNotebookFromLines) and written back as nbformat 4 JSON on `:w` (SaveBuffer's notebook arm, Jupyter's own 1-space indent so diffs stay clean). Cell chrome (header band with "In [n]:"/Markdown label + a clickable Run chip, Accent left bar on the cursor's cell) and each code cell's outputs (stdout/stderr/result text, red tracebacks, inline PNG figures) are drawn by DrawPane's notebook branch as extra visual slots under the cell's last row -- Editor::NotebookTrailingSlots, the org-inline-image "one row, N slots" mechanism, kept in agreement across the draw loop, its RowSlot cursor lookup and UpdateScrollForPane.</li>
+<li>Execution: one persistent `python3` process per notebook (JobManager, stdin/stdout JSON lines -- NotebookKernelScript() in notebook_doc.cpp: shared namespace, IPython-style last-expression display with `;` suppression, tracebacks trimmed to the cell's frames, streaming stdout, KeyboardInterrupt via a new JobManager::Interrupt/SIGINT, and an inline matplotlib backend that ships every open figure as PNG at the end of a cell or on plt.show()). No jupyter_client/ZMQ dependency; the interpreter is `mep.opt.notebook_python` (default python3; flake.nix's devShell python now carries matplotlib for the figure cell).</li>
+<li>Keys: Enter / Ctrl+Enter run the cell under the cursor, Shift+Enter runs and moves to the next cell (creating one at the end), mod1+Enter runs and inserts below -- in Normal and Insert mode, C++-side since mep.map can't bind Enter. `&lt;leader&gt;j` group (kBuiltinNotebook): jr run, jn run+next, jo run+insert, jA run all, ja/jb insert above/below, jd delete, jm/jy to markdown/code, jk/jj move up/down, jc/jC clear cell/all outputs, ji interrupt, j0 restart kernel; `]j`/`[j` step cells; `:Notebook*` commands for all of them plus `:NotebookNew [path]`; `&lt;leader&gt;rr` runs all cells. Cell bodies are syntax-highlighted per cell (python / markdown) by kBuiltinSyntax's notebook branch.</li>
+<li>Lua surface for scripts/agents: mep.notebook_is_buffer/run_cell/run_all/ run_and_advance/run_and_insert/interrupt/restart_kernel/clear_outputs/ insert_cell/delete_cell/set_cell_type/move_cell/cell_index/cell_count/ goto_cell/set_python/status/cell_outputs.</li>
+<li>Tests: src/notebook_doc_test.cpp (mep-notebook-doc-test, in `just test`) covers parse/serialize round trips, the text view, cell re-matching after inserts/deletes, output display/slot math and the wire protocol. examples/notebook_example.ipynb (generated through the real kernel, with a stored matplotlib figure and a traceback) is the fixture to try it on.</li>
+</ul>
+<h1>Filetree image viewer mode</h1>
+<ul>
+<li>`:e`/`mep.open` on a directory now opens the file tree in the current pane (Editor::LoadFile's new directory branch -&gt; mep.set_on_directory_open -&gt; kBuiltinFileTree's mep.tree_open_in_pane, mep.buffer_switch) instead of silently creating an empty buffer; `&lt;leader&gt;ff`/:MepFileTree's own split-left mep.tree_open is unchanged.</li>
+<li>Shift+I on the tree buffer toggles an image viewer showing the first image (alphabetically) in the tree's root directory, reusing the existing "&lt;"/"&gt;" nav-header and h/l-stepping machinery (ImageSession:: nav_prev_ref/nav_next_ref, built for kBuiltinLanguageUiR's Plot pane) rather than new UI; stepping clamps at the first/last image. A new ImageSession::return_ref + mep.image_set_return pairs with a new Editor::SetBufferOnImageToggle/mep.buffer_set_on_image_toggle hook on the tree buffer so Shift+I toggles back to the tree from the image.</li>
+<li>Verified end-to-end against a spawned native instance (raw agent-socket RPC + xdotool-focused key injection): directory open, first-image open, h/l clamp at both ends, Shift+I round-trip back to the tree, empty- directory notification, and no regression to plain file opens or the split-left tree toggle.</li>
+</ul>
+<h1>ai tabbar notification</h1>
+<p>  Add a notification to the tabbar workspace tab when finishing tasks or being
+  asked to interact. I'd like the workspace tab background to be red (if not an
+  active workspace)</p>
+<ul>
+<li>An inactive workspace whose resident agent reports "awaiting_input" or "done" (Editor::WorkspaceNeedsAttention, src/editor.cpp) now draws its tab with a red background (new "WorkspaceAlertBg" highlight group, src/editor.cpp's BuildHighlightGroups) and red text in the tabbar (src/main.cpp's DrawTabBar). The join walks Editor::Participants(), matching each agent's terminal buffer (falling back to its cursor location) to a workspace via Editor::BufferWorkspaceId -- the same pattern the Lua AI-agents sidebar already used. The collapsed "+N hidden" indicator also turns red if any hidden workspace needs attention, and the tab's tooltip gets an "-- agent needs you" suffix. Verified live: spawned a second detached `mep` instance, created a second workspace, identified a synthetic agent against a buffer in it, set its status to "awaiting_input", switched away, and confirmed the inactive tab rendered red via screenshot.</li>
+</ul>
+<h1>Add a direnv widget to the bottom bar</h1>
+<p>  I'd like a direnv widget in the bottom bar that shows the current direnv
+  status (active/inactive) and allows me to toggle it on/off with a click.
+  (note, it should activate by default when opening a project). Place it 
+  on the left side of the pomodoro timer, but on the right side of the line and
+  column indicator.</p>
+<h1>Fix folded style for org mode files</h1>
+<p>  The fold style for org mode files doesnt look great. Can you make it look
+  better? I think it should have a different (highlighted) background color,
+  and should have a ... at the end of the line. Otherwise, it looks like a
+  normal line. Can you make it look better?</p>
+<h1>Add tabs, nested within workspaces, nested within projects feature</h1>
+<ul>
+<li>Need to have new git worktrees per workspace</li>
+<li>Need to have buffers scoped to workspaces</li>
+<li>Need to remove mode from top tab bar</li>
+<li>Need to add project to left side of tab bar formatted like [project_name] and tabs formatted like [ws1] [ws2] highlighted by active workspace</li>
+<li>Implemented 2026-09-03 across all 12 phases of WORKSPACES_PLAN.md (see its Status section for what was verified how, and what still needs a GPU-capable display to confirm by eye).</li>
+</ul>
+<h1>Add reorder todo feature with ctrl+j,k</h1>
+<p>  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 22:03]--[2026-09-05 Sat 22:12] =&gt;  0:09
+  :END:</p>
+<h1>Add better styling to mode in bottom bar and remove filename</h1>
+<h1>add image editor</h1>
+<h1>add latex run button</h1>
+<h1>add orgmode run button</h1>
+<ul>
+<li>Run button now shows for .org files; picks the target format from a `#+EXPORT:` header keyword (html/pdf/odt/markdown/ascii, default html), runs the matching mep.org_export_* exporter, and opens/refreshes the result in a vertical split using the appropriate viewer (browser-style HTML pane, PDF viewer, or office WYSIWYG pane), reusing an already-open split instead of stacking up new ones.</li>
+<li>Added mep.pdf_reload/mep.office_reload (editor.cpp/lua_env.cpp) so an already-open PDF/ODT preview can be refreshed in place, mirroring the existing mep.html_reload.</li>
+</ul>
+<h1>bind run button to &lt;leader&gt;rr</h1>
+<h1>add colors to tabbar buttons</h1>
+<h1>decrease size of tabbar tab button icons (i.e. just for tab, new tab, delete tab)</h1>
+<h1>remove ? mark and swap with [+] for adding new workspace</h1>
+<h1>add [-] for delete active workspace</h1>
+<h1>add zen mode</h1>
+<p>  :LOGBOOK:
+  CLOCK: [2026-09-05 Sat 23:14]--[2026-09-05 Sat 23:20] =&gt;  0:06
+  :END:</p>
+<h1>add pomodoro timer widget</h1>
+<h1>make todo list have line wrapping</h1>
+<h1>Fix cursor bug</h1>
+<p>  There are certain times that an action will occur twice. I've noticed
+  sometimes in normal files the cursor will move two spaces when pressing j or
+  k. Other times, I'll see this behavior in the terminal, where deleting a
+  character will delete two. The behavior does seem inconsistent though. Can you
+  investigate and fix?</p>
+<h1>Add archive behavior</h1>
+<p>  On archiving a todo item, i'd like its todo moved to the bottom of the todo
+  document. Can you implement this behavior</p>
+<h1>Implement gaps</h1>
+<p>  The old sidebars had a nice few pixel gap between them and the normal panes.
+  I like that, but, I think I want them in between all normal panes (i.e.
+  everywhere). Can you implement gaps betwen panes and set the gap width to be
+  5 pixels?</p>
+<h1>Fix git tab rendering bug</h1>
+<p>  The tabs in the git sidebar (the new one) bleed over into the neighboring pane
+  when the sidebar has a narrow enough width. This seems like a bug. Can you
+  investigate and fix?</p>
+<h1>Add a start agent binding to the todo sidebar</h1>
+<p>  I'd like a start agent binding for the todo sidebar activated with 'L'. It
+  should take the todo, and its text, prompt the user for a workspace (branch)
+  name, and create a new workspace and start up a project ai agent terminal
+  inside it. If a workspace is currently active with an agent running, instead of a space
+  or an x in the todo list, can you place a robot icon indicating that an agent is currently
+  working on this todo? Can you implement this? I'd like this same behavior to work in a TODO.org file
+  with the binding 'gL' in normal mode (i.e. on the current todod where the cursor is). </p>
+<h1>Fix agents to be local to a mep instance.</h1>
+<p>  Currently, it seems like while working on MEP, I can't have agents running
+  because it might need to close down MEP (and hence the agents that are
+  running) during the testing process. Instead, I'd like it to reliably be able
+  to spawn new instances of MEP and have instructions to not close the
+  containing MEP instance. I think this might require allowing multiple mcp
+  servers running and tying them to a mep instance and also modifying the agent
+  terminal instructions to be informed of which MEP instance it is running from
+  and to be sure not to close it if working on MEP. I'd also like ai agents to
+  be sure to only use the MEP api when interacting with any MEP instance and
+  not the x11 server, unless specifically working on testing mouse/keyboard
+  input. Can you implement these? This way, I can have multiple agents running
+  and working on MEP at the same time, and they won't interfere with each
+  other.</p>
+<ul>
+<li>Each running mep instance already binds its own agent-control socket (`~/.local/share/mep/agent-sockets/&lt;pid&gt;.sock`) and exports it as `MEP_AGENT_SOCKET` into any terminal it spawns, so a `mep-mcp` process started from inside an AI terminal always drives the instance it was launched from, never a sibling window -- multiple agents/mep windows already don't contend for or cross-talk over a shared server.</li>
+<li>What was missing was telling the agent this, and warning it about the real failure mode: an agent developing mep itself runs as a child (in the process group) of the very instance it would want to rebuild and test, so quitting/restarting that instance to pick up a change kills the agent's own session along with it (`JobManager::ShutdownAll` SIGTERMs the whole process group on shutdown). Added a new "developing mep itself" section to `mep.opt.ai_terminal_instructions` (`kBuiltinAiTerminal`, `src/main.cpp`) and `MEP_AGENT_API.md` telling the agent to identify its own containing pid (`mep_session_info`'s `pid`, or its own `MEP_AGENT_SOCKET`'s `&lt;pid&gt;.sock` filename), never close/kill/restart it, and instead launch a separate `setsid`-detached instance to test changes against and drive it via its own socket.</li>
+<li>Also strengthened the UI-automation section to say explicitly: prefer the structured `mep_*` editor-state tools for any mep instance, and reach for `mep_mouse_*`/`mep_key_press`/`mep_screenshot` only when the task is specifically about testing mouse/keyboard/rendering input.</li>
+</ul>
+<h1>Org file robot animation</h1>
+<p>  When using the agents to complete a todo item in an org mode document (i.e.
+  with gL), I'd like it to activate a little animation at the end of the todo
+  item. Here, I'd like a robot icon, with a ... that animates . and then .. and
+  then ... and back to . and repeat. Can you implement this behavior? I'd like
+  the same animation in the todo sidebar (currently just a robot icon). I'd like
+  this to be triggered in both, whether starting in the sidebar or in the
+  TODO.org file.</p>
+<ul>
+<li>Added `Decoration::virt_robot_icon` (editor.h) so a buffer decoration's `virt_text` can be prefixed with the same hand-drawn `DrawRobotIcon` glyph the Todo sidebar already overlays, exposed through `mep.deco_add`/`mep.buffer_deco_add`'s `virt_robot_icon` option (lua_env.cpp) and drawn in `DrawPane`'s decoration loop (main.cpp) just before `virt_text`, shifting it right by the icon's own width.</li>
+<li>Added a shared `mep_todo_agent_dots()` Lua helper (kBuiltinActivityBar, main.cpp) cycling ". -&gt; .. -&gt; ... -&gt; .. -&gt; repeat" off `mep.now()`, used by both the Todo sidebar's row text (after the existing robot mark) and a new `mep_activity_todo_decorate_buffer()` that finds TODO.org's own open buffer (by filename, across workspaces) and adds a `virt_text_eol` + `virt_robot_icon` decoration on each headline with a live agent -- so the animation shows up in-buffer too, wherever the agent was started from ('L' in the sidebar or 'gL' on the headline).</li>
+<li>`mep_activity_todo_key` now folds the dots' own phase in whenever any row is agent-live, and the sidebar's poll interval tightened from 0.5s to 0.15s (still just a cheap string compare when nothing changed) so the animation reads as smooth rather than jumpy; a separate 0.15s poll (gated on `mep.activity_todo_agents` being non-empty) drives the in-buffer decoration independently of sidebar visibility.</li>
+<li>Verified by spawning a separate `setsid`-detached mep instance (native-GUI build, real X11/GPU in this sandbox) and driving it over its own raw agent-control socket: injected a `virt_robot_icon` decoration on a headline and a matching sidebar row directly, and confirmed both render the robot glyph followed by the animated dots with correct spacing, across all four dot-count states.</li>
+</ul>
+<h1>filetree button fix</h1>
+<p>The filetree button in the tabbar doesnt toggle the filetree (it just opens it). Can you fix this?</p>
+<h1>Fix tabbar buttons</h1>
+<p>  The tabbars associated to the right tabbar use the old sidebar style sidebars.
+  I'd like to replace them with the buffer style tabbars. The ones on the left
+  side work. However, they don't open them as a vertical split towards the
+  bottom of the left side. Instead, they open them side-by-side even though it
+  works when I use the bindings (e.g. &lt;leader&gt;ff, &lt;leader&gt;bB, and &lt;leader&gt;gg).
+  Can you investigate and fix this so that the tabbar buttons have the same
+  behavior.</p>
+<h1>Fix performance issues</h1>
+<p>  Root cause: mep.on_frame(fn) had no way to unregister a hook -- every call
+  permanently registered a per-frame Lua call. mep.activity_todo_start_agent's
+  own wait-state hooks (used by both 'L' in the Todo sidebar and 'gL' on a
+  TODO.org headline) had a `done`-style flag but the hook body itself kept
+  being invoked every single frame forever after finishing -- so each agent
+  start left two more dead closures in the per-frame dispatch permanently,
+  and repeating it over a session degraded the whole editor's frame
+  throughput (including plain keyboard input like j/k), exactly matching
+  "clunky, needs two keypresses, fast without an agent running."</p>
+<ul>
+<li>LuaEnv::RunFrameHooks/CallFrameHookRef (lua_env.cpp) now let a hook signal it's done by returning a truthy value, dropping it from frame_hook_refs_ instead of calling it forever; mep.activity_todo_ start_agent's two wait-state hooks (kBuiltinActivityBar, main.cpp) were converted to this shape, including the "terminal went away mid-wait" abort path so they can never re-leak.</li>
+<li>Also fixed: mep.activity_todo_agents never pruned a finished agent's entry, so every todo an agent had ever touched kept paying a live-agent scan (workspace_list + participants + ai_terminals) on every 0.15s sidebar/decorator poll for the rest of the session -- mep_todo_agent_ live() now drops an entry once an agent actually seen alive goes away.</li>
+<li>New mep-lua-frame-hook-bench (bench_results/history.jsonl, `just bench`) demonstrates the shape: permanent no-op hooks get linearly more expensive per frame as they accumulate, while one-shot self-removing hooks cost ~nothing on the very next pass after they fire.</li>
+<li>Verified: `just bench` builds clean and runs (crdt/buffer/frame-hook benchmarks all recorded); re-read every mep.on_frame hook in main.cpp (20 call sites) to confirm no other one-shot-disguised-as-permanent leak of this shape exists elsewhere.</li>
+</ul>
+<h1>Add DAP debugging capabilities.</h1>
+<p>  Add DAP debugging capabilities. Start with R, Python, and C/C++. I also want a
+  debugging ui, triggered with &lt;leader&gt;du that has all of the symbols and such
+  in sidebars and a console, etc. Buttons for going stepping into, out of, etc.
+  Use examples in the example folder to test out and the flake.nix for adding
+  dependencies to the shell. I'd like &lt;leader&gt;dd to continue/start debugging. I'd
+  like &lt;leader&gt;db to toggle a break point (visible in the side line number gutter),
+  &lt;leader&gt;di to step into, &lt;leader&gt;do to step out of, and a couple others that might make
+  sense if you can think of them. Can you implement these?</p>
+<p>  Also folds in the separate "Fix dap debug ui" todo -- this same change is
+  what actually builds the debug UI for the first time.</p>
+<ul>
+<li>The pre-existing DAP client (kBuiltinDap) only ever sent breakpoint toggles and one-line continue/step requests, with no keybindings, no reaction to the `stopped` event beyond a toast, and -- a real protocol gap -- no way to answer a server-initiated <b>request</b> (e.g. runInTerminal), which left such adapters hanging forever. Fixed in lua_env.cpp: DispatchLspMessage now answers server requests (mep.lsp_on_request), and kBuiltinDap's `stopped` handler now runs a real threads -&gt; stackTrace -&gt; scopes -&gt; variables chain, jumps the cursor to the paused line, and drops a green "▶" gutter arrow (namespace `dap_current_line`, kept separate from the breakpoint dot's own namespace so toggling a breakpoint mid-session can't wipe it).</li>
+<li>New `kBuiltinDebugUi` (loaded right after kBuiltinDap, mirroring this file's existing kBuiltinRun/kBuiltinRunButton mechanics-vs-UI split): a "Debug" sidebar (Call Stack / Variables / Breakpoints sections) and a Debug Console pane, plus every requested keybinding under a new `d` leader group -- `&lt;leader&gt;du` (toggle the sidebar+console), `dd` (start/continue, resolving the language from the current file's extension), `db` (toggle breakpoint), `dn`/`di`/`do` (step over/into/ out -- `dn` since `do` was already spoken for), `dt` (terminate), `dr` (restart), `dc` (clear all breakpoints in the file), and `dv` (evaluate the expression under the cursor).</li>
+<li>R has no DAP adapter that speaks stdio the way lldb-dap/debugpy do -- the real one, vscDebugger, opens a plain TCP socket instead. Built a real TCP transport for this rather than just documenting the gap: new `TcpJsonRpcManager`/`TcpConnection` (src/tcp_client.h/.cpp, mirrors job.h's threading/PollAll shape) plus `mep.lsp_connect` (lua_env.cpp). `mep.dap_start('r')` spawns R itself via `mep.term_start` (R's own stdout isn't LSP-framed) running vscDebugger's real (undocumented/unexported, confirmed against its source) `.vsc.listenForDAP()`, then retries `mep.lsp_connect` for a few seconds until R's socket comes up.</li>
+<li>Along the way, live-testing against a <b>real</b> lldb-dap surfaced (and fixed) two protocol bugs this client had never had a live adapter to catch before: (1) DAP is NOT JSON-RPC 2.0 -- only the Content-Length header framing is shared; the JSON body is `{seq, type, command, arguments}` / `{seq, type: "response", request_seq, success, body}` / `{event, body}`, nothing like `{jsonrpc, id, method, params}`. Added a `dap_mode` flag to the LSP/DAP client (lua_env.cpp) with its own DispatchDapMessage, so this client now speaks real DAP instead of a shape no adapter actually accepts. (2) Debug builds compiled for the new C/C++/Rust launch path came out fully optimized regardless of the `-g` flag -- this toolchain's `_FORTIFY_SOURCE` hardening silently adds `-O2` when no `-O` is given, which inlines away small functions (examples/cpp_example.cpp's `distanceTo` had zero line-table entries at -O2, so lldb reported every breakpoint inside it as an unresolved "pending" location and never stopped). Fixed by always appending `-O0` after `-g`.</li>
+<li>flake.nix: added `pkgs.lldb` (ships `lldb-dap`), `debugpy` to the existing Python package set, and a hand-packaged `vscDebuggerR` (`rPackages.buildRPackage` + `fetchFromGitHub`, since vscDebugger isn't on CRAN) added to the R package set.</li>
+<li>Verified end-to-end against real spawned adapters (a detached mep instance driven over its own raw agent-control socket, per MEP_AGENT_API.md): C++ (lldb-dap) and Python (debugpy) both go start -&gt; stop at entry -&gt; continue -&gt; hit a real breakpoint -&gt; show correct call stack/locals -&gt; step over -&gt; terminate, exactly as intended. R (vscDebugger) verified up through a real TCP connect, initialize, launch, setBreakpoints, configurationDone, and a genuine `stopped`/breakpoint event -- but the session then ended before this client's follow-up stackTrace/variables requests could complete; vscDebugger's `debugMode = 'file'` runs the whole script from inside `configurationDoneRequest` and stops listening right after, per its own source, so sustaining an interactive pause for `file` mode may need a different launch shape than this change had time to track down. The R <b>transport</b> (the actual ask, given no stdio adapter exists) is solid and reusable; R <b>session</b> behavior past the first breakpoint is the one open item, noted in kBuiltinDap's own comment next to `mep.dap_adapters.r`.</li>
+</ul>
+<h1>Native file open popup</h1>
+<p>  Add platform native file-open popup (instead of :e , the current behavior) when using File-&gt;Open</p>
+<h1>remove flamboozled</h1>
+<p>  Removed the stray "flamboozled" line from the top of README.org.</p>
+<h1>Remove ai tabbar notification (agent-attention highlight)</h1>
+<p>  Reverted the "ai tabbar notification" feature: an inactive workspace tab
+  no longer turns red when its resident agent reports "awaiting_input" or
+  "done". Suspected as a performance culprit -- Editor::WorkspaceNeedsAttention
+  called Editor::Participants() (which allocates a fresh vector by walking
+  collaboration peers, AI agents, and local participants) once per workspace,
+  every single frame in main.cpp's DrawTabBar.</p>
+<ul>
+<li>Removed Editor::WorkspaceNeedsAttention (editor.h/editor.cpp) and the "WorkspaceAlertBg" highlight group (editor.cpp's BuildHighlightGroups).</li>
+<li>Removed the needs_attention field and all red-tab/red-tooltip/red-"+N hidden" logic from DrawTabBar (main.cpp) -- inactive tabs render exactly as they did before that feature, plain "WorkspaceInactive".</li>
+<li>Verified `just build-native` still builds clean.</li>
+</ul>
+<h1>add simple todo</h1>
+<p>  Added the word "flummoxed" to the top of README.org.</p>
+<h1>Add language specific, configurable run button to active pane bar</h1>
+<h1>quickjump capability</h1>
+<p>  I'd like a quickjump capability. In particular, when pressing 's' in normal
+  mode, I'd like to then be able to start typing, and any non-matches to the
+  thing I'm typing to appear more opaque and for the matches to appear less
+  opaque with a hint I can type (just a letter or two ideally) to jump to that
+  matching location, or when I finish typing and there are no matches to jump to
+  it. Can you implement this feature?</p>
+<ul>
+<li>Done as a new Editor::Mode::QuickJump (editor.cpp, next to the older HintChar/HintLabel pair) bound to `s` by kBuiltinQuickJump (main.cpp) via mep.quick_jump(), so it can be rebound with a plain mep.map. Every keystroke rescans the visible rows of every text pane in the tab (the active one first, then the rest in split order; a label in another pane focuses it before moving its cursor; smart-case): DrawPane washes each pane's text area with translucent NormalBg, repaints each match at full strength on an IncSearch backdrop, and draws a one-key label right after it. Labels are drawn from the home-row-first pool minus every character that would extend the query at some match, so a key is never ambiguous (label -&gt; jump, else -&gt; narrow); nearest match gets the first label. A query that narrows to one match jumps at once; Enter jumps to the nearest, Backspace edits, Esc cancels; the command line echoes "jump: &lt;query&gt;" (+ "(no matches)"). Landing records the jumplist so `` / Ctrl-O return. README "Keys" documents it. Verified against a spawned instance over its agent socket (ui.key_press/type_text + screenshots): label jump, unique-match auto-jump, Esc/Enter-with-no-match leaving the cursor put, Backspace. Cross-pane: verified over the agent socket alone via the scriptable surface added for it -- mep.quick_jump(query?), mep.quick_jump_matches() (pane_id/row/col/label), mep.quick_jump_pick(label) -- so no synthetic keyboard input is needed: labels span both panes, picking another pane's label focuses it, a unique match elsewhere auto-jumps, and a terminal pane is skipped.</li>
+</ul>
+</body>
+</html>

@@ -851,6 +851,7 @@ add_library(mep_core STATIC
     src/editor_mail.cpp
     src/mail.cpp
     src/mail_net.cpp
+    src/mail_imap.cpp
     src/mail_crypto.cpp
     src/editor_pres.cpp
     # Another program's window inside the document (mepml exec-gui):
@@ -971,6 +972,13 @@ if(NOT EMSCRIPTEN)
         target_link_libraries(mep_core PUBLIC OpenGL::GL X11::X11)
     endif()
 endif()
+# Mail's own pooled IMAP connections (mail_imap.cpp) need OpenSSL for
+# TLS; without it (or on Windows, whose sockets it does not speak) every
+# IMAP operation goes through curl as before.
+if(NOT EMSCRIPTEN AND NOT WIN32 AND OpenSSL_FOUND)
+    target_compile_definitions(mep_core PRIVATE MEP_MAIL_NATIVE_IMAP=1)
+    target_link_libraries(mep_core PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+endif()
 if(NOT EMSCRIPTEN AND NOT WIN32 AND NOT APPLE)
     # gui_embed.h's X11 implementor, same condition as the gfx backend's.
     target_compile_definitions(mep_core PRIVATE MEP_GUI_EMBED_X11=1)
@@ -984,6 +992,18 @@ if(APPLE)
     set_source_files_properties(src/gui_embed_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_compile_definitions(mep_core PRIVATE MEP_GUI_EMBED_MACOS=1)
     target_link_libraries(mep_core PUBLIC "-framework ApplicationServices" "-weak_framework ScreenCaptureKit")
+    # X11 programs on a private Xvfb each (gui_embed_xvfb.cpp), layered
+    # under the Accessibility backend. Only Xlib's headers are needed to
+    # build it (XQuartz's): the libraries are loaded at run time, so mep
+    # still starts without XQuartz.
+    find_path(MEP_XLIB_INCLUDE_DIR X11/extensions/Xdamage.h PATHS /opt/X11/include NO_DEFAULT_PATH)
+    if(MEP_XLIB_INCLUDE_DIR)
+        target_sources(mep_core PRIVATE src/gui_embed_xvfb.cpp)
+        set_source_files_properties(src/gui_embed_xvfb.cpp PROPERTIES INCLUDE_DIRECTORIES "${MEP_XLIB_INCLUDE_DIR}")
+        target_compile_definitions(mep_core PRIVATE MEP_GUI_EMBED_XVFB=1)
+    else()
+        message(STATUS "Xlib headers not found (install XQuartz): X11 programs will not embed without Accessibility")
+    endif()
 endif()
 if(NOT EMSCRIPTEN AND NOT WIN32)
     # cad_predicates.cpp's exact arithmetic assumes every floating-point

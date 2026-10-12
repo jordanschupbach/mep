@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 189 =<leader>= sequences registered at startup. Press
+All 190 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -52,9 +52,10 @@ the features live.
 | =<leader>bs= | Scratch buffer | [[file:files.html][Files and buffers]] |
 | =<leader>bv= | browse: toggle HTML file between page and source | [[file:mepml.html][mepml]] |
 | =<leader>ca= | LSP: code action | [[file:lsp.html][Language servers]] |
+| =<leader>dC= | Debug: clear breakpoints in file | [[file:debugging.html][Debugging]] |
 | =<leader>db= | Debug: toggle breakpoint | [[file:debugging.html][Debugging]] |
-| =<leader>dc= | Debug: clear breakpoints in file | [[file:debugging.html][Debugging]] |
-| =<leader>dd= | Debug: start/continue | [[file:debugging.html][Debugging]] |
+| =<leader>dc= | Debug: start/continue | [[file:debugging.html][Debugging]] |
+| =<leader>dd= | Diagnostics picker | [[file:lsp.html][Language servers]] |
 | =<leader>di= | Debug: step into | [[file:debugging.html][Debugging]] |
 | =<leader>dn= | Debug: step over | [[file:debugging.html][Debugging]] |
 | =<leader>do= | Debug: step out | [[file:debugging.html][Debugging]] |

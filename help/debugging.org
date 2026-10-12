@@ -9,9 +9,9 @@ Everything is on the =<leader>d= group.
 
 | Key          | Does                              |
 |--------------+-----------------------------------|
-| =<leader>dd= | start, or continue                |
+| =<leader>dc= | start, or continue                |
 | =<leader>db= | toggle a breakpoint on this line  |
-| =<leader>dc= | clear every breakpoint in the file |
+| =<leader>dC= | clear every breakpoint in the file |
 | =<leader>dn= | step over                         |
 | =<leader>di= | step into                         |
 | =<leader>do= | step out                          |
@@ -20,8 +20,9 @@ Everything is on the =<leader>d= group.
 | =<leader>dt= | terminate                         |
 | =<leader>du= | show or hide the debug UI         |
 
-=<leader>dd= is the one key to remember: it starts a session if there is
-none and continues if there is.
+=<leader>dc= is the one key to remember: it starts a session if there is
+none and continues if there is. (The group's =dd= is not a debug key: it
+is the [[file:lsp.html][diagnostics picker]].)
 
 Commands: =:MepDapBreakpoint=, =:MepDapContinue=, =:MepDapTerminate=.
 

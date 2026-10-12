@@ -1,6 +1,8 @@
 #ifndef MEP_GUI_EMBED_H
 #define MEP_GUI_EMBED_H
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -29,6 +31,13 @@
 //     window stays its own, moved and sized over the block through the
 //     Accessibility API and kept just above mep's window. Needs the
 //     Accessibility permission (and Screen Recording for its pictures).
+//   - Private X server (gui_embed_xvfb.cpp): each program gets an Xvfb of
+//     its own; mep draws the server's screen as a texture and passes it
+//     the pointer and keys (EmbeddedWindow::DrawnByMep). No permission
+//     and no window manager involved, but only X11 programs draw there.
+//     On macOS it is layered over the Accessibility backend
+//     (CreateLayeredBackend): an X11 program lands in its Xvfb, a Mac one
+//     in its own window as before.
 //   - Unsupported (gui_embed.cpp): every other build/session; says why.
 // Adding a platform (native Wayland, Windows) means writing one
 // more Backend/EmbeddedWindow pair and teaching CreateBackend to pick it;
@@ -88,6 +97,15 @@ public:
     // True once, after the user asked (from inside the program) to give
     // the keyboard back to mep -- Ctrl-\ on X11.
     virtual bool TakeReleaseRequest() = 0;
+    // True once, after one of mep's own chords (Backend::SetReservedChords)
+    // was pressed while the program had the keyboard: it was kept from the
+    // program, the keyboard is being given back (TakeReleaseRequest), and
+    // the chord is mep's to act on. `key`/`mods` as SetReservedChords says.
+    virtual bool TakeReservedChord(std::string *key, unsigned *mods) {
+        (void)key;
+        (void)mods;
+        return false;
+    }
     // Asks it to close the way its window manager's close button would.
     // False when it does not take such requests (the caller signals it).
     virtual bool RequestClose() = 0;
@@ -97,7 +115,42 @@ public:
     virtual Snapshot Capture() = 0;
     // Its title, "" if it has none.
     virtual std::string Title() = 0;
+
+    // --- A window no windowing system shows: mep draws it ---------------
+    // True when mep itself draws the window (LiveFrame) and passes it the
+    // pointer and the keys (Pointer*, Key, Text): it lives on a screen
+    // nobody sees. Then HasFocus is simply what Focus last said, and the
+    // keyboard never leaves mep -- mep's own chords stay mep's.
+    virtual bool DrawnByMep() const { return false; }
+    // Its picture as it is now, the whole of it, or null when there is
+    // none yet. `version` changes whenever the pixels do.
+    virtual const Snapshot *LiveFrame(uint64_t *version) {
+        (void)version;
+        return nullptr;
+    }
+    // The pointer at (x, y), in the window's own pixels.
+    virtual void PointerMove(int x, int y) {
+        (void)x;
+        (void)y;
+    }
+    // A button pressed or let go: 1 left, 2 middle, 3 right, 4/5 wheel
+    // up/down, 6/7 wheel left/right (X11's numbering).
+    virtual void PointerButton(int button, bool down) {
+        (void)button;
+        (void)down;
+    }
+    // A key pressed and let go: an X11 keysym (the one portable name for
+    // keys there is), held down with `mods` (KeyMod bits).
+    virtual void Key(unsigned keysym, unsigned mods) {
+        (void)keysym;
+        (void)mods;
+    }
+    // One character typed.
+    virtual void Text(char32_t cp) { (void)cp; }
 };
+
+// EmbeddedWindow::Key's modifiers.
+enum KeyMod : unsigned { kModShift = 1, kModCtrl = 2, kModAlt = 4, kModSuper = 8 };
 
 // The windowing system.
 class Backend {
@@ -109,7 +162,19 @@ public:
     virtual bool Usable(std::string *why) const = 0;
     // Environment a child needs so it opens its window where this backend
     // can adopt it (DISPLAY, and toolkit hints like GDK_BACKEND=x11).
-    virtual std::vector<std::pair<std::string, std::string>> ChildEnv() const = 0;
+    // Called once for every program, right before it is started (a
+    // backend may set up a display for it here: ChildStarted says whose).
+    virtual std::vector<std::pair<std::string, std::string>> ChildEnv() = 0;
+    // The program ChildEnv was last called for has started as `pid` (or
+    // failed to: never called).
+    virtual void ChildStarted(int pid) { (void)pid; }
+    // The program `pid` has ended, or no longer needs what ChildEnv set up
+    // for it.
+    virtual void ChildEnded(int pid) { (void)pid; }
+    // Why a program that is running shows no window, when the backend
+    // knows ("" otherwise) -- a Mac program, say, while mep may not move
+    // windows.
+    virtual std::string WhyNoWindow() const { return ""; }
     // True when this windowing system cannot put a shield over a program
     // (macOS): the pointer always reaches it, so a click into it takes the
     // keyboard, as SetPointerThrough(true) arranges elsewhere.
@@ -146,6 +211,12 @@ public:
         (void)name;
         return "";
     }
+    // Which chords are mep's even while a program has the keyboard (its
+    // mod1 pane moves): `key` is "a".."z", "0".."9", "Tab" or "CR", `mods`
+    // KeyMod bits. Where the windowing system hands the program the keys
+    // itself, the backend keeps these from it (TakeReservedChord) if it
+    // can; where mep draws the window it never needs to.
+    virtual void SetReservedChords(std::function<bool(const std::string &key, unsigned mods)> reserved) { (void)reserved; }
     // Once per frame: drains the windowing system's events.
     virtual void Pump() = 0;
     // Once per frame, after every Place/Hide: pushes the changes out.
@@ -158,6 +229,21 @@ public:
  * @return A backend -- the unsupported one when nothing better fits, never null.
  */
 std::unique_ptr<Backend> CreateBackend(void *native_window_handle);
+
+/**
+ * @brief A backend that is two: every program is started for both (both ChildEnvs), and its window is looked for in
+ * `first`, then in `second` -- where it shows up depends on the program (an X11 one on `first`'s private server, a Mac
+ * one as its own window). Hand-offs and named applications are `second`'s.
+ */
+std::unique_ptr<Backend> CreateLayeredBackend(std::unique_ptr<Backend> first, std::unique_ptr<Backend> second);
+
+#if defined(MEP_GUI_EMBED_XVFB)
+/**
+ * @brief The private X server backend (gui_embed_xvfb.cpp), or null when there is no Xvfb or Xlib to run it with.
+ * @param why Set to the reason when null is returned.
+ */
+std::unique_ptr<Backend> CreateXvfbBackend(std::string *why);
+#endif
 
 /**
  * @brief The backend for platforms with no embedding yet.
@@ -281,6 +367,25 @@ public:
     // True once each time the program took the keyboard by itself (a click
     // into a pointer-through window): the editor then treats it as focused.
     bool TakeFocusGained();
+
+    // A window mep draws and feeds itself (EmbeddedWindow::DrawnByMep):
+    // its picture, and the pointer and keys, in the window's own pixels.
+    bool DrawnByMep() const { return window_ && window_->DrawnByMep(); }
+    const Snapshot *LiveFrame(uint64_t *version) { return window_ ? window_->LiveFrame(version) : nullptr; }
+    void PointerMove(int x, int y) {
+        if (window_) window_->PointerMove(x, y);
+    }
+    void PointerButton(int button, bool down) {
+        if (window_) window_->PointerButton(button, down);
+    }
+    void Key(unsigned keysym, unsigned mods) {
+        if (window_) window_->Key(keysym, mods);
+    }
+    void Text(char32_t cp) {
+        if (window_) window_->Text(cp);
+    }
+    // See EmbeddedWindow::TakeReservedChord.
+    bool TakeReservedChord(std::string *key, unsigned *mods) { return window_ && window_->TakeReservedChord(key, mods); }
 
     // Stops it: first politely (a close request, else SIGTERM), then for good.
     void Stop();

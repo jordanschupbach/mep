@@ -117,33 +117,6 @@
           sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30";
         };
 
-        # pdfium (pdf_doc.cpp) was added to CMakeLists.txt's FetchContent
-        # set after lua was already wired up above, and this file wasn't
-        # updated to match -- with FETCHCONTENT_FULLY_DISCONNECTED=ON
-        # below, CMake never downloads it, leaving pdfium_SOURCE_DIR empty
-        # and failing configure (the pdfium imported-target paths don't
-        # exist). fetchzip (unlike fetchurl+manual tar for lua above)
-        # unpacks the archive itself and hands back a ready source
-        # directory, so no preConfigure extraction step is needed.
-        # Unlike fetchurl, fetchzip's fixed-output hash is of the
-        # *unpacked* tree (post stripRoot), not the raw archive -- so
-        # this hash is NOT the same as CMakeLists.txt's own URL_HASH pin
-        # and had to be computed separately (`nix hash path` /
-        # `nix-prefetch-url --unpack` against the archive).
-        # Only the Linux x86_64 asset/hash is verified (mirrors
-        # CMakeLists.txt's own `else()` branch, which is likewise the only
-        # one it pins a real build/dev environment against); extend with
-        # Darwin's arm64/x64 hashes from CMakeLists.txt if this flake ever
-        # targets aarch64-linux or Darwin.
-        pdfiumSrc = pkgs.fetchzip {
-          url = "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8009/pdfium-linux-x64.tgz";
-          hash = "sha256-/TbTmcM7FRmCXpk42WXYTT/Mw1I4WscLmFMWTLr/ZTo=";
-          # Release tarball has multiple top-level entries (LICENSE,
-          # include/, lib/, ...), not one wrapping directory, so
-          # fetchzip's default stripRoot=true would error -- keep it flat.
-          stripRoot = false;
-        };
-
         tsGrammars = pkgs.tree-sitter.withPlugins (
           p: with p; [
             tree-sitter-bash
@@ -212,6 +185,11 @@
             pkgs.cmake
             pkgs.ninja
             pkgs.pkg-config
+          ]
+          # Linux-only: CMakeLists.txt's gcc header probe and its mold/lld
+          # linker selection are both `NOT APPLE`-gated, so on Darwin these
+          # would only add a GCC toolchain to the closure for nothing.
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             # CMakeLists.txt's own Clang-modules workaround (top of that
             # file) shells out to a bare `gcc` at configure time to learn
             # libstdc++'s header search paths, which it then passes to
@@ -246,6 +224,13 @@
             pkgs.lld
           ];
           buildInputs = [
+            pkgs.openssl
+          ]
+          # Linux-only: on Darwin the backend is Cocoa/NSOpenGL
+          # (gfx/backend_native_macos.mm, system frameworks via the SDK)
+          # and audio is a no-op, so none of the X11/ALSA stack applies --
+          # alsa-lib doesn't even evaluate there.
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             # gfx/backend_native.cpp's own hand-written X11/GLX windowing/
             # input/context implementation (GLFW_REMOVAL_PLAN.md) --
             # libGL provides both OpenGL and GLX (Mesa exports both from
@@ -264,7 +249,6 @@
             pkgs.libx11
             pkgs.libxi
             pkgs.libxtst
-            pkgs.openssl
             # In-house ALSA audio backend (gfx/backend_native_audio.cpp,
             # see MINIAUDIO_REMOVAL_PLAN.md) -- PulseAudio/PipeWire users
             # are covered transparently via their ALSA compatibility shim.
@@ -282,9 +266,37 @@
             tar xzf ${luaTarball} --strip-components=1 -C "$NIX_BUILD_TOP/lua-src"
             cmakeFlagsArray+=(
               "-DFETCHCONTENT_SOURCE_DIR_LUA=$NIX_BUILD_TOP/lua-src"
-              "-DFETCHCONTENT_SOURCE_DIR_PDFIUM=${pdfiumSrc}"
               "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
             )
+          '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
+            # CMakeLists.txt pins the system CLT SDK and the host's own
+            # macOS version whenever /usr/bin/sw_vers exists, for the
+            # Homebrew-LLVM build -- and with the Darwin sandbox off (the
+            # default) that file *is* visible here. Build against
+            # nixpkgs' own SDK/deployment target instead, so the package
+            # is pure and nixpkgs' clang and ld64 stay a matched pair.
+            cmakeFlagsArray+=(
+              "-DCMAKE_OSX_SYSROOT=$SDKROOT"
+              "-DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET"
+            )
+            # clang-scan-deps (C++20 module scanning) runs the unwrapped
+            # clang, so it never sees the -isystem paths the cc-wrapper
+            # injects (libc++, openssl, ...), and CMake drops those from
+            # the command line as "implicit". Linux recovers them via
+            # CMakeLists.txt's `gcc -E -v` probe, which is NOT APPLE-gated;
+            # here, ask the wrapper itself and hand the scanner a shim that
+            # appends them.
+            scanFlags=$($CXX -E -v -xc++ /dev/null 2>&1 >/dev/null \
+              | sed -n '/^#include <...> search starts here:/,/^End of search list/{//!p;}' \
+              | grep -v '(framework directory)$' | sed 's/^ *//' \
+              | while read -r d; do printf ' -isystem %q' "$d"; done)
+            mkdir -p "$NIX_BUILD_TOP/scan-deps"
+            cat > "$NIX_BUILD_TOP/scan-deps/clang-scan-deps" <<EOF
+            #!${pkgs.runtimeShell}
+            exec ${mepStdenv.cc.cc}/bin/clang-scan-deps "\$@"$scanFlags
+            EOF
+            chmod +x "$NIX_BUILD_TOP/scan-deps/clang-scan-deps"
+            cmakeFlagsArray+=("-DCMAKE_CXX_COMPILER_CLANG_SCAN_DEPS=$NIX_BUILD_TOP/scan-deps/clang-scan-deps")
           '';
 
           # BUILD_PERFORMANCE_PLAN.md -- explicit -GNinja rather than
@@ -351,17 +363,15 @@
         };
       in
       {
-        # mepPackage is Linux-only (its pdfium pin is the linux-x64 asset
-        # and its buildInputs are the X11/ALSA stack -- see pdfiumSrc's
-        # own comment): building these outputs on Darwin fails. They stay
-        # declared on every system anyway -- deliberately NOT gated with
-        # optionalAttrs, because making the output attr *names* depend on
-        # the system forces flake-utils' transposition to evaluate every
-        # system's nixpkgs just to list attrs, and this nixpkgs revision
-        # throws outright for x86_64-darwin (support dropped), which then
-        # breaks evaluating any other system's outputs too. On macOS use
-        # the devShell + the justfile's Homebrew LLVM toolchain instead
-        # (see README.org's Platforms section).
+        # Built on Linux and aarch64-darwin (mepPackage gates the X11/ALSA
+        # stack to Linux and fixes up the Darwin toolchain in preConfigure).
+        # Output attr *names* must stay the same on every system --
+        # deliberately NOT gated with optionalAttrs, because making them
+        # depend on the system forces flake-utils' transposition to
+        # evaluate every system's nixpkgs just to list attrs, and this
+        # nixpkgs revision throws outright for x86_64-darwin (support
+        # dropped), which then breaks evaluating any other system's
+        # outputs too.
         packages.default = mepPackage;
         apps.default = flake-utils.lib.mkApp { drv = mepPackage; };
 

@@ -2,6 +2,8 @@ web_build_dir := "build/web"
 native_build_dir := "build/native"
 native_build_dev_dir := "build/native-dev"
 ts_grammar_dir := ".ts-grammars/lib"
+# macOS: the code-signing certificate `just install` signs mep with (scripts/macos-signing-setup.sh).
+macos_sign_identity := "mep Local Code Signing"
 
 # Windows builds into their own directory with their own toolchain
 # (MSVC + Ninja, set up by scripts\windows-build.bat), so they never
@@ -271,6 +273,17 @@ install prefix=(env("HOME") / ".local"): build-native
         done < "$manifest"
     fi
     cmake --install {{native_build_dir}} --prefix "{{prefix}}"
+    if [ "$(uname)" = Darwin ]; then
+        # A stable identity for the Keychain (see scripts/macos-signing-setup.sh):
+        # without it each install is a new program and mail's password asks again.
+        if security find-certificate -c "{{macos_sign_identity}}" >/dev/null 2>&1; then
+            codesign -f -s "{{macos_sign_identity}}" -i mep "{{prefix}}/bin/mep" ||
+                echo "warning: signing failed (re-run scripts/macos-signing-setup.sh); mep stays ad-hoc signed"
+        else
+            echo "note: mep is ad-hoc signed -- run scripts/macos-signing-setup.sh once so the Keychain"
+            echo "      keeps trusting mep across installs"
+        fi
+    fi
     echo "Installed mep to {{prefix}}/bin/mep"
     case ":$PATH:" in *":{{prefix}}/bin:"*) ;; *) echo "note: {{prefix}}/bin is not on your PATH" ;; esac
     if [ "$(uname)" = Darwin ]; then just install-app "{{prefix}}"; fi
@@ -298,10 +311,12 @@ install-app prefix=(env("HOME") / ".local") dest=(env("HOME") / "Applications"):
     printf '%s\n' '#!/bin/sh' \
         'exec /usr/bin/open -n "$(dirname "$0")/../Resources/mep.app" --args "$@"' \
         > "$app/Contents/MacOS/mep"
-    printf '%s\n' '#!/bin/sh' \
-        'exec "${SHELL:-/bin/zsh}" -lc '"'"'exec "$0" "$@"'"'"' "{{prefix}}/bin/mep" "$@"' \
-        > "$inner/Contents/MacOS/mep"
-    chmod +x "$app/Contents/MacOS/mep" "$inner/Contents/MacOS/mep"
+    # The nested bundle's executable is a small signed program that runs
+    # PREFIX/bin/mep as its child, not a script: macOS checks permissions
+    # (Accessibility for exec-gui embedding) against the launched bundle's
+    # signature, which a script bundle lacks (scripts/macos-app-launcher.c).
+    cc -O2 -DMEP_BINARY="\"{{prefix}}/bin/mep\"" -o "$inner/Contents/MacOS/mep" scripts/macos-app-launcher.c
+    chmod +x "$app/Contents/MacOS/mep"
     tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
     iconset="$tmp/mep.iconset"; mkdir "$iconset"
     sips -s format png --padToHeightWidth 800 800 assets/mep-light.png --out "$tmp/square.png" >/dev/null
@@ -334,10 +349,33 @@ install-app prefix=(env("HOME") / ".local") dest=(env("HOME") / "Applications"):
     }
     write_plist "$app" com.mep.launcher '
       <key>LSUIElement</key><true/>'
-    write_plist "$inner" com.mep.editor ''
+    # LSUIElement: the launcher shows no Dock tile -- mep, its child, has its own.
+    write_plist "$inner" com.mep.editor '
+      <key>LSUIElement</key><true/>'
+    # Signed with the stable certificate, the Accessibility grant survives
+    # reinstalls; ad-hoc, it holds until the launcher itself changes.
+    if security find-certificate -c "{{macos_sign_identity}}" >/dev/null 2>&1 &&
+        codesign -f -s "{{macos_sign_identity}}" "$inner" 2>/dev/null; then :
+    else
+        codesign -f -s - "$inner"
+    fi
     /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" || true
     mdimport "$app" 2>/dev/null || true
     echo "Installed $app"
+
+# macOS: build a Python whose tkinter draws through X11 (scripts/python-tk-x11.nix)
+# and link it as PREFIX/bin/python3-x11. An X11 program shows inside mep on a
+# private display of its own, with no permission asked; nixpkgs' own Tk is Aqua.
+#
+# Build an X11-Tk Python for permission-free exec-gui tkinter on macOS.
+[macos]
+python-x11 prefix=(env("HOME") / ".local"):
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(nix-build --no-out-link scripts/python-tk-x11.nix)"
+    mkdir -p "{{prefix}}/bin"
+    ln -sfn "$out/bin/python3" "{{prefix}}/bin/python3-x11"
+    echo "Linked {{prefix}}/bin/python3-x11 -> $out/bin/python3"
 
 # Remove everything the last `just install` put down.
 [unix]

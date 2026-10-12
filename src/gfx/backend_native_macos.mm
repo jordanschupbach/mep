@@ -557,6 +557,16 @@ public:
         @autoreleasepool {
             [NSApplication sharedApplication];
             [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+            // Not a bundle's own process (started from a terminal, or as
+            // the child of mep.app's launcher): no icon of its own, so the
+            // Dock tile takes the installed logo.
+            if ([[NSBundle mainBundle] bundleIdentifier] == nil) {
+                NSString *exe = [[NSBundle mainBundle] executablePath];
+                NSString *logo = [[[[exe stringByResolvingSymlinksInPath] stringByDeletingLastPathComponent]
+                    stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"share/mep/assets/mep-light.png"];
+                NSImage *icon = [[NSImage alloc] initWithContentsOfFile:logo];
+                if (icon) [NSApp setApplicationIconImage:icon];
+            }
 
             ctx_->app_delegate = [[MepAppDelegate alloc] init];
             ctx_->app_delegate->ctx = ctx_;

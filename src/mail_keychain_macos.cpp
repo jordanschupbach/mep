@@ -92,6 +92,29 @@ Status Read(const std::string &service, const std::string &account, bool allow_u
     return Status::Ok;
 }
 
+Status Probe(const std::string &service, const std::string &account, bool *ours) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    CFMutableDictionaryRef q = Query(service, account);
+    CFDictionarySetValue(q, kSecReturnAttributes, kCFBooleanTrue);
+    CFDictionarySetValue(q, kSecMatchLimit, kSecMatchLimitOne);
+    AllowUi(false);
+    CFTypeRef result = nullptr;
+    const OSStatus st = SecItemCopyMatching(q, &result);
+    AllowUi(true);
+    CFRelease(q);
+    if (st != errSecSuccess || !result) return FromOSStatus(st);
+    *ours = false;
+    if (CFGetTypeID(result) == CFDictionaryGetTypeID()) {
+        auto comment = static_cast<CFStringRef>(CFDictionaryGetValue(static_cast<CFDictionaryRef>(result), kSecAttrComment));
+        if (comment) {
+            char buf[32] = {0};
+            if (CFStringGetCString(comment, buf, sizeof(buf), kCFStringEncodingUTF8)) *ours = std::string(buf) == kMarker;
+        }
+    }
+    CFRelease(result);
+    return Status::Ok;
+}
+
 Status Delete(const std::string &service, const std::string &account, bool allow_ui) {
     std::lock_guard<std::mutex> lock(g_mutex);
     CFMutableDictionaryRef q = Query(service, account);

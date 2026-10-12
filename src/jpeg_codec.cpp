@@ -226,6 +226,127 @@ void Idct8x8(float block[64]) {
 
 uint16_t ReadU16BE(const unsigned char *p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
 
+// --- Progressive scans (spec Annex G) ----------------------------------
+//
+// A progressive JPEG sends each block's coefficients over several scans:
+// the DC terms first (then their lower bits), the AC bands after, each
+// band first at reduced precision (successive approximation, `al` bits
+// short) and then refined a bit at a time. The coefficients therefore
+// accumulate in per-block buffers across scans and only become pixels
+// once the last scan is in. Coefficients are kept in natural order.
+
+bool DecodeDcFirst(BitReader &br, const HuffTable &dc, int *pred, int al, int *coef) {
+    const int s = DecodeHuffmanSymbol(br, dc);
+    if (s < 0 || s > 11) return false;
+    const long bits = s > 0 ? br.GetBits(s) : 0;
+    if (s > 0 && bits < 0) return false;
+    *pred += ExtendSign(bits, s);
+    coef[0] = *pred * (1 << al);
+    return true;
+}
+
+bool DecodeDcRefine(BitReader &br, int al, int *coef) {
+    const int bit = br.GetBit();
+    if (bit < 0) return false;
+    if (bit) coef[0] |= 1 << al;
+    return true;
+}
+
+// `eobrun`: how many more blocks of this band are all zero (an EOBn code
+// covers a run of blocks, not just the rest of one).
+bool DecodeAcFirst(BitReader &br, const HuffTable &ac, int ss, int se, int al, int *eobrun, int *coef) {
+    if (*eobrun > 0) {
+        --*eobrun;
+        return true;
+    }
+    for (int k = ss; k <= se;) {
+        const int rs = DecodeHuffmanSymbol(br, ac);
+        if (rs < 0) return false;
+        int r = rs >> 4;
+        const int sz = rs & 0x0F;
+        if (sz == 0) {
+            if (r < 15) {
+                *eobrun = (1 << r) - 1;
+                if (r > 0) {
+                    const long extra = br.GetBits(r);
+                    if (extra < 0) return false;
+                    *eobrun += static_cast<int>(extra);
+                }
+                break;
+            }
+            k += 16;  // ZRL
+            continue;
+        }
+        k += r;
+        if (k > 63) return false;
+        const long bits = br.GetBits(sz);
+        if (bits < 0) return false;
+        coef[kZigzag[k]] = ExtendSign(bits, sz) * (1 << al);
+        k++;
+    }
+    return true;
+}
+
+// The refinement pass for an AC band: one more bit for every coefficient
+// already nonzero, and newly nonzero ones (always +-1 << al) placed
+// among the zeros (libjpeg's decode_mcu_AC_refine, step for step).
+bool DecodeAcRefine(BitReader &br, const HuffTable &ac, int ss, int se, int al, int *eobrun, int *coef) {
+    const int p1 = 1 << al;
+    const int m1 = -p1;
+    auto refine = [&](int &c) {
+        const int bit = br.GetBit();
+        if (bit < 0) return false;
+        if (bit && (c & p1) == 0) c += c >= 0 ? p1 : m1;
+        return true;
+    };
+    int k = ss;
+    if (*eobrun <= 0) {
+        for (; k <= se; k++) {
+            const int rs = DecodeHuffmanSymbol(br, ac);
+            if (rs < 0) return false;
+            int r = rs >> 4;
+            const int sz = rs & 0x0F;
+            int value = 0;
+            if (sz != 0) {
+                if (sz != 1) return false;
+                const int bit = br.GetBit();
+                if (bit < 0) return false;
+                value = bit ? p1 : m1;
+            } else if (r != 15) {
+                *eobrun = 1 << r;
+                if (r > 0) {
+                    const long extra = br.GetBits(r);
+                    if (extra < 0) return false;
+                    *eobrun += static_cast<int>(extra);
+                }
+                break;
+            }
+            // Skip `r` zero coefficients (refining the nonzero ones passed
+            // on the way); the new value goes in the zero after them.
+            while (k <= se) {
+                int &c = coef[kZigzag[k]];
+                if (c != 0) {
+                    if (!refine(c)) return false;
+                } else {
+                    if (r == 0) break;
+                    r--;
+                }
+                k++;
+            }
+            if (value != 0 && k <= se) coef[kZigzag[k]] = value;
+        }
+    }
+    if (*eobrun > 0) {
+        // The rest of the band is in an end-of-band run: only refinements.
+        for (; k <= se; k++) {
+            int &c = coef[kZigzag[k]];
+            if (c != 0 && !refine(c)) return false;
+        }
+        --*eobrun;
+    }
+    return true;
+}
+
 // ===================== Encoder =====================
 //
 // Standard Annex-K quantization/Huffman tables below are used as
@@ -526,10 +647,18 @@ unsigned char *Decode(const unsigned char *data, size_t len, int *width, int *he
     int width_v = 0, height_v = 0;
     int restart_interval = 0;
     size_t pos = 2;
-    bool have_sof = false;
+    bool have_sof = false, progressive = false, have_scan = false;
+    int h_max = 1, v_max = 1, mcus_x = 0, mcus_y = 0;
+    // Every block's quantized coefficients (natural order), per component,
+    // on the component's padded block grid -- filled by one scan
+    // (sequential) or built up over several (progressive), turned into
+    // pixels once the image ends.
+    std::vector<std::vector<int>> coefs;
+    std::vector<int> blocks_w, blocks_h;
 
     while (pos + 4 <= len) {
         if (data[pos] != 0xFF) return fail("JPEG: malformed marker segment");
+        while (pos + 2 < len && data[pos + 1] == 0xFF) pos++;  // fill bytes before a marker
         unsigned char marker = data[pos + 1];
         pos += 2;
         if (marker == 0xD9) break;  // EOI
@@ -546,10 +675,11 @@ unsigned char *Decode(const unsigned char *data, size_t len, int *width, int *he
                 int precision = seg[p] >> 4, table_id = seg[p] & 0x0F;
                 p++;
                 if (table_id > 3) return fail("JPEG: invalid quantization table id");
+                if (p + static_cast<size_t>(precision == 0 ? 64 : 128) > seg_data_len) return fail("JPEG: truncated quantization table");
                 // DQT elements are transmitted in zigzag scan order (spec
                 // Annex B.2.4.1); store dezigzagged so dequantization can
                 // index the table by natural (row-major) position, matching
-                // how DecodeBlock already places coefficients.
+                // how the coefficients are kept.
                 for (int i = 0; i < 64; i++) {
                     if (precision == 0) {
                         quant_tables[table_id][static_cast<size_t>(kZigzag[i])] = seg[p];
@@ -560,29 +690,49 @@ unsigned char *Decode(const unsigned char *data, size_t len, int *width, int *he
                     }
                 }
             }
-        } else if (marker == 0xC0) {  // SOF0: baseline DCT
+        } else if (marker == 0xC0 || marker == 0xC1 || marker == 0xC2) {  // SOF0/1: sequential, SOF2: progressive
+            if (have_sof) return fail("JPEG: more than one frame");
+            if (seg_data_len < 6) return fail("JPEG: truncated frame header");
             if (seg[0] != 8) return fail("JPEG: only 8-bit sample precision is supported");
+            progressive = marker == 0xC2;
             height_v = ReadU16BE(seg + 1);
             width_v = ReadU16BE(seg + 3);
             int nc = seg[5];
             if (nc != 1 && nc != 3) return fail("JPEG: only grayscale or 3-component (YCbCr) images are supported");
+            if (width_v <= 0 || height_v <= 0) return fail("JPEG: no image size (DNL is not supported)");
+            if (seg_data_len < 6 + nc * 3) return fail("JPEG: truncated frame header");
             comps.resize(static_cast<size_t>(nc));
             for (int i = 0; i < nc; i++) {
                 const unsigned char *cp = seg + 6 + i * 3;
-                comps[static_cast<size_t>(i)].id = cp[0];
-                comps[static_cast<size_t>(i)].h = cp[1] >> 4;
-                comps[static_cast<size_t>(i)].v = cp[1] & 0x0F;
-                comps[static_cast<size_t>(i)].quant_table = cp[2];
+                Component &c = comps[static_cast<size_t>(i)];
+                c.id = cp[0];
+                c.h = cp[1] >> 4;
+                c.v = cp[1] & 0x0F;
+                c.quant_table = cp[2] & 0x03;
+                if (c.h < 1 || c.h > 4 || c.v < 1 || c.v > 4) return fail("JPEG: invalid sampling factors");
+                h_max = std::max(h_max, c.h);
+                v_max = std::max(v_max, c.v);
+            }
+            mcus_x = (width_v + 8 * h_max - 1) / (8 * h_max);
+            mcus_y = (height_v + 8 * v_max - 1) / (8 * v_max);
+            coefs.resize(comps.size());
+            blocks_w.resize(comps.size());
+            blocks_h.resize(comps.size());
+            for (size_t i = 0; i < comps.size(); i++) {
+                blocks_w[i] = mcus_x * comps[i].h;
+                blocks_h[i] = mcus_y * comps[i].v;
+                coefs[i].assign(static_cast<size_t>(blocks_w[i]) * static_cast<size_t>(blocks_h[i]) * 64, 0);
             }
             have_sof = true;
-        } else if (marker >= 0xC1 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
-            return fail("JPEG: only baseline (SOF0) sequential DCT is supported, not progressive/arithmetic/lossless");
+        } else if (marker >= 0xC3 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
+            return fail("JPEG: only baseline, extended and progressive Huffman DCT are supported, not arithmetic/lossless");
         } else if (marker == 0xC4) {  // DHT
             size_t p = 0;
             while (p < seg_data_len) {
                 int table_class = seg[p] >> 4, table_id = seg[p] & 0x0F;
                 p++;
                 if (table_id > 3) return fail("JPEG: invalid Huffman table id");
+                if (p + 16 > seg_data_len) return fail("JPEG: truncated Huffman table");
                 HuffTable &t = table_class == 0 ? dc_tables[table_id] : ac_tables[table_id];
                 int counts[17] = {0};
                 int total = 0;
@@ -591,138 +741,178 @@ unsigned char *Decode(const unsigned char *data, size_t len, int *width, int *he
                     total += counts[i];
                 }
                 p += 16;
+                if (p + static_cast<size_t>(total) > seg_data_len) return fail("JPEG: truncated Huffman table");
                 t.symbols_by_len.assign(17, {});
                 for (int i = 1; i <= 16; i++) {
                     for (int j = 0; j < counts[i]; j++) t.symbols_by_len[static_cast<size_t>(i)].push_back(seg[p++]);
                 }
                 t.Build();
                 t.present = true;
-                (void)total;
             }
         } else if (marker == 0xDD) {  // DRI
             restart_interval = ReadU16BE(seg);
         } else if (marker == 0xDA) {  // SOS
             if (!have_sof) return fail("JPEG: SOS before SOF");
-            int ns = seg[0];
+            const int ns = seg[0];
+            if (ns < 1 || ns > 4 || seg_data_len < 4 + ns * 2) return fail("JPEG: invalid scan header");
+            std::vector<size_t> scan_comps;
             for (int i = 0; i < ns; i++) {
                 int cid = seg[1 + i * 2];
                 int tables = seg[2 + i * 2];
                 bool found = false;
-                for (Component &c : comps) {
-                    if (c.id == cid) {
-                        c.dc_table = tables >> 4;
-                        c.ac_table = tables & 0x0F;
-                        found = true;
-                        break;
-                    }
+                for (size_t ci = 0; ci < comps.size(); ci++) {
+                    if (comps[ci].id != cid) continue;
+                    comps[ci].dc_table = (tables >> 4) & 0x03;
+                    comps[ci].ac_table = tables & 0x03;
+                    scan_comps.push_back(ci);
+                    found = true;
+                    break;
                 }
                 if (!found) return fail("JPEG: SOS references an undeclared component");
             }
+            const int ss = seg[1 + ns * 2], se = seg[2 + ns * 2];
+            const int ah = seg[3 + ns * 2] >> 4, al = seg[3 + ns * 2] & 0x0F;
+            if (progressive) {
+                if (ss > se || se > 63 || (ss == 0 && se != 0) || (ss > 0 && ns != 1) || al > 13) {
+                    return fail("JPEG: invalid progressive scan parameters");
+                }
+            }
+            for (size_t ci : scan_comps) {
+                const Component &c = comps[ci];
+                const bool need_dc = !progressive || (ss == 0 && ah == 0);
+                const bool need_ac = !progressive || ss > 0;
+                if ((need_dc && !dc_tables[c.dc_table].present) || (need_ac && !ac_tables[c.ac_table].present)) {
+                    return fail("JPEG: scan references an undefined Huffman table");
+                }
+            }
             // Entropy-coded data starts right after the SOS segment.
-            size_t scan_start = pos + seg_len;
-
-            int h_max = 1, v_max = 1;
-            for (const Component &c : comps) {
-                h_max = std::max(h_max, c.h);
-                v_max = std::max(v_max, c.v);
-            }
-            int mcu_w = 8 * h_max, mcu_h = 8 * v_max;
-            int mcus_x = (width_v + mcu_w - 1) / mcu_w;
-            int mcus_y = (height_v + mcu_h - 1) / mcu_h;
-
-            // One full-resolution-of-that-component plane per component
-            // (each component's own sample grid, before upsampling).
-            std::vector<std::vector<unsigned char>> planes(comps.size());
-            std::vector<int> plane_w(comps.size()), plane_h(comps.size());
-            for (size_t i = 0; i < comps.size(); i++) {
-                plane_w[i] = mcus_x * comps[i].h * 8;
-                plane_h[i] = mcus_y * comps[i].v * 8;
-                planes[i].assign(static_cast<size_t>(plane_w[i]) * static_cast<size_t>(plane_h[i]), 0);
-            }
-
+            const size_t scan_start = pos + seg_len;
             BitReader br(data + scan_start, len - scan_start);
             for (Component &c : comps) c.dc_pred = 0;
-            int mcus_since_restart = 0;
-            for (int my = 0; my < mcus_y; my++) {
-                for (int mx = 0; mx < mcus_x; mx++) {
-                    for (size_t ci = 0; ci < comps.size(); ci++) {
-                        Component &c = comps[ci];
-                        if (!dc_tables[c.dc_table].present || !ac_tables[c.ac_table].present) {
-                            return fail("JPEG: scan references an undefined Huffman table");
-                        }
-                        for (int by = 0; by < c.v; by++) {
-                            for (int bx = 0; bx < c.h; bx++) {
-                                int block[64];
-                                if (!DecodeBlock(br, dc_tables[c.dc_table], ac_tables[c.ac_table], &c.dc_pred, block)) {
-                                    return fail("JPEG: corrupt entropy-coded data");
-                                }
-                                float fblock[64];
-                                const uint16_t *q = quant_tables[c.quant_table];
-                                for (int i = 0; i < 64; i++) fblock[i] = static_cast<float>(block[i] * q[i]);
-                                Idct8x8(fblock);
-                                int px0 = (mx * c.h + bx) * 8, py0 = (my * c.v + by) * 8;
-                                for (int yy = 0; yy < 8; yy++) {
-                                    for (int xx = 0; xx < 8; xx++) {
-                                        float v = fblock[yy * 8 + xx] + 128.0f;
-                                        int iv = static_cast<int>(std::lround(v));
-                                        iv = std::clamp(iv, 0, 255);
-                                        size_t idx = static_cast<size_t>(py0 + yy) * static_cast<size_t>(plane_w[ci]) +
-                                                     static_cast<size_t>(px0 + xx);
-                                        planes[ci][idx] = static_cast<unsigned char>(iv);
+            int eobrun = 0;
+            auto decode_block = [&](size_t ci, int bx, int by) {
+                Component &c = comps[ci];
+                int *coef = coefs[ci].data() + (static_cast<size_t>(by) * static_cast<size_t>(blocks_w[ci]) + static_cast<size_t>(bx)) * 64;
+                if (!progressive) return DecodeBlock(br, dc_tables[c.dc_table], ac_tables[c.ac_table], &c.dc_pred, coef);
+                if (ss == 0) {
+                    return ah == 0 ? DecodeDcFirst(br, dc_tables[c.dc_table], &c.dc_pred, al, coef) : DecodeDcRefine(br, al, coef);
+                }
+                return ah == 0 ? DecodeAcFirst(br, ac_tables[c.ac_table], ss, se, al, &eobrun, coef)
+                               : DecodeAcRefine(br, ac_tables[c.ac_table], ss, se, al, &eobrun, coef);
+            };
+            int units_since_restart = 0;
+            auto after_unit = [&](bool last) {
+                if (restart_interval <= 0) return;
+                if (++units_since_restart < restart_interval || last) return;
+                br.SyncToRestart();
+                for (Component &c : comps) c.dc_pred = 0;
+                eobrun = 0;
+                units_since_restart = 0;
+            };
+            if (scan_comps.size() == 1) {
+                // Non-interleaved: the component's own blocks (only those
+                // covering the image, not the MCU padding), one per unit.
+                const size_t ci = scan_comps[0];
+                const int comp_w = (width_v * comps[ci].h + h_max - 1) / h_max;
+                const int comp_h = (height_v * comps[ci].v + v_max - 1) / v_max;
+                const int bw = (comp_w + 7) / 8, bh = (comp_h + 7) / 8;
+                for (int by = 0; by < bh; by++) {
+                    for (int bx = 0; bx < bw; bx++) {
+                        if (!decode_block(ci, bx, by)) return fail("JPEG: corrupt entropy-coded data");
+                        after_unit(by == bh - 1 && bx == bw - 1);
+                    }
+                }
+            } else {
+                for (int my = 0; my < mcus_y; my++) {
+                    for (int mx = 0; mx < mcus_x; mx++) {
+                        for (size_t ci : scan_comps) {
+                            for (int by = 0; by < comps[ci].v; by++) {
+                                for (int bx = 0; bx < comps[ci].h; bx++) {
+                                    if (!decode_block(ci, mx * comps[ci].h + bx, my * comps[ci].v + by)) {
+                                        return fail("JPEG: corrupt entropy-coded data");
                                     }
                                 }
                             }
                         }
-                    }
-                    mcus_since_restart++;
-                    if (restart_interval > 0 && mcus_since_restart == restart_interval &&
-                        !(my == mcus_y - 1 && mx == mcus_x - 1)) {
-                        br.SyncToRestart();
-                        for (Component &c : comps) c.dc_pred = 0;
-                        mcus_since_restart = 0;
+                        after_unit(my == mcus_y - 1 && mx == mcus_x - 1);
                     }
                 }
             }
-
-            // Upsample (nearest/box replication -- "fast" non-fancy
-            // upsampling, matching stb_image's own default) + color
-            // convert + assemble RGBA8 output.
-            auto *out = static_cast<unsigned char *>(std::malloc(static_cast<size_t>(width_v) * static_cast<size_t>(height_v) * 4));
-            if (!out) return fail("JPEG: out of memory");
-            for (int y = 0; y < height_v; y++) {
-                for (int x = 0; x < width_v; x++) {
-                    unsigned char r, g, b;
-                    if (comps.size() == 1) {
-                        int sx = x * comps[0].h / h_max, sy = y * comps[0].v / v_max;
-                        r = g = b = planes[0][static_cast<size_t>(sy) * static_cast<size_t>(plane_w[0]) + static_cast<size_t>(sx)];
-                    } else {
-                        int sx0 = x * comps[0].h / h_max, sy0 = y * comps[0].v / v_max;
-                        int sx1 = x * comps[1].h / h_max, sy1 = y * comps[1].v / v_max;
-                        int sx2 = x * comps[2].h / h_max, sy2 = y * comps[2].v / v_max;
-                        float yv = planes[0][static_cast<size_t>(sy0) * static_cast<size_t>(plane_w[0]) + static_cast<size_t>(sx0)];
-                        float cb = planes[1][static_cast<size_t>(sy1) * static_cast<size_t>(plane_w[1]) + static_cast<size_t>(sx1)] - 128.0f;
-                        float cr = planes[2][static_cast<size_t>(sy2) * static_cast<size_t>(plane_w[2]) + static_cast<size_t>(sx2)] - 128.0f;
-                        int rv = static_cast<int>(std::lround(yv + 1.402f * cr));
-                        int gv = static_cast<int>(std::lround(yv - 0.344136f * cb - 0.714136f * cr));
-                        int bv = static_cast<int>(std::lround(yv + 1.772f * cb));
-                        r = static_cast<unsigned char>(std::clamp(rv, 0, 255));
-                        g = static_cast<unsigned char>(std::clamp(gv, 0, 255));
-                        b = static_cast<unsigned char>(std::clamp(bv, 0, 255));
-                    }
-                    size_t di = (static_cast<size_t>(y) * static_cast<size_t>(width_v) + static_cast<size_t>(x)) * 4;
-                    out[di + 0] = r;
-                    out[di + 1] = g;
-                    out[di + 2] = b;
-                    out[di + 3] = 255;
-                }
+            have_scan = true;
+            // On to the next marker after this scan's data (skipping
+            // stuffed bytes and restart markers inside it).
+            size_t next = scan_start;
+            while (next + 1 < len && !(data[next] == 0xFF && data[next + 1] != 0x00 &&
+                                       !(data[next + 1] >= 0xD0 && data[next + 1] <= 0xD7))) {
+                next++;
             }
-            *width = width_v;
-            *height = height_v;
-            return out;
+            pos = next;
+            continue;
         }
         pos += seg_len;
     }
-    return fail("JPEG: no scan data found (missing SOS)");
+    if (!have_scan) return fail("JPEG: no scan data found (missing SOS)");
+
+    // Dequantize + IDCT every block into its component's plane.
+    std::vector<std::vector<unsigned char>> planes(comps.size());
+    std::vector<int> plane_w(comps.size());
+    for (size_t ci = 0; ci < comps.size(); ci++) {
+        plane_w[ci] = blocks_w[ci] * 8;
+        planes[ci].assign(static_cast<size_t>(plane_w[ci]) * static_cast<size_t>(blocks_h[ci]) * 8, 0);
+        const uint16_t *q = quant_tables[comps[ci].quant_table];
+        for (int by = 0; by < blocks_h[ci]; by++) {
+            for (int bx = 0; bx < blocks_w[ci]; bx++) {
+                const int *coef = coefs[ci].data() + (static_cast<size_t>(by) * static_cast<size_t>(blocks_w[ci]) + static_cast<size_t>(bx)) * 64;
+                float fblock[64];
+                for (int i = 0; i < 64; i++) fblock[i] = static_cast<float>(coef[i] * q[i]);
+                Idct8x8(fblock);
+                const int px0 = bx * 8, py0 = by * 8;
+                for (int yy = 0; yy < 8; yy++) {
+                    for (int xx = 0; xx < 8; xx++) {
+                        int iv = static_cast<int>(std::lround(fblock[yy * 8 + xx] + 128.0f));
+                        iv = std::clamp(iv, 0, 255);
+                        planes[ci][static_cast<size_t>(py0 + yy) * static_cast<size_t>(plane_w[ci]) + static_cast<size_t>(px0 + xx)] =
+                            static_cast<unsigned char>(iv);
+                    }
+                }
+            }
+        }
+    }
+
+    // Upsample (nearest/box replication -- "fast" non-fancy upsampling,
+    // matching stb_image's own default) + color convert + assemble RGBA8.
+    auto *out = static_cast<unsigned char *>(std::malloc(static_cast<size_t>(width_v) * static_cast<size_t>(height_v) * 4));
+    if (!out) return fail("JPEG: out of memory");
+    for (int y = 0; y < height_v; y++) {
+        for (int x = 0; x < width_v; x++) {
+            unsigned char r, g, b;
+            if (comps.size() == 1) {
+                int sx = x * comps[0].h / h_max, sy = y * comps[0].v / v_max;
+                r = g = b = planes[0][static_cast<size_t>(sy) * static_cast<size_t>(plane_w[0]) + static_cast<size_t>(sx)];
+            } else {
+                int sx0 = x * comps[0].h / h_max, sy0 = y * comps[0].v / v_max;
+                int sx1 = x * comps[1].h / h_max, sy1 = y * comps[1].v / v_max;
+                int sx2 = x * comps[2].h / h_max, sy2 = y * comps[2].v / v_max;
+                float yv = planes[0][static_cast<size_t>(sy0) * static_cast<size_t>(plane_w[0]) + static_cast<size_t>(sx0)];
+                float cb = planes[1][static_cast<size_t>(sy1) * static_cast<size_t>(plane_w[1]) + static_cast<size_t>(sx1)] - 128.0f;
+                float cr = planes[2][static_cast<size_t>(sy2) * static_cast<size_t>(plane_w[2]) + static_cast<size_t>(sx2)] - 128.0f;
+                int rv = static_cast<int>(std::lround(yv + 1.402f * cr));
+                int gv = static_cast<int>(std::lround(yv - 0.344136f * cb - 0.714136f * cr));
+                int bv = static_cast<int>(std::lround(yv + 1.772f * cb));
+                r = static_cast<unsigned char>(std::clamp(rv, 0, 255));
+                g = static_cast<unsigned char>(std::clamp(gv, 0, 255));
+                b = static_cast<unsigned char>(std::clamp(bv, 0, 255));
+            }
+            size_t di = (static_cast<size_t>(y) * static_cast<size_t>(width_v) + static_cast<size_t>(x)) * 4;
+            out[di + 0] = r;
+            out[di + 1] = g;
+            out[di + 2] = b;
+            out[di + 3] = 255;
+        }
+    }
+    *width = width_v;
+    *height = height_v;
+    return out;
 }
 
 std::string Encode(int width, int height, int comp, const unsigned char *pixels, int stride_bytes, int quality) {

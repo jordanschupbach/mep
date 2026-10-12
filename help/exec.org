@@ -73,21 +73,52 @@ that the program has closed once that window is gone, and =r= opens another.
 
 * Where it works
 
-| Platform       | How                                                         |
-|----------------+-------------------------------------------------------------|
-| Linux (X11)    | the window is taken into mep's own window and clipped to the pane |
-| macOS          | the window stays the program's, kept over the pane and just above mep's window |
-| anything else  | =:exec= says that it cannot show a program's window there   |
+| Platform              | How                                                         |
+|-----------------------+-------------------------------------------------------------|
+| Linux (X11)           | the window is taken into mep's own window and clipped to the pane |
+| macOS, X11 programs   | the program draws on a private display of its own, which mep draws into the pane -- no permission needed |
+| macOS, Mac programs   | the window stays the program's, kept over the pane and just above mep's window -- needs Accessibility |
+| anything else         | =:exec= says that it cannot show a program's window there   |
 
-On macOS this needs the Accessibility permission (System Settings > Privacy &
-Security > Accessibility), for mep or for the terminal it was started from.
-macOS asks for it the first time. Until it is given, =:exec= says so and opens
-nothing. There is no way round it: macOS gives no program another's window,
-so mep can only move and size it, and moving another program's window is what
-that permission allows. A mepml =exec-gui= block needs it just the same -- if
-those show, =:exec= has what it needs. Because the window is the program's own and not part of mep's, mep's
-popups (the command line, which-key, pickers) are drawn underneath it while it
-shows.
+** macOS: X11 programs, inside mep
+
+With [[https://www.xquartz.org][XQuartz]] installed, every program is
+started on a private X display of its own (an =Xvfb=, which draws into memory
+and shows nothing), and mep draws that display into the pane itself. A
+program that draws through X11 -- =xterm=, =xclock=, Tk built for X11, GTK or
+Qt built for X11 -- is then truly inside mep: no window of its own, no
+permission to give, its menus and dialogs inside the pane, and mep's popups
+drawn over it as over anything else. mep keeps the keyboard throughout and
+passes the keys on, so =mod1= pane moves stay mep's while the program has the
+keyboard. The display goes when the program does.
+
+Python's tkinter from Homebrew, python.org or nixpkgs draws through Aqua (as
+a Mac program), not X11. =just python-x11= builds a Python whose Tk is the
+X11 one and links it as =~/.local/bin/python3-x11=:
+
+#+begin_example
+:exec python3-x11 my_app.py
+#+end_example
+
+Not passed across: the clipboard (the private display has its own), and
+keys held down (each key is pressed and let go at once).
+
+** macOS: Mac programs, over mep
+
+A Mac program (Firefox, any =.app=) ignores X11 and opens a window of its
+own, which mep can only move and size -- and moving another program's window
+is what the Accessibility permission (System Settings > Privacy & Security >
+Accessibility) allows, for mep or for the terminal it was started from. macOS
+asks for it the first time such a window appears; until it is given, the pane
+says why it stays empty. There is no way round it: macOS gives no program
+another's window. Because the window is the program's own and not part of
+mep's, mep's popups (the command line, which-key, pickers) are drawn
+underneath it while it shows. While it has the keyboard, mep still catches
+its own =mod1= chords before the program does (=mod1+h= moves to the pane on
+the left and gives the keyboard back), and =Ctrl-\=.
+
+If the permission is switched on in System Settings but mep still asks for
+it, the entry is for an older build: remove it with "-" and add mep again.
 
 =:exec= uses the same machinery as a mepml =exec-gui= block, which shows a
 program's window inside a document instead of as a pane. See

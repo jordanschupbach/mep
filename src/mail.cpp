@@ -1026,6 +1026,10 @@ void WalkPart(std::string_view raw, WalkState *st, int depth, const std::string 
         else a.filename = "part" + std::to_string(st->attachments.size() + 1);
     }
     a.data = data;
+    a.content_id = Trim(HeaderValue(hs, "Content-ID"));
+    if (a.content_id.size() >= 2 && a.content_id.front() == '<' && a.content_id.back() == '>') {
+        a.content_id = a.content_id.substr(1, a.content_id.size() - 2);
+    }
     st->attachments.push_back(std::move(a));
 }
 
@@ -1889,6 +1893,24 @@ std::vector<uint32_t> ReadSearch(const std::vector<ImapResponse> &rs) {
     return out;
 }
 
+std::vector<std::pair<uint32_t, std::string>> ReadFetchBodies(const std::vector<ImapResponse> &rs) {
+    std::vector<std::pair<uint32_t, std::string>> out;
+    for (const ImapResponse &r : rs) {
+        if (r.tag != "*" || r.values.size() < 3 || !r.values[1].IsAtom("FETCH")) continue;
+        const ImapValue &list = r.values[2];
+        if (list.kind != ImapValue::Kind::List) continue;
+        uint32_t uid = 0;
+        const std::string *body = nullptr;
+        for (size_t i = 0; i + 1 < list.items.size(); i += 2) {
+            const std::string k = Lower(list.items[i].text);
+            if (k == "uid") uid = static_cast<uint32_t>(std::strtoul(list.items[i + 1].text.c_str(), nullptr, 10));
+            else if (k == "body[]" || k == "body.peek[]" || k == "rfc822") body = &list.items[i + 1].text;
+        }
+        if (uid != 0 && body) out.emplace_back(uid, *body);
+    }
+    return out;
+}
+
 SelectInfo ReadSelect(const std::vector<ImapResponse> &rs) {
     SelectInfo s;
     for (const ImapResponse &r : rs) {
@@ -2429,6 +2451,7 @@ OAuthTokens ParseTokenResponse(std::string_view json) {
     ParseIdTokenClaims(j.get("id_token").as_string(""), &t.email, &t.name);
     t.refresh_token = j.get("refresh_token").as_string("");
     t.expires_in = static_cast<long long>(j.get("expires_in").as_double(0.0));
+    t.scope = j.get("scope").as_string("");
     const std::string err = j.get("error").as_string("");
     if (!err.empty()) {
         t.error = err;
@@ -2438,6 +2461,20 @@ OAuthTokens ParseTokenResponse(std::string_view json) {
         t.error = "the sign-in server sent no access token";
     }
     return t;
+}
+
+std::string MissingMailScope(const OAuthProvider &p, const std::string &granted) {
+    if (p.id != "google" || granted.empty()) return "";
+    static const std::string kGmail = "https://mail.google.com/";
+    if (p.scope.find(kGmail) == std::string::npos) return "";  // an account-set scope: not ours to judge
+    size_t pos = 0;
+    while (pos < granted.size()) {
+        size_t end = granted.find(' ', pos);
+        if (end == std::string::npos) end = granted.size();
+        if (granted.compare(pos, end - pos, kGmail) == 0) return "";
+        pos = end + 1;
+    }
+    return kGmail;
 }
 
 // --- curl ---------------------------------------------------------------

@@ -36,6 +36,11 @@ enum class DomNodeType { Element, Text };
 enum class HtmlFontFamily { Sans, Serif, Mono };
 enum class HtmlTextAlign { Left, Center, Right, Justify };
 enum class HtmlWhiteSpace { Normal, Pre, NoWrap };
+enum class HtmlVerticalAlign { Unset, Top, Middle, Bottom };
+// What an element is to table layout: <table>/<tr>/<td>... by tag, or a
+// display:table/table-row/table-cell box (how HTML email builds columns
+// out of divs).
+enum class HtmlTableRole { None, Table, RowGroup, Row, Cell };
 
 // A compact, renderer-independent display list for a canvas element.  The
 // JavaScript binding records commands here; main.cpp replays them into the
@@ -123,6 +128,11 @@ struct ComputedStyle {
     bool faded = false;
     bool Invisible() const { return visibility_hidden || faded; }
     bool block = true;  // false = inline (flows with surrounding text)
+    // display:inline-block (or inline-table): flows like a word, but as one
+    // box laid out as a block inside (main.cpp's HtmlCollectInlineChild) --
+    // side-by-side email columns, padded button links. Implies !block.
+    bool inline_block = false;
+    HtmlTableRole table_role = HtmlTableRole::None;
     bool bold = false;
     bool italic = false;
     bool underline = false;
@@ -131,6 +141,15 @@ struct ComputedStyle {
     HtmlFontFamily font_family = HtmlFontFamily::Sans;
     HtmlTextAlign text_align = HtmlTextAlign::Left;
     HtmlWhiteSpace white_space = HtmlWhiteSpace::Normal;
+    // `vertical-align` (or a cell's/row's `valign`), acted on only for
+    // table cells (HtmlLayoutTable): Unset there means the row's, else
+    // middle -- a browser's default. Does not inherit.
+    HtmlVerticalAlign vertical_align = HtmlVerticalAlign::Unset;
+    // HTML's align="center"/"right" (on a cell, div, p...) also places the
+    // block-level boxes inside, a narrower table above all -- what CSS
+    // text-align does not (a browser's -webkit-center). Inherits with
+    // text_align; any CSS text-align resets it.
+    HtmlTextAlign block_align = HtmlTextAlign::Left;
     // A positive unitless value is a multiplier of the resolved font size;
     // otherwise line_height_length carries a CSS px/em/rem/% length.
     float line_height_multiplier = 0.0f;
@@ -160,7 +179,11 @@ struct ComputedStyle {
     // on every node the way ComputeStyles' WalkAndStyle already resets
     // most non-inherited fields.
     struct BorderEdge {
+        // Drawn: a style (solid, dashed...) and a nonzero width, the two
+        // set apart by the longhands (border-style / border-width).
         bool present = false;
+        bool styled = false;
+        bool clear = false;  // color: transparent
         float width_px = 1.0f;
         unsigned char r = 0, g = 0, b = 0;
     };
@@ -395,6 +418,10 @@ struct DomNode {
 
 struct HtmlDoc {
     std::unique_ptr<DomNode> root;  // synthetic node wrapping the whole document; never null after a successful parse
+    // ParseHtml turns \(..\) / $..$ spans into <math> (org/markdown exports
+    // carry TeX that way). Off for content where a '$' is just a dollar --
+    // an email's "$50 - $100 an hour".
+    bool extract_math = true;
     // The hosting pane's live view state, synced every frame by the editor
     // (Editor::SyncHtmlViewportState): current scroll offset and viewport
     // size in layout px. getBoundingClientRect converts layout coordinates

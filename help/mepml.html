@@ -684,14 +684,23 @@ the pane's edges, and is hidden while its block is off screen or another
 buffer is shown. (To show a program as a pane of its own instead, use
 <code>:exec</code>: see <a href="exec.html">Programs in a pane</a>.) <code>rows</code> sets its height (20 rows by default) and <code>cols</code> its
 width (the text width by default).</p>
-<p>On macOS the program's window is its own still (nothing can be drawn inside
-another program's window there): mep moves and sizes it over the block,
-keeps it just above its own window, and shrinks it to what is on screen
-where the pane's edge would cut it off. This needs the Accessibility
-permission -- System Settings &gt; Privacy &amp; Security &gt; Accessibility, for mep
-or for the terminal it was started from -- which macOS asks for the first
-time a block runs; and the Screen Recording permission for the picture of
-the window kept when the program ends (asked for once, too; without it the
+<p>On macOS, with <a href="https://www.xquartz.org">XQuartz</a> installed, an X11
+program (<code>xclock</code>, Tk built for X11, GTK or Qt built for X11) draws on a
+private display of its own that mep draws into the block: no permission is
+needed, and its picture is kept when it ends. Python's usual tkinter on macOS
+is the Aqua one; <code>just python-x11</code> builds one whose Tk is X11's, as
+<code>python3-x11</code> (see <a href="exec.html">Programs in a pane</a>):</p>
+<pre>```{exec-gui, rows=14}
+python3-x11 my_app.py
+```</pre>
+<p>A Mac program's window is its own still (nothing can be drawn inside another
+program's window there): mep moves and sizes it over the block, keeps it
+just above its own window, and shrinks it to what is on screen where the
+pane's edge would cut it off. This needs the Accessibility permission --
+System Settings &gt; Privacy &amp; Security &gt; Accessibility, for mep or for the
+terminal it was started from -- which macOS asks for the first time such a
+window appears; and the Screen Recording permission for the picture of the
+window kept when the program ends (asked for once, too; without it the
 results keep no picture).</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
@@ -709,7 +718,7 @@ program printed, and its exit status when that was not 0. A program that
 opens no window within 20 seconds is still running (the block says so, and
 still takes one if it comes later), and the stop key ends it. Programs are
 tied to mep: when mep exits, however it exits, they close too.</p>
-<p>This needs mep running on X11 (which includes XWayland). The program is
+<p>On Linux this needs mep running on X11 (which includes XWayland). The program is
 started with its toolkit pointed at X11 (<code>GDK_BACKEND=x11</code>,
 <code>QT_QPA_PLATFORM=xcb</code>, <code>SDL_VIDEODRIVER=x11</code>), so GTK, Qt and SDL programs
 open their windows where mep can take them. Elsewhere the block says why it

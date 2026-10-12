@@ -93,6 +93,7 @@ struct Attachment {
     std::string filename;
     std::string content_type;  // lower-cased "type/subtype"
     std::string data;          // decoded bytes
+    std::string content_id;    // Content-ID without <>, for an HTML part's <img src="cid:...">
 };
 
 struct Message {
@@ -233,6 +234,8 @@ struct SelectInfo {
 std::vector<Folder> ReadListResponses(const std::vector<ImapResponse> &rs);
 /** @brief The message summaries in FETCH responses (UID FLAGS INTERNALDATE RFC822.SIZE BODY[HEADER.FIELDS ...]). */
 std::vector<MessageSummary> ReadFetchSummaries(const std::vector<ImapResponse> &rs);
+/** @brief (uid, raw message) for each FETCH response carrying a whole BODY[] / BODY.PEEK[] literal. */
+std::vector<std::pair<uint32_t, std::string>> ReadFetchBodies(const std::vector<ImapResponse> &rs);
 /** @brief The numbers of SEARCH responses. */
 std::vector<uint32_t> ReadSearch(const std::vector<ImapResponse> &rs);
 /** @brief EXISTS / UIDVALIDITY / UIDNEXT out of a SELECT's untagged responses. */
@@ -385,6 +388,7 @@ struct OAuthTokens {
     std::string access_token;
     std::string refresh_token;  // empty when the provider did not send a new one
     long long expires_in = 0;
+    std::string scope;          // what was granted (space-separated); "" when the provider did not say
     std::string error;          // "invalid_grant: Token has been expired or revoked." etc.
 };
 
@@ -393,6 +397,12 @@ struct OAuthTokens {
 void ParseIdTokenClaims(std::string_view jwt, std::string *email, std::string *name);
 /** @brief Reads a token endpoint's JSON answer. */
 OAuthTokens ParseTokenResponse(std::string_view json);
+/**
+ * @brief The mail scope `p` needs that `granted` (a token response's scope) lacks, or "" if none is missing.
+ * Google's consent page has a checkbox per scope; leaving Gmail's unticked still yields a token, which IMAP
+ * then refuses with a bare "Invalid credentials".
+ */
+std::string MissingMailScope(const OAuthProvider &p, const std::string &granted);
 
 // --- curl ---------------------------------------------------------------
 

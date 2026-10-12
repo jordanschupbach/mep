@@ -8462,12 +8462,14 @@ const char *kBuiltinLsp =
     // before actually advancing) -- then, once landed, pop up that row's
     // list (mep_diag_popup: Ctrl-N/Ctrl-P to move over it, y/Y to yank a
     // message, Enter to land on the exact column, Escape to dismiss).
-    // Unconditionally, not past some count: the reason to jump to an error
-    // is to read it, and a row's badge + single virt_text line is exactly
-    // what can't show a wrapped message or a second diagnostic. errors_only
-    // narrows which diagnostics reach the popup too, so "[e" shows the
-    // *errors* on the row rather than diagnostics of any severity, matching
-    // what "next/previous error" itself already means.
+    // Only for errors ("[e"/"]e"): the reason to jump to an error is to
+    // read it, and a row's badge + single virt_text line is exactly what
+    // can't show a wrapped message or a second diagnostic. The popup shows
+    // the *errors* on the row rather than diagnostics of any severity,
+    // matching what "next/previous error" itself already means. "[d"/"]d"
+    // (errors_only false) just move -- they're for stepping through every
+    // hint and warning quickly, where a popup per stop gets in the way;
+    // <leader>dd's picker is the overview for those.
     "local function mep_diag_nav(delta, errors_only)\n"
     "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
     "  if #diags == 0 then mep.notify('No diagnostics') return end\n"
@@ -8503,8 +8505,9 @@ const char *kBuiltinLsp =
     "    target = target or rows[#rows]\n"
     "  end\n"
     "  mep.set_cursor(target, 1)\n"
+    "  if not errors_only then return end\n"
     "  local row_diags = mep_diag_at_row(target)\n"
-    "  if errors_only then\n"
+    "  do\n"
     "    local errors_here = {}\n"
     "    for _, d in ipairs(row_diags) do\n"
     "      if (d.severity or 1) == 1 then errors_here[#errors_here + 1] = d end\n"
@@ -8518,6 +8521,57 @@ const char *kBuiltinLsp =
     "function mep.lsp_next_error() mep_diag_nav(1, true) end\n"
     "function mep.lsp_prev_error() mep_diag_nav(-1, true) end\n"
     "mep.command('MepDiagShow', mep.lsp_diagnostic_at_cursor)\n"
+    // <leader>dd: every diagnostic in the current file in the fuzzy picker,
+    // the same shape as '/' (mep.buffer_search): one row per diagnostic
+    // ('line:col  SEV  message', the severity tag in its own highlight
+    // group), sorted by position, previewing the buffer around the
+    // highlighted one with the full (possibly multi-line) message on top.
+    // Enter lands on the diagnostic's exact line:column.
+    "local kDiagPickerContext = 8\n"
+    "function mep.lsp_diagnostics_picker()\n"
+    "  local diags = {}\n"
+    "  for _, d in ipairs(mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}) do diags[#diags + 1] = d end\n"
+    "  if #diags == 0 then mep.notify('No diagnostics') return end\n"
+    "  table.sort(diags, function(a, b)\n"
+    "    if a.range.start.line ~= b.range.start.line then return a.range.start.line < b.range.start.line end\n"
+    "    if a.range.start.character ~= b.range.start.character then return a.range.start.character < b.range.start.character end\n"
+    "    return (a.severity or 1) < (b.severity or 1)\n"
+    "  end)\n"
+    "  local n = mep.line_count()\n"
+    "  local items = {}\n"
+    "  for i, d in ipairs(diags) do\n"
+    "    local sev = MEP_DIAG_SEVERITY[d.severity or 1] or 'Error'\n"
+    "    local pos = string.format('%4d:%-3d ', d.range.start.line + 1, d.range.start.character + 1)\n"
+    "    local tag = string.format('%-5s ', sev)\n"
+    "    items[i] = {\n"
+    "      display = pos .. tag .. (d.message:gsub('\\n.*', '')), data = tostring(i),\n"
+    "      hl = {{col_start = #pos + 1, col_end = #pos + #sev, hl = sev}},\n"
+    "    }\n"
+    "  end\n"
+    "  local function show_preview(i)\n"
+    "    local d = diags[i]\n"
+    "    local sev = MEP_DIAG_SEVERITY[d.severity or 1] or 'Error'\n"
+    "    local row = d.range.start.line + 1\n"
+    "    local out_lines, out_spans = {}, {}\n"
+    "    for _, l in ipairs(mep.lsp_diag_wrap('[' .. sev .. '] ' .. d.message, 80)) do\n"
+    "      out_lines[#out_lines + 1] = l\n"
+    "      out_spans[#out_spans + 1] = {row = #out_lines, col_start = 1, col_end = #l, hl = sev}\n"
+    "    end\n"
+    "    out_lines[#out_lines + 1] = ''\n"
+    "    for r = math.max(1, row - kDiagPickerContext), math.min(n, row + kDiagPickerContext) do\n"
+    "      out_lines[#out_lines + 1] = ((r == row) and '> ' or '  ') .. string.format('%4d  %s', r, mep.get_line(r))\n"
+    "    end\n"
+    "    mep.picker_set_preview(table.concat(out_lines, '\\n'), out_spans)\n"
+    "  end\n"
+    "  mep.picker_open('Diagnostics (' .. #diags .. ')', items, function(item)\n"
+    "    local d = item and diags[tonumber(item)]\n"
+    "    if d then mep.set_cursor(d.range.start.line + 1, d.range.start.character + 1) end\n"
+    "  end, nil, nil, function(item)\n"
+    "    if item and item ~= '' then show_preview(tonumber(item)) end\n"
+    "  end)\n"
+    "  show_preview(1)\n"
+    "end\n"
+    "mep.command('MepDiagPicker', mep.lsp_diagnostics_picker)\n"
     // 'L' is already vim's screen-bottom motion (H/M/L), so it can't be
     // reused here without silently breaking that motion -- 'Q' is free
     // (mep has no Ex-mode) and pairs naturally with 'K' for hover above.
@@ -8529,6 +8583,10 @@ const char *kBuiltinLsp =
     // reach a key typed after a pending "["/"]").
     "mep.map_bracket_prev('e', mep.lsp_prev_error)\n"
     "mep.map_bracket_next('e', mep.lsp_next_error)\n"
+    // "[d"/"]d": the same jump over diagnostics of every severity --
+    // info, hint and warning rows that "[e"/"]e" skip.
+    "mep.map_bracket_prev('d', mep.lsp_prev_diagnostic)\n"
+    "mep.map_bracket_next('d', mep.lsp_next_diagnostic)\n"
     // --- Semantic tokens: colour by what a name *is* -------------------
     //
     // The half of syntax colouring a grammar cannot do. Treesitter sees
@@ -13229,7 +13287,7 @@ const char *kBuiltinDap =
     // and was never actually hit -- the program had already exited by
     // the time setBreakpoints reached the adapter. stopOnEntry halts at
     // the very first instruction regardless of that race, so breakpoints
-    // are always in place before `mep.dap_continue` (`<leader>dd` again)
+    // are always in place before `mep.dap_continue` (`<leader>dc` again)
     // resumes it -- the standard, spec-documented way DAP clients avoid
     // this exact race, not a workaround specific to this client.\n"
     // adapter.launch_args(path), when an adapter declares one (only `r`
@@ -13587,14 +13645,18 @@ const char *kBuiltinDebugUi =
     "  end)\n"
     "end\n"
     "mep.leader_map('du', 'Debug: toggle UI', mep.dap_ui_toggle)\n"
-    "mep.leader_map('dd', 'Debug: start/continue', mep.dap_toggle_start_or_continue)\n"
+    "mep.leader_map('dc', 'Debug: start/continue', mep.dap_toggle_start_or_continue)\n"
     "mep.leader_map('db', 'Debug: toggle breakpoint', mep_dap_toggle_breakpoint_here)\n"
     "mep.leader_map('dn', 'Debug: step over', mep.dap_step_over)\n"
     "mep.leader_map('di', 'Debug: step into', mep.dap_step_into)\n"
     "mep.leader_map('do', 'Debug: step out', mep.dap_step_out)\n"
     "mep.leader_map('dt', 'Debug: terminate', mep.dap_terminate)\n"
     "mep.leader_map('dr', 'Debug: restart', mep.dap_restart)\n"
-    "mep.leader_map('dc', 'Debug: clear breakpoints in file', mep.dap_clear_breakpoints)\n"
+    "mep.leader_map('dC', 'Debug: clear breakpoints in file', mep.dap_clear_breakpoints)\n"
+    // <leader>dd is the diagnostics picker (kBuiltinLsp's
+    // mep.lsp_diagnostics_picker), not a debug key -- "d" for diagnostics
+    // shares this group with "d" for debug.
+    "mep.leader_map('dd', 'Diagnostics picker', mep.lsp_diagnostics_picker)\n"
     "mep.leader_map('dv', 'Debug: evaluate under cursor', mep.dap_evaluate_at_cursor)\n";
 
 // Syntax highlighting (Phase 19): a real Treesitter integration --
@@ -27495,14 +27557,15 @@ const char *kBuiltinSnippetHelp =
     "local t9 = tab('Debugger')\n"
     "sec(t9, 'Debug keys (<leader>d..., any supported filetype)', 'key', {\n"
     "  {'<leader>du', '', 'toggle debug UI'},\n"
-    "  {'<leader>dd', '', 'start / continue'},\n"
+    "  {'<leader>dc', '', 'start / continue'},\n"
     "  {'<leader>db', '', 'toggle breakpoint on current line'},\n"
     "  {'<leader>dn', '', 'step over'},\n"
     "  {'<leader>di', '', 'step into'},\n"
     "  {'<leader>do', '', 'step out'},\n"
     "  {'<leader>dt', '', 'terminate'},\n"
     "  {'<leader>dr', '', 'restart'},\n"
-    "  {'<leader>dc', '', 'clear breakpoints in file'},\n"
+    "  {'<leader>dC', '', 'clear breakpoints in file'},\n"
+    "  {'<leader>dd', '', 'diagnostics picker (LSP)'},\n"
     "  {'<leader>dv', '', 'evaluate under cursor'},\n"
     "})\n"
     "local MEP_HELP_TAB_NAMES = {}\n"
@@ -42613,6 +42676,40 @@ struct HtmlLayout {
     float pending_margin_bottom = 0;
 };
 
+// Appends `from` to `to` moved by (dx, dy): a subtree laid out once to
+// measure it, then placed -- instead of laid out a second time where it
+// goes, which doubled the work at every level of nesting (an email's
+// tables nest eight deep: 256 layouts of the innermost cells a frame).
+// Fixed layers are pinned to the viewport and stay where they are. A
+// node's geometry stamp (DomNode::layout_*) moves with its hit box when
+// this pass wrote it, i.e. it lies inside that box.
+void HtmlAppendShifted(HtmlLayout &to, HtmlLayout &&from, float dx, float dy) {
+    auto shift = [&](auto &v, auto &dst) {
+        for (auto &e : v) {
+            e.x += dx;
+            e.y += dy;
+            dst.push_back(std::move(e));
+        }
+    };
+    for (HtmlHitBox &b : from.boxes) {
+        if (DomNode *n = b.node; n && n->layout_x >= b.x - 0.5f && n->layout_x <= b.x + b.w + 0.5f &&
+                                 n->layout_y >= b.y - 0.5f && n->layout_y <= b.y + b.h + 0.5f) {
+            n->layout_x += dx;
+            n->layout_y += dy;
+        }
+    }
+    shift(from.runs, to.runs);
+    shift(from.boxes, to.boxes);
+    shift(from.rules, to.rules);
+    shift(from.images, to.images);
+    shift(from.math_runs, to.math_runs);
+    shift(from.canvases, to.canvases);
+    shift(from.svgs, to.svgs);
+    shift(from.backgrounds, to.backgrounds);
+    shift(from.borders, to.borders);
+    for (auto &f : from.fixed_layers) to.fixed_layers.push_back(std::move(f));
+}
+
 struct HtmlLayoutCtx {
     float layout_width;
     float base_font_size;
@@ -42634,6 +42731,23 @@ struct HtmlLayoutCtx {
     // renders in flow inside its ancestor panel -- a rare case not worth a
     // second escape hatch).
     bool in_fixed_subtree = false;
+    // The x where the containing block's content starts (layout_width being
+    // its right edge): what a percentage width and an image's "fits the
+    // column" clamp measure against. 0 = unknown (the whole width).
+    float content_left = 0.0f;
+    // The enclosing block's HTML align (ComputedStyle::block_align): where a
+    // narrower table inside it sits.
+    HtmlTextAlign block_align = HtmlTextAlign::Left;
+    // An inline-block being laid out into the box its line gave it: its own
+    // width/max-width were already applied when the box was sized, so the
+    // block pass must not resolve them again (a 33% column inside its own
+    // 33% box).
+    const DomNode *presized = nullptr;
+    // An image's own pixels to layout px: 0 = the pane zoom (images at
+    // their screen size, as documents always had them); a page that sizes
+    // everything in CSS px (mail) passes the same rem/16 scale its lengths
+    // get, so an image without a width keeps its size against them.
+    float image_scale = 0.0f;
 };
 
 /**
@@ -42706,6 +42820,10 @@ struct HtmlPendingWord {
     // before it (an intra-word style change: "num<b>b</b>er") -- laid out
     // with no inter-word gap and never wrapped away from its predecessor.
     bool glue_prev = false;
+    // No space before it either, but a line may still break there: next to
+    // an inline-block with no whitespace between them in the source (two
+    // width:50% email columns written back to back fill the line exactly).
+    bool tight = false;
     // Whether this word's source text node ended in whitespace -- what the
     // NEXT text node's first word consults to decide glue_prev.
     bool trailing_space = false;
@@ -42722,7 +42840,16 @@ struct HtmlPendingWord {
     float letter_spacing = 0.0f;
     bool no_wrap = false;
     DomNode *node = nullptr;  // innermost element that produced this word (click target)
+    // An inline-block: one box_w x box_h box in the line, its subtree laid
+    // out as a block where the line puts it (HtmlFlushWords).
+    DomNode *box = nullptr;
+    float box_w = 0, box_h = 0;
+    std::shared_ptr<HtmlLayout> box_layout = nullptr;  // laid out at (0, 0) when measured; placed by moving it
 };
+void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out);
+float HtmlMaxContentWidth(const DomNode *node, const HtmlLayoutCtx &ctx);
+bool HtmlIsCell(const DomNode *n);
+const DomNode *HtmlCellTable(const DomNode *cell);
 
 // HTML's generic CSS families share the already-loaded office font atlases.
 // Keeping this selection at the layout boundary leaves html_doc.h raylib-free
@@ -42848,6 +42975,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
      */
     auto word_width = [](const HtmlPendingWord &w) -> float {
         if (w.fixed_advance > 0.0f) return w.fixed_advance;
+        if (w.box) return w.box_w;
         if (w.is_image) return w.image_w;
         if (w.is_math) return w.math.width;
         return gfx::MeasureTextEx(w.font ? *w.font : g_font, w.text.c_str(), w.font_size, w.letter_spacing).x;
@@ -42859,6 +42987,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
      * @return The line height in pixels the word needs.
      */
     auto word_line_height = [](const HtmlPendingWord &w) -> float {
+        if (w.box) return w.box_h;
         if (w.is_image) return w.image_h + 6.0f;
         if (w.is_math) return w.math.height + 6.0f;
         return w.line_height > 0.0f ? w.line_height : HtmlLineHeight(w.font_size);
@@ -42896,7 +43025,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         float line_ascent = 0, line_descent = 0;
         for (const PlacedWord &pw : line) {
             lh = std::max(lh, word_line_height(*pw.w));
-            if (pw.w->is_image) continue;
+            if (pw.w->is_image || pw.w->box) continue;
             line_ascent = std::max(line_ascent, word_ascent(*pw.w));
             line_descent = std::max(line_descent, word_descent(*pw.w));
         }
@@ -42925,6 +43054,16 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
             float y = w.is_image ? cursor_y + (lh - word_line_height(w)) / 2.0f
                                  : cursor_y + baseline_y - word_ascent(w);
             const float placed_x = pw.x + align_offset + static_cast<float>(word_index) * justify_gap;
+            if (w.box) {
+                // vertical-align: top / middle / else the box's bottom on the line's.
+                const HtmlVerticalAlign va = w.box->style.vertical_align;
+                float box_y = va == HtmlVerticalAlign::Top      ? cursor_y
+                              : va == HtmlVerticalAlign::Middle ? cursor_y + (lh - w.box_h) / 2.0f
+                                                                : cursor_y + lh - w.box_h;
+                // Laid out when it was measured; its margins stay its own.
+                if (w.box_layout) HtmlAppendShifted(out, std::move(*w.box_layout), placed_x, box_y);
+                continue;
+            }
             if (w.is_image) {
                 out.images.push_back({placed_x, y, w.image_w, w.image_h, w.image_path, w.link_href, w.link_node});
             } else if (w.is_math) {
@@ -42953,7 +43092,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         }
         float word_w = word_width(w);
         const gfx::Font &font = w.font ? *w.font : g_font;
-        float space_w = (line.empty() || w.glue_prev) ? 0 : gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
+        float space_w = (line.empty() || w.glue_prev || w.tight) ? 0 : gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
         // The wrap decision at a cluster head sees the WHOLE glued cluster
         // ("num"+"b"+"er" is one word to the reader), so a mid-word style
         // change can't strand its tail on the next line.
@@ -42974,7 +43113,7 @@ float HtmlFlushWords(std::vector<HtmlPendingWord> &words, float indent_x, float 
         if (!line.empty() && !ctx.no_wrap && !w.no_wrap && !w.glue_prev &&
             x + space_w + cluster_w > ctx.layout_width)
             flush_line(false);
-        if (!line.empty() && !w.glue_prev) x += gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
+        if (!line.empty() && !w.glue_prev && !w.tight) x += gfx::MeasureTextEx(font, " ", w.font_size, w.letter_spacing).x;
         line.push_back({&w, x});
         x += word_w;
     }
@@ -43083,7 +43222,8 @@ void HtmlCollectTextWords(const std::string &raw_text, const ComputedStyle &styl
             // whitespace ("num<b>b</b>er" reads as one word) -- see
             // HtmlPendingWord::glue_prev.
             word.glue_prev = first_word_of_node && start == 0 && !out.empty() && !out.back().trailing_space &&
-                             !out.back().is_image && !out.back().is_math && out.back().text != "\n";
+                             !out.back().is_image && !out.back().is_math && !out.back().box && out.back().text != "\n";
+            word.tight = first_word_of_node && start == 0 && !out.empty() && out.back().box && !out.back().trailing_space;
             first_word_of_node = false;
             word.text = text.substr(start, i - start);
             word.font_size = fs;
@@ -43097,7 +43237,8 @@ void HtmlCollectTextWords(const std::string &raw_text, const ComputedStyle &styl
             word.line_height = style.line_height_multiplier > 0.0f
                                    ? style.line_height_multiplier * fs
                                    : (style.line_height_length.set
-                                          ? ResolveCssLength(style.line_height_length, fs, ctx.layout_width, ctx.base_font_size)
+                                          // a percentage is of the font size, not of any width
+                                          ? ResolveCssLength(style.line_height_length, fs, fs, ctx.base_font_size)
                                           : HtmlLineHeight(fs));
             word.no_wrap = style.white_space == HtmlWhiteSpace::NoWrap;
             word.link_href = style.link_href;
@@ -43226,6 +43367,53 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
         return;
     }
     if (c->style.display_none) return;
+    if (c->style.inline_block && c->tag != "img" && c->tag != "input" && c->tag != "button" && c->tag != "select" &&
+        c->tag != "textarea" && c->tag != "svg" && c->tag != "canvas" && c->tag != "math" && !HtmlIsCell(c)) {
+        // One box: its CSS width (of the line's room), else as wide as its
+        // content wants and the room allows; as tall as it then lays out.
+        const ComputedStyle &bs = c->style;
+        const float room = std::max(1.0f, ctx.layout_width - ctx.content_left);
+        const float fs = ctx.base_font_size * bs.font_scale;
+        auto len = [&](const CssLength &l) { return ResolveCssLength(l, fs, room, ctx.base_font_size); };
+        const float px_scale = ctx.base_font_size / 16.0f;
+        auto edge = [&](const ComputedStyle::BorderEdge &e) { return e.present ? std::max(1.0f, e.width_px * px_scale) : 0.0f; };
+        const float extras = len(bs.padding.left) + len(bs.padding.right) + edge(bs.border_left) + edge(bs.border_right);
+        const float margins = len(bs.margin.left) + len(bs.margin.right);
+        float w = bs.width.set && !bs.width.auto_value ? len(bs.width) + (bs.border_box ? 0.0f : extras)
+                                                       : HtmlMaxContentWidth(c, ctx) - margins;
+        if (bs.max_width.set && !bs.max_width.auto_value) w = std::min(w, len(bs.max_width) + (bs.border_box ? 0.0f : extras));
+        w = std::max(0.0f, std::min(w, room - margins));
+        HtmlPendingWord word;
+        word.box = c;
+        word.box_w = w + margins;
+        word.font_size = ctx.base_font_size * parent_style.font_scale;  // the gap before it is the parent's space
+        word.color = HtmlResolveColor(parent_style, ctx);
+        word.font = &HtmlFontFor(parent_style);
+        HtmlLayoutCtx probe = ctx;
+        probe.layout_width = word.box_w;
+        probe.content_left = 0.0f;
+        probe.presized = c;
+        auto laid = std::make_shared<HtmlLayout>();
+        float probe_y = 0.0f;
+        HtmlLayoutBlock(c, 0.0f, probe_y, probe, *laid);
+        word.box_h = probe_y + laid->pending_margin_bottom;
+        word.box_layout = std::move(laid);
+        word.link_href = parent_style.link_href;
+        word.link_node = parent_style.link_node;
+        // Whitespace in the source on either side is a space; none is none.
+        word.tight = !out.empty() && !out.back().trailing_space && out.back().text != "\n";
+        if (c->parent) {
+            const auto &sibs = c->parent->children;
+            for (size_t k = 0; k + 1 < sibs.size(); ++k) {
+                if (sibs[k].get() != c) continue;
+                const DomNode *next = sibs[k + 1].get();
+                word.trailing_space = next->type == DomNodeType::Text && !next->text.empty() &&
+                                      std::isspace(static_cast<unsigned char>(next->text[0]));
+            }
+        }
+        out.push_back(std::move(word));
+        return;
+    }
     if (c->tag == "br") {
         out.push_back({"\n", ctx.base_font_size, ctx.default_color, false, false, false, false});
         return;
@@ -43245,8 +43433,9 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
                                      : resolved.compare(0, 5, "data:") == 0 ? GetOrLoadDataUriImageTexture(resolved)
                                                                              : GetOrLoadOrgInlineImageTexture(resolved);
         if (tex) {
-            float natural_w = static_cast<float>(tex->width) * ctx.zoom;
-            float natural_h = static_cast<float>(tex->height) * ctx.zoom;
+            const float img_scale = ctx.image_scale > 0.0f ? ctx.image_scale : ctx.zoom;
+            float natural_w = static_cast<float>(tex->width) * img_scale;
+            float natural_h = static_cast<float>(tex->height) * img_scale;
             /**
              * @brief Reads and parses attribute `name` on `c` as a pixel size.
              * @param name Attribute name to look up.
@@ -43263,6 +43452,17 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
             // follow the same rem_px/16 scale as px lengths (ResolveCssLength).
             const float attr_scale = ctx.base_font_size / 16.0f;
             float want_w = attr_px("width") * attr_scale, want_h = attr_px("height") * attr_scale;
+            // CSS sizes beat the attributes (`width="600" style="width:100%"`
+            // is how email makes an image fit a narrow column).
+            const float room = std::max(1.0f, ctx.layout_width - ctx.content_left);
+            const ComputedStyle &ist = c->style;
+            const float ifs = ctx.base_font_size * ist.font_scale;
+            if (ist.width.set && !ist.width.auto_value) want_w = ResolveCssLength(ist.width, ifs, room, ctx.base_font_size);
+            if (ist.height.set && !ist.height.auto_value && ist.height.unit != CssLength::Unit::Percent) {
+                want_h = ResolveCssLength(ist.height, ifs, room, ctx.base_font_size);
+            } else if (ist.height.set && ist.height.auto_value) {
+                want_h = 0;  // height:auto keeps the aspect ratio of whatever width wins
+            }
             float w, h;
             if (want_w > 0 && want_h > 0) {
                 w = want_w;
@@ -43277,10 +43477,22 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
                 w = natural_w;
                 h = natural_h;
             }
-            if (w > ctx.layout_width) {
-                float scale = ctx.layout_width / w;
+            float max_w = room;
+            if (ist.max_width.set && !ist.max_width.auto_value) {
+                max_w = std::min(max_w, ResolveCssLength(ist.max_width, ifs, room, ctx.base_font_size));
+            }
+            if (w > max_w && w > 0) {
+                float scale = max_w / w;
                 w *= scale;
                 h *= scale;
+            }
+            // max-height (px) scales it down the same way, keeping its shape.
+            if (ist.max_height.set && !ist.max_height.auto_value && ist.max_height.unit != CssLength::Unit::Percent) {
+                const float max_h = ResolveCssLength(ist.max_height, ifs, room, ctx.base_font_size);
+                if (h > max_h && h > 0 && max_h > 0) {
+                    w *= max_h / h;
+                    h = max_h;
+                }
             }
             HtmlPendingWord word;
             word.font_size = ctx.base_font_size * c->style.font_scale;
@@ -43294,6 +43506,10 @@ void HtmlCollectInlineChild(DomNode *c, const ComputedStyle &parent_style, const
             out.push_back(std::move(word));
             return;
         }
+        // An empty (or blank) alt marks the image as decoration: shown or
+        // nothing, never a placeholder -- an email's tracking pixels and
+        // spacers, whose fetch so often fails, would litter the page.
+        if (alt_it != c->attrs.end() && alt_it->second.find_first_not_of(" \t\r\n\xc2\xa0") == std::string::npos) return;
         std::string label = "[image: " +
                              (alt_it != c->attrs.end() && !alt_it->second.empty()
                                   ? alt_it->second
@@ -43527,6 +43743,7 @@ void HtmlLayoutPreformatted(DomNode *node, float indent_x, float &cursor_y, cons
  * @param out Layout output to append runs, rules, images, math runs, backgrounds, and borders to.
  */
 void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out);
+float HtmlMaxContentWidth(const DomNode *node, const HtmlLayoutCtx &ctx);
 // One block element: its content (HtmlLayoutBlockContent), then its hit
 // box. An invisible one (visibility: hidden, opacity: 0) keeps its space
 // and its hit box -- it can still be hovered, which is how an overlay
@@ -43541,6 +43758,17 @@ void HtmlLayoutBlock(DomNode *node, float indent_x, float &cursor_y, const HtmlL
         auto drop = [](auto &v, size_t keep) { v.erase(v.begin() + static_cast<std::ptrdiff_t>(keep), v.end()); };
         drop(out.runs, runs); drop(out.rules, rules); drop(out.images, images); drop(out.math_runs, maths);
         drop(out.canvases, canvases); drop(out.svgs, svgs); drop(out.backgrounds, backgrounds); drop(out.borders, borders);
+    } else if (node->style.overflow_clip) {
+        // overflow: hidden -- what was laid out wholly below the box (cut
+        // short by its height) is not drawn.
+        const float bottom = node->layout_y + node->layout_h;
+        auto drop_below = [bottom](auto &v, size_t keep) {
+            v.erase(std::remove_if(v.begin() + static_cast<std::ptrdiff_t>(keep), v.end(), [bottom](const auto &e) { return e.y >= bottom; }),
+                    v.end());
+        };
+        drop_below(out.runs, runs); drop_below(out.rules, rules); drop_below(out.images, images); drop_below(out.math_runs, maths);
+        drop_below(out.canvases, canvases); drop_below(out.svgs, svgs); drop_below(out.backgrounds, backgrounds);
+        drop_below(out.borders, borders);
     }
     out.boxes.push_back({indent_x, y0, std::max(0.0f, ctx.layout_width - indent_x), cursor_y + out.pending_margin_bottom - y0, node});
 }
@@ -43639,6 +43867,11 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     float margin_r = ResolveCssLength(cs.margin.right, font_size, available_w, eff_ctx.base_font_size);
     float margin_t = ResolveCssLength(cs.margin.top, font_size, available_w, eff_ctx.base_font_size);
     float margin_b = ResolveCssLength(cs.margin.bottom, font_size, available_w, eff_ctx.base_font_size);
+    // A table cell's box -- padding, borders, width, height -- belongs to the
+    // grid HtmlLayoutTable lays out: it hands this block just the content
+    // area. Applying them here again doubled every cell's padding.
+    const bool grid_cell = HtmlIsCell(node) && HtmlCellTable(node) != nullptr;
+    if (grid_cell) margin_l = margin_r = margin_t = margin_b = 0.0f;
     // The UA line-based margin (margin_top_lines/bottom_lines) is a DEFAULT, not
     // a floor: if the page set that edge's margin, its value wins even when it's
     // smaller (or zero) -- exactly as CSS overrides a UA default. Using max()
@@ -43650,6 +43883,7 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     float pad_r = ResolveCssLength(cs.padding.right, font_size, available_w, eff_ctx.base_font_size);
     float pad_t = ResolveCssLength(cs.padding.top, font_size, available_w, eff_ctx.base_font_size);
     float pad_b = ResolveCssLength(cs.padding.bottom, font_size, available_w, eff_ctx.base_font_size);
+    if (grid_cell) pad_l = pad_r = pad_t = pad_b = 0.0f;
     // Border widths are authored px too, so they follow the same rem_px/16
     // scale as every other px length (a 1px hairline stays >= 1px).
     const float border_px_scale = eff_ctx.base_font_size / 16.0f;
@@ -43660,11 +43894,28 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     float border_r = border_w_of(cs.border_right);
     float border_t = border_w_of(cs.border_top);
     float border_b = border_w_of(cs.border_bottom);
-    float fixed_w = ResolveCssLength(cs.width, font_size, available_w, eff_ctx.base_font_size);
-    float min_w = ResolveCssLength(cs.min_width, font_size, available_w, eff_ctx.base_font_size);
-    float max_w = cs.max_width.set ? ResolveCssLength(cs.max_width, font_size, available_w, eff_ctx.base_font_size) : available_w;
+    if (grid_cell) border_l = border_r = border_t = border_b = 0.0f;
+    const bool presized = node == eff_ctx.presized;
+    const bool sized = cs.width.set && !cs.width.auto_value && !grid_cell && !presized;
+    float fixed_w = sized ? ResolveCssLength(cs.width, font_size, available_w, eff_ctx.base_font_size) : 0.0f;
+    float min_w = grid_cell ? 0.0f : ResolveCssLength(cs.min_width, font_size, available_w, eff_ctx.base_font_size);
+    float max_w = cs.max_width.set && !grid_cell && !presized ? ResolveCssLength(cs.max_width, font_size, available_w, eff_ctx.base_font_size) : available_w;
     float extras_w = pad_l + border_l + border_r + pad_r;
-    float border_w = cs.width.set ? (cs.border_box ? fixed_w : fixed_w + extras_w) : available_w - margin_l - margin_r;
+    float border_w = sized ? (cs.border_box ? fixed_w : fixed_w + extras_w) : available_w - margin_l - margin_r;
+    // A table without a width of its own is as wide as its content wants
+    // (up to what is there), as in a browser -- not the whole line, which
+    // stretched every email button across the page. Its auto margins
+    // (align="center") then centre it.
+    const bool is_table = cs.table_role == HtmlTableRole::Table;
+    if (is_table && !sized) {
+        border_w = std::min(border_w, HtmlMaxContentWidth(node, eff_ctx));
+    }
+    // ... and one inside an align="center"/"right" block sits there.
+    if (is_table && !cs.margin.left.auto_value && !cs.margin.right.auto_value &&
+        eff_ctx.block_align != HtmlTextAlign::Left) {
+        const float room = std::max(0.0f, available_w - border_w - margin_l - margin_r);
+        margin_l += eff_ctx.block_align == HtmlTextAlign::Center ? room / 2.0f : room;
+    }
     border_w = std::max(border_w, cs.border_box ? min_w : min_w + extras_w);
     border_w = std::min(border_w, cs.border_box ? max_w : max_w + extras_w);
     border_w = std::max(extras_w, border_w);
@@ -43680,6 +43931,8 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     float content_x = border_x + border_l + pad_l;
     HtmlLayoutCtx box_ctx = eff_ctx;
     box_ctx.layout_width = content_x + std::max(0.0f, border_w - extras_w);
+    box_ctx.content_left = content_x;
+    box_ctx.block_align = cs.block_align;
     box_ctx.text_align = cs.text_align;
     box_ctx.no_wrap = cs.white_space == HtmlWhiteSpace::NoWrap;
     cursor_y += std::max(out.pending_margin_bottom, eff_margin_t);
@@ -43780,22 +44033,39 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     const float tail_inset = pad_b + border_b;
     const float content_top = cursor_y;
     auto enforce_height = [&]() {
+        if (grid_cell) return;  // the row's height (HtmlLayoutTable) is the cell's
         float content_h = cursor_y - content_top;
-        float requested = ResolveCssLength(cs.height, font_size, available_w, eff_ctx.base_font_size);
-        float min_h = ResolveCssLength(cs.min_height, font_size, available_w, eff_ctx.base_font_size);
-        float max_h = cs.max_height.set ? ResolveCssLength(cs.max_height, font_size, available_w, eff_ctx.base_font_size) : content_h;
-        if (cs.height.set && cs.border_box) requested = std::max(0.0f, requested - border_t - pad_t - pad_b - border_b);
-        float target = cs.height.set ? requested : content_h;
+        // A percentage height is of the containing block's height, which
+        // here is never a definite one -- so, as in CSS then, it is auto
+        // (resolved against the WIDTH instead, `height:100%` on an email's
+        // product card opened a gap the page's width tall).
+        auto definite = [](const CssLength &l) { return l.set && !l.auto_value && l.unit != CssLength::Unit::Percent; };
+        float requested = definite(cs.height) ? ResolveCssLength(cs.height, font_size, available_w, eff_ctx.base_font_size) : 0.0f;
+        float min_h = definite(cs.min_height) ? ResolveCssLength(cs.min_height, font_size, available_w, eff_ctx.base_font_size) : 0.0f;
+        float max_h = definite(cs.max_height) ? ResolveCssLength(cs.max_height, font_size, available_w, eff_ctx.base_font_size)
+                                              : std::numeric_limits<float>::max();
+        if (definite(cs.height) && cs.border_box) requested = std::max(0.0f, requested - border_t - pad_t - pad_b - border_b);
+        float target = definite(cs.height) ? requested : content_h;
         target = std::max(target, min_h);
-        // Without overflow clipping yet, do not truncate existing prose to
-        // max-height; it still bounds an otherwise empty/fixed-height box.
-        if (content_h == 0.0f) target = std::min(target, max_h);
-        cursor_y = content_top + std::max(content_h, target);
+        // max-height bounds an otherwise empty/fixed-height box; prose is
+        // only cut short where the box clips (overflow: hidden) -- an
+        // email's hidden preheader is `height:0; overflow:hidden` round a
+        // paragraph of filler that would otherwise open a gap at the top.
+        const bool clipped = cs.overflow_clip && (definite(cs.height) || definite(cs.max_height));
+        if (content_h == 0.0f || clipped) target = std::min(target, max_h);
+        cursor_y = content_top + (clipped ? target : std::max(content_h, target));
     };
     if (node->tag == "hr") {
-        cursor_y += line_h / 2.0f;
-        out.rules.push_back({content_x, cursor_y, box_ctx.layout_width - content_x});
-        cursor_y += line_h / 2.0f;
+        // A styled rule (a height, a background, its own borders -- email's
+        // `height:1px; border:0; background:#ddd`) is just that box; only a
+        // bare <hr> gets the drawn line with room round it.
+        const bool styled = (cs.height.set && !cs.height.auto_value) || cs.has_bg || cs.border_top.present ||
+                            cs.border_bottom.present || cs.border_left.present || cs.border_right.present;
+        if (!styled) {
+            cursor_y += line_h / 2.0f;
+            out.rules.push_back({content_x, cursor_y, box_ctx.layout_width - content_x});
+            cursor_y += line_h / 2.0f;
+        }
         enforce_height();
         cursor_y += tail_inset;
         finish_bg();
@@ -43873,7 +44143,19 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
         out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
         return;
     }
-    if (node->tag == "table") {
+    if (node->tag == "img") {
+        // display:block -- the image alone on its line(s).
+        std::vector<HtmlPendingWord> img_words;
+        HtmlCollectInlineChild(node, node->style, box_ctx, img_words);
+        cursor_y = HtmlFlushWords(img_words, content_x, cursor_y, box_ctx, out);
+        enforce_height();
+        cursor_y += tail_inset;
+        finish_bg();
+        finish_border();
+        out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
+        return;
+    }
+    if (is_table) {
         HtmlLayoutTable(node, content_x, cursor_y, box_ctx, out);
         enforce_height();
         cursor_y += tail_inset;
@@ -44061,7 +44343,10 @@ void HtmlLayoutBlockContent(DomNode *node, float indent_x, float &cursor_y, cons
     cursor_y += tail_inset;
     finish_bg();
     finish_border();
-    out.pending_margin_bottom = std::max({out.pending_margin_bottom, margin_b, ua_margin_b});
+    // The page's own bottom margin replaces the UA default (eff_margin_b),
+    // as on every other path here: `p { margin: 0 }` (all of email) still
+    // left a blank line under each paragraph.
+    out.pending_margin_bottom = std::max(out.pending_margin_bottom, eff_margin_b);
 }
 
 // Lays out one `position:fixed`/sticky element as a pinned viewport panel and
@@ -44270,16 +44555,168 @@ void LayoutFixedElement(DomNode *node, const HtmlLayoutCtx &ctx, HtmlLayout &roo
 // reserves its columns in later rows before widths and positions are chosen.
 // This remains deliberately smaller than the CSS table algorithm, but gives
 // ordinary colspan/rowspan tables stable, non-overlapping cells.
-void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
+// A table's rows, through its row groups.
+// Cells straight inside the table (display:table-cell divs in a
+// display:table one, no row between) make one anonymous row: the table.
+std::vector<DomNode *> HtmlTableRows(const DomNode *table) {
     std::vector<DomNode *> rows;
-    std::function<void(DomNode *)> collect_rows = [&](DomNode *n) {
+    bool loose_cells = false;
+    std::function<void(const DomNode *)> collect = [&](const DomNode *n) {
         for (auto &child : n->children) {
-            if (child->type != DomNodeType::Element) continue;
-            if (child->tag == "tr") rows.push_back(child.get());
-            else if (child->tag == "thead" || child->tag == "tbody" || child->tag == "tfoot") collect_rows(child.get());
+            if (child->type != DomNodeType::Element || child->style.display_none) continue;
+            const HtmlTableRole role = child->style.table_role;
+            if (role == HtmlTableRole::Row) rows.push_back(child.get());
+            else if (role == HtmlTableRole::RowGroup) collect(child.get());
+            else if (role == HtmlTableRole::Cell && n == table) loose_cells = true;
         }
     };
-    collect_rows(table);
+    collect(table);
+    if (loose_cells) rows.insert(rows.begin(), const_cast<DomNode *>(table));
+    return rows;
+}
+
+bool HtmlIsCell(const DomNode *n) { return n->type == DomNodeType::Element && n->style.table_role == HtmlTableRole::Cell; }
+
+// The table a cell belongs to (tr, then any row group, then the table).
+const DomNode *HtmlCellTable(const DomNode *cell) {
+    const DomNode *n = cell->parent;
+    while (n && n->style.table_role != HtmlTableRole::Table) {
+        if (n->style.table_role != HtmlTableRole::Row && n->style.table_role != HtmlTableRole::RowGroup) return nullptr;
+        n = n->parent;
+    }
+    return n;
+}
+
+// A cell's padding: its own CSS, else the table's cellpadding attribute,
+// else the legacy 6/4px that unstyled (document) tables were laid out with.
+void HtmlCellPadding(const DomNode *cell, const HtmlLayoutCtx &ctx, float &l, float &r, float &t, float &b) {
+    const ComputedStyle &cst = cell->style;
+    const float fs = ctx.base_font_size * cst.font_scale;
+    // (A display:table-cell box has none of the legacy padding.)
+    float fallback_h = 0.0f, fallback_v = 0.0f;
+    if (cell->tag == "td" || cell->tag == "th") fallback_h = 6.0f, fallback_v = 4.0f;
+    if (const DomNode *table = HtmlCellTable(cell); table && (cell->tag == "td" || cell->tag == "th")) {
+        if (auto it = table->attrs.find("cellpadding"); it != table->attrs.end()) {
+            fallback_h = fallback_v = std::max(0.0f, static_cast<float>(std::atof(it->second.c_str()))) * ctx.base_font_size / 16.0f;
+        }
+    }
+    l = cst.padding.left.set ? ResolveCssLength(cst.padding.left, fs, 0.0f, ctx.base_font_size) : fallback_h;
+    r = cst.padding.right.set ? ResolveCssLength(cst.padding.right, fs, 0.0f, ctx.base_font_size) : fallback_h;
+    t = cst.padding.top.set ? ResolveCssLength(cst.padding.top, fs, 0.0f, ctx.base_font_size) : fallback_v;
+    b = cst.padding.bottom.set ? ResolveCssLength(cst.padding.bottom, fs, 0.0f, ctx.base_font_size) : fallback_v;
+}
+
+// A cell's own width (CSS or width=""), as a border-box width; 0 = none. A
+// percentage is of `table_w` (0 when that is not known yet).
+float HtmlCellFixedWidth(const DomNode *cell, float table_w, float pad_lr, const HtmlLayoutCtx &ctx) {
+    const ComputedStyle &cst = cell->style;
+    if (!cst.width.set || cst.width.auto_value) return 0.0f;
+    if (cst.width.unit == CssLength::Unit::Percent && table_w <= 0.0f) return 0.0f;
+    const float w = ResolveCssLength(cst.width, ctx.base_font_size * cst.font_scale, table_w, ctx.base_font_size);
+    return w <= 0.0f ? 0.0f : (cst.border_box || cst.width.unit == CssLength::Unit::Percent ? w : w + pad_lr);
+}
+
+// Max-content widths, memoized for one LayoutHtmlDoc pass (they depend on
+// the DOM and the font size only, and nested tables ask for them over and
+// over).
+std::unordered_map<const DomNode *, float> g_html_max_content;
+
+// How wide `node` is laid out on one line, nothing wrapped: what a table
+// without a width of its own sizes its columns -- and itself -- by.
+float HtmlMaxContentWidth(const DomNode *node, const HtmlLayoutCtx &ctx) {
+    if (auto it = g_html_max_content.find(node); it != g_html_max_content.end()) return it->second;
+    const ComputedStyle &cs = node->style;
+    const float fs = ctx.base_font_size * cs.font_scale;
+    const float px_scale = ctx.base_font_size / 16.0f;
+    auto len = [&](const CssLength &l) {
+        return l.set && !l.auto_value && l.unit != CssLength::Unit::Percent ? ResolveCssLength(l, fs, 0.0f, ctx.base_font_size)
+                                                                           : 0.0f;
+    };
+    auto edge = [&](const ComputedStyle::BorderEdge &e) { return e.present ? std::max(1.0f, e.width_px * px_scale) : 0.0f; };
+    const bool cell = HtmlIsCell(node);
+    const float extras = cell ? 0.0f
+                              : len(cs.padding.left) + len(cs.padding.right) + edge(cs.border_left) + edge(cs.border_right) +
+                                    len(cs.margin.left) + len(cs.margin.right);
+    float w = 0.0f;
+    if (cs.display_none) {
+        w = 0.0f;
+    } else if (node->tag == "img") {
+        auto attr_px = [&](const char *name) -> float {
+            auto it = node->attrs.find(name);
+            return it == node->attrs.end() ? 0.0f : static_cast<float>(std::atof(it->second.c_str()));
+        };
+        w = len(cs.width);
+        if (w <= 0.0f) w = attr_px("width") * px_scale;
+        if (w <= 0.0f && !(cs.width.set && cs.width.unit == CssLength::Unit::Percent)) {
+            auto src = node->attrs.find("src");
+            const std::string resolved = src == node->attrs.end() ? std::string() : ResolveHtmlImagePath(src->second, ctx.base_dir);
+            const gfx::Texture2D *tex = resolved.empty()                        ? nullptr
+                                        : resolved.compare(0, 5, "data:") == 0 ? GetOrLoadDataUriImageTexture(resolved)
+                                                                                : GetOrLoadOrgInlineImageTexture(resolved);
+            if (tex) {
+                w = static_cast<float>(tex->width) * (ctx.image_scale > 0.0f ? ctx.image_scale : ctx.zoom);
+                if (const float h = attr_px("height") * px_scale; h > 0.0f && tex->height > 0) {
+                    w = h * static_cast<float>(tex->width) / static_cast<float>(tex->height);
+                }
+            }
+        }
+        if (cs.max_width.set && cs.max_width.unit != CssLength::Unit::Percent && !cs.max_width.auto_value) w = std::min(w, len(cs.max_width));
+    } else if (!cell && cs.width.set && !cs.width.auto_value && cs.width.unit != CssLength::Unit::Percent) {
+        w = len(cs.width) + (cs.border_box ? 0.0f : extras);
+    } else if (cs.table_role == HtmlTableRole::Table) {
+        for (const DomNode *row : HtmlTableRows(node)) {
+            float row_w = 0.0f;
+            for (const auto &c : row->children) {
+                if (!HtmlIsCell(c.get()) || c->style.display_none) continue;
+                float pl, pr, pt, pb;
+                HtmlCellPadding(c.get(), ctx, pl, pr, pt, pb);
+                const float fixed = HtmlCellFixedWidth(c.get(), 0.0f, pl + pr, ctx);
+                row_w += fixed > 0.0f ? std::max(fixed, HtmlMaxContentWidth(c.get(), ctx) + pl + pr) : HtmlMaxContentWidth(c.get(), ctx) + pl + pr;
+            }
+            w = std::max(w, row_w);
+        }
+        w += extras;
+    } else {
+        float line = 0.0f, best = 0.0f;
+        for (const auto &c : node->children) {
+            if (c->type == DomNodeType::Text) {
+                std::string text;
+                bool space = false;
+                for (char ch : c->text) {
+                    const bool ws = ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+                    if (ws) space = !text.empty();
+                    else {
+                        if (space) text.push_back(' ');
+                        space = false;
+                        text.push_back(ch);
+                    }
+                }
+                if (!text.empty()) line += gfx::MeasureTextEx(HtmlFontFor(cs), text.c_str(), fs, 0).x + (space ? fs * 0.3f : 0.0f);
+                continue;
+            }
+            if (c->type != DomNodeType::Element || c->style.display_none) continue;
+            if (c->tag == "br") {
+                best = std::max(best, line);
+                line = 0.0f;
+                continue;
+            }
+            const float cw = HtmlMaxContentWidth(c.get(), ctx);
+            if (c->style.block && !HtmlIsCell(c.get())) {
+                best = std::max({best, line, cw});
+                line = 0.0f;
+            } else {
+                line += cw;
+            }
+        }
+        w = std::max(best, line) + extras;
+    }
+    if (!cell && cs.min_width.set) w = std::max(w, len(cs.min_width));
+    g_html_max_content[node] = w;
+    return w;
+}
+
+void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const HtmlLayoutCtx &ctx, HtmlLayout &out) {
+    const std::vector<DomNode *> rows = HtmlTableRows(table);
     if (rows.empty()) return;
     struct TableCell { DomNode *node; size_t row, column, colspan, rowspan; };
     const size_t row_count = rows.size();
@@ -44293,7 +44730,7 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
     for (size_t r = 0; r < row_count; ++r) {
         size_t column = 0;
         for (auto &child : rows[r]->children) {
-            if (child->type != DomNodeType::Element || (child->tag != "td" && child->tag != "th")) continue;
+            if (!HtmlIsCell(child.get()) || child->style.display_none) continue;
             while (column < occupied[r].size() && occupied[r][column]) ++column;
             const size_t colspan = span_attr(child.get(), "colspan");
             const size_t rowspan = std::min(span_attr(child.get(), "rowspan"), row_count - r);
@@ -44308,83 +44745,127 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
         }
     }
     if (columns == 0) return;
-    // A cell's padding comes from its own CSS (`th, td { padding: ... }`),
-    // falling back to the legacy 6/4px when unstyled -- honoring it is most
-    // of what separates a cramped grid from a browser's roomy table.
-    auto cell_padding = [&](const DomNode *cell, float &l, float &r, float &t, float &b) {
-        const ComputedStyle &cst = cell->style;
-        const float fs = ctx.base_font_size * cst.font_scale;
-        l = cst.padding.left.set ? ResolveCssLength(cst.padding.left, fs, 0.0f, ctx.base_font_size) : 6.0f;
-        r = cst.padding.right.set ? ResolveCssLength(cst.padding.right, fs, 0.0f, ctx.base_font_size) : 6.0f;
-        t = cst.padding.top.set ? ResolveCssLength(cst.padding.top, fs, 0.0f, ctx.base_font_size) : 4.0f;
-        b = cst.padding.bottom.set ? ResolveCssLength(cst.padding.bottom, fs, 0.0f, ctx.base_font_size) : 4.0f;
-    };
-    std::vector<float> widths(columns, 24.0f);
-    for (const TableCell &cell : cells) {
-        std::string text; HtmlCollectRawText(cell.node, text);
-        const float font_size = ctx.base_font_size * cell.node->style.font_scale;
-        float pl, pr, pt, pb;
-        cell_padding(cell.node, pl, pr, pt, pb);
-        const float natural = gfx::MeasureTextEx(HtmlFontFor(cell.node->style), text.c_str(), font_size, 0).x + pl + pr;
-        const float each = natural / static_cast<float>(cell.colspan);
-        for (size_t i = 0; i < cell.colspan; ++i) widths[cell.column + i] = std::max(widths[cell.column + i], each);
+    // Columns, as a browser's auto table layout roughly sizes them: a
+    // column with a width of its own (width="" / CSS) keeps it, the rest
+    // share what is left in proportion to how wide their content wants to
+    // be (its max-content: text on one line, images at their size).
+    const float table_w = std::max(1.0f, ctx.layout_width - content_x);
+    std::vector<float> natural(columns, 0.0f), fixed(columns, 0.0f);
+    std::vector<float> cell_pad_l(cells.size()), cell_pad_r(cells.size()), cell_pad_t(cells.size()), cell_pad_b(cells.size());
+    for (size_t i = 0; i < cells.size(); ++i) {
+        const TableCell &cell = cells[i];
+        HtmlCellPadding(cell.node, ctx, cell_pad_l[i], cell_pad_r[i], cell_pad_t[i], cell_pad_b[i]);
+        const float pad_lr = cell_pad_l[i] + cell_pad_r[i];
+        const float want = HtmlMaxContentWidth(cell.node, ctx) + pad_lr;
+        const float own = HtmlCellFixedWidth(cell.node, table_w, pad_lr, ctx);
+        const float n = static_cast<float>(cell.colspan);
+        for (size_t c = cell.column; c < cell.column + cell.colspan; ++c) {
+            natural[c] = std::max(natural[c], want / n);
+            if (own > 0.0f) fixed[c] = std::max(fixed[c], own / n);
+        }
     }
-    float available = std::max(1.0f, ctx.layout_width - content_x), total = 0.0f;
-    for (float width : widths) total += width;
-    if (total > available) for (float &width : widths) width *= available / total;
-    else for (float &width : widths) width += (available - total) / static_cast<float>(columns);
+    std::vector<float> widths(columns);
+    float fixed_total = 0.0f, auto_natural = 0.0f;
+    for (size_t c = 0; c < columns; ++c) {
+        if (fixed[c] > 0.0f) fixed_total += fixed[c];
+        else auto_natural += natural[c];
+    }
+    const float left_for_auto = table_w - fixed_total;
+    for (size_t c = 0; c < columns; ++c) {
+        if (fixed[c] > 0.0f) widths[c] = fixed[c];
+        else if (auto_natural > 0.0f) widths[c] = std::max(0.0f, left_for_auto) * natural[c] / auto_natural;
+        else widths[c] = std::max(0.0f, left_for_auto) / static_cast<float>(columns);
+    }
+    // Fixed columns too wide for the table, or no auto column to take the
+    // slack: everything scales to fit exactly.
+    float total = 0.0f;
+    for (float w : widths) total += w;
+    if (total > 0.0f && std::fabs(total - table_w) > 0.5f) {
+        for (float &w : widths) w *= table_w / total;
+    } else if (total <= 0.0f) {
+        for (float &w : widths) w = table_w / static_cast<float>(columns);
+    }
     // A row is as tall as its cells actually lay out, measured by laying
-    // them out -- not by re-deriving it. The estimate this replaces
-    // re-implemented word wrapping here using the *cell's* own font and
-    // size, which stops being right the moment a cell contains anything
-    // styled differently from the cell itself: a <code> span, a link, or
-    // simply a font-family or line-height inherited from the page. It then
-    // under-reserved the row, so the cell's border box came out shorter
-    // than the text inside it and the grid line was drawn straight through
-    // the row -- every entry in a key-reference table read as struck out.
-    //
-    // Measured against the built-in help pages, the old estimate was short
-    // by ~7px on a plain table and by ~20px (a full line) once the page
-    // carried a stylesheet, which is what made the artifact so
-    // inconsistent. Measuring costs one extra layout pass per cell, into a
-    // scratch HtmlLayout that is discarded; HtmlLayoutBlock only reads from
-    // its node and appends to the layout it is handed, so running it twice
-    // is safe and side-effect free.
-    std::vector<float> row_heights(row_count, HtmlLineHeight(ctx.base_font_size) + 8.0f);
-    for (const TableCell &cell : cells) {
+    // them out -- not by re-deriving it (a re-derived estimate drifted from
+    // the real wrapping as soon as a cell held a <code> span, a link or an
+    // inherited line-height, and the grid line ran through the text).
+    // Measuring costs one extra layout pass per cell, into a scratch
+    // HtmlLayout that is discarded; HtmlLayoutBlock only reads from its
+    // node and appends to the layout it is handed, so running it twice is
+    // safe and side-effect free.
+    std::vector<float> content_h(cells.size(), 0.0f);
+    std::vector<HtmlLayout> laid(cells.size());  // each cell's content, laid out at its padding's corner of (0, 0)
+    std::vector<float> row_heights(row_count, 0.0f);
+    for (size_t i = 0; i < cells.size(); ++i) {
+        const TableCell &cell = cells[i];
         float cell_w = 0.0f;
-        for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
-        float ppl, ppr, ppt, ppb;
-        cell_padding(cell.node, ppl, ppr, ppt, ppb);
-        // Same geometry as the real pass below: content indented by the left
-        // padding, wrapping short of the right one, so the probe wraps
-        // identically.
+        for (size_t c = 0; c < cell.colspan; ++c) cell_w += widths[cell.column + c];
         HtmlLayoutCtx probe_ctx = ctx;
-        probe_ctx.layout_width = std::max(ppl + 1.0f, cell_w - ppr);
-        HtmlLayout scratch;
+        probe_ctx.layout_width = std::max(cell_pad_l[i] + 1.0f, cell_w - cell_pad_r[i]);
+        probe_ctx.content_left = cell_pad_l[i];
         float probe_y = 0.0f;
-        HtmlLayoutBlock(cell.node, ppl, probe_y, probe_ctx, scratch);
-        const float wanted = probe_y + ppt + ppb;
+        HtmlLayoutBlock(cell.node, cell_pad_l[i], probe_y, probe_ctx, laid[i]);
+        content_h[i] = probe_y;
+        float wanted = probe_y + cell_pad_t[i] + cell_pad_b[i];
+        // height="" / CSS height: at least that tall (a spacer row).
+        const ComputedStyle &cst = cell.node->style;
+        const float cfs = ctx.base_font_size * cst.font_scale;
+        for (const CssLength *l : {&cst.height, &cst.min_height}) {
+            if (l->set && !l->auto_value && l->unit != CssLength::Unit::Percent) {
+                wanted = std::max(wanted, ResolveCssLength(*l, cfs, 0.0f, ctx.base_font_size));
+            }
+        }
         float have = 0.0f;
         for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) have += row_heights[rr];
         if (wanted > have) row_heights[cell.row + cell.rowspan - 1] += wanted - have;
     }
+    for (size_t r = 0; r < row_count; ++r) {
+        const ComputedStyle &rst = rows[r]->style;
+        const float rfs = ctx.base_font_size * rst.font_scale;
+        for (const CssLength *l : {&rst.height, &rst.min_height}) {
+            if (l->set && !l->auto_value && l->unit != CssLength::Unit::Percent) {
+                row_heights[r] = std::max(row_heights[r], ResolveCssLength(*l, rfs, 0.0f, ctx.base_font_size));
+            }
+        }
+    }
     std::vector<float> row_tops(row_count);
     float table_bottom = cursor_y;
     for (size_t r = 0; r < row_count; ++r) { row_tops[r] = table_bottom; table_bottom += row_heights[r]; }
-    const gfx::Color border = ResolveHlGroup("Border");
-    for (const TableCell &cell : cells) {
+    // A row's (and row group's) background, under its cells'.
+    for (size_t r = 0; r < row_count; ++r) {
+        for (const DomNode *n = rows[r]; n && n != table; n = n->parent) {
+            const ComputedStyle &rst = n->style;
+            if (!rst.has_bg || rst.bg_a == 0) continue;
+            HtmlBgRect row_bg;
+            row_bg.x = content_x;
+            row_bg.y = row_tops[r];
+            row_bg.w = table_w;
+            row_bg.h = row_heights[r];
+            row_bg.color = gfx::Color{rst.bg_r, rst.bg_g, rst.bg_b, static_cast<unsigned char>(static_cast<float>(rst.bg_a) * rst.opacity)};
+            row_bg.owner = n;
+            out.backgrounds.push_back(row_bg);
+            break;
+        }
+    }
+    // border="N" on the table: every cell framed too (a browser's 1px inset).
+    const bool framed = [&] {
+        auto it = table->attrs.find("border");
+        return it != table->attrs.end() && std::atoi(it->second.c_str()) > 0;
+    }();
+    const gfx::Color frame_color{128, 128, 128, 255};
+    const float px_scale = ctx.base_font_size / 16.0f;
+    for (size_t i = 0; i < cells.size(); ++i) {
+        const TableCell &cell = cells[i];
         float x = content_x, cell_w = 0.0f, cell_h = 0.0f;
-        for (size_t i = 0; i < cell.column; ++i) x += widths[i];
-        for (size_t i = 0; i < cell.colspan; ++i) cell_w += widths[cell.column + i];
+        for (size_t c = 0; c < cell.column; ++c) x += widths[c];
+        for (size_t c = 0; c < cell.colspan; ++c) cell_w += widths[cell.column + c];
         for (size_t rr = cell.row; rr < cell.row + cell.rowspan; ++rr) cell_h += row_heights[rr];
-        float cpl, cpr, cpt, cpb;
-        cell_padding(cell.node, cpl, cpr, cpt, cpb);
-        // The cell's background fills its WHOLE box (header band, zebra
-        // stripe) -- the generic block path skips td/th bgs since only this
-        // pass knows the full row height.
+        const float cpt = cell_pad_t[i], cpb = cell_pad_b[i];
         const ComputedStyle &cst = cell.node->style;
-        if (cst.has_bg) {
+        // The cell's background fills its WHOLE box (header band, zebra
+        // stripe) -- the generic block path skips td/th backgrounds since
+        // only this pass knows the full row height.
+        if (cst.has_bg && cst.bg_a > 0) {
             HtmlBgRect cell_bg;
             cell_bg.x = x;
             cell_bg.y = row_tops[cell.row];
@@ -44392,22 +44873,54 @@ void HtmlLayoutTable(DomNode *table, float content_x, float &cursor_y, const Htm
             cell_bg.h = cell_h;
             cell_bg.color = gfx::Color{cst.bg_r, cst.bg_g, cst.bg_b,
                                        static_cast<unsigned char>(static_cast<float>(cst.bg_a) * cst.opacity)};
+            cell_bg.radius = ResolveCssLength(cst.border_radius, ctx.base_font_size * cst.font_scale, cell_w, ctx.base_font_size);
             cell_bg.owner = cell.node;
             out.backgrounds.push_back(cell_bg);
         }
-        HtmlLayoutCtx cell_ctx = ctx; cell_ctx.layout_width = std::max(x + cpl + 1.0f, x + cell_w - cpr);
-        float cell_y = row_tops[cell.row] + cpt;
-        HtmlLayoutBlock(cell.node, x + cpl, cell_y, cell_ctx, out);
-        // border-collapse: adjacent cells share ONE grid line instead of each
-        // drawing all four edges (which doubles every interior rule). Each
-        // cell keeps its top+left; the last column/row close the outer frame.
-        if (table->style.border_collapse) {
-            const float right_w = cell.column + cell.colspan >= columns ? 1.0f : 0.0f;
-            const float bottom_w = cell.row + cell.rowspan >= row_count ? 1.0f : 0.0f;
-            out.borders.push_back(
-                {x, row_tops[cell.row], cell_w, cell_h, 1, right_w, bottom_w, 1, border, border, border, border});
-        } else {
-            out.borders.push_back({x, row_tops[cell.row], cell_w, cell_h, 1, 1, 1, 1, border, border, border, border});
+        // vertical-align / valign: the cell's, else its row's (or row
+        // group's), else middle.
+        HtmlVerticalAlign va = cst.vertical_align;
+        for (const DomNode *n = cell.node->parent; va == HtmlVerticalAlign::Unset && n && n != table; n = n->parent) {
+            va = n->style.vertical_align;
+        }
+        if (va == HtmlVerticalAlign::Unset) va = HtmlVerticalAlign::Middle;
+        const float slack = std::max(0.0f, cell_h - cpt - cpb - content_h[i]);
+        const float shift = va == HtmlVerticalAlign::Middle ? slack / 2.0f : va == HtmlVerticalAlign::Bottom ? slack : 0.0f;
+        // The content as measured, moved into place (a cell starts fresh:
+        // no earlier trailing margin goes in, none of its own comes out).
+        HtmlAppendShifted(out, std::move(laid[i]), x, row_tops[cell.row] + cpt + shift);
+        // The cell's own CSS borders, else the table's border="" grid.
+        HtmlBorderRect br;
+        br.x = x;
+        br.y = row_tops[cell.row];
+        br.w = cell_w;
+        br.h = cell_h;
+        br.radius = ResolveCssLength(cst.border_radius, ctx.base_font_size * cst.font_scale, cell_w, ctx.base_font_size);
+        br.owner = cell.node;
+        bool any = false;
+        auto side = [&](const ComputedStyle::BorderEdge &e, float &w, gfx::Color &c) {
+            if (e.present) {
+                w = std::max(1.0f, e.width_px * px_scale);
+                c = gfx::Color{e.r, e.g, e.b, 255};
+                any = true;
+            } else if (framed) {
+                w = 1.0f;
+                c = frame_color;
+                any = true;
+            }
+        };
+        side(cst.border_top, br.top_w, br.top_c);
+        side(cst.border_right, br.right_w, br.right_c);
+        side(cst.border_bottom, br.bottom_w, br.bottom_c);
+        side(cst.border_left, br.left_w, br.left_c);
+        if (any) {
+            // border-collapse: neighbouring cells share one line -- each
+            // keeps its top and left, the last column/row close the frame.
+            if (table->style.border_collapse) {
+                if (cell.column + cell.colspan < columns) br.right_w = 0.0f;
+                if (cell.row + cell.rowspan < row_count) br.bottom_w = 0.0f;
+            }
+            out.borders.push_back(br);
         }
     }
     cursor_y = table_bottom;
@@ -44487,6 +45000,7 @@ HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
     // own comment at ResolveCssLength).
     g_css_viewport_w = ctx.viewport_w;
     g_css_viewport_h = ctx.viewport_h;
+    g_html_max_content.clear();
     float cursor_y = 0;
     for (auto &c : doc.root->children) {
         if (c->type != DomNodeType::Element || c->style.display_none) continue;
@@ -49839,6 +50353,57 @@ void DrawMepmlTerminal(int run_id, float x, float y, float h) {
     RegisterClickRegionOnTop(rect, [run_id] { g_editor.MepmlTerminalFocus(run_id); });
 }
 
+// The picture of a program mep draws itself (EmbeddedWindow::DrawnByMep:
+// one on a private X server), uploaded again whenever its pixels change.
+// Keyed by the program; a texture not drawn for a few seconds (its program
+// gone, or scrolled out of sight) is let go.
+struct EmbeddedFrameTexture {
+    gfx::Texture2D tex{};
+    uint64_t version = 0;
+    double used = 0.0;
+};
+std::unordered_map<const void *, EmbeddedFrameTexture> g_embedded_frames;
+
+/**
+ * @brief Draws a program's own picture over its area, when mep is what draws it (nothing, for a window the windowing system shows).
+ * @param app The program (null: none).
+ * @param full Its whole area.
+ * @param clip The part of mep's window it may cover.
+ */
+void DrawEmbeddedFrame(mep::gui_embed::EmbeddedApp *app, const mep::gui_embed::Rect &full, const gfx::Rectangle &clip) {
+    const double now = gfx::GetTime();
+    for (auto it = g_embedded_frames.begin(); it != g_embedded_frames.end();) {
+        if (now - it->second.used > 5.0) {
+            gfx::UnloadTexture(it->second.tex);
+            it = g_embedded_frames.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (!app || !app->DrawnByMep()) return;
+    uint64_t version = 0;
+    const mep::gui_embed::Snapshot *frame = app->LiveFrame(&version);
+    if (!frame) return;
+    EmbeddedFrameTexture &e = g_embedded_frames[app];
+    e.used = now;
+    if (e.tex.id == 0 || e.tex.width != frame->width || e.tex.height != frame->height) {
+        if (e.tex.id != 0) gfx::UnloadTexture(e.tex);
+        gfx::Image img{const_cast<unsigned char *>(frame->rgba.data()), frame->width, frame->height, 1, gfx::kPixelFormatR8G8B8A8};
+        e.tex = gfx::LoadTextureFromImage(img);
+        e.version = version;
+    } else if (version != e.version) {
+        gfx::UpdateTexture(e.tex, frame->rgba.data());
+        e.version = version;
+    }
+    // Only the part inside the pane: a texture is not clipped by itself.
+    const float x0 = std::max(static_cast<float>(full.x), clip.x), y0 = std::max(static_cast<float>(full.y), clip.y);
+    const float x1 = std::min(static_cast<float>(full.x + std::min(full.w, frame->width)), clip.x + clip.width);
+    const float y1 = std::min(static_cast<float>(full.y + std::min(full.h, frame->height)), clip.y + clip.height);
+    if (x1 <= x0 || y1 <= y0) return;
+    gfx::DrawTextureRec(e.tex, gfx::Rectangle{x0 - static_cast<float>(full.x), y0 - static_cast<float>(full.y), x1 - x0, y1 - y0},
+                        gfx::Vector2{x0, y0}, gfx::White);
+}
+
 /**
  * @brief Draws the area a mepml exec-gui block's program window sits in, and puts the window there.
  * @param run_id The GUI run.
@@ -49866,6 +50431,7 @@ void DrawMepmlGui(int run_id, float x, float y, float w, float h, const gfx::Rec
     const mep::gui_embed::Rect pane_clip{static_cast<int>(clip.x), static_cast<int>(clip.y), static_cast<int>(clip.width),
                                          static_cast<int>(clip.height)};
     g_editor.MepmlGuiPlace(run_id, full, pane_clip);
+    DrawEmbeddedFrame(g_editor.MepmlGuiAppOf(run_id), full, clip);
     gfx::DrawRectangleLines(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
                             view.focused ? ResolveHlGroup("Accent") : gfx::Fade(ResolveHlGroup("Border"), 0.6f));
     // A click on it (mep sees clicks there until the program has the
@@ -49898,6 +50464,8 @@ void DrawExecAppPane(const Pane &pane, const Editor::ExecAppView &view, float x,
     // that shows whether it has the keyboard.
     const mep::gui_embed::Rect full{static_cast<int>(x) + 1, static_cast<int>(y) + 1, static_cast<int>(w) - 2, static_cast<int>(h) - 2};
     g_editor.ExecAppPlace(pane.buffer_id, full, full);
+    DrawEmbeddedFrame(g_editor.ExecAppOf(pane.buffer_id), full,
+                      gfx::Rectangle{static_cast<float>(full.x), static_cast<float>(full.y), static_cast<float>(full.w), static_cast<float>(full.h)});
     gfx::DrawRectangleLines(static_cast<int>(rect.x), static_cast<int>(rect.y), static_cast<int>(rect.width), static_cast<int>(rect.height),
                             view.focused ? ResolveHlGroup("Accent") : gfx::Fade(ResolveHlGroup("Border"), 0.6f));
     // A click on it (mep sees clicks there until the program has the
@@ -51715,7 +52283,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (html_sess) {
             std::string title = html_sess->doc.title.empty() ? html_sess->source : html_sess->doc.title;
-            std::string label = "HTML: " + title + "  " + std::to_string(static_cast<int>(std::lround(html_sess->zoom * 100.0f))) + "%" +
+            // A page that is not a browser's (a mail message) goes by its pane's name.
+            if (!html_sess->chrome) {
+                const std::string mail_title = g_editor.MailPaneTitle(pane.buffer_id);
+                if (!mail_title.empty()) title = mail_title;
+            }
+            std::string label = (html_sess->chrome ? "HTML: " : "") + title + "  " + std::to_string(static_cast<int>(std::lround(html_sess->zoom * 100.0f))) + "%" +
                                  (html_sess->theme_colors ? "  [theme, Ctrl-R]" : "  [page colors, Ctrl-R]");
             gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{x + 6, label_y}, font_size, 0, ResolveHlGroup("Normal"));
         } else if (pdf_sess && pdf_sess->nav_goto_active) {
@@ -52207,7 +52780,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     if (html_sess) {
         // The omnibar is pane chrome: it takes the top row, the page gets the rest.
-        const float omnibar_h = DrawHtmlOmnibar(pane, *html_sess, x, content_y, w, is_active);
+        const float omnibar_h = html_sess->chrome ? DrawHtmlOmnibar(pane, *html_sess, x, content_y, w, is_active) : 0.0f;
         content_y += omnibar_h;
         content_h = std::max(0.0f, content_h - omnibar_h);
         g_editor.ResizeHtmlViewport(pane.buffer_id, static_cast<int>(w), static_cast<int>(content_h));
@@ -52221,6 +52794,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         ctx.base_dir = urlutil::IsHttpUrl(html_sess->origin) ? html_sess->origin
                                                              : std::filesystem::path(html_sess->source).parent_path().string();
         ctx.zoom = html_sess->zoom;
+        if (html_sess->css_px_images) ctx.image_scale = ctx.base_font_size / 16.0f;
         // The viewport a `position:fixed` box positions against: the FULL
         // pane (not the content area inset by kHtmlPad). A browser positions
         // fixed elements against the true viewport edge, so `left:0` must land
@@ -61010,6 +61584,7 @@ std::string UiHintLabelForIndex(int i, int width) {
  */
 void NavigateHtmlLink(int buffer_id, const std::string &href) {
     if (href.empty() || href[0] == '#') return;
+    if (g_editor.MailFollowLink(buffer_id, href)) return;  // a mail message's link: never followed in-pane
     if (href.rfind("mailto:", 0) == 0) {
         g_editor.RunCommand("lua mep.open_url([[" + href + "]])");
         return;

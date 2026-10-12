@@ -3178,6 +3178,9 @@ struct JsRuntime;  // js_engine.h
 struct HtmlSession {
     int buffer_id = 0;
     HtmlDoc doc;
+    // Images without a size of their own are CSS px, scaled like the page's
+    // lengths (HtmlLayoutCtx::image_scale) -- set for a mail message.
+    bool css_px_images = false;
     // The path/URL this was opened from, for the pane header label and
     // for resolving a local <img src="relative/path"> against the page's
     // own directory (DrawPane's html branch) -- not necessarily the same
@@ -3236,6 +3239,9 @@ struct HtmlSession {
     // to the Lua :MepBrowseGo command (which normalizes "localhost:8000"
     // into a URL and navigates this pane), Escape abandons the edit.
     bool omnibar_active = false;
+    // False for a page that is not a browser (a mail message rendered
+    // in the mail pane): no omnibar is drawn, the page takes the pane.
+    bool chrome = true;
     std::string omnibar_text;
     size_t omnibar_cursor = 0;   // byte offset into omnibar_text
     bool omnibar_select_all = false;  // a fresh edit starts with the URL selected: typing replaces it
@@ -6648,6 +6654,19 @@ public:
     // A plain Normal-mode key in a mail buffer (`count` = any pending
     // count, 0 for none); true when it was a mail command and is consumed.
     bool MailHandleKey(int cp, int count);
+    /**
+     * @brief A key typed while a mail message shows as rendered HTML (an html pane): the mail
+     * pane's own message keys (q, J/K, r, dd, v, i...) are handled here; anything else (j/k
+     * scrolling, gg/G, :) is left to the html pane.
+     * @return True when the key was the mail pane's -- the html view may be gone after it.
+     */
+    bool MailHtmlKey(int cp);
+    /**
+     * @brief A link clicked in a mail message's HTML: web links open in the system browser
+     * (never in-pane), mailto: starts a draft, mep-mail: links are the pane's own controls.
+     * @return False when `buffer_id` is not a mail pane (the html pane follows the link itself).
+     */
+    bool MailFollowLink(int buffer_id, const std::string &href);
 
     // True if `name`'s extension is a format DecodeAudioFile can play.
     static bool IsMusicFile(const std::string &name);
@@ -11093,6 +11112,32 @@ public:
     void ExecAppRestart(int buffer_id);
     /** @brief Stops the program of an :exec pane whose buffer is being deleted (it finishes closing in the background). */
     void ExecAppClose(int buffer_id);
+    /** @brief An :exec pane's program, null when the buffer has none (for drawing a window mep draws itself). */
+    mep::gui_embed::EmbeddedApp *ExecAppOf(int buffer_id);
+    /** @brief A GUI run's program, null when there is no such run (for drawing a window mep draws itself). */
+    mep::gui_embed::EmbeddedApp *MepmlGuiAppOf(int run_id);
+    // Where a window mep draws itself was on screen, and the pointer's
+    // dealings with it (HandleEmbeddedPointer).
+    struct EmbeddedPointerState {
+        mep::gui_embed::Rect clip;  // the part of mep's window it may cover
+        bool placed_now = false;    // placed during the frame being drawn
+        bool visible = false;       // placed during the last frame drawn
+        int x = -1, y = -1;         // the pointer, last passed on
+        int held = 0;               // buttons pressed on it and not yet let go (bit per button)
+        float wheel_x = 0.0f, wheel_y = 0.0f;  // wheel movement short of a whole notch
+    };
+    /**
+     * @brief Passes the pointer to the programs whose windows mep draws itself (EmbeddedWindow::DrawnByMep).
+     * @param wheel This frame's wheel movement.
+     * @return True when the wheel went to a program (and must not scroll anything else).
+     */
+    bool HandleEmbeddedPointer(gfx::Vector2 wheel);
+    /**
+     * @brief Passes the keys to the program holding the keyboard, when mep draws its window itself -- after mep's own
+     * chords (mod1, tabs) have had their turn. Ctrl-\ takes the keyboard back.
+     * @return True when the keys were the program's.
+     */
+    bool HandleEmbeddedKeys();
     // Enter/i focus, r restart, ':' and the leader -- see Mode::ExecApp.
     void HandleExecAppInput();
     // Once per frame, from MepmlGuisTick (the same backend Pump) and
@@ -15007,6 +15052,14 @@ private:
     // outlives every run's window.
     void *native_window_handle_ = nullptr;
     std::unique_ptr<mep::gui_embed::Backend> gui_backend_;
+    // Releases the keyboard of the program mep draws itself, back to mep.
+    void ReleaseDrawnAppKeyboard();
+    // Creates gui_backend_ on first use, telling it which chords are mep's.
+    void EnsureGuiBackend();
+    // Whether a chord is one of mep's mod1 mappings (Backend::SetReservedChords's terms), and running it.
+    bool IsReservedChord(const std::string &key, unsigned mods) const;
+    void RunReservedChord(const std::string &key, unsigned mods);
+    unsigned Mod1Bit() const;  // mod1_ as a gui_embed::KeyMod bit
     struct MepmlGuiRun {
         std::unique_ptr<mep::gui_embed::EmbeddedApp> app;
         int buffer_id = -1;
@@ -15020,6 +15073,7 @@ private:
         std::string snapshot_ref;   // ... and how the results name it
         std::vector<std::string> temp_files;
         mep::gui_embed::Rect placed;  // this frame's area (a click outside it takes the keyboard back)
+        EmbeddedPointerState pointer;      // (a window mep draws itself)
     };
     std::map<int, MepmlGuiRun> mepml_guis_;
     // :exec panes, keyed by buffer id (editor_exec.cpp).
@@ -15031,6 +15085,7 @@ private:
         std::string cwd;
         mep::gui_embed::Rect placed;    // this frame's area (a click outside it takes the keyboard back)
         bool focus_when_shown = true;   // hands it the keyboard the first time its window shows
+        EmbeddedPointerState pointer;        // (a window mep draws itself)
     };
     std::map<int, ExecAppSession> exec_apps_;
     int exec_app_focus_ = -1;  // the :exec buffer whose program holds the keyboard, or -1

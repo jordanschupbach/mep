@@ -15,6 +15,8 @@ enum class Status { Ok, NotFound, Denied, Error };
  *        showing macOS's "allow access?" dialog. `*ours` says whether mep wrote it (trusts mep alone).
  */
 Status Read(const std::string &service, const std::string &account, bool allow_ui, std::string *secret, bool *ours);
+/** @brief Whether an item exists and `*ours` (mep wrote it), from its attributes alone -- never a dialog. */
+Status Probe(const std::string &service, const std::string &account, bool *ours);
 /** @brief Deletes an item (Denied without `allow_ui` when it does not trust mep). */
 Status Delete(const std::string &service, const std::string &account, bool allow_ui);
 /** @brief Adds an item that trusts this mep only (Denied without `allow_ui` if macOS wanted to ask first). */

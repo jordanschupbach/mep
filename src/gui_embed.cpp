@@ -45,7 +45,7 @@ public:
         if (why) *why = why_;
         return false;
     }
-    std::vector<std::pair<std::string, std::string>> ChildEnv() const override { return {}; }
+    std::vector<std::pair<std::string, std::string>> ChildEnv() override { return {}; }
     void NoteExistingWindows() override {}
     std::unique_ptr<EmbeddedWindow> Adopt(const std::vector<int> &, bool) override { return nullptr; }
     void Pump() override {}
@@ -75,6 +75,80 @@ void Keep(std::vector<std::string> &lines, const std::string &line) {
 
 std::unique_ptr<Backend> CreateUnsupportedBackend(std::string why) { return std::make_unique<UnsupportedBackend>(std::move(why)); }
 
+namespace {
+
+class LayeredBackend final : public Backend {
+public:
+    LayeredBackend(std::unique_ptr<Backend> first, std::unique_ptr<Backend> second)
+        : first_(std::move(first)), second_(std::move(second)) {}
+
+    std::string Name() const override { return first_->Name() + "+" + second_->Name(); }
+    bool Usable(std::string *why) const override {
+        std::string why1, why2;
+        if (first_->Usable(&why1) || second_->Usable(&why2)) return true;
+        if (why) *why = why2 + "; and X11 programs cannot run on a private display either: " + why1;
+        return false;
+    }
+    std::vector<std::pair<std::string, std::string>> ChildEnv() override {
+        std::vector<std::pair<std::string, std::string>> env = first_->ChildEnv();
+        for (auto &kv : second_->ChildEnv()) env.push_back(std::move(kv));
+        return env;
+    }
+    void ChildStarted(int pid) override {
+        first_->ChildStarted(pid);
+        second_->ChildStarted(pid);
+    }
+    void ChildEnded(int pid) override {
+        first_->ChildEnded(pid);
+        second_->ChildEnded(pid);
+    }
+    std::string WhyNoWindow() const override {
+        const std::string w = second_->WhyNoWindow();
+        return w.empty() ? first_->WhyNoWindow() : w;
+    }
+    bool PointerThroughOnly() const override { return second_->PointerThroughOnly(); }
+    void NoteExistingWindows() override {
+        first_->NoteExistingWindows();
+        second_->NoteExistingWindows();
+    }
+    std::unique_ptr<EmbeddedWindow> Adopt(const std::vector<int> &pids, bool allow_unowned) override {
+        std::string why;
+        if (first_->Usable(&why))
+            if (std::unique_ptr<EmbeddedWindow> w = first_->Adopt(pids, allow_unowned)) return w;
+        // (Asked even when it is not usable yet: it can say why a window
+        // it sees cannot be shown -- WhyNoWindow.)
+        std::unique_ptr<EmbeddedWindow> w = second_->Adopt(pids, allow_unowned);
+        // Its window is the second's: what the first set up for it is idle.
+        if (w && !pids.empty()) first_->ChildEnded(pids.front());
+        return w;
+    }
+    std::unique_ptr<EmbeddedWindow> AdoptHandoff(const std::vector<std::string> &executables, const std::vector<int> &own_pids) override {
+        return second_->AdoptHandoff(executables, own_pids);
+    }
+    std::string ResolveApplication(const std::string &name) const override { return second_->ResolveApplication(name); }
+    void SetReservedChords(std::function<bool(const std::string &, unsigned)> reserved) override {
+        first_->SetReservedChords(reserved);
+        second_->SetReservedChords(std::move(reserved));
+    }
+    void Pump() override {
+        first_->Pump();
+        second_->Pump();
+    }
+    void Flush() override {
+        first_->Flush();
+        second_->Flush();
+    }
+
+private:
+    std::unique_ptr<Backend> first_, second_;
+};
+
+}  // namespace
+
+std::unique_ptr<Backend> CreateLayeredBackend(std::unique_ptr<Backend> first, std::unique_ptr<Backend> second) {
+    return std::make_unique<LayeredBackend>(std::move(first), std::move(second));
+}
+
 std::unique_ptr<Backend> CreateBackend(void *native_window_handle) {
     if (native_window_handle == nullptr) return CreateUnsupportedBackend("there is no window to embed a program into (a headless run)");
 #if defined(MEP_GUI_EMBED_X11)
@@ -83,8 +157,14 @@ std::unique_ptr<Backend> CreateBackend(void *native_window_handle) {
     return CreateUnsupportedBackend(why);
 #elif defined(MEP_GUI_EMBED_MACOS)
     std::string why;
-    if (std::unique_ptr<Backend> mac = CreateMacOSBackend(native_window_handle, &why)) return mac;
-    return CreateUnsupportedBackend(why);
+    std::unique_ptr<Backend> mac = CreateMacOSBackend(native_window_handle, &why);
+    if (!mac) mac = CreateUnsupportedBackend(why);
+#if defined(MEP_GUI_EMBED_XVFB)
+    // X11 programs on a private display of their own (no permission
+    // needed); Mac programs as their own windows, as before.
+    if (std::unique_ptr<Backend> xvfb = CreateXvfbBackend(&why)) return CreateLayeredBackend(std::move(xvfb), std::move(mac));
+#endif
+    return mac;
 #elif defined(__EMSCRIPTEN__)
     return CreateUnsupportedBackend("a browser tab cannot hold another program's window");
 #else
@@ -325,6 +405,7 @@ void EmbeddedApp::SetHandoff(const std::string &executable) {
 EmbeddedApp::~EmbeddedApp() {
     window_.reset();
     if (job_id_ > 0 && !exited_) JobManager::Instance().KillHard(job_id_);
+    if (pid_ > 0) backend_.ChildEnded(pid_);
 }
 
 bool EmbeddedApp::Start(const std::vector<std::string> &argv, const std::string &cwd, std::string *error) {
@@ -361,6 +442,7 @@ bool EmbeddedApp::Start(const std::vector<std::string> &argv, const std::string 
         return false;
     }
     pid_ = JobManager::Instance().Pid(job_id_);
+    backend_.ChildStarted(pid_);
     state_ = State::Starting;
     return true;
 #endif
@@ -374,6 +456,8 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
         if (job_state_->exited && !exited_) {
             exited_ = true;
             exit_code_ = job_state_->exit_code;
+            // (A handed-off window is not on anything set up for it.)
+            if (pid_ > 0 && !handed_off_) backend_.ChildEnded(pid_);
         }
     }
     if (exited_ && !handed_off_) {
@@ -443,7 +527,7 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
             focused_ = false;
             focus_lost_ = true;
         }
-    } else if ((pointer_through_ || backend_.PointerThroughOnly()) && shown_ && window_->HasFocus()) {
+    } else if ((pointer_through_ || (backend_.PointerThroughOnly() && !window_->DrawnByMep())) && shown_ && window_->HasFocus()) {
         // Clicked into (the pointer reaches it directly): it has taken the
         // keyboard, so it is focused -- Ctrl-\ or a click outside gives it back.
         window_->Focus(true);

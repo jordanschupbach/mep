@@ -100,7 +100,7 @@ class FakeBackend final : public Backend {
 public:
     std::string Name() const override { return "fake"; }
     bool Usable(std::string *) const override { return true; }
-    std::vector<std::pair<std::string, std::string>> ChildEnv() const override { return {{"MEP_GUI_EMBED_FAKE", "1"}}; }
+    std::vector<std::pair<std::string, std::string>> ChildEnv() override { return {{"MEP_GUI_EMBED_FAKE", "1"}}; }
     void NoteExistingWindows() override { ++noted; }
     std::unique_ptr<EmbeddedWindow> Adopt(const std::vector<int> &pids, bool allow_unowned) override {
         last_pids = pids;

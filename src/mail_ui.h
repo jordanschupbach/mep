@@ -17,7 +17,9 @@
 #include "mail.h"
 
 #include <cstdint>
+#include <list>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -36,6 +38,9 @@ struct MailListState {
     uint32_t exists = 0;
     uint32_t min_seq = 0;  // lowest sequence number loaded (0 = none yet)
     bool loaded = false;
+    bool from_snapshot = false;  // msgs are the saved copy; the server's answer is on its way
+    // Moved/deleted here: kept out of a list fetch that left before the move.
+    std::set<uint32_t> removed_uids;
     std::string search;    // non-empty: these are search results for it
 };
 
@@ -49,6 +54,15 @@ struct MailSession {
     uint32_t msg_uid = 0;
     mail::Message msg;
     bool msg_loaded = false;
+    // How the open message is shown: its HTML rendered (when it has any),
+    // or as text (`v` flips it). Remote images stay blocked until `i`
+    // fetches them -- they are how senders track who opened a message.
+    bool msg_html = true;
+    bool msg_images = false;
+    std::string msg_image_dir;  // the open message's inline and fetched images
+    std::vector<std::string> msg_remote_urls;                   // its remote <img> sources
+    std::unordered_map<std::string, std::string> msg_remote_files;  // ... fetched: url -> file
+    std::string msg_html_key;  // what the pane's html view was built for ("" = none)
     // Folders view used as a destination picker for `M`.
     bool picking = false;
     std::vector<uint32_t> pick_uids;
@@ -79,6 +93,13 @@ struct MailDraftContext {
     std::vector<std::string> temp_files;  // forwarded attachments to clean up
 };
 
+// A parsed message kept after reading or prefetching it, so opening it
+// (again) needs no round trip. Keyed by "account id|mailbox|uid".
+struct MailCachedMessage {
+    std::string key;
+    std::shared_ptr<const mail::Message> msg;
+};
+
 struct MailState {
     bool accounts_loaded = false;
     long long accounts_stamp = -1;  // the accounts file's mtime when last read
@@ -86,8 +107,11 @@ struct MailState {
     std::string accounts_error;
     std::unordered_map<std::string, std::string> secrets;               // account id -> password/token
     std::unordered_map<std::string, std::vector<mail::Folder>> folders;  // account id -> LIST
+    std::set<std::string> folders_stale;  // account ids whose folders are an old saved copy
     std::unordered_map<int, MailSession> sessions;                      // buffer id -> pane state
     std::unordered_map<std::string, MailDraftContext> drafts;          // draft path -> context
+    std::list<MailCachedMessage> msg_cache;  // most recently used first
+    std::set<std::string> prefetching;       // cache keys being fetched in the background
     int ns = -1;
     bool sending = false;
     bool signing_in = false;  // a browser sign-in is waiting for its redirect

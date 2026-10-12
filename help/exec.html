@@ -67,18 +67,40 @@ that the program has closed once that window is gone, and <code>r</code> opens a
 <table>
 <tr><th>Platform</th><th>How</th></tr>
 <tr><td>Linux (X11)</td><td>the window is taken into mep's own window and clipped to the pane</td></tr>
-<tr><td>macOS</td><td>the window stays the program's, kept over the pane and just above mep's window</td></tr>
+<tr><td>macOS, X11 programs</td><td>the program draws on a private display of its own, which mep draws into the pane -- no permission needed</td></tr>
+<tr><td>macOS, Mac programs</td><td>the window stays the program's, kept over the pane and just above mep's window -- needs Accessibility</td></tr>
 <tr><td>anything else</td><td><code>:exec</code> says that it cannot show a program's window there</td></tr>
 </table>
-<p>On macOS this needs the Accessibility permission (System Settings &gt; Privacy &amp;
-Security &gt; Accessibility), for mep or for the terminal it was started from.
-macOS asks for it the first time. Until it is given, <code>:exec</code> says so and opens
-nothing. There is no way round it: macOS gives no program another's window,
-so mep can only move and size it, and moving another program's window is what
-that permission allows. A mepml <code>exec-gui</code> block needs it just the same -- if
-those show, <code>:exec</code> has what it needs. Because the window is the program's own and not part of mep's, mep's
-popups (the command line, which-key, pickers) are drawn underneath it while it
-shows.</p>
+<h2>macOS: X11 programs, inside mep</h2>
+<p>With <a href="https://www.xquartz.org">XQuartz</a> installed, every program is
+started on a private X display of its own (an <code>Xvfb</code>, which draws into memory
+and shows nothing), and mep draws that display into the pane itself. A
+program that draws through X11 -- <code>xterm</code>, <code>xclock</code>, Tk built for X11, GTK or
+Qt built for X11 -- is then truly inside mep: no window of its own, no
+permission to give, its menus and dialogs inside the pane, and mep's popups
+drawn over it as over anything else. mep keeps the keyboard throughout and
+passes the keys on, so <code>mod1</code> pane moves stay mep's while the program has the
+keyboard. The display goes when the program does.</p>
+<p>Python's tkinter from Homebrew, python.org or nixpkgs draws through Aqua (as
+a Mac program), not X11. <code>just python-x11</code> builds a Python whose Tk is the
+X11 one and links it as <code>~/.local/bin/python3-x11</code>:</p>
+<pre>:exec python3-x11 my_app.py</pre>
+<p>Not passed across: the clipboard (the private display has its own), and
+keys held down (each key is pressed and let go at once).</p>
+<h2>macOS: Mac programs, over mep</h2>
+<p>A Mac program (Firefox, any <code>.app</code>) ignores X11 and opens a window of its
+own, which mep can only move and size -- and moving another program's window
+is what the Accessibility permission (System Settings &gt; Privacy &amp; Security &gt;
+Accessibility) allows, for mep or for the terminal it was started from. macOS
+asks for it the first time such a window appears; until it is given, the pane
+says why it stays empty. There is no way round it: macOS gives no program
+another's window. Because the window is the program's own and not part of
+mep's, mep's popups (the command line, which-key, pickers) are drawn
+underneath it while it shows. While it has the keyboard, mep still catches
+its own <code>mod1</code> chords before the program does (<code>mod1+h</code> moves to the pane on
+the left and gives the keyboard back), and <code>Ctrl-\</code>.</p>
+<p>If the permission is switched on in System Settings but mep still asks for
+it, the entry is for an older build: remove it with "-" and add mep again.</p>
 <p><code>:exec</code> uses the same machinery as a mepml <code>exec-gui</code> block, which shows a
 program's window inside a document instead of as a pane. See
 <a href="mepml.html">mepml</a> for that.</p>

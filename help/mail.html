@@ -88,7 +88,7 @@ the vault; the next mail action asks again.</p>
 <ul>
 <li>Connections always use TLS, with certificates checked. <code>insecure</code> (unencrypted) accounts are only allowed to a server on your own computer (<code>127.0.0.1</code> / <code>localhost</code>), so a typo can never send a password in the clear.</li>
 <li>mep's mail folder (drafts, the vault, temporary files) is readable by your user only. Temporary files (forwarded attachments) are removed after sending, or after a day otherwise.</li>
-<li>HTML mail is never rendered or run, and remote images are never fetched. Attachments open in mep only for formats it just displays (PDF, images, text, office documents, media); anything else is saved to Downloads.</li>
+<li>HTML mail is shown but never run (no scripts, frames or outside stylesheets), and remote images are fetched only when you ask (<code>i</code>). Attachments open in mep only for formats it just displays (PDF, images, text, office documents, media); anything else is saved to Downloads.</li>
 <li>Browser sign-in uses PKCE and a random <code>state</code> from the system's secure random generator, listens on <code>127.0.0.1</code> only, and only talks to <code>https://</code> sign-in servers.</li>
 </ul>
 <h1>Browser sign-in</h1>
@@ -222,11 +222,48 @@ message, <code>r</code> one you have answered and <code>@</code> one with attach
 <tr><td><code>r R f</code></td><td>reply, reply to all, forward</td></tr>
 <tr><td><code>dd x a M s U</code></td><td>as in the list -- deleting or moving goes on to the next message</td></tr>
 <tr><td><code>Enter</code></td><td>on an <code>Attach:</code> line: save the file to Downloads and open it</td></tr>
+<tr><td><code>v</code></td><td>rendered HTML / plain text</td></tr>
+<tr><td><code>i</code></td><td>load the message's remote images</td></tr>
 </table>
-<p>Everything else is ordinary Vim: move around, search, select and yank.
-HTML-only mail is shown as text, with its links numbered under the
-message (<code>[1] https://...</code>). Its HTML is never run or rendered, so remote
-images (tracking pixels) are never loaded.</p>
+<p>A message with an HTML version is shown rendered, the way its sender laid
+it out: <code>j</code> / <code>k</code>, <code>Ctrl-d</code> / <code>Ctrl-u</code> and <code>gg</code> / <code>G</code> scroll, <code>Ctrl-R</code>
+switches to your editor colours, and the mail keys above all still work.
+Clicking a link opens it in your web browser (a <code>mailto:</code> link starts a
+draft), and clicking an attachment's name in the header saves and opens
+it. <code>v</code> flips to the plain-text view -- ordinary Vim, where you can search,
+select and yank -- and back; mep remembers which you prefer.</p>
+<p>Nothing in a message runs or reaches out on its own: scripts, frames and
+stylesheets from elsewhere are dropped, and images embedded in the
+message show, but remote images stay blocked -- they are how senders
+track whether, when and where a message was read. The header says how
+many were blocked; <code>i</code> (or clicking <i>load them</i>) fetches them for that
+message only.</p>
+<h2>Speed</h2>
+<p>A folder you have opened before shows at once: mep keeps a copy of each
+folder's newest page and of each account's folder list (in <code>mail/cache</code>,
+readable only by you), and the header says <i>syncing...</i> until the server's
+answer replaces it. Older messages (<code>+</code>) load once the sync is done. A
+saved folder list is re-read from the server once it is a day old, or with
+<code>$</code> in the folder list.</p>
+<p>Messages open from a saved copy too. When a folder loads, its newest 25
+messages are fetched in the background (without marking them read), and
+opening one also fetches the next few, so <code>J</code> reads on without waiting.
+Every message fetched is kept in <code>mail/cache/messages</code> (readable only by
+you, oldest dropped past 256 MB), so it opens at once later, even after a
+restart. Delete that directory to clear it.</p>
+<p>mep stays signed in between operations: a few connections per account are
+kept open (for up to ten minutes unused), each remembering which folder it
+has selected, so reading, refreshing, deleting or moving in the folder you
+are in costs the server one command, without a new login or a new
+selection. A connection the server dropped meanwhile is replaced on the
+spot. (These connections need mep built with OpenSSL, as it is on macOS
+and Linux; elsewhere, or with <code>MEP_MAIL_CURL=1</code> in the environment, each
+operation runs <code>curl</code> as before.)</p>
+<p>Once a list is up, its newest messages are fetched in the background --
+without marking them read -- and so are the neighbours of the one you are
+reading, so <code>Enter</code>, <code>J</code> and <code>K</code> usually show a message at once.
+<code>:MailLog</code> records how long each server round trip took, and whether it
+reused a connection.</p>
 <h2>The folder list</h2>
 <table>
 <tr><td><code>Enter</code> / <code>l</code></td><td>open the folder, account inbox or draft under the cursor</td></tr>
@@ -281,6 +318,7 @@ send from another of your accounts.</p>
 <li>*"refused mep's return address"*: the client was made as a /Web application/; make a <i>Desktop app</i> client instead.</li>
 <li>*"the sign-in has expired or was revoked"*: run <code>:MailSignIn</code>. With Google, see the 7-day note under the Browser sign-in section.</li>
 <li>*Google says "access blocked" or "not a test user"*: add your address as a test user (step 3 of the Google setup), or publish the app.</li>
+<li><b>Everything takes seconds</b>: if <code>:MailLog</code> says <i>server throttling</i>, the server is holding back each command (Gmail does this to an account it considers busy). Folders and messages you opened (or that were fetched ahead) before still show at once from the saved copy.</li>
 <li>*"cannot connect"* / *"timed out"*: no network, or a firewall blocking the mail ports (993 for IMAP, 465/587 for SMTP).</li>
 <li>*"Mail needs curl on PATH"*: install curl. It is preinstalled on macOS, Windows 10+ and nearly every Linux.</li>
 <li><b>Not sent</b>: the draft stays open with what you wrote, and the notification says what the server answered.</li>

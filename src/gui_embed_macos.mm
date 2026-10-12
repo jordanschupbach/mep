@@ -43,7 +43,9 @@
 //
 // Needs the Accessibility permission for mep -- or, for a mep started
 // from a terminal, for that terminal: macOS attributes a command-line
-// program's requests to the app that launched it.
+// program's requests to the app that launched it (its "responsible"
+// app, named in Usable()'s message). mep.app is a signed launcher that
+// keeps mep as its child for this reason (scripts/macos-app-launcher.c).
 
 #include "gui_embed.h"
 
@@ -65,7 +67,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 #include <functional>
+#include <libproc.h>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -236,31 +240,55 @@ Snapshot SnapshotOf(CGImageRef image) {
     return s;
 }
 
+// The app macOS checks this process's permissions against: the bundle
+// (or terminal) that started it -- "" when unknown. Read through the
+// responsibility SPI, looked up at run time since it is not public.
+std::string ResponsibleApp() {
+    using Fn = pid_t (*)(pid_t);
+    static Fn fn = reinterpret_cast<Fn>(dlsym(RTLD_DEFAULT, "responsibility_get_pid_responsible_for_pid"));
+    if (!fn) return "";
+    pid_t pid = fn(getpid());
+    if (pid <= 0) return "";
+    char path[PROC_PIDPATHINFO_MAXSIZE] = {};
+    if (proc_pidpath(pid, path, sizeof path) <= 0) return "";
+    std::string p = path;
+    // .../Name.app/Contents/MacOS/exe -> .../Name.app
+    size_t at = p.rfind(".app/Contents/MacOS/");
+    return at == std::string::npos ? p : p.substr(0, at + 4);
+}
+
 class MacWindow;
 
 class MacBackend final : public Backend {
 public:
-    explicit MacBackend(NSWindow *host) : host_(host), self_pid_(getpid()) {
-        // The system's own prompt for the Accessibility permission, once,
-        // the first time a program is to be embedded.
-        NSDictionary *opts = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt : @YES};
-        AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts);
-    }
+    explicit MacBackend(NSWindow *host) : host_(host), self_pid_(getpid()) {}
     ~MacBackend() override {
         if (key_monitor_) [NSEvent removeMonitor:key_monitor_];
+        if (tap_) {
+            CGEventTapEnable(tap_, false);
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), tap_source_, kCFRunLoopCommonModes);
+            CFRelease(tap_source_);
+            CFRelease(tap_);
+        }
     }
 
     std::string Name() const override { return "macos"; }
     bool Usable(std::string *why) const override {
         if (AXIsProcessTrusted()) return true;
-        if (why)
-            *why = "macOS lets mep move another program's window only once it may control the computer: allow it under "
-                   "System Settings > Privacy & Security > Accessibility (mep, or the terminal it was started from), then "
-                   "start mep again";
+        AskForAccessibility();
+        if (why) {
+            std::string app = ResponsibleApp();
+            *why = "macOS lets mep move another program's window only once it may control the computer: allow " +
+                   (app.empty() ? std::string("mep, or the terminal it was started from,") : app) +
+                   " under System Settings > Privacy & Security > Accessibility, then start mep again. If it is "
+                   "already switched on there, the entry is for an older build: remove it with \"-\" and add it again";
+        }
         return false;
     }
-    std::vector<std::pair<std::string, std::string>> ChildEnv() const override { return {}; }
+    std::vector<std::pair<std::string, std::string>> ChildEnv() override { return {}; }
     bool PointerThroughOnly() const override { return true; }
+    std::string WhyNoWindow() const override { return why_no_window_; }
+    void SetReservedChords(std::function<bool(const std::string &, unsigned)> reserved) override { reserved_ = std::move(reserved); }
     void NoteExistingWindows() override {
         known_.clear();
         for (const WindowInfo &w : ListWindows(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID))
@@ -297,13 +325,34 @@ private:
     // The largest ordinary on-screen window `wanted` accepts that is not a
     // dialog, as an Accessibility element. `shared`: see MacWindow.
     std::unique_ptr<EmbeddedWindow> AdoptWhere(const std::function<bool(const WindowInfo &)> &wanted, bool shared);
+    // The system's own prompt for the Accessibility permission, once -- only
+    // when a Mac program's window is actually to be shown (an X11 program
+    // on a private display needs none: CreateLayeredBackend).
+    void AskForAccessibility() const {
+        if (ax_asked_) return;
+        ax_asked_ = true;
+        NSDictionary *opts = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt : @YES};
+        AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)opts);
+    }
+    // While a program has the keyboard: an event tap that keeps mep's own
+    // chords (Ctrl-\, the reserved ones) from it. A tap that may change
+    // events needs the Accessibility permission -- which a window shown
+    // this way has. Without one, a monitor that only watches for Ctrl-\.
+    static CGEventRef OnKey(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *self);
+    bool StartTap();
 
     NSWindow *host_;
     pid_t self_pid_;
     std::set<CGWindowID> known_;
     id key_monitor_ = nil;
+    CFMachPortRef tap_ = nullptr;
+    CFRunLoopSourceRef tap_source_ = nullptr;
+    std::set<int64_t> swallowed_;  // keys whose press was kept from the program: so is their release
+    std::function<bool(const std::string &, unsigned)> reserved_;
     MacWindow *release_target_ = nullptr;
     bool capture_asked_ = false;
+    mutable bool ax_asked_ = false;
+    std::string why_no_window_;
 };
 
 // What a capture in flight writes into: shared with its completion block,
@@ -357,6 +406,11 @@ public:
     }
 
     void MarkReleaseRequest() { release_requested_ = true; }
+    void MarkChord(const std::string &key, unsigned mods) {
+        chord_key_ = key;
+        chord_mods_ = mods;
+        release_requested_ = true;
+    }
 
     bool Alive() override {
         if (dead_) return false;
@@ -460,6 +514,14 @@ public:
         const bool r = release_requested_;
         release_requested_ = false;
         return r;
+    }
+
+    bool TakeReservedChord(std::string *key, unsigned *mods) override {
+        if (chord_key_.empty()) return false;
+        *key = chord_key_;
+        *mods = chord_mods_;
+        chord_key_.clear();
+        return true;
     }
 
     bool RequestClose() override {
@@ -638,10 +700,70 @@ private:
     int last_where_ = -1;
     bool shown_ = false, hidden_ = false, focused_ = false, focus_asked_ = false, clipped_ = false;
     bool dead_ = false, release_requested_ = false;
+    std::string chord_key_;  // a reserved chord kept from the program (TakeReservedChord)
+    unsigned chord_mods_ = 0;
 };
+
+// The key a virtual key code is on a US layout, as SetReservedChords names
+// keys ("" for the rest): mep's own chords are named by position, the way
+// its Cocoa backend reads them.
+std::string KeyName(int64_t code) {
+    static const std::map<int64_t, std::string> kNames = {
+        {0, "a"},  {11, "b"}, {8, "c"},  {2, "d"},  {14, "e"}, {3, "f"},  {5, "g"},  {4, "h"},  {34, "i"},
+        {38, "j"}, {40, "k"}, {37, "l"}, {46, "m"}, {45, "n"}, {31, "o"}, {35, "p"}, {12, "q"}, {15, "r"},
+        {1, "s"},  {17, "t"}, {32, "u"}, {9, "v"},  {13, "w"}, {7, "x"},  {16, "y"}, {6, "z"},  {29, "0"},
+        {18, "1"}, {19, "2"}, {20, "3"}, {21, "4"}, {23, "5"}, {22, "6"}, {26, "7"}, {28, "8"}, {25, "9"},
+        {48, "Tab"}, {36, "CR"}, {76, "CR"}};
+    auto it = kNames.find(code);
+    return it == kNames.end() ? std::string() : it->second;
+}
+
+CGEventRef MacBackend::OnKey(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *self_ptr) {
+    (void)proxy;
+    auto *self = static_cast<MacBackend *>(self_ptr);
+    // Too slow once (mep was busy): the system switched the tap off.
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        if (self->release_target_) CGEventTapEnable(self->tap_, true);
+        return event;
+    }
+    const int64_t code = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+    if (type == kCGEventKeyUp) return self->swallowed_.erase(code) ? nullptr : event;
+    if (type != kCGEventKeyDown || !self->release_target_) return event;
+    const CGEventFlags f = CGEventGetFlags(event);
+    const unsigned mods = ((f & kCGEventFlagMaskShift) ? kModShift : 0u) | ((f & kCGEventFlagMaskControl) ? kModCtrl : 0u) |
+                          ((f & kCGEventFlagMaskAlternate) ? kModAlt : 0u) | ((f & kCGEventFlagMaskCommand) ? kModSuper : 0u);
+    if ((mods & kModCtrl) && code == 42) {  // Ctrl-\ (kVK_ANSI_Backslash)
+        self->swallowed_.insert(code);
+        self->release_target_->MarkReleaseRequest();
+        return nullptr;
+    }
+    const std::string key = KeyName(code);
+    if (key.empty() || !self->reserved_ || !self->reserved_(key, mods)) return event;
+    self->swallowed_.insert(code);
+    self->release_target_->MarkChord(key, mods);
+    Log("kept a chord from the program:", static_cast<CGWindowID>(code), mods);
+    return nullptr;
+}
+
+bool MacBackend::StartTap() {
+    if (tap_) return true;
+    tap_ = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault,
+                            CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp), &MacBackend::OnKey, this);
+    if (!tap_) return false;
+    tap_source_ = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap_, 0);
+    CFRunLoopAddSource(CFRunLoopGetMain(), tap_source_, kCFRunLoopCommonModes);
+    return true;
+}
 
 void MacBackend::WatchReleaseKey(MacWindow *w) {
     release_target_ = w;
+    if (w) swallowed_.clear();
+    if (StartTap()) {
+        // Only on while a program has the keyboard: every key typed
+        // anywhere passes through it.
+        CGEventTapEnable(tap_, w != nullptr);
+        return;
+    }
     if (w && !key_monitor_) {
         MacBackend *self = this;
         key_monitor_ = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown
@@ -726,6 +848,15 @@ std::unique_ptr<EmbeddedWindow> MacBackend::AdoptWhere(const std::function<bool(
         if (w.layer != 0 || w.pid == self_pid_ || w.bounds.size.width < 2 || w.bounds.size.height < 2) continue;
         if (!wanted(w)) continue;
         candidates.push_back(w);
+    }
+    // A Mac program's window (CGWindowList needs no permission to see it),
+    // which mep may not move: asked for the permission now, and the block
+    // says why it stays empty.
+    if (!candidates.empty() && !AXIsProcessTrusted()) {
+        AskForAccessibility();
+        why_no_window_ = "a Mac program: mep can show its window only with the Accessibility permission (System Settings > "
+                         "Privacy & Security > Accessibility); X11 programs need none";
+        return nullptr;
     }
     std::stable_sort(candidates.begin(), candidates.end(), [](const WindowInfo &a, const WindowInfo &b) {
         return a.bounds.size.width * a.bounds.size.height > b.bounds.size.width * b.bounds.size.height;

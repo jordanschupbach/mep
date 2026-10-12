@@ -458,6 +458,30 @@ void TestOAuth() {
     CHECK(em.empty());
     t = mail::ParseTokenResponse("{\"access_token\":\"a\",\"refresh_token\":\"r\",\"id_token\":\"h." + payload + ".s\"}");
     CHECK(t.email == "ada@gmail.com" && t.name == "Ada Lovelace");
+    // Google's per-scope checkboxes: a token without Gmail's scope is caught before IMAP refuses it.
+    t = mail::ParseTokenResponse("{\"access_token\":\"a\",\"scope\":\"openid https://www.googleapis.com/auth/userinfo.email\"}");
+    CHECK(t.scope == "openid https://www.googleapis.com/auth/userinfo.email");
+    CHECK(mail::MissingMailScope(*g, t.scope) == "https://mail.google.com/");
+    CHECK(mail::MissingMailScope(*g, "openid https://mail.google.com/ email").empty());
+    CHECK(mail::MissingMailScope(*g, "").empty());  // not stated: let the server decide
+    CHECK(mail::MissingMailScope(*mail::OAuthProviderForMail("outlook"), "openid").empty());
+    // Prefetched bodies (UID FETCH ... BODY.PEEK[]): the server answers with BODY[] literals.
+    {
+        const std::string raw = "Subject: Hi\r\n\r\nbody\r\n";
+        const std::string stream = "* 3 FETCH (UID 42 BODY[] {" + std::to_string(raw.size()) + "}\r\n" + raw +
+                                   ")\r\n* 4 FETCH (UID 43 FLAGS (\\Seen))\r\nA1 OK done\r\n";
+        const auto bodies = mail::ReadFetchBodies(mail::ParseImapStream(stream));
+        CHECK(bodies.size() == 1 && bodies[0].first == 42 && bodies[0].second == raw);
+    }
+    // An HTML part's inline image keeps its Content-ID (for <img src="cid:...">).
+    {
+        const mail::Message m = mail::ParseMessage(
+            "Subject: x\r\nContent-Type: multipart/related; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/html\r\n\r\n"
+            "<img src=\"cid:logo@x\">\r\n--b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\n"
+            "Content-Transfer-Encoding: base64\r\n\r\naGk=\r\n--b--\r\n");
+        CHECK(m.attachments.size() == 1 && m.attachments[0].content_id == "logo@x" && m.attachments[0].data == "hi");
+        CHECK(m.html.find("cid:logo@x") != std::string::npos);
+    }
     CHECK(mail::MailPresetForOAuth("google") == "gmail" && mail::MailPresetForOAuth("microsoft") == "outlook");
     // A built-in client from the environment (the build's own is empty here).
     CHECK(!mail::HasBuiltinOAuthClient("google"));

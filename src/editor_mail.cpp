@@ -31,6 +31,7 @@
 #include "job.h"
 #include "mail.h"
 #include "mail_crypto.h"
+#include "mail_imap.h"
 #include "mail_net.h"
 #include "mail_ui.h"
 
@@ -38,8 +39,16 @@ namespace {
 
 constexpr int kFirstRow = 0;              // the title lives in the pane header, not the text
 constexpr uint32_t kPageSize = 100;       // messages per load / "load more"
+// Prefetches go out as one command, and a throttling server (Gmail) holds
+// each command back seconds no matter its size: ask for plenty at once.
+constexpr int kPrefetchTop = 25;          // newest messages fetched (unread-safe) once a list loads
+constexpr int kPrefetchBehind = 2;        // ... and around an opened one: this many newer,
+constexpr int kPrefetchAhead = 8;         // ... this many older (J reads on through them)
+constexpr size_t kMsgCacheMax = 40;       // parsed messages kept for instant reopening
+constexpr uint64_t kPrefetchMaxSize = 2u << 20;  // bigger ones are fetched only when opened
 constexpr size_t kSearchLimit = 200;      // newest search hits shown
 constexpr double kAutoRefreshSec = 180.0;  // a visible list re-syncs this often
+constexpr long long kFolderSnapshotMaxAge = 24 * 3600;  // a saved folder list older than this is re-listed
 
 std::string HomeDir() {
     const char *home = std::getenv("HOME");
@@ -212,6 +221,14 @@ std::string FriendlySignInError(const std::string &provider_label, const std::st
     if (has("admin_policy_enforced") || has("org_internal")) {
         return "your organisation's Google admin does not allow this app";
     }
+    if (has("mail access not granted")) {
+        return provider_label + " signed you in but did not give mep your mail -- on the consent page, tick the box "
+                                "\"Read, compose, send, and permanently delete all your email from Gmail\" (or \"Select "
+                                "all\") before clicking Continue. Run :MailSignIn to try again";
+    }
+    if (has("signed in, but the mail server refused") && has("AUTHENTICATIONFAILED")) {
+        return raw + " -- if the consent page had checkboxes, the Gmail one must be ticked; run :MailSignIn to try again";
+    }
     if (has("timed out")) return "no answer from the browser within 5 minutes -- run :MailSignIn to try again";
     return raw;
 }
@@ -284,6 +301,8 @@ const char kHelpText[] =
     "  J / K          next / previous message\n"
     "  r R f dd x a M s U   as in the list\n"
     "  Enter          on an Attach: line -- save it to Downloads and open it\n"
+    "  v              rendered HTML / plain text   i  load remote images\n"
+    "                 (HTML view: j/k scroll, links open in your browser)\n"
     "\n"
     "Composing (a plain text buffer: header lines, a blank line, the body)\n"
     "  :MailSend               send it        :w saves the draft\n"
@@ -318,6 +337,17 @@ struct MailUi {
         m.accounts = mail::LoadAccounts(path, &m.accounts_error);
         for (auto &kv : m.sessions) {
             if (kv.second.account >= static_cast<int>(m.accounts.size())) kv.second.account = 0;
+        }
+        // Folder lists saved last time, so opening a folder needs no LIST
+        // first; one older than a day is refreshed in the background.
+        const long long now = static_cast<long long>(std::time(nullptr));
+        for (const mail::Account &a : m.accounts) {
+            if (m.folders.count(a.id)) continue;
+            std::vector<mail::Folder> folders;
+            long long saved_at = 0;
+            if (!mail::LoadFolderSnapshot(a.email, &folders, &saved_at)) continue;
+            m.folders[a.id] = std::move(folders);
+            if (now - saved_at > kFolderSnapshotMaxAge) m.folders_stale.insert(a.id);
         }
     }
 
@@ -372,6 +402,7 @@ struct MailUi {
     // its pane closed.
     static void ReportError(Editor &e, const std::string &error) {
         if (error.empty() || error == "cancelled") return;
+        MailDebug("error: " + error);
         e.Notify("Mail: " + error, Editor::NotifyLevel::Error);
     }
 
@@ -595,7 +626,7 @@ struct MailUi {
             if (unread > 0) rest += ", " + std::to_string(unread) + " unread";
         }
         std::string status = s.status;
-        if (s.loading > 0 && status.empty()) status = "loading...";
+        if (s.loading > 0 && status.empty()) status = s.list.loaded ? "syncing..." : "loading...";
         SetTitle(s, title, rest, status);
         if (!s.list.loaded && s.loading > 0) {
             o.Add("  Loading...");
@@ -699,8 +730,9 @@ struct MailUi {
             o.Span(0, 7, "MailHeader", true);
             o.Span(9, static_cast<int>(line.size()), "MailNew");
         }
-        if (m.text_from_html) {
-            o.Add("         (shown as text from the message's HTML)");
+        if (!m.html.empty()) {
+            o.Add(m.text_from_html ? "         (text from the message's HTML -- v shows it rendered)"
+                                   : "         (v shows the HTML version)");
             o.Line("MailDate");
         }
         o.Add(std::string(40, '-'));
@@ -756,6 +788,340 @@ struct MailUi {
             p->cursor.row = std::clamp(p->cursor.row, 0, static_cast<int>(b.lines.size()) - 1);
             if (!message) p->cursor.col = 0;
         }
+        SyncHtmlView(e, s);
+    }
+
+    // --- The message as rendered HTML ----------------------------------------
+    //
+    // A message with an HTML part shows it through mep's own HTML engine:
+    // the mail buffer gets an HtmlSession (DrawPane then draws the page
+    // instead of the text lines, and keys go through HandleHtmlInput, which
+    // hands the mail keys back to MailHtmlKey). Nothing in a message runs
+    // or reaches out on its own: no scripts, no stylesheets or frames, no
+    // local files, and remote images only once asked for (`i`) -- they are
+    // how senders learn that, when and where a message was read.
+
+    static bool ShowsHtml(const MailSession &s) {
+        return s.view == MailSession::View::Message && s.msg_loaded && s.msg_html && !s.msg.html.empty();
+    }
+
+    static std::string EscapeHtml(const std::string &in) {
+        std::string out;
+        for (char c : in) {
+            switch (c) {
+                case '&': out += "&amp;"; break;
+                case '<': out += "&lt;"; break;
+                case '>': out += "&gt;"; break;
+                case '"': out += "&quot;"; break;
+                default: out.push_back(c);
+            }
+        }
+        return out;
+    }
+
+    static const std::string &EnsureImageDir(MailSession &s) {
+        if (s.msg_image_dir.empty()) {
+            const std::string dir = mail::MailDataDir();
+            if (!dir.empty()) {
+                s.msg_image_dir = dir + "/tmp/msg-" + RandomToken(12);
+                std::error_code ec;
+                std::filesystem::create_directories(s.msg_image_dir, ec);
+            }
+        }
+        return s.msg_image_dir;
+    }
+
+    // A new message (or none): its images go, and remote ones are blocked again.
+    static void ForgetMessageImages(MailSession &s) {
+        if (!s.msg_image_dir.empty()) {
+            std::error_code ec;
+            std::filesystem::remove_all(s.msg_image_dir, ec);
+        }
+        s.msg_image_dir.clear();
+        s.msg_images = false;
+        s.msg_remote_urls.clear();
+        s.msg_remote_files.clear();
+    }
+
+    static void DropHtmlView(Editor &e, MailSession &s) {
+        s.msg_html_key.clear();
+        if (e.htmldocs_.erase(s.buffer_id) > 0 && e.CurPane().buffer_id == s.buffer_id) e.SyncModeToActivePaneBuffer();
+    }
+
+    static void SyncHtmlView(Editor &e, MailSession &s) {
+        if (!ShowsHtml(s)) {
+            DropHtmlView(e, s);
+            return;
+        }
+        const std::string key = std::to_string(s.msg_uid) + (s.msg_images ? "+" + std::to_string(s.msg_remote_files.size()) : "");
+        if (s.msg_html_key == key && e.IsHtmlBuffer(s.buffer_id)) return;
+        const bool same_message = s.msg_html_key.rfind(std::to_string(s.msg_uid), 0) == 0 && e.IsHtmlBuffer(s.buffer_id);
+        const bool existed = e.IsHtmlBuffer(s.buffer_id);
+        HtmlSession &sess = e.htmldocs_[s.buffer_id];
+        const float keep_scroll = same_message ? sess.scroll_y : 0.0f;
+        const bool theme = existed ? sess.theme_colors : false;
+        sess.buffer_id = s.buffer_id;
+        sess.js.reset();
+        sess.focused_field = nullptr;
+        sess.hover_node = nullptr;
+        sess.omnibar_active = false;
+        sess.history.clear();
+        sess.doc = HtmlDoc();
+        sess.chrome = false;
+        sess.css_px_images = true;
+        // The page's own colours, as the sender laid it out (Ctrl-R: the editor's).
+        sess.theme_colors = theme;
+        sess.origin = sess.source = "mail-message-" + std::to_string(s.buffer_id);
+        BuildMessagePage(s, sess.doc);
+        sess.styled_media_w = -1.0f;
+        sess.scroll_y = keep_scroll;
+        s.msg_html_key = key;
+        if (e.CurPane().buffer_id == s.buffer_id) e.SyncModeToActivePaneBuffer();
+    }
+
+    static DomNode *FindBody(DomNode *root, DomNode **html_out) {
+        *html_out = nullptr;
+        if (!root) return nullptr;
+        for (const auto &c : root->children) {
+            if (c->tag != "html") continue;
+            *html_out = c.get();
+            for (const auto &g : c->children) {
+                if (g->tag == "body") return g.get();
+            }
+            return c.get();
+        }
+        return root;
+    }
+
+    static void BuildMessagePage(MailSession &s, HtmlDoc &doc) {
+        const mail::Message &m = s.msg;
+        doc.extract_math = false;  // a '$' in mail is money, not TeX
+        ParseHtml(m.html, doc, /*full_document=*/true, /*compute_styles=*/false);
+        // cid: images (multipart/related) are the message's own parts.
+        std::unordered_map<std::string, std::string> cid_files;
+        std::vector<bool> shown_inline(m.attachments.size(), false);
+        for (size_t i = 0; i < m.attachments.size(); i++) {
+            const mail::Attachment &a = m.attachments[i];
+            if (a.content_id.empty() || a.content_type.rfind("image/", 0) != 0) continue;
+            if (m.html.find("cid:" + a.content_id) == std::string::npos) continue;
+            const std::string &dir = EnsureImageDir(s);
+            if (dir.empty()) break;
+            const std::string path = dir + "/cid-" + std::to_string(i);
+            std::error_code ec;
+            if (!std::filesystem::exists(path, ec)) {
+                std::ofstream out(path, std::ios::binary);
+                out.write(a.data.data(), static_cast<std::streamsize>(a.data.size()));
+            }
+            cid_files[a.content_id] = path;
+            shown_inline[i] = true;
+        }
+        std::vector<std::string> remote;
+        int blocked = 0;
+        // false: drop the node.
+        auto fix_image = [&](DomNode *img) {
+            img->attrs.erase("srcset");
+            auto it = img->attrs.find("src");
+            const std::string src = it == img->attrs.end() ? std::string() : mail::Trim(it->second);
+            const std::string lower = mail::Lower(src);
+            if (lower.rfind("data:image/", 0) == 0) return true;
+            std::string file;
+            if (lower.rfind("cid:", 0) == 0) {
+                auto f = cid_files.find(mail::UrlDecodeComponent(src.substr(4)));
+                if (f != cid_files.end()) file = f->second;
+            } else if (lower.rfind("http://", 0) == 0 || lower.rfind("https://", 0) == 0) {
+                if (std::find(remote.begin(), remote.end(), src) == remote.end()) remote.push_back(src);
+                if (s.msg_images) {
+                    auto f = s.msg_remote_files.find(src);
+                    if (f != s.msg_remote_files.end()) file = f->second;
+                } else {
+                    blocked++;
+                }
+            }
+            if (!file.empty()) {
+                img->attrs["src"] = file;
+                return true;
+            }
+            // Not shown: a described image keeps its "[image: alt]"; a bare one
+            // (spacers, tracking pixels) goes. Never a local path.
+            img->attrs["src"] = "";
+            auto alt = img->attrs.find("alt");
+            return alt != img->attrs.end() && !mail::Trim(alt->second).empty();
+        };
+        std::function<void(DomNode *)> walk = [&](DomNode *n) {
+            auto &ch = n->children;
+            for (size_t i = 0; i < ch.size();) {
+                DomNode *c = ch[i].get();
+                if (c->type == DomNodeType::Element) {
+                    static const char *const kDropped[] = {"script", "iframe", "frame", "frameset", "object", "embed",
+                                                           "applet", "link", "meta", "base", "audio", "video", "source"};
+                    bool drop = false;
+                    for (const char *t : kDropped) drop = drop || c->tag == t;
+                    if (!drop && c->tag == "img") drop = !fix_image(c);
+                    if (drop) {
+                        ch.erase(ch.begin() + static_cast<std::ptrdiff_t>(i));
+                        continue;
+                    }
+                }
+                walk(c);
+                i++;
+            }
+        };
+        if (doc.root) walk(doc.root.get());
+        doc.scripts.clear();
+        s.msg_remote_urls = remote;
+
+        // The header: who, when, attachments -- as the text view shows them.
+        auto list = [](const std::vector<mail::Address> &as) {
+            std::string out;
+            for (const mail::Address &a : as) out += (out.empty() ? "" : ", ") + a.Display();
+            return out;
+        };
+        std::string h =
+            "<div style=\"background:#f1f3f4;color:#202124;padding:10px 14px;margin:0 0 14px 0;"
+            "border-bottom:1px solid #dadce0\">";
+        h += "<div style=\"font-size:1.3em;font-weight:bold;margin-bottom:6px\">" +
+             EscapeHtml(m.subject.empty() ? std::string("(no subject)") : m.subject) + "</div>";
+        auto row = [&](const char *label, const std::string &value) {
+            if (value.empty()) return;
+            h += "<div><b>" + std::string(label) + "</b> " + EscapeHtml(value) + "</div>";
+        };
+        row("From:", list(m.from));
+        if (!m.reply_to.empty() && list(m.reply_to) != list(m.from)) row("Reply-To:", list(m.reply_to));
+        row("To:", list(m.to));
+        row("Cc:", list(m.cc));
+        row("Date:", m.date >= 0 ? mail::FormatLongDate(m.date) : m.date_raw);
+        std::string atts;
+        for (size_t i = 0; i < m.attachments.size(); i++) {
+            if (shown_inline[i]) continue;
+            const mail::Attachment &a = m.attachments[i];
+            atts += std::string(atts.empty() ? "" : " &nbsp; ") + "<a href=\"mep-mail:attachment/" + std::to_string(i) +
+                    "\">" + EscapeHtml(a.filename) + "</a> (" + EscapeHtml(mail::HumanSize(a.data.size())) + ")";
+        }
+        if (!atts.empty()) h += "<div><b>Attachments:</b> " + atts + "</div>";
+        h += "<div style=\"color:#5f6368;font-size:0.9em;margin-top:6px\">";
+        if (blocked > 0) {
+            h += std::to_string(blocked) + " remote image" + (blocked == 1 ? "" : "s") +
+                 " blocked \xe2\x80\x94 <a href=\"mep-mail:images\">load them</a> (i) &nbsp;\xc2\xb7&nbsp; ";
+        }
+        h += "v: plain text &nbsp;\xc2\xb7&nbsp; Ctrl-R: editor colours &nbsp;\xc2\xb7&nbsp; links open in your browser</div>";
+        h += "</div>";
+        HtmlDoc header;
+        header.extract_math = false;
+        ParseHtml(h, header, /*full_document=*/false, /*compute_styles=*/false);
+        DomNode *html_el = nullptr;
+        DomNode *body = FindBody(doc.root.get(), &html_el);
+        // Beside the message's <body>, not inside it: the sender's body
+        // styles (a display:flex body, its background, padding) are the
+        // message's own and must not take the header in -- as a second
+        // child of a flex body it turned the whole message into one line.
+        DomNode *holder = body && body != html_el && body->parent ? body->parent : body;
+        if (holder && header.root) {
+            auto &dst = holder->children;
+            auto at = dst.begin();
+            if (holder != body) {
+                while (at != dst.end() && at->get() != body) ++at;
+            }
+            std::vector<std::unique_ptr<DomNode>> moved = std::move(header.root->children);
+            for (auto &n : moved) n->parent = holder;
+            dst.insert(at, std::make_move_iterator(moved.begin()), std::make_move_iterator(moved.end()));
+        }
+        // A white page under the message's own styles (which come later, and win).
+        if (DomNode *top = html_el ? html_el : doc.root.get()) {
+            auto style = std::make_unique<DomNode>();
+            style->type = DomNodeType::Element;
+            style->tag = "style";
+            style->parent = top;
+            auto text = std::make_unique<DomNode>();
+            text->type = DomNodeType::Text;
+            text->text = "html, body { background: #ffffff; color: #202124; } body { padding: 0 16px 16px 16px; }";
+            text->parent = style.get();
+            style->children.push_back(std::move(text));
+            top->children.insert(top->children.begin(), std::move(style));
+        }
+        ComputeStyles(doc);
+    }
+
+    static void ToggleHtml(Editor &e, MailSession &s) {
+        if (s.msg.html.empty()) {
+            e.SetStatusMessage("Mail: this message has no HTML version");
+            return;
+        }
+        s.msg_html = !s.msg_html;
+        Render(e, s);
+        SetCursorRow(e, s, 0);
+        e.SetStatusMessage(s.msg_html ? "Mail: showing the HTML (v: text)" : "Mail: showing text (v: HTML)");
+    }
+
+    // `i`: the message's remote images, fetched now (in the background).
+    static void LoadRemoteImages(Editor &e, MailSession &s) {
+        if (s.view != MailSession::View::Message || !s.msg_loaded || s.msg.html.empty()) return;
+        s.msg_html = true;
+        if (s.msg_images) return;
+        s.msg_images = true;
+        if (s.msg_remote_urls.empty()) {
+            Render(e, s);
+            e.SetStatusMessage("Mail: this message has no remote images");
+            return;
+        }
+        const std::string &dir = EnsureImageDir(s);
+        if (dir.empty()) return;
+        std::vector<std::pair<std::string, std::string>> files;
+        for (size_t i = 0; i < s.msg_remote_urls.size() && i < 200; i++) {
+            files.emplace_back(s.msg_remote_urls[i], dir + "/remote-" + std::to_string(i));
+        }
+        e.SetStatusMessage("Mail: loading " + Plural(files.size(), "image") + "...");
+        auto got = std::make_shared<std::vector<std::pair<std::string, std::string>>>();
+        const uint32_t uid = s.msg_uid;
+        Editor *ed = &e;
+        Spawn(
+            e, s.buffer_id, "images",
+            [files, got](const std::atomic<bool> &cancel) { *got = mail::DownloadFiles(files, &cancel); },
+            [ed, got, uid, total = files.size()](MailSession *sp) {
+                if (!sp || sp->msg_uid != uid || !sp->msg_images) return;
+                for (const auto &f : *got) sp->msg_remote_files[f.first] = f.second;
+                ed->SetStatusMessage("Mail: loaded " + std::to_string(got->size()) + " of " + Plural(total, "image"));
+                Render(*ed, *sp);
+            });
+        Render(e, s);
+    }
+
+    static bool HtmlKey(Editor &e, int cp) {
+        MailSession *sp = Session(e, e.CurPane().buffer_id);
+        if (!sp || sp->view != MailSession::View::Message) return false;
+        MailSession &s = *sp;
+        switch (cp) {
+            case 'v': ToggleHtml(e, s); return true;
+            case 'i': LoadRemoteImages(e, s); return true;
+            case 'o': return true;  // no address bar here
+            default: break;
+        }
+        if (s.pending_d || (cp > 0 && cp < 128 && std::strchr("q-JKrRfdxaMsUcm?", cp))) return HandleKey(e, cp, 1);
+        return false;
+    }
+
+    static bool FollowLink(Editor &e, int buffer_id, const std::string &href) {
+        MailSession *sp = Session(e, buffer_id);
+        if (!sp) return false;
+        MailSession &s = *sp;
+        const std::string lower = mail::Lower(href);
+        if (lower.rfind("mep-mail:attachment/", 0) == 0) {
+            SaveAttachment(e, s, std::atoi(href.c_str() + 20));
+        } else if (lower == "mep-mail:images") {
+            LoadRemoteImages(e, s);
+        } else if (lower.rfind("mailto:", 0) == 0) {
+            mail::Draft d;
+            std::string to = href.substr(7);
+            to = to.substr(0, to.find('?'));
+            d.to = mail::UrlDecodeComponent(to);
+            const mail::Account *a = AccountAt(e, s.account);
+            if (a && !a->signature.empty()) d.body = "\n" + Signature(*a);
+            Compose(e, s.account, d, {}, false);
+        } else if (lower.rfind("http://", 0) == 0 || lower.rfind("https://", 0) == 0) {
+            std::string err;
+            if (mail::OpenInBrowser(href, &err)) e.SetStatusMessage("Mail: opened " + href + " in your browser");
+            else e.Notify("Mail: " + err, Editor::NotifyLevel::Error);
+        }
+        return true;  // anything else: not followed
     }
 
     // --- Loading ---------------------------------------------------------
@@ -765,8 +1131,11 @@ struct MailUi {
                   [](const mail::MessageSummary &a, const mail::MessageSummary &b) { return a.uid > b.uid; });
     }
 
-    static void CacheFolders(Editor &e, const std::string &account_id, std::vector<mail::Folder> folders) {
-        if (!folders.empty()) e.mail_.folders[account_id] = std::move(folders);
+    static void CacheFolders(Editor &e, const mail::Account &account, std::vector<mail::Folder> folders) {
+        if (folders.empty()) return;
+        mail::SaveFolderSnapshot(account.email, folders);
+        e.mail_.folders_stale.erase(account.id);
+        e.mail_.folders[account.id] = std::move(folders);
     }
 
     static void LoadFolders(Editor &e, MailSession &s, int account) {
@@ -792,7 +1161,7 @@ struct MailUi {
                         ed->Notify("Mail (" + cred->account.email + "): " + res->second, Editor::NotifyLevel::Error);
                     }
                 } else {
-                    CacheFolders(*ed, cred->account.id, res->first);
+                    CacheFolders(*ed, cred->account, res->first);
                 }
                 if (!sp) return;
                 sp->loading = std::max(0, sp->loading - 1);
@@ -819,6 +1188,40 @@ struct MailUi {
         std::vector<mail::Folder> folders;
     };
 
+    static uint32_t MinSeq(const std::vector<mail::MessageSummary> &msgs) {
+        uint32_t min_seq = 0;
+        for (const mail::MessageSummary &m : msgs) {
+            if (min_seq == 0 || (m.seq > 0 && m.seq < min_seq)) min_seq = m.seq;
+        }
+        return min_seq;
+    }
+
+    // The message under the list cursor (0 = none), and putting the cursor
+    // back on it once the list was replaced.
+    static uint32_t CursorUid(Editor &e, const MailSession &s) {
+        const int row = CursorRow(e, s);
+        if (s.view != MailSession::View::List || row < 0 || row >= static_cast<int>(s.rows.size())) return 0;
+        const MailRow &r = s.rows[static_cast<size_t>(row)];
+        if (r.kind != MailRow::Kind::Message || r.index < 0 || r.index >= static_cast<int>(s.list.msgs.size())) return 0;
+        return s.list.msgs[static_cast<size_t>(r.index)].uid;
+    }
+
+    static void DropRemoved(MailSession &s) {
+        auto &msgs = s.list.msgs;
+        const auto &gone = s.list.removed_uids;
+        if (gone.empty()) return;
+        msgs.erase(std::remove_if(msgs.begin(), msgs.end(),
+                                  [&gone](const mail::MessageSummary &m) { return gone.count(m.uid) > 0; }),
+                   msgs.end());
+    }
+
+    static void KeepCursorOn(Editor &e, const MailSession &s, uint32_t uid) {
+        if (s.view != MailSession::View::List || uid == 0) return;
+        for (size_t i = 0; i < s.list.msgs.size(); i++) {
+            if (s.list.msgs[i].uid == uid) SetCursorRow(e, s, kFirstRow + static_cast<int>(i));
+        }
+    }
+
     static void OpenMailbox(Editor &e, MailSession &s, int account, const std::string &mailbox) {
         if (s.view == MailSession::View::Folders) s.folders_row = CursorRow(e, s);
         s.view = MailSession::View::List;
@@ -831,33 +1234,98 @@ struct MailUi {
         s.status.clear();
         s.loading++;
         s.list_row = kFirstRow;
+        auto cred = MakeCred(e, account);
+        const std::string count_key = mail::Lower(cred->account.email) + "|" + mailbox;
+        // Last time's list shows at once; the server's replaces it below.
+        if (mail::LoadListSnapshot(count_key, &s.list.msgs, &s.list.exists) && !s.list.msgs.empty()) {
+            SortNewestFirst(&s.list.msgs);
+            s.list.min_seq = MinSeq(s.list.msgs);
+            s.list.loaded = true;
+            s.list.from_snapshot = true;
+        } else {
+            s.list.msgs.clear();
+        }
         Render(e, s);
         SetCursorRow(e, s, kFirstRow);
+        if (s.list.from_snapshot) PrefetchMessages(e, s, 0, kPrefetchTop);
         const int gen = s.generation;
-        auto cred = MakeCred(e, account);
         auto res = std::make_shared<ListResult>();
-        const bool need_folders = cred && e.mail_.folders.find(cred->account.id) == e.mail_.folders.end();
+        const bool need_folders = e.mail_.folders.find(cred->account.id) == e.mail_.folders.end() ||
+                                  e.mail_.folders_stale.count(cred->account.id) > 0;
         Editor *ed = &e;
+        // The folder list (for Trash/Archive and the folders view) loads
+        // alongside, over its own connection, instead of ahead of the list.
+        if (need_folders) {
+            auto fcred = MakeCred(e, account);
+            auto folders = std::make_shared<std::vector<mail::Folder>>();
+            auto ferr = std::make_shared<std::string>();
+            Spawn(
+                e, s.buffer_id, "folders",
+                [fcred, folders, ferr](const std::atomic<bool> &cancel) {
+                    if (!fcred->Ensure(&cancel)) return;
+                    mail::ListFolders(fcred->Session(), folders.get(), ferr.get(), &cancel);
+                },
+                [ed, fcred, folders](MailSession *) { CacheFolders(*ed, fcred->account, *folders); });
+        }
         Spawn(
             e, s.buffer_id, "open " + mailbox,
-            [cred, res, mailbox, need_folders](const std::atomic<bool> &cancel) {
+            [cred, res, mailbox, count_key](const std::atomic<bool> &cancel) {
                 if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
                 }
                 const mail::Session sess = cred->Session();
-                if (need_folders) {
-                    std::string ignored;
-                    mail::ListFolders(sess, &res->folders, &ignored, &cancel);
+                auto page_from = [](uint32_t exists) { return exists > kPageSize ? exists - kPageSize + 1 : 1; };
+                // The last count seen lets the SELECT and the FETCH share one
+                // connection (one login, one SELECT); the SELECT's own EXISTS
+                // then says whether the guessed range needs topping up.
+                const uint32_t hint = mail::LoadMailboxCount(count_key);
+                bool done = false;
+                if (hint > 0) {
+                    const uint32_t from = page_from(hint);
+                    std::string err;
+                    if (mail::FetchSummaries(sess, mailbox, std::to_string(from) + ":*", false, &res->msgs, &err, &cancel,
+                                             &res->sel) &&
+                        res->sel.ok) {
+                        done = true;
+                        const uint32_t exists = res->sel.exists;
+                        const uint32_t want = exists == 0 ? 0 : page_from(exists);
+                        if (exists == 0) {
+                            res->msgs.clear();
+                        } else if (from > exists) {
+                            // Fewer messages than last time: fetch the page afresh.
+                            res->msgs.clear();
+                            done = mail::FetchSummaries(sess, mailbox, std::to_string(want) + ":*", false, &res->msgs,
+                                                        &res->error, &cancel);
+                        } else if (want < from) {
+                            std::vector<mail::MessageSummary> more;
+                            if (mail::FetchSummaries(sess, mailbox, std::to_string(want) + ":" + std::to_string(from - 1),
+                                                     false, &more, &res->error, &cancel)) {
+                                res->msgs.insert(res->msgs.end(), more.begin(), more.end());
+                            }
+                        }
+                    } else if (err == "cancelled") {
+                        res->error = err;
+                        return;
+                    } else {
+                        res->msgs.clear();  // a bad guess (or a hiccup): the two-step way below
+                        MailDebug("open " + mailbox + ": guessed range failed (" + err + "), selecting first");
+                    }
                 }
-                if (!mail::SelectMailbox(sess, mailbox, &res->sel, &res->error, &cancel)) return;
-                if (res->sel.exists == 0) return;
-                const uint32_t from = res->sel.exists > kPageSize ? res->sel.exists - kPageSize + 1 : 1;
-                mail::FetchSummaries(sess, mailbox, std::to_string(from) + ":*", false, &res->msgs, &res->error, &cancel);
+                if (!done) {
+                    if (!mail::SelectMailbox(sess, mailbox, &res->sel, &res->error, &cancel)) return;
+                    if (res->sel.exists > 0) {
+                        mail::FetchSummaries(sess, mailbox, std::to_string(page_from(res->sel.exists)) + ":*", false,
+                                             &res->msgs, &res->error, &cancel);
+                    }
+                }
+                if (res->error.empty() && res->sel.ok) {
+                    mail::SaveMailboxCount(count_key, res->sel.exists);
+                    mail::SaveListSnapshot(count_key, res->msgs, res->sel.exists);
+                }
             },
             [ed, cred, res, gen](MailSession *sp) {
                 AfterCred(*ed, *cred, res->error);
-                CacheFolders(*ed, cred->account.id, res->folders);
                 if (!sp) return;
                 sp->loading = std::max(0, sp->loading - 1);
                 if (sp->generation != gen) return;
@@ -868,16 +1336,18 @@ struct MailUi {
                     Render(*ed, *sp);
                     return;
                 }
+                const uint32_t cursor_uid = CursorUid(*ed, *sp);
                 sp->list.msgs = std::move(res->msgs);
+                DropRemoved(*sp);
                 SortNewestFirst(&sp->list.msgs);
                 sp->list.exists = res->sel.exists;
-                sp->list.min_seq = 0;
-                for (const mail::MessageSummary &m : sp->list.msgs) {
-                    if (sp->list.min_seq == 0 || (m.seq > 0 && m.seq < sp->list.min_seq)) sp->list.min_seq = m.seq;
-                }
+                sp->list.min_seq = MinSeq(sp->list.msgs);
                 sp->list.loaded = true;
+                sp->list.from_snapshot = false;
                 sp->last_refresh = gfx::GetTime();
                 Render(*ed, *sp);
+                KeepCursorOn(*ed, *sp, cursor_uid);
+                PrefetchMessages(*ed, *sp, 0, kPrefetchTop);
             });
     }
 
@@ -915,8 +1385,17 @@ struct MailUi {
                     res->error = cred->error;
                     return;
                 }
-                mail::FetchSummaries(cred->Session(), mailbox, std::to_string(min_uid) + ":*", true, &res->msgs,
-                                     &res->error, &cancel);
+                if (!mail::FetchSummaries(cred->Session(), mailbox, std::to_string(min_uid) + ":*", true, &res->msgs,
+                                          &res->error, &cancel)) {
+                    return;
+                }
+                // "n:*" also answers with the newest message when none is >= n.
+                res->msgs.erase(std::remove_if(res->msgs.begin(), res->msgs.end(),
+                                               [min_uid](const mail::MessageSummary &m) { return m.uid < min_uid; }),
+                                res->msgs.end());
+                uint32_t max_seq = 0;
+                for (const mail::MessageSummary &m : res->msgs) max_seq = std::max(max_seq, m.seq);
+                mail::SaveListSnapshot(mail::Lower(cred->account.email) + "|" + mailbox, res->msgs, max_seq);
             },
             [ed, cred, res, gen, min_uid, max_uid, quiet](MailSession *sp) {
                 AfterCred(*ed, *cred, res->error);
@@ -929,13 +1408,7 @@ struct MailUi {
                     Render(*ed, *sp);
                     return;
                 }
-                // Keep the cursor on the same message across the update.
-                uint32_t cursor_uid = 0;
-                const int row = CursorRow(*ed, *sp);
-                if (sp->view == MailSession::View::List && row >= 0 && row < static_cast<int>(sp->rows.size()) &&
-                    sp->rows[static_cast<size_t>(row)].kind == MailRow::Kind::Message) {
-                    cursor_uid = sp->list.msgs[static_cast<size_t>(sp->rows[static_cast<size_t>(row)].index)].uid;
-                }
+                const uint32_t cursor_uid = CursorUid(*ed, *sp);
                 std::vector<mail::MessageSummary> fresh;
                 size_t arrived = 0;
                 uint32_t max_seq = 0;
@@ -947,18 +1420,13 @@ struct MailUi {
                 }
                 SortNewestFirst(&fresh);
                 sp->list.msgs = std::move(fresh);
+                DropRemoved(*sp);
                 if (max_seq > 0) sp->list.exists = max_seq;
-                sp->list.min_seq = 0;
-                for (const mail::MessageSummary &m : sp->list.msgs) {
-                    if (sp->list.min_seq == 0 || (m.seq > 0 && m.seq < sp->list.min_seq)) sp->list.min_seq = m.seq;
-                }
+                sp->list.min_seq = MinSeq(sp->list.msgs);
+                sp->list.from_snapshot = false;
                 sp->status.clear();
                 Render(*ed, *sp);
-                if (sp->view == MailSession::View::List && cursor_uid != 0) {
-                    for (size_t i = 0; i < sp->list.msgs.size(); i++) {
-                        if (sp->list.msgs[i].uid == cursor_uid) SetCursorRow(*ed, *sp, kFirstRow + static_cast<int>(i));
-                    }
-                }
+                KeepCursorOn(*ed, *sp, cursor_uid);
                 if (arrived > 0) {
                     ed->Notify("Mail: " + Plural(arrived, "new message") + " in " +
                                    FolderDisplayName(*ed, sp->account, sp->list.mailbox),
@@ -968,6 +1436,11 @@ struct MailUi {
     }
 
     static void LoadMore(Editor &e, MailSession &s) {
+        if (s.list.from_snapshot) {
+            // Sequence numbers in the saved copy may be out of date.
+            e.Notify("Mail: still syncing this folder -- try again in a moment", Editor::NotifyLevel::Info);
+            return;
+        }
         if (!s.list.search.empty() || s.list.min_seq <= 1) {
             e.Notify("Mail: no older messages", Editor::NotifyLevel::Info);
             return;
@@ -1071,6 +1544,136 @@ struct MailUi {
         mail::Message msg;
     };
 
+    // --- Message cache and prefetch ---------------------------------------
+
+    static std::string MsgKey(Editor &e, const MailSession &s, uint32_t uid) {
+        const mail::Account *a = AccountAt(e, s.account);
+        return (a ? a->id : std::string()) + "|" + s.list.mailbox + "|" + std::to_string(uid);
+    }
+
+    static std::shared_ptr<const mail::Message> CachedMessage(Editor &e, const std::string &key) {
+        auto &c = e.mail_.msg_cache;
+        for (auto it = c.begin(); it != c.end(); ++it) {
+            if (it->key != key) continue;
+            c.splice(c.begin(), c, it);  // most recently used first
+            return c.front().msg;
+        }
+        return nullptr;
+    }
+
+    // The message at `uid` from memory, else from the disk cache (then kept
+    // in memory too); null when neither has it.
+    static std::shared_ptr<const mail::Message> StoredMessage(Editor &e, const MailSession &s, uint32_t uid) {
+        const std::string key = MsgKey(e, s, uid);
+        if (auto hit = CachedMessage(e, key)) return hit;
+        const int idx = IndexOfUid(s, uid);
+        const std::string mid = idx >= 0 ? s.list.msgs[static_cast<size_t>(idx)].message_id : std::string();
+        std::string raw;
+        if (!mail::LoadCachedMessage(key, mid, &raw)) return nullptr;
+        CacheMessage(e, key, mail::ParseMessage(raw));
+        return CachedMessage(e, key);
+    }
+
+    static void CacheMessage(Editor &e, const std::string &key, mail::Message msg) {
+        auto &c = e.mail_.msg_cache;
+        c.remove_if([&](const MailCachedMessage &m) { return m.key == key; });
+        c.push_front({key, std::make_shared<const mail::Message>(std::move(msg))});
+        while (c.size() > kMsgCacheMax) c.pop_back();
+    }
+
+    // Fetches list rows [first, first+count) that are not cached yet, in
+    // the background over one connection, with BODY.PEEK[] so they stay
+    // unread; opening one of them is then instant.
+    static void PrefetchMessages(Editor &e, MailSession &s, int first, int count) {
+        std::vector<uint32_t> uids;
+        std::vector<std::string> keys;
+        for (int i = std::max(0, first); i < first + count && i < static_cast<int>(s.list.msgs.size()); i++) {
+            const mail::MessageSummary &m = s.list.msgs[static_cast<size_t>(i)];
+            if (m.size > kPrefetchMaxSize) continue;
+            const std::string key = MsgKey(e, s, m.uid);
+            if (e.mail_.prefetching.count(key)) continue;
+            bool cached = false;
+            for (const MailCachedMessage &c : e.mail_.msg_cache) cached = cached || c.key == key;
+            if (cached || mail::HaveCachedMessage(key)) continue;
+            uids.push_back(m.uid);
+            keys.push_back(key);
+        }
+        if (uids.empty()) return;
+        for (const std::string &k : keys) e.mail_.prefetching.insert(k);
+        auto cred = MakeCred(e, s.account);
+        struct Fetched {
+            std::vector<std::pair<uint32_t, mail::Message>> msgs;
+            std::string error;
+        };
+        auto res = std::make_shared<Fetched>();
+        const std::string mailbox = s.list.mailbox;
+        const std::string prefix = MsgKey(e, s, 0);
+        const std::string base = prefix.substr(0, prefix.size() - 1);  // "account|mailbox|"
+        Editor *ed = &e;
+        Spawn(
+            e, s.buffer_id, "prefetch",
+            [cred, res, mailbox, uids, base](const std::atomic<bool> &cancel) {
+                if (!cred->Ensure(&cancel)) return;
+                std::vector<std::pair<uint32_t, std::string>> raws;
+                if (!mail::PeekMessages(cred->Session(), mailbox, uids, &raws, &res->error, &cancel)) return;
+                for (auto &r : raws) {
+                    res->msgs.emplace_back(r.first, mail::ParseMessage(r.second));
+                    mail::SaveCachedMessage(base + std::to_string(r.first), res->msgs.back().second.message_id, r.second);
+                }
+            },
+            [ed, cred, res, keys, base](MailSession *sp) {
+                AfterCred(*ed, *cred, res->error);
+                for (const std::string &k : keys) ed->mail_.prefetching.erase(k);
+                if (!res->error.empty() && res->error != "cancelled") MailDebug("prefetch: " + res->error);
+                for (auto &m : res->msgs) CacheMessage(*ed, base + std::to_string(m.first), std::move(m.second));
+                // A message opened while it was on its way shows now.
+                if (sp && sp->view == MailSession::View::Message && !sp->msg_loaded) {
+                    const std::string waiting = base + std::to_string(sp->msg_uid);
+                    if (auto hit = StoredMessage(*ed, *sp, sp->msg_uid)) {
+                        ShowOpenedMessage(*ed, *sp, *hit);
+                    } else if (std::find(keys.begin(), keys.end(), waiting) != keys.end()) {
+                        sp->loading = std::max(0, sp->loading - 1);
+                        OpenMessage(*ed, *sp, IndexOfUid(*sp, sp->msg_uid));  // the prefetch missed it: fetch it alone
+                    }
+                }
+            });
+    }
+
+    // The open message is `msg`: shows it, and marks it read (here and on
+    // the server) when it came from the cache rather than a reading fetch.
+    static void ShowOpenedMessage(Editor &e, MailSession &s, const mail::Message &msg, bool fetched_read = false) {
+        s.msg = msg;
+        s.msg_loaded = true;
+        s.loading = std::max(0, s.loading - 1);
+        s.generation++;  // a slower fetch of the same message is now moot
+        const int idx = IndexOfUid(s, s.msg_uid);
+        if (idx >= 0) {
+            mail::MessageSummary &m = s.list.msgs[static_cast<size_t>(idx)];
+            if (!m.Seen() && !fetched_read) {
+                auto cred = MakeCred(e, s.account);
+                auto err = std::make_shared<std::string>();
+                const std::vector<uint32_t> uids = {s.msg_uid};
+                const std::string mailbox = s.list.mailbox;
+                Editor *ed = &e;
+                Spawn(
+                    e, s.buffer_id, "mark read",
+                    [cred, err, uids, mailbox](const std::atomic<bool> &cancel) {
+                        if (!cred->Ensure(&cancel)) return;
+                        mail::StoreFlags(cred->Session(), mailbox, uids, "+FLAGS", "(\\Seen)", err.get(), &cancel);
+                    },
+                    [ed, cred, err](MailSession *) {
+                        AfterCred(*ed, *cred, *err);
+                        ReportError(*ed, *err);
+                    });
+            }
+            m.SetFlag("\\Seen", true);  // reading marks it read
+        }
+        Render(e, s);
+        SetCursorRow(e, s, 0);
+        // J/K next: the neighbours, before they are asked for.
+        if (idx >= 0) PrefetchMessages(e, s, idx - kPrefetchBehind, kPrefetchBehind + 1 + kPrefetchAhead);
+    }
+
     static void OpenMessage(Editor &e, MailSession &s, int index) {
         if (index < 0 || index >= static_cast<int>(s.list.msgs.size())) return;
         if (s.view == MailSession::View::List) s.list_row = CursorRow(e, s);
@@ -1080,21 +1683,29 @@ struct MailUi {
         s.msg_uid = s.list.msgs[static_cast<size_t>(index)].uid;
         s.msg = mail::Message{};
         s.msg_loaded = false;
+        ForgetMessageImages(s);
         s.status.clear();
         s.generation++;
         s.loading++;
         Render(e, s);
         SetCursorRow(e, s, 0);
         if (Pane *p = PaneShowing(e, s.buffer_id)) p->scroll_row = 0;
-        const int gen = s.generation;
         const uint32_t uid = s.msg_uid;
+        const std::string key = MsgKey(e, s, uid);
+        if (auto hit = StoredMessage(e, s, uid)) {
+            ShowOpenedMessage(e, s, *hit);
+            return;
+        }
+        // On its way already (a prefetch): PrefetchMessages shows it on arrival.
+        if (e.mail_.prefetching.count(key)) return;
+        const int gen = s.generation;
         auto cred = MakeCred(e, s.account);
         auto res = std::make_shared<MessageResult>();
         const std::string mailbox = s.list.mailbox;
         Editor *ed = &e;
         Spawn(
             e, s.buffer_id, "message",
-            [cred, res, mailbox, uid](const std::atomic<bool> &cancel) {
+            [cred, res, mailbox, uid, key](const std::atomic<bool> &cancel) {
                 if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
@@ -1106,29 +1717,27 @@ struct MailUi {
                     return;
                 }
                 res->msg = mail::ParseMessage(raw);
+                mail::SaveCachedMessage(key, res->msg.message_id, raw);
             },
-            [ed, cred, res, gen, uid](MailSession *sp) {
+            [ed, cred, res, gen, key](MailSession *sp) {
                 AfterCred(*ed, *cred, res->error);
+                if (res->error.empty()) CacheMessage(*ed, key, res->msg);
                 if (!sp) return;
-                sp->loading = std::max(0, sp->loading - 1);
                 if (sp->generation != gen) return;
                 if (!res->error.empty()) {
+                    sp->loading = std::max(0, sp->loading - 1);
                     sp->status = res->error;
                     ReportError(*ed, res->error);
                     Render(*ed, *sp);
                     return;
                 }
-                sp->msg = std::move(res->msg);
-                sp->msg_loaded = true;
-                const int idx = IndexOfUid(*sp, uid);
-                if (idx >= 0) sp->list.msgs[static_cast<size_t>(idx)].SetFlag("\\Seen", true);  // reading marks it read
-                Render(*ed, *sp);
-                SetCursorRow(*ed, *sp, 0);
+                ShowOpenedMessage(*ed, *sp, res->msg, /*fetched_read=*/true);
             });
     }
 
     static void BackToList(Editor &e, MailSession &s) {
         s.view = MailSession::View::List;
+        ForgetMessageImages(s);
         s.pending_d = false;
         s.status.clear();
         // An in-flight message load is now moot.
@@ -1186,6 +1795,7 @@ struct MailUi {
         const int first = sorted.empty() ? 0 : sorted.back();
         for (int i : sorted) {
             removed.push_back(s.list.msgs[static_cast<size_t>(i)]);
+            s.list.removed_uids.insert(removed.back().uid);
             s.list.msgs.erase(s.list.msgs.begin() + i);
         }
         if (s.list.exists >= removed.size()) s.list.exists -= static_cast<uint32_t>(removed.size());
@@ -1205,6 +1815,7 @@ struct MailUi {
 
     static void RestoreRemoved(Editor &e, MailSession &s, std::vector<mail::MessageSummary> removed) {
         for (mail::MessageSummary &m : removed) {
+            s.list.removed_uids.erase(m.uid);
             if (IndexOfUid(s, m.uid) < 0) s.list.msgs.push_back(std::move(m));
         }
         SortNewestFirst(&s.list.msgs);
@@ -1283,7 +1894,7 @@ struct MailUi {
             },
             [ed, cred, res, removed, role, n](MailSession *sp) mutable {
                 AfterCred(*ed, *cred, res->error);
-                CacheFolders(*ed, cred->account.id, res->folders);
+                CacheFolders(*ed, cred->account, res->folders);
                 if (!res->error.empty()) {
                     ReportError(*ed, res->error);
                     if (sp) RestoreRemoved(*ed, *sp, std::move(removed));
@@ -1386,14 +1997,20 @@ struct MailUi {
             then(s, s.msg, uid);
             return;
         }
+        if (auto hit = StoredMessage(e, s, uid)) {
+            const mail::Message copy = *hit;  // `then` may re-render, and the cache may evict
+            then(s, copy, uid);
+            return;
+        }
         e.SetStatusMessage("Mail: fetching the message...");
         auto cred = MakeCred(e, s.account);
         auto res = std::make_shared<MessageResult>();
         const std::string mailbox = s.list.mailbox;
+        const std::string key = MsgKey(e, s, uid);
         Editor *ed = &e;
         Spawn(
             e, s.buffer_id, "fetch",
-            [cred, res, mailbox, uid](const std::atomic<bool> &cancel) {
+            [cred, res, mailbox, uid, key](const std::atomic<bool> &cancel) {
                 if (!cred->Ensure(&cancel)) {
                     res->error = cred->error;
                     return;
@@ -1401,6 +2018,7 @@ struct MailUi {
                 std::string raw;
                 if (mail::FetchMessage(cred->Session(), mailbox, uid, &raw, &res->error, &cancel)) {
                     res->msg = mail::ParseMessage(raw);
+                    if (!raw.empty()) mail::SaveCachedMessage(key, res->msg.message_id, raw);
                 }
             },
             [ed, cred, res, uid, then](MailSession *sp) {
@@ -1699,6 +2317,8 @@ struct MailUi {
                     case 'M': StartMovePick(e, s, 1); return true;
                     case 's': ToggleFlag(e, s, 1, "\\Flagged"); return true;
                     case 'U': ToggleFlag(e, s, 1, "\\Seen"); return true;
+                    case 'v': ToggleHtml(e, s); return true;
+                    case 'i': LoadRemoteImages(e, s); return true;
                     default: return IsEditingKey(cp);
                 }
         }
@@ -2023,7 +2643,7 @@ struct MailUi {
             mail::Account acct = res->account;
             UpsertAccount(*ed, acct);
             ed->mail_.secrets[acct.id] = res->refresh_token;
-            CacheFolders(*ed, acct.id, res->folders);
+            CacheFolders(*ed, acct, res->folders);
             if (!res->warning.empty()) ed->Notify("Mail: " + res->warning, Editor::NotifyLevel::Warn);
             ed->Notify("Mail: signed in to " + acct.email + " (" + Plural(res->folders.size(), "folder") + ")",
                        Editor::NotifyLevel::Info);
@@ -2049,6 +2669,11 @@ struct MailUi {
                 mail::OAuthTokens t = mail::OAuthExchangeCode(p, client, code, verifier, redirect, &cancel);
                 if (!t.error.empty()) {
                     res->error = p.label + " sign-in failed: " + t.error;
+                    return 0;
+                }
+                MailDebug("granted scopes: " + (t.scope.empty() ? std::string("(not stated)") : t.scope));
+                if (!mail::MissingMailScope(p, t.scope).empty()) {
+                    res->error = "mail access not granted";
                     return 0;
                 }
                 // Whoever actually signed in is the account (it may differ from
@@ -2295,6 +2920,7 @@ struct MailUi {
         e.mail_.secrets[a.id] = st->secret;
         e.mail_.folders.erase(a.id);
         e.Notify("Mail: checking " + a.email + "...", Editor::NotifyLevel::Info);
+        MailDebug("password setup for " + a.email + " (" + a.imap_host + "), saving to \"" + a.secret + "\"");
         auto res = std::make_shared<std::pair<std::vector<mail::Folder>, std::string>>();
         auto stored_err = std::make_shared<std::string>();
         auto stored = std::make_shared<bool>(false);
@@ -2303,6 +2929,8 @@ struct MailUi {
         const mail::Account acct = a;
         const std::string secret = st->secret;
         cb.on_exit = [ed, acct, res, stored, stored_err](int) {
+            MailDebug("password setup finished: " + (res->second.empty() ? std::string("ok") : res->second) +
+                      (*stored ? "" : " (not saved: " + *stored_err + ")"));
             if (!*stored) {
                 ed->Notify("Mail: the password was not saved (" + *stored_err + ") -- it is kept until mep exits",
                            Editor::NotifyLevel::Warn);
@@ -2314,7 +2942,7 @@ struct MailUi {
                 mep::NoteActivity();
                 return;
             }
-            CacheFolders(*ed, acct.id, res->first);
+            CacheFolders(*ed, acct, res->first);
             ed->Notify("Mail: " + acct.email + " is set up (" + Plural(res->first.size(), "folder") + ")",
                        Editor::NotifyLevel::Info);
             const int buf = WorkspaceMailBuffer(*ed);
@@ -2348,6 +2976,13 @@ std::string Editor::MailPaneTitle(int buffer_id) const {
 }
 
 bool Editor::MailHandleKey(int cp, int count) { return MailUi::HandleKey(*this, cp, count); }
+
+bool Editor::MailHtmlKey(int cp) { return MailUi::HtmlKey(*this, cp); }
+
+bool Editor::MailFollowLink(int buffer_id, const std::string &href) {
+    if (!IsMailBuffer(buffer_id)) return false;
+    return MailUi::FollowLink(*this, buffer_id, href);
+}
 
 bool Editor::MailActivate() {
     MailSession *s = MailUi::Session(*this, CurPane().buffer_id);
@@ -2754,6 +3389,7 @@ void Editor::MailShowLog() {
 void Editor::MailLock() {
     mail::VaultLock();
     mail::ForgetAllAccessTokens();
+    mail::CloseImapConnections();
     for (auto &kv : mail_.secrets) mail::Wipe(&kv.second);
     mail_.secrets.clear();
     SetStatusMessage("Mail: saved passwords forgotten for now" +
@@ -2779,5 +3415,7 @@ void Editor::MailTeardown(int buffer_id) {
     auto it = mail_.sessions.find(buffer_id);
     if (it == mail_.sessions.end()) return;
     for (int job : it->second.jobs) JobManager::Instance().Kill(job);
+    MailUi::ForgetMessageImages(it->second);
+    htmldocs_.erase(buffer_id);
     mail_.sessions.erase(it);
 }

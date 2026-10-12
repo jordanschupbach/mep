@@ -2,6 +2,7 @@
 
 #include "json.h"
 #include "mail_crypto.h"
+#include "mail_imap.h"
 #if defined(__APPLE__)
 #include "mail_keychain_macos.h"
 #endif
@@ -11,6 +12,7 @@
 #include "platform_compat.h"
 #include "persist.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -524,6 +526,308 @@ bool WritePrivateFile(const std::string &path, const std::string &data) {
 
 }  // namespace
 
+namespace {
+std::mutex g_counts_mutex;
+
+Json ReadCounts(const std::string &path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return Json::Object();
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    Json root;
+    if (!Json::Parse(ss.str(), &root) || !root.is_object()) return Json::Object();
+    return root;
+}
+}  // namespace
+
+std::vector<std::pair<std::string, std::string>> DownloadFiles(const std::vector<std::pair<std::string, std::string>> &files,
+                                                               const std::atomic<bool> *cancel) {
+    std::vector<std::pair<std::string, std::string>> got;
+    if (files.empty()) return got;
+    // URLs come from a message: curl may speak only http(s), and the
+    // config is built with the same quoting every other secret uses.
+    std::string config = "proto = \"=http,https\"\nproto-redir = \"=http,https\"\nlocation\nmax-redirs = 5\n"
+                         "max-filesize = 10000000\nconnect-timeout = 10\nmax-time = 30\nfail\n";
+    for (const auto &f : files) {
+        config += "url = " + CurlConfigQuote(f.first) + "\n";
+        config += "output = " + CurlConfigQuote(f.second) + "\n";
+    }
+    RunProcess({CurlProgram(), "-sS", "--parallel", "--parallel-max", "8", "-K", "-"}, config, 120000, cancel);
+    for (const auto &f : files) {
+        std::error_code ec;
+        if (std::filesystem::file_size(f.second, ec) > 0 && !ec) got.push_back(f);
+    }
+    return got;
+}
+
+uint32_t LoadMailboxCount(const std::string &key) {
+    const std::string dir = MailDataDir();
+    if (dir.empty()) return 0;
+    std::lock_guard<std::mutex> lock(g_counts_mutex);
+    const double n = ReadCounts(dir + "/counts.json").get(key).as_double(0.0);
+    return n > 0 ? static_cast<uint32_t>(n) : 0;
+}
+
+void SaveMailboxCount(const std::string &key, uint32_t count) {
+    const std::string dir = MailDataDir();
+    if (dir.empty()) return;
+    std::lock_guard<std::mutex> lock(g_counts_mutex);
+    const std::string path = dir + "/counts.json";
+    Json root = ReadCounts(path);
+    if (root.get(key).as_double(-1.0) == static_cast<double>(count)) return;
+    root[key] = Json(static_cast<double>(count));
+    WritePrivateFile(path, root.dump() + "\n");
+}
+
+namespace {
+
+std::mutex g_snapshot_mutex;
+
+// MailDataDir()/cache/<readable key>-<hash>.json (the hash keeps names that
+// SafeFilename folds together apart); "" without a data dir.
+std::string SnapshotPath(const std::string &kind, const std::string &key) {
+    const std::string dir = MailDataDir();
+    if (dir.empty()) return "";
+    MakeDir(dir + "/cache");
+    uint64_t h = 1469598103934665603ull;  // FNV-1a: stable across runs
+    for (char c : key) h = (h ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
+    return dir + "/cache/" + kind + "-" + SafeFilename(Lower(key)) + "-" + hex + ".json";
+}
+
+bool ReadSnapshot(const std::string &path, Json *root) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return Json::Parse(ss.str(), root) && root->is_object() && root->get("v").as_int(0) == 1;
+}
+
+Json StringsJson(const std::vector<std::string> &v) {
+    Json a = Json::Array();
+    for (const std::string &s : v) a.push_back(s);
+    return a;
+}
+
+std::vector<std::string> JsonStrings(const Json &a) {
+    std::vector<std::string> v;
+    for (const Json &s : a.items()) v.push_back(s.as_string());
+    return v;
+}
+
+Json AddressesJson(const std::vector<Address> &addrs) {
+    Json a = Json::Array();
+    for (const Address &ad : addrs) {
+        Json pair = Json::Array();
+        pair.push_back(ad.name);
+        pair.push_back(ad.email);
+        a.push_back(std::move(pair));
+    }
+    return a;
+}
+
+std::vector<Address> JsonAddresses(const Json &a) {
+    std::vector<Address> v;
+    for (const Json &pair : a.items()) {
+        if (pair.items().size() != 2) continue;
+        v.push_back({pair.items()[0].as_string(), pair.items()[1].as_string()});
+    }
+    return v;
+}
+
+}  // namespace
+
+bool LoadListSnapshot(const std::string &key, std::vector<MessageSummary> *msgs, uint32_t *exists) {
+    const std::string path = SnapshotPath("list", key);
+    if (path.empty()) return false;
+    Json root;
+    {
+        std::lock_guard<std::mutex> lock(g_snapshot_mutex);
+        if (!ReadSnapshot(path, &root) || root.get("key").as_string() != key) return false;
+    }
+    msgs->clear();
+    for (const Json &j : root.get("msgs").items()) {
+        MessageSummary m;
+        m.uid = static_cast<uint32_t>(j.get("uid").as_double(0));
+        m.seq = static_cast<uint32_t>(j.get("seq").as_double(0));
+        m.flags = JsonStrings(j.get("flags"));
+        m.internal_date = static_cast<long long>(j.get("idate").as_double(-1));
+        m.size = static_cast<uint64_t>(j.get("size").as_double(0));
+        m.subject = j.get("subject").as_string();
+        m.from = JsonAddresses(j.get("from"));
+        m.to = JsonAddresses(j.get("to"));
+        m.date = static_cast<long long>(j.get("date").as_double(-1));
+        m.message_id = j.get("mid").as_string();
+        m.has_attachment = j.get("att").as_bool(false);
+        if (m.uid != 0) msgs->push_back(std::move(m));
+    }
+    *exists = static_cast<uint32_t>(root.get("exists").as_double(0));
+    return true;
+}
+
+void SaveListSnapshot(const std::string &key, const std::vector<MessageSummary> &msgs, uint32_t exists) {
+    const std::string path = SnapshotPath("list", key);
+    if (path.empty()) return;
+    Json root = Json::Object();
+    root["v"] = 1;
+    root["key"] = key;
+    root["exists"] = Json(static_cast<double>(exists));
+    Json arr = Json::Array();
+    for (const MessageSummary &m : msgs) {
+        Json j = Json::Object();
+        j["uid"] = Json(static_cast<double>(m.uid));
+        j["seq"] = Json(static_cast<double>(m.seq));
+        j["flags"] = StringsJson(m.flags);
+        j["idate"] = m.internal_date;
+        j["size"] = Json(static_cast<double>(m.size));
+        j["subject"] = m.subject;
+        j["from"] = AddressesJson(m.from);
+        j["to"] = AddressesJson(m.to);
+        j["date"] = m.date;
+        j["mid"] = m.message_id;
+        j["att"] = m.has_attachment;
+        arr.push_back(std::move(j));
+    }
+    root["msgs"] = std::move(arr);
+    std::lock_guard<std::mutex> lock(g_snapshot_mutex);
+    WritePrivateFile(path, root.dump() + "\n");
+}
+
+bool LoadFolderSnapshot(const std::string &email, std::vector<Folder> *folders, long long *saved_at) {
+    const std::string path = SnapshotPath("folders", Lower(email));
+    if (path.empty()) return false;
+    Json root;
+    {
+        std::lock_guard<std::mutex> lock(g_snapshot_mutex);
+        if (!ReadSnapshot(path, &root) || root.get("key").as_string() != Lower(email)) return false;
+    }
+    folders->clear();
+    for (const Json &j : root.get("folders").items()) {
+        Folder f;
+        f.raw = j.get("raw").as_string();
+        f.name = j.get("name").as_string();
+        const std::string delim = j.get("delim").as_string("/");
+        f.delim = delim.empty() ? '/' : delim[0];
+        f.attrs = JsonStrings(j.get("attrs"));
+        f.selectable = j.get("selectable").as_bool(true);
+        f.role = j.get("role").as_string();
+        if (!f.raw.empty()) folders->push_back(std::move(f));
+    }
+    *saved_at = static_cast<long long>(root.get("saved_at").as_double(0));
+    return !folders->empty();
+}
+
+void SaveFolderSnapshot(const std::string &email, const std::vector<Folder> &folders) {
+    const std::string path = SnapshotPath("folders", Lower(email));
+    if (path.empty() || folders.empty()) return;
+    Json root = Json::Object();
+    root["v"] = 1;
+    root["key"] = Lower(email);
+    root["saved_at"] = static_cast<long long>(std::time(nullptr));
+    Json arr = Json::Array();
+    for (const Folder &f : folders) {
+        Json j = Json::Object();
+        j["raw"] = f.raw;
+        j["name"] = f.name;
+        j["delim"] = std::string(1, f.delim);
+        j["attrs"] = StringsJson(f.attrs);
+        j["selectable"] = f.selectable;
+        j["role"] = f.role;
+        arr.push_back(std::move(j));
+    }
+    root["folders"] = std::move(arr);
+    std::lock_guard<std::mutex> lock(g_snapshot_mutex);
+    WritePrivateFile(path, root.dump() + "\n");
+}
+
+namespace {
+
+constexpr uintmax_t kMessageCacheMaxBytes = 256u << 20;  // trimmed (least recently used first) past this
+std::mutex g_message_cache_mutex;
+int g_message_saves = 0;  // trims run every so many saves, not on each
+
+// MailDataDir()/cache/messages/<hash>.eml; "" without a data dir. The
+// file's first two lines are the key and the Message-ID it was saved for.
+std::string MessageCachePath(const std::string &key, bool create_dir) {
+    const std::string dir = MailDataDir();
+    if (dir.empty()) return "";
+    if (create_dir) {
+        MakeDir(dir + "/cache");
+        MakeDir(dir + "/cache/messages");
+    }
+    uint64_t h = 1469598103934665603ull;  // FNV-1a: stable across runs
+    for (char c : key) h = (h ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(h));
+    return dir + "/cache/messages/" + hex + ".eml";
+}
+
+// Drops the least recently used files until the directory fits the cap.
+void TrimMessageCache(const std::string &dir) {
+    std::error_code ec;
+    std::vector<std::pair<std::filesystem::file_time_type, std::pair<std::string, uintmax_t>>> files;
+    uintmax_t total = 0;
+    for (const auto &ent : std::filesystem::directory_iterator(dir, ec)) {
+        std::error_code e2;
+        const uintmax_t size = ent.file_size(e2);
+        if (e2) continue;
+        const auto when = ent.last_write_time(e2);
+        if (e2) continue;
+        files.push_back({when, {ent.path().string(), size}});
+        total += size;
+    }
+    if (total <= kMessageCacheMaxBytes) return;
+    std::sort(files.begin(), files.end());
+    for (const auto &f : files) {
+        if (total <= kMessageCacheMaxBytes * 3 / 4) break;  // some slack, so the next saves do not trim again
+        std::filesystem::remove(f.second.first, ec);
+        total -= f.second.second;
+    }
+}
+
+}  // namespace
+
+bool HaveCachedMessage(const std::string &key) {
+    const std::string path = MessageCachePath(key, false);
+    std::error_code ec;
+    return !path.empty() && std::filesystem::exists(path, ec);
+}
+
+bool LoadCachedMessage(const std::string &key, const std::string &message_id, std::string *raw) {
+    const std::string path = MessageCachePath(key, false);
+    if (path.empty()) return false;
+    std::string data;
+    {
+        std::lock_guard<std::mutex> lock(g_message_cache_mutex);
+        std::ifstream in(path, std::ios::binary);
+        if (!in) return false;
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        data = ss.str();
+        std::error_code ec;
+        std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now(), ec);  // recently used
+    }
+    const size_t nl1 = data.find('\n');
+    const size_t nl2 = nl1 == std::string::npos ? std::string::npos : data.find('\n', nl1 + 1);
+    if (nl2 == std::string::npos || data.compare(0, nl1, key) != 0) return false;
+    // A different Message-ID: the UID now names another message (the
+    // mailbox's UIDVALIDITY changed), so this copy is no good.
+    const std::string saved_id = data.substr(nl1 + 1, nl2 - nl1 - 1);
+    if (!message_id.empty() && !saved_id.empty() && saved_id != message_id) return false;
+    raw->assign(data, nl2 + 1, std::string::npos);
+    return !raw->empty();
+}
+
+void SaveCachedMessage(const std::string &key, const std::string &message_id, const std::string &raw) {
+    if (raw.empty() || key.find('\n') != std::string::npos || message_id.find('\n') != std::string::npos) return;
+    const std::string path = MessageCachePath(key, true);
+    if (path.empty()) return;
+    std::lock_guard<std::mutex> lock(g_message_cache_mutex);
+    WritePrivateFile(path, key + "\n" + message_id + "\n" + raw);
+    if (g_message_saves++ % 32 == 0) TrimMessageCache(path.substr(0, path.rfind('/')));
+}
+
 bool LoadSavedOAuthClient(const std::string &provider_id, OAuthClient *out) {
     std::ifstream in(OAuthClientsPath(), std::ios::binary);
     if (!in) return false;
@@ -820,8 +1124,32 @@ namespace {
 
 std::string KeychainLabel(const Account &a) { return "mep mail: " + a.email; }
 
+// What this process already read from (or wrote to) the Keychain, so only
+// the first read can ask -- the rest of the session's connections, each a
+// worker resolving the secret, reuse it. g_keychain_mutex also serializes
+// whole reads: workers starting together wait for the one dialog instead
+// of each showing their own.
+std::mutex g_keychain_mutex;
+std::map<std::string, std::string> g_keychain_cache;
+std::map<std::string, std::chrono::steady_clock::time_point> g_keychain_denied;
+
+void CacheKeychainSecret(const Account &a, const std::string &secret) {
+    std::string &slot = g_keychain_cache[Lower(a.email)];
+    Wipe(&slot);
+    slot = secret;
+    g_keychain_denied.erase(Lower(a.email));
+}
+
+void ForgetKeychainSecret(const Account &a) {
+    std::lock_guard<std::mutex> lock(g_keychain_mutex);
+    auto it = g_keychain_cache.find(Lower(a.email));
+    if (it == g_keychain_cache.end()) return;
+    Wipe(&it->second);
+    g_keychain_cache.erase(it);
+}
+
 // Replaces any existing item (one only mep can read once rewritten).
-bool MacKeychainWrite(const Account &a, const std::string &secret, std::string *error, bool interactive = true) {
+bool MacKeychainWriteLocked(const Account &a, const std::string &secret, std::string *error, bool interactive) {
     using keychain::Status;
     Status del = keychain::Delete(kService, a.email, false);
     if (del == Status::Denied) {
@@ -839,11 +1167,27 @@ bool MacKeychainWrite(const Account &a, const std::string &secret, std::string *
                                       : "the Keychain refused to save the password";
         return false;
     }
+    CacheKeychainSecret(a, secret);
     return true;
+}
+
+bool MacKeychainWrite(const Account &a, const std::string &secret, std::string *error, bool interactive = true) {
+    std::lock_guard<std::mutex> lock(g_keychain_mutex);
+    return MacKeychainWriteLocked(a, secret, error, interactive);
 }
 
 std::string MacKeychainRead(const Account &a, std::string *error) {
     using keychain::Status;
+    std::lock_guard<std::mutex> lock(g_keychain_mutex);
+    const std::string key = Lower(a.email);
+    auto cached = g_keychain_cache.find(key);
+    if (cached != g_keychain_cache.end()) return cached->second;
+    auto denied = g_keychain_denied.find(key);
+    if (denied != g_keychain_denied.end() && std::chrono::steady_clock::now() - denied->second < std::chrono::seconds(30)) {
+        // Just refused: the workers that queued behind that dialog don't each reopen it.
+        *error = "access to the Keychain item for " + a.email + " was not allowed";
+        return "";
+    }
     std::string secret;
     bool ours = false;
     Status st = keychain::Read(kService, a.email, false, &secret, &ours);
@@ -851,25 +1195,37 @@ std::string MacKeychainRead(const Account &a, std::string *error) {
         if (!ours) {
             // Readable but not marked as mep's own: re-create it so it trusts mep alone.
             std::string ignored;
-            MacKeychainWrite(a, secret, &ignored, false);
+            MacKeychainWriteLocked(a, secret, &ignored, false);
         }
+        CacheKeychainSecret(a, secret);
         return secret;
     }
     if (st == Status::Denied) {
-        // An item the `security` command made (older versions of mep): read it
-        // once that way, then make it mep's own -- after which `security`, like
-        // every other program, has to ask.
-        ProcResult p = RunProcess({"security", "find-generic-password", "-s", kService, "-a", a.email, "-w"}, "", 30000,
-                                  nullptr);
-        std::string legacy = FirstLine(p.out);
-        if (p.exit_code == 0 && !legacy.empty()) {
-            std::string ignored;
-            MacKeychainWrite(a, legacy, &ignored, true);
-            return legacy;
+        // Attributes need no permission: they say who made the item.
+        bool marked = false;
+        if (keychain::Probe(kService, a.email, &marked) == Status::Ok && !marked) {
+            // An item the `security` command made (older versions of mep): read it
+            // once that way, then make it mep's own -- after which `security`, like
+            // every other program, has to ask.
+            ProcResult p = RunProcess({"security", "find-generic-password", "-s", kService, "-a", a.email, "-w"}, "",
+                                      30000, nullptr);
+            std::string legacy = FirstLine(p.out);
+            if (p.exit_code == 0 && !legacy.empty()) {
+                std::string ignored;
+                MacKeychainWriteLocked(a, legacy, &ignored, true);
+                CacheKeychainSecret(a, legacy);
+                return legacy;
+            }
         }
-        // Made by an earlier build of mep: macOS asks ("Always Allow" remembers this build).
+        // Made by another build of mep (an ad-hoc signed binary is a new program
+        // to macOS after every rebuild or install): one dialog, then cached for
+        // the session. "Always Allow" lets this build read it from now on.
         st = keychain::Read(kService, a.email, true, &secret, &ours);
-        if (st == Status::Ok) return secret;
+        if (st == Status::Ok) {
+            CacheKeychainSecret(a, secret);
+            return secret;
+        }
+        if (st == Status::Denied) g_keychain_denied[key] = std::chrono::steady_clock::now();
         *error = st == Status::Denied ? "access to the Keychain item for " + a.email + " was not allowed"
                                       : "the Keychain could not be read";
         return "";
@@ -1004,6 +1360,7 @@ void ForgetSecret(const Account &a) {
     if (!IsPlainEmail(a.email)) return;
     if (a.secret != "keychain") return;
 #if defined(__APPLE__)
+    ForgetKeychainSecret(a);
     if (mail::keychain::Delete(kService, a.email, false) == mail::keychain::Status::Denied) {
         RunProcess({"security", "delete-generic-password", "-s", kService, "-a", a.email}, "", 30000, nullptr);
     }
@@ -1104,6 +1461,9 @@ ImapResult RunImap(const Session &s, const std::vector<ImapStep> &steps, bool tr
         r.ok = true;
         return r;
     }
+    // A pooled connection of mep's own first (mail_imap.h); curl otherwise.
+    if (RunImapNative(s, steps, traced, cancel, timeout_ms, &r)) return r;
+    r = ImapResult{};
     std::string config;
     for (size_t i = 0; i < steps.size(); i++) {
         const ImapStep &st = steps[i];
@@ -1121,16 +1481,38 @@ ImapResult RunImap(const Session &s, const std::vector<ImapStep> &steps, bool tr
         argv.push_back("--trace");
         argv.push_back("-");
     }
+    const auto started = std::chrono::steady_clock::now();
     ProcResult p = RunProcess(argv, config, timeout_ms, cancel);
-    if (!p.spawned) {
-        r.error = "could not run curl (is it installed?)";
-        return r;
-    }
     if (traced) {
         r.trace = ParseCurlTrace(p.out);
         r.responses = ParseImapStream(r.trace.received);
     } else {
         r.body = std::move(p.out);
+    }
+    {
+        // Timings for :MailLog -- each step's command verb only (never a search term or a secret).
+        std::string what;
+        for (const ImapStep &st : steps) {
+            std::string verb = st.request.empty() ? std::string("FETCH-URL") : st.request.substr(0, st.request.find(' '));
+            if ((verb == "UID" || verb == "uid") && st.request.size() > 4) {
+                verb = "UID " + st.request.substr(4, st.request.find(' ', 4) - 4);
+            }
+            what += (what.empty() ? "" : " + ") + verb;
+        }
+        const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                                    started).count();
+        // Gmail tags its answers [THROTTLED] while it holds each command
+        // of a busy account back (seconds apiece) -- worth knowing when
+        // mail is slow.
+        const size_t bytes = traced ? r.trace.received.size() : r.body.size();
+        const bool throttled = traced && r.trace.received.find("[THROTTLED]") != std::string::npos;
+        MailLog("imap " + what + ": " + std::to_string(ms) + " ms, " + std::to_string(bytes / 1024) + " KB" +
+                (throttled ? ", server throttling" : "") +
+                (p.exit_code != 0 ? ", curl exit " + std::to_string(p.exit_code) : ""));
+    }
+    if (!p.spawned) {
+        r.error = "could not run curl (is it installed?)";
+        return r;
     }
     if (p.cancelled) {
         r.error = "cancelled";
@@ -1143,6 +1525,13 @@ ImapResult RunImap(const Session &s, const std::vector<ImapStep> &steps, bool tr
     if (p.exit_code != 0) {
         r.error = DescribeCurlFailure(p.exit_code, p.err, s.account);
         const std::string server = FirstTaggedFailure(r.responses);
+        if (server.find("Application-specific password required") != std::string::npos) {
+            // Gmail with 2-Step Verification: the account password is never accepted over IMAP.
+            r.error = "login refused for " + s.account.Login() +
+                      " -- Google wants an app password, not your account password: make one at "
+                      "https://myaccount.google.com/apppasswords (or sign in with the browser: :MailSetup google)";
+            return r;
+        }
         if (!server.empty()) r.error += ": " + server;
         return r;
     }
@@ -1171,15 +1560,42 @@ bool SelectMailbox(const Session &s, const std::string &mailbox, SelectInfo *out
     return true;
 }
 
+bool ListFoldersAndSelect(const Session &s, const std::string &mailbox, std::vector<Folder> *folders, SelectInfo *sel,
+                          std::string *error, const std::atomic<bool> *cancel) {
+    ImapResult r = RunImap(s, {{"", "LIST \"\" \"*\"", ""}, {mailbox, "NOOP", ""}}, true, cancel);
+    if (!r.ok) {
+        *error = r.error;
+        return false;
+    }
+    *folders = ReadListResponses(r.responses);
+    *sel = ReadSelect(r.responses);
+    return true;
+}
+
 bool FetchSummaries(const Session &s, const std::string &mailbox, const std::string &set, bool by_uid,
-                    std::vector<MessageSummary> *out, std::string *error, const std::atomic<bool> *cancel) {
+                    std::vector<MessageSummary> *out, std::string *error, const std::atomic<bool> *cancel,
+                    SelectInfo *sel) {
     const std::string cmd = std::string(by_uid ? "UID FETCH " : "FETCH ") + set + " " + SummaryFetchItems();
     ImapResult r = RunImap(s, {{mailbox, cmd, ""}}, true, cancel);
+    if (sel) *sel = ReadSelect(r.responses);
     if (!r.ok) {
         *error = r.error;
         return false;
     }
     *out = ReadFetchSummaries(r.responses);
+    return true;
+}
+
+bool PeekMessages(const Session &s, const std::string &mailbox, const std::vector<uint32_t> &uids,
+                  std::vector<std::pair<uint32_t, std::string>> *out, std::string *error,
+                  const std::atomic<bool> *cancel) {
+    if (uids.empty()) return true;
+    ImapResult r = RunImap(s, {{mailbox, "UID FETCH " + ImapSet(uids) + " (UID BODY.PEEK[])", ""}}, true, cancel);
+    if (!r.ok) {
+        *error = r.error;
+        return false;
+    }
+    *out = ReadFetchBodies(r.responses);
     return true;
 }
 
@@ -1695,6 +2111,11 @@ void ForgetAllAccessTokens() {
     std::lock_guard<std::mutex> lock(g_token_mutex);
     for (auto &kv : g_tokens) Wipe(&kv.second.token);
     g_tokens.clear();
+#if defined(__APPLE__)
+    std::lock_guard<std::mutex> keychain_lock(g_keychain_mutex);
+    for (auto &kv : g_keychain_cache) Wipe(&kv.second);
+    g_keychain_cache.clear();
+#endif
 }
 
 }  // namespace mail

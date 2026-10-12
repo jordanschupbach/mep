@@ -92,7 +92,7 @@ public:
 
     std::string Name() const override { return "x11"; }
     bool Usable(std::string *) const override { return true; }
-    std::vector<std::pair<std::string, std::string>> ChildEnv() const override {
+    std::vector<std::pair<std::string, std::string>> ChildEnv() override {
         // The program's window has to be an X window: toolkits that would
         // pick Wayland when it is there are told not to.
         return {{"DISPLAY", display_name_},        {"GDK_BACKEND", "x11"},

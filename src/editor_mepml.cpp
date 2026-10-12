@@ -4152,7 +4152,7 @@ int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::s
             return -1;
         }
     }
-    if (!gui_backend_) gui_backend_ = mep::gui_embed::CreateBackend(native_window_handle_);
+    EnsureGuiBackend();
 
     std::string cwd = ActiveRoot();
     std::filesystem::path doc_file;
@@ -4213,10 +4213,13 @@ bool Editor::MepmlGuiViewOf(int run_id, MepmlGuiView *out) const {
     out->focused = mepml_gui_focus_ == run_id;
     switch (run.app->GetState()) {
         case State::Starting: out->status = "starting " + run.label + " ..."; break;
-        case State::NoWindow:
-            out->status = run.app->LastSnapshot().Empty() ? run.label + " has not opened a window (C-c C-k stops it)"
-                                                          : "its window is closed -- C-c C-k stops " + run.label;
+        case State::NoWindow: {
+            const std::string why = gui_backend_ ? gui_backend_->WhyNoWindow() : std::string();
+            out->status = run.app->LastSnapshot().Empty()
+                              ? run.label + " has not opened a window" + (why.empty() ? "" : " (" + why + ")") + " (C-c C-k stops it)"
+                              : "its window is closed -- C-c C-k stops " + run.label;
             break;
+        }
         case State::Shown: out->status.clear(); break;
         case State::Exited: out->status = run.label + " has ended"; break;
     }
@@ -4227,7 +4230,14 @@ void Editor::MepmlGuiPlace(int run_id, const mep::gui_embed::Rect &full, const m
     auto it = mepml_guis_.find(run_id);
     if (it == mepml_guis_.end()) return;
     it->second.placed = full;
+    it->second.pointer.clip = clip;
+    it->second.pointer.placed_now = true;
     it->second.app->Place(full, clip);
+}
+
+mep::gui_embed::EmbeddedApp *Editor::MepmlGuiAppOf(int run_id) {
+    auto it = mepml_guis_.find(run_id);
+    return it == mepml_guis_.end() ? nullptr : it->second.app.get();
 }
 
 void Editor::MepmlGuisEndFrame() {
@@ -4239,6 +4249,8 @@ void Editor::MepmlGuisEndFrame() {
         if (kv.second.web && kv.second.app->GetState() == mep::gui_embed::EmbeddedApp::State::Shown) web_shown = true;
     gfx::SetKeyboardFocusProxy(web_shown);
     for (auto &kv : mepml_guis_) {
+        kv.second.pointer.visible = kv.second.pointer.placed_now;
+        kv.second.pointer.placed_now = false;
         kv.second.app->EndFrame();
         if (mepml_gui_focus_ == kv.first && kv.second.app->TakeFocusLost()) {
             mepml_gui_focus_ = -1;
@@ -4258,6 +4270,8 @@ void Editor::MepmlGuisTick() {
     int waiting = 0;
     for (const auto &kv : mepml_guis_) waiting += kv.second.app->GetState() == State::Starting ? 1 : 0;
     waiting += ExecAppsWaiting();
+    std::string chord;  // a chord of mep's own the program was kept from (run after the loop)
+    unsigned chord_mods = 0;
     for (auto it = mepml_guis_.begin(); it != mepml_guis_.end();) {
         MepmlGuiRun &run = it->second;
         if (run.buffer_id < 0 || run.buffer_id >= static_cast<int>(buffers_.size())) {
@@ -4291,6 +4305,7 @@ void Editor::MepmlGuisTick() {
             if (lost) {
                 mepml_gui_focus_ = -1;
                 status_message_ = "Back in the document";
+                run.app->TakeReservedChord(&chord, &chord_mods);
             }
         }
         if (run.app->GetState() != State::Exited) {
@@ -4342,6 +4357,7 @@ void Editor::MepmlGuisTick() {
         RemoveTempFiles(run.temp_files);
         it = mepml_guis_.erase(it);
     }
+    if (!chord.empty()) RunReservedChord(chord, chord_mods);
     // The :exec panes share the backend (one Pump, above) and the rule
     // about ownerless windows.
     ExecAppsTick(waiting == 1);

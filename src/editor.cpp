@@ -20747,8 +20747,15 @@ int Editor::ProjectLoad(const std::string &root_arg, bool *restored) {
         // bootstrap project sits pristine (dashboard-eligible) until
         // something opens it for real, so opening *that* one still gets
         // the standard default layout instead of leaving the dashboard up.
-        if (restored && !ProjectIsPristine(projects_[i])) *restored = true;
+        // Opening that pristine bootstrap project is also where its saved
+        // session comes back: a bare `mep` never restores it at startup
+        // (main(), so the dashboard shows), so picking cwd from Projects
+        // has to, the same as opening any other project below.
+        const bool pristine = ProjectIsPristine(projects_[i]);
+        if (restored && !pristine) *restored = true;
         ProjectSwitch(projects_[i].id);
+        if (pristine && RestoreWorkspaces())
+            RestoreWorkspaceState(projects_[i].id, /*keep_primary_tabs=*/false, RestoreLayouts());
         return projects_[i].id;
     }
     Project project;
@@ -21106,6 +21113,10 @@ bool Editor::SaveWorkspaceState(int project_id) {
     if (!session_enabled_) return false;
     const Project *project = FindProject(project_id);
     if (!project) return false;
+    // A pristine project (the cwd bootstrap sitting on the dashboard) has
+    // nothing to save, and writing its empty state would overwrite the
+    // real session that opening it from Projects is about to restore.
+    if (ProjectIsPristine(*project)) return false;
     const std::string path = WorkspaceStateFile(*project);
     if (path.empty()) return false;
     RefreshSavedFoldsFromBuffers(*project);

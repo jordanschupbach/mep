@@ -36,9 +36,11 @@ jobs.</p>
 <tr><td><code>&lt;leader&gt;pp</code></td><td><b>Loaded projects</b></td><td>the projects currently open in mep</td></tr>
 </table>
 <p><b>Projects</b> (<code>:MepProjects</code>, and the <code>p</code> action on the <a href="dashboard.html">start screen</a>) is a
-bookmark list: pick one to open it. The list is nothing but projects --
-managing it is done with the Ctrl keys shown in the footer, so typing to
-filter never has action rows mixed in with the matches:</p>
+bookmark list: pick one to open it. Below the projects are the rows that
+manage the list -- <code>+ Add current directory</code>, <code>+ Add project by path...</code>,
+<code>+ New project...</code> (the project wizard: flake.nix with the packages you
+tick, .envrc, justfile, README, TODO; also <code>:MepNewProject</code>) and
+<code>- Remove a project...</code>. Each also has a Ctrl key, shown in the footer:</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
 <tr><td><code>C-a</code></td><td>add the current directory as a project</td></tr>

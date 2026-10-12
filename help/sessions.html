@@ -26,9 +26,9 @@ tabs, the same split arrangement at the same sizes, the same files open at the
 same cursor positions, your file tree, your terminals. With that on, the
 default layout is only a fallback -- for a workspace with nothing saved, or a
 saved layout that could not be rebuilt -- never applied on top of a layout
-that did come back. This applies to a bare <code>mep</code> too, as long as the
-directory already has a saved session from a previous run -- only a
-directory with no saved session yet shows the dashboard instead.</p>
+that did come back. A bare <code>mep</code> never restores a session -- it always
+shows the dashboard; open the project from Projects (or start with
+<code>--project DIR</code>) to get its saved session back.</p>
 <h1>What is saved</h1>
 <ul>
 <li>the window's size, whether it was maximized, and the interface zoom (see below);</li>

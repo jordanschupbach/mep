@@ -33,9 +33,11 @@ jobs.
 | =<leader>pp=   | *Loaded projects* | the projects currently open in mep    |
 
 *Projects* (=:MepProjects=, and the =p= action on the [[file:dashboard.html][start screen]]) is a
-bookmark list: pick one to open it. The list is nothing but projects --
-managing it is done with the Ctrl keys shown in the footer, so typing to
-filter never has action rows mixed in with the matches:
+bookmark list: pick one to open it. Below the projects are the rows that
+manage the list -- =+ Add current directory=, =+ Add project by path...=,
+=+ New project...= (the project wizard: flake.nix with the packages you
+tick, .envrc, justfile, README, TODO; also =:MepNewProject=) and
+=- Remove a project...=. Each also has a Ctrl key, shown in the footer:
 
 | Key   | Does                                                     |
 |-------+----------------------------------------------------------|

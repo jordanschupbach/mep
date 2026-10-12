@@ -5578,15 +5578,26 @@ const char *kBuiltinFileTree =
     "    items[#items + 1] = {display = label, data = p}\n"
     "  end\n"
     "  local project_count = #items\n"
-    // The list is nothing but projects now -- add/add-by-path/new/remove are
-    // Ctrl-key bindings (mep.picker_set_hint below) rather than four action
-    // rows mixed in among the real entries, which fuzzy-matched against the
-    // query and pushed the actual projects down the list. With no projects
-    // at all the list would be empty, so a single unselectable row says so
-    // and names the binding that fixes it (data '' -> on_select ignores it,
-    // preview_project clears the pane).
-    "  if project_count == 0 then\n"
-    "    items[1] = {display = '(no projects yet -- C-a adds the current directory)', data = ''}\n"
+    // The management actions sit below the projects as their own rows, so
+    // they are visible (the Ctrl keys in the footer stay as shortcuts).
+    // Their data is an `action:` tag -- a project's data is an absolute
+    // path, so the two can never collide.
+    "  local actions = {\n"
+    "    {display = '+ Add current directory', data = 'action:add',\n"
+    "     about = 'Bookmark the current directory as a project.'},\n"
+    "    {display = '+ Add project by path...', data = 'action:path',\n"
+    "     about = 'Bookmark an existing folder as a project.'},\n"
+    "    {display = '+ New project...', data = 'action:new',\n"
+    "     about = 'Create a new project folder: flake.nix with chosen packages, .envrc, justfile, README, TODO.'},\n"
+    "  }\n"
+    "  if project_count > 0 then\n"
+    "    actions[#actions + 1] = {display = '- Remove a project...', data = 'action:remove',\n"
+    "     about = 'Remove a project from this list (its folder is left alone).'}\n"
+    "  end\n"
+    "  local about = {}\n"
+    "  for _, a in ipairs(actions) do\n"
+    "    items[#items + 1] = {display = a.display, data = a.data}\n"
+    "    about[a.data] = a.about\n"
     "  end\n"
     "  local function add_current()\n"
     "    mep.project_add('.')\n"
@@ -5612,6 +5623,10 @@ const char *kBuiltinFileTree =
     "      mep.picker_set_preview('')\n"
     "      return\n"
     "    end\n"
+    "    if about[item] then\n"
+    "      mep.picker_set_preview(about[item])\n"
+    "      return\n"
+    "    end\n"
     "    local readme = mep.project_readme_path(item)\n"
     "    if readme then\n"
     "      mep.picker_preview_file(readme, 60)\n"
@@ -5621,7 +5636,11 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  mep.picker_open('Projects', items, function(item)\n"
     "    if not item or item == '' then return end\n"
-    "    mep.project_open_or_warn(item)\n"
+    "    if item == 'action:add' then add_current()\n"
+    "    elseif item == 'action:path' then mep.projects_add_path()\n"
+    "    elseif item == 'action:new' then mep.new_project()\n"
+    "    elseif item == 'action:remove' then mep.projects_remove_picker()\n"
+    "    else mep.project_open_or_warn(item) end\n"
     // Enter opens the highlighted project; everything else is a Ctrl key.
     // Each one closes this picker first -- unlike Enter/Esc (which close it
     // in C++ before on_select even runs), a Ctrl key leaves it open, and
@@ -5650,11 +5669,12 @@ const char *kBuiltinFileTree =
     // first project with an empty preview pane until the user pressed an
     // arrow key -- preview it immediately here to match the "preview by
     // default" behavior on_select_change gives every row after the first.
-    "  if project_count > 0 then preview_project(items[1].data) end\n"
+    "  preview_project(items[1].data)\n"
     "end\n"
     "mep.command('MepProjects', mep.projects)\n"
     "mep.command('MepProjectAdd', function() mep.project_add('.') end)\n"
     "mep.command('MepProjectAddPath', function() mep.projects_add_path() end)\n"
+    "mep.command('MepNewProject', function() mep.new_project() end)\n"
     "mep.leader_map('po', 'Projects', mep.projects)\n";
 
 // Buffers sidebar: a SidebarInstance that, like git status, can dock in
@@ -63684,23 +63704,20 @@ int main(int argc, char **argv) {
     // applied first (synchronously, so the bar is right from the first
     // frame), then the async git detection confirms/adopts worktrees.
     //
-    // An explicitly requested project (--project/$MEP_PROJECT) always goes
-    // through session restore. A bare `mep` does too, but only when cwd (the
-    // bootstrap project's root, decision 4 above) already has a saved
-    // session file: SaveWorkspaceState writes one on every bare run too
-    // (gated only on session persistence, not on --project), so without this
-    // check that file would be written and then never read back. A cwd with
-    // no saved file yet -- a genuinely fresh directory -- still leaves the
-    // pristine bootstrap workspace alone so the dashboard shows
-    // (Editor::ShouldShowDashboard), matching the pre-session-restore
-    // behavior. RestoreWorkspaceState brings the workspace list back (and,
-    // with mep.opt.restore_layouts, each workspace's saved tabs/panes/files
-    // where it can), and project_apply_default_layout_to_empty_workspaces
-    // then lays out only the workspaces it could not (skipping the primary
-    // one when a file was already loaded into it).
-    const bool bootstrap_has_saved_state =
-        project_arg.empty() && std::filesystem::exists(g_editor.WorkspaceStateFile(g_editor.ActiveProject()));
-    if ((!project_arg.empty() || bootstrap_has_saved_state) && g_editor.RestoreWorkspaces()) {
+    // Only an explicitly requested project (--project/$MEP_PROJECT) goes
+    // through session restore; a bare `mep` leaves the pristine bootstrap
+    // workspace alone so the dashboard shows (Editor::ShouldShowDashboard)
+    // even when cwd has a saved session file -- SaveWorkspaceState writes
+    // one for the bootstrap project on every bare run, so restoring it here
+    // would make nearly every directory skip the dashboard and open itself
+    // as a project. A saved session is reached by picking the project from
+    // the Projects picker (project_open restores it) or with --project.
+    // RestoreWorkspaceState brings the workspace list back (and, with
+    // mep.opt.restore_layouts, each workspace's saved tabs/panes/files where
+    // it can), and project_apply_default_layout_to_empty_workspaces then
+    // lays out only the workspaces it could not (skipping the primary one
+    // when a file was already loaded into it).
+    if (!project_arg.empty() && g_editor.RestoreWorkspaces()) {
         g_editor.RestoreWorkspaceState(g_editor.ActiveProject().id, !file_arg.empty(), g_editor.RestoreLayouts());
         lua->DoString(std::string("mep.project_apply_default_layout_to_empty_workspaces(") +
                       (file_arg.empty() ? "false" : "true") + ")");

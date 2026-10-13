@@ -40993,6 +40993,11 @@ bool g_youtube_pip_focused = false;
 gfx::Rectangle g_youtube_pip_rect{};
 bool g_youtube_pip_dragging = false;
 gfx::Vector2 g_youtube_pip_drag_offset{};
+// mod1+right drag resizes it (16:9 kept, top-left corner anchored):
+// the press point and the width at the press.
+bool g_youtube_pip_resizing = false;
+gfx::Vector2 g_youtube_pip_resize_from{};
+float g_youtube_pip_resize_w0 = 0.0f;
 
 // Chrome text is drawn from an ASCII-only atlas (see DrawUiText), so a
 // title's non-ASCII runs (accents, CJK, emoji) collapse to one '?' rather
@@ -41784,11 +41789,13 @@ void CloseYoutubePip() {
     g_youtube_pip_open = false;
     g_youtube_pip_focused = false;
     g_youtube_pip_dragging = false;
+    g_youtube_pip_resizing = false;
 }
 
 /**
  * @brief Draws the floating always-on-top YouTube viewer when it is open: the live picture in a
- * small frame that a mod1(Alt)+left drag moves anywhere in the window, with a transport strip
+ * small frame that a mod1(Alt)+left drag moves anywhere in the window and a mod1+right drag
+ * resizes (16:9 kept), with a transport strip
  * (play/pause, seek bar, close) while hovered or focused. Called last in DrawEditor's chrome pass
  * so nothing but the modal overlays paints over it.
  */
@@ -41813,23 +41820,32 @@ void DrawYoutubePip() {
     const float screen_w = static_cast<float>(gfx::GetScreenWidth());
     const float screen_h = static_cast<float>(gfx::GetScreenHeight());
 
-    // --- Geometry: a fixed 16:9 frame; first open parks it bottom-right. ---
-    const float w = std::clamp(std::round(font_size * 22.0f), 220.0f, 400.0f);
-    const float h = std::round(w * 9.0f / 16.0f);
+    // --- Geometry: a 16:9 frame, size and place remembered; first open
+    // parks it bottom-right at a default size. ---
+    const float min_w = 160.0f;
+    const float max_w = std::max(min_w, screen_w - 2.0f * kMarginX);
     gfx::Rectangle &rect = g_youtube_pip_rect;
     if (rect.width <= 0.0f) {
-        rect.x = screen_w - w - 16.0f;
-        rect.y = screen_h - h - 72.0f;
+        rect.width = std::clamp(std::round(font_size * 22.0f), 220.0f, 400.0f);
+        rect.height = std::round(rect.width * 9.0f / 16.0f);
+        rect.x = screen_w - rect.width - 16.0f;
+        rect.y = screen_h - rect.height - 72.0f;
     }
-    rect.width = w;
-    rect.height = h;
 
-    // mod1+left drag moves it (the press also focuses it, like any click).
+    // mod1+left drag moves it, mod1+right drag resizes it (either press
+    // also focuses it, like any click).
     const bool hovered = PointInRect(mouse, rect);
-    if (!g_youtube_pip_dragging && hovered && g_editor.IsMod1Down() && gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
-        g_youtube_pip_dragging = true;
-        g_youtube_pip_drag_offset = gfx::Vector2{mouse.x - rect.x, mouse.y - rect.y};
-        g_youtube_pip_focused = true;
+    if (hovered && g_editor.IsMod1Down() && !g_youtube_pip_dragging && !g_youtube_pip_resizing) {
+        if (gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+            g_youtube_pip_dragging = true;
+            g_youtube_pip_drag_offset = gfx::Vector2{mouse.x - rect.x, mouse.y - rect.y};
+            g_youtube_pip_focused = true;
+        } else if (gfx::IsMouseButtonPressed(gfx::MouseButton::Right)) {
+            g_youtube_pip_resizing = true;
+            g_youtube_pip_resize_from = mouse;
+            g_youtube_pip_resize_w0 = rect.width;
+            g_youtube_pip_focused = true;
+        }
     }
     if (g_youtube_pip_dragging) {
         if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
@@ -41839,6 +41855,22 @@ void DrawYoutubePip() {
             g_youtube_pip_dragging = false;
         }
     }
+    if (g_youtube_pip_resizing) {
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Right)) {
+            // Whichever axis the mouse has travelled further along sets
+            // the new width (height follows at 16:9), so a diagonal pull
+            // feels like grabbing the corner.
+            const float dx = mouse.x - g_youtube_pip_resize_from.x;
+            const float dy = (mouse.y - g_youtube_pip_resize_from.y) * 16.0f / 9.0f;
+            const float d = std::fabs(dx) >= std::fabs(dy) ? dx : dy;
+            rect.width = std::clamp(std::round(g_youtube_pip_resize_w0 + d), min_w, max_w);
+        } else {
+            g_youtube_pip_resizing = false;
+        }
+    }
+    rect.width = std::clamp(rect.width, min_w, max_w);
+    rect.height = std::round(rect.width * 9.0f / 16.0f);
+    const float w = rect.width, h = rect.height;
     rect.x = std::clamp(rect.x, 0.0f, std::max(0.0f, screen_w - w));
     rect.y = std::clamp(rect.y, 0.0f, std::max(0.0f, screen_h - h));
     const float x = rect.x, y = rect.y;
@@ -41881,7 +41913,7 @@ void DrawYoutubePip() {
     }
 
     // --- Transport strip along the bottom, only while hovered/focused/dragging ---
-    if (hovered || g_youtube_pip_focused || g_youtube_pip_dragging) {
+    if (hovered || g_youtube_pip_focused || g_youtube_pip_dragging || g_youtube_pip_resizing) {
         const float strip_h = std::round(font_size * 1.9f);
         const float sy = y + h - strip_h;
         const float cy = sy + strip_h / 2.0f;
@@ -41931,7 +41963,7 @@ void DrawYoutubePip() {
         // Title and the two gestures, along the top edge.
         const float top_h = std::round(small + 10.0f);
         gfx::DrawRectangleRec(gfx::Rectangle{x, y, w, top_h}, gfx::Fade(gfx::Black, 0.65f));
-        const std::string hint = "alt+drag: move   alt+d: close";
+        const std::string hint = YoutubeFitText("alt+drag: move   alt+right-drag: resize   alt+d: close", w - 2.0f * pad, small);
         const float hint_w = MeasureUiText(hint, small);
         DrawUiText(hint, gfx::Vector2{x + w - pad - hint_w, y + 5.0f}, small, gfx::Fade(gfx::White, 0.7f));
         const float title_avail = w - 2.0f * pad - hint_w - pad;

@@ -172,6 +172,13 @@ std::unique_ptr<Backend> CreateBackend(void *native_window_handle) {
 #endif
 }
 
+#if !defined(MEP_GUI_EMBED_MACOS)
+std::unique_ptr<WebView> CreateWebView(void *, std::function<bool(const std::string &, unsigned)>, std::string *why) {
+    if (why) *why = "a WebKit view inside mep's window is only implemented on macOS so far";
+    return nullptr;
+}
+#endif
+
 bool SplitCommandLine(const std::string &line, std::vector<std::string> *words) {
     words->clear();
     std::string word;
@@ -448,6 +455,14 @@ bool EmbeddedApp::Start(const std::vector<std::string> &argv, const std::string 
 #endif
 }
 
+void EmbeddedApp::StartWindow(std::unique_ptr<EmbeddedWindow> window) {
+    window_ = std::move(window);
+    in_process_ = true;
+    window_->SetPointerThrough(pointer_through_);
+    state_ = State::Shown;
+    title_ = window_->Title();
+}
+
 void EmbeddedApp::Tick(double now, bool allow_unowned) {
     if (started_at_ < 0) started_at_ = now;
     if (job_state_) {
@@ -484,8 +499,8 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
         return;
     }
     // A handed-off window is the program: once it is gone (closed, or let
-    // go of by Stop), so is the program.
-    if (handed_off_ && (!window_ || !window_->Alive())) {
+    // go of by Stop), so is the program. So is a window of mep's own.
+    if ((handed_off_ || in_process_) && (!window_ || !window_->Alive())) {
         window_.reset();
         focused_ = false;
         state_ = State::Exited;
@@ -513,6 +528,8 @@ void EmbeddedApp::Tick(double now, bool allow_unowned) {
         }
         return;
     }
+    // (A page's title changes as it is browsed.)
+    if (in_process_) title_ = window_->Title();
     if (!window_->Alive()) {
         // Closed its window but still running (or about to exit): the
         // picture it last showed is what the results keep.
@@ -606,7 +623,7 @@ bool EmbeddedApp::TakeFocusLost() {
 }
 
 void EmbeddedApp::Stop() {
-    if (handed_off_) {
+    if (handed_off_ || in_process_) {
         // Not mep's process (the user's own copy of the program): its window
         // is asked to close, and only let go of -- left as it is -- when it
         // will not, or on a second stop. Nothing is ever signalled.

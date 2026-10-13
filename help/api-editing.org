@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (237)
+* The bindings (240)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -20,6 +20,9 @@ that it does nothing.
 |----------+------|
 | =mep.a11y= | the accessibility view of a buffer's document |
 | =mep.border_toggle= | hides the menu bar, tab bar and status line together if any is showing, otherwise shows all three |
+| =mep.browser= | acts on the current pane's web view -- |
+| =mep.browser_open= | a WebKit web view in the current pane |
+| =mep.browser_url= | the current :Browser pane's URL, nil elsewhere |
 | =mep.buffer_change_epoch= | -- |
 | =mep.buffer_changed_on_disk= | bool: whether `id`'s file was rewritten |
 | =mep.buffer_count= | returns the number of currently open buffers |

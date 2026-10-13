@@ -17,13 +17,16 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (237)</h1>
+<h1>The bindings (240)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
 <tr><th>Function</th><th>Does</th></tr>
 <tr><td><code>mep.a11y</code></td><td>the accessibility view of a buffer's document</td></tr>
 <tr><td><code>mep.border_toggle</code></td><td>hides the menu bar, tab bar and status line together if any is showing, otherwise shows all three</td></tr>
+<tr><td><code>mep.browser</code></td><td>acts on the current pane's web view --</td></tr>
+<tr><td><code>mep.browser_open</code></td><td>a WebKit web view in the current pane</td></tr>
+<tr><td><code>mep.browser_url</code></td><td>the current :Browser pane's URL, nil elsewhere</td></tr>
 <tr><td><code>mep.buffer_change_epoch</code></td><td>--</td></tr>
 <tr><td><code>mep.buffer_changed_on_disk</code></td><td>bool: whether `id`'s file was rewritten</td></tr>
 <tr><td><code>mep.buffer_count</code></td><td>returns the number of currently open buffers</td></tr>

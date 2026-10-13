@@ -11162,6 +11162,25 @@ public:
      * @param args The command line as typed after :exec.
      */
     void OpenExecInPlace(const std::string &args);
+    // :Browser -- a web page in the current pane, shown by the platform's
+    // WebKit (gui_embed.h's WebView) as a view inside mep's window rather
+    // than mep's own HTML renderer (:Browse) or a window of its own
+    // (:BrowseExternal). It is an :exec pane whose "program" is that view:
+    // placing it, the keyboard and :bd work the same.
+    /**
+     * @brief Opens a web view in the current pane.
+     * @param target What to load (WebView::Load's terms); "" opens a blank page with the address bar ready for typing.
+     * @param error Set to why, when false is returned (the status line says it too).
+     * @return False where there is no WebKit view to open.
+     */
+    bool OpenBrowserInPlace(const std::string &target, std::string *error = nullptr);
+    /**
+     * @brief Acts on the current pane's web view: "back", "forward", "reload", "address" (edit the address), or "go" with `arg`.
+     * @return False when the current pane is not a :Browser pane.
+     */
+    bool BrowserAction(const std::string &action, const std::string &arg = "");
+    /** @brief The current pane's web page URL, or false when it is not a :Browser pane. */
+    bool BrowserUrl(std::string *url);
     /** @brief True if the buffer is an :exec pane. */
     bool IsExecAppBuffer(int buffer_id) const;
     struct ExecAppView {
@@ -15153,7 +15172,12 @@ private:
         mep::gui_embed::Rect placed;    // this frame's area (a click outside it takes the keyboard back)
         bool focus_when_shown = true;   // hands it the keyboard the first time its window shows
         EmbeddedPointerState pointer;        // (a window mep draws itself)
+        bool web = false;               // a :Browser pane: app is a WebView of mep's own, not a program
+        std::string web_url;            // ... and where it is (r opens it again there)
     };
+    // (Re)creates a :Browser pane's web view, at sess.web_url.
+    bool StartBrowserApp(ExecAppSession &sess, std::string *error);
+    mep::gui_embed::WebView *BrowserOf(int buffer_id);
     std::map<int, ExecAppSession> exec_apps_;
     int exec_app_focus_ = -1;  // the :exec buffer whose program holds the keyboard, or -1
     // Programs of deleted :exec buffers, asked to close and given until the

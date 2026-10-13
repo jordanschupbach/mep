@@ -5,7 +5,7 @@
 
 * Every command
 
-All 421 ex commands mep defines: 147 built in and 275 registered from Lua.
+All 426 ex commands mep defines: 147 built in and 280 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -31,8 +31,13 @@ bindings instead. A dash means no page covers that command yet.
 | =:bp= | [[file:files.html][Files and buffers]] |
 | =:bprev= | [[file:command-line.html][The command line]] |
 | =:bprevious= | [[file:command-line.html][The command line]] |
-| =:Browse= | [[file:files.html][Files and buffers]] |
+| =:Browse= | [[file:browser.html][The browser pane]] |
 | =:BrowseExternal= | [[file:browser.html][The browser pane]] |
+| =:Browser= | [[file:browser.html][The browser pane]] |
+| =:BrowserBack= | [[file:browser.html][The browser pane]] |
+| =:BrowserForward= | [[file:browser.html][The browser pane]] |
+| =:BrowserGo= | [[file:browser.html][The browser pane]] |
+| =:BrowserReload= | [[file:browser.html][The browser pane]] |
 | =:CadExport= | -- |
 | =:CadNew= | -- |
 | =:close= | [[file:command-line.html][The command line]] |

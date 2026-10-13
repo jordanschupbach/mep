@@ -11732,6 +11732,38 @@ int l_http_servers(lua_State *L) {
  * @param L Lua state; arg 1 the typed text.
  * @return Number of values pushed (1: the normalized target).
  */
+// mep.browser_open(target): a WebKit web view in the current pane
+// (Editor::OpenBrowserInPlace, :Browser). `target` as the address bar
+// takes it; "" or nil opens a blank page with the address bar ready.
+// Returns true, or false plus why where there is no WebKit view to open.
+int l_browser_open(lua_State *L) {
+    std::string why;
+    const bool ok = GetEditor(L)->OpenBrowserInPlace(luaL_optstring(L, 1, ""), &why);
+    lua_pushboolean(L, ok);
+    if (ok) return 1;
+    lua_pushstring(L, why.c_str());
+    return 2;
+}
+
+// mep.browser(action [, arg]): acts on the current pane's web view --
+// "back", "forward", "reload", "address", "go" (to `arg`). False when the
+// current pane is not a :Browser pane.
+int l_browser(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->BrowserAction(luaL_checkstring(L, 1), luaL_optstring(L, 2, "")));
+    return 1;
+}
+
+// mep.browser_url(): the current :Browser pane's URL, nil elsewhere.
+int l_browser_url(lua_State *L) {
+    std::string url;
+    if (!GetEditor(L)->BrowserUrl(&url)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushstring(L, url.c_str());
+    return 1;
+}
+
 int l_url_normalize(lua_State *L) {
     const std::string out = urlutil::NormalizeOmnibarInput(luaL_checkstring(L, 1));
     lua_pushlstring(L, out.data(), out.size());
@@ -15684,6 +15716,9 @@ const luaL_Reg kMepFuncs[] = {
     {"http_stop", l_http_stop},
     {"http_servers", l_http_servers},
     {"url_normalize", l_url_normalize},
+    {"browser_open", l_browser_open},
+    {"browser", l_browser},
+    {"browser_url", l_browser_url},
     {"url_resolve", l_url_resolve},
     {"html_title", l_html_title},
     {"html_source_lines", l_html_source_lines},

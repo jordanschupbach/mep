@@ -4165,7 +4165,45 @@ const char *kBuiltinTextTools =
     "mep.command('MepBrowseExternal', mep.browse_external_command)\n"
     "mep.command('BrowseExternal', mep.browse_external_command)\n"
     "mep.leader_map('bo', 'Browse', mep.browse_command)\n"
-    "mep.leader_map('bO', 'Browse (external window)', mep.browse_external_command)\n";
+    "mep.leader_map('bO', 'Browse (external window)', mep.browse_external_command)\n"
+    // :Browser [target] -- the platform's own WebKit (WKWebView on macOS)
+    // as the current pane (Editor::OpenBrowserInPlace, editor_exec.cpp):
+    // a full browser engine, unlike :Browse's in-house renderer, and inside
+    // mep's window, unlike :BrowseExternal. The target resolves like
+    // :Browse's (argument, URL under the cursor, the HTML file being
+    // edited) except that with none it opens a blank page with the address
+    // bar ready rather than prompting. Where mep has no WebKit view of its
+    // own (Linux so far), launcher/browser.ts's WebKitGTK window is shown
+    // as an :exec pane instead.
+    "local function mep_shell_quote(s) return \"'\" .. s:gsub(\"'\", \"'\\\\''\") .. \"'\" end\n"
+    "function mep.browser_command(args)\n"
+    "  local target = args and args ~= '' and args or nil\n"
+    "  target = target or mep.url_under_cursor()\n"
+    "  if not target then\n"
+    "    local fname = mep.filename()\n"
+    "    if fname ~= '' and fname:match('%.html?$') then target = fname end\n"
+    "  end\n"
+    "  local ok, why = mep.browser_open(target or '')\n"
+    "  if ok then return end\n"
+    "  if mep.platform() ~= 'linux' or not target then\n"
+    "    mep.notify('Browser: ' .. tostring(why), 'error')\n"
+    "    return\n"
+    "  end\n"
+    "  local script = os.getenv('MEP_BROWSER_LAUNCHER') or 'launcher/browser.ts'\n"
+    "  mep.cmd('exec env LD_LIBRARY_PATH=\"${MEP_WEBVIEW_LD_LIBRARY_PATH}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\" ' ..\n"
+    "    'deno run --allow-net --allow-read --allow-write --allow-env --allow-ffi --unstable-ffi ' ..\n"
+    "    mep_shell_quote(script) .. ' ' .. mep_shell_quote(target))\n"
+    "end\n"
+    "mep.command('Browser', mep.browser_command)\n"
+    // Its controls, for mappings and the command line (the pane's own keys
+    // H/L/r/o do the same while mep has the keyboard).
+    "mep.command('BrowserBack', function() mep.browser('back') end)\n"
+    "mep.command('BrowserForward', function() mep.browser('forward') end)\n"
+    "mep.command('BrowserReload', function() mep.browser('reload') end)\n"
+    "mep.command('BrowserGo', function(args)\n"
+    "  if not mep.browser('go', args or '') then mep.browser_command(args) end\n"
+    "end)\n"
+    "mep.leader_map('bw', 'Browser (WebKit)', mep.browser_command)\n";
 
 // Sidebar popout preview helpers (mod1+m, Editor::ToggleSidebarPopout):
 // the shared "render these lines / this diff / this path into the popout's

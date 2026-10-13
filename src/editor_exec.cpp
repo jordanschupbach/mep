@@ -86,6 +86,90 @@ void Editor::OpenExecInPlace(const std::string &args) {
     status_message_ = "Starting " + line + " -- its window fills this pane; Ctrl-\\ gives the keyboard back to mep, :bd closes it";
 }
 
+// --- :Browser ---------------------------------------------------------------
+
+bool Editor::StartBrowserApp(ExecAppSession &sess, std::string *error) {
+    std::unique_ptr<mep::gui_embed::WebView> view = mep::gui_embed::CreateWebView(
+        native_window_handle_, [this](const std::string &key, unsigned mods) { return IsReservedChord(key, mods); }, error);
+    if (!view) return false;
+    // Nothing to load yet: the address bar takes the keyboard instead.
+    if (sess.web_url.empty()) view->EditAddress();
+    else view->Load(sess.web_url);
+    auto app = std::make_unique<mep::gui_embed::EmbeddedApp>(*gui_backend_);
+    app->SetSnapshots(false);
+    // A real view of mep's window: a click into it reaches it directly.
+    app->SetPointerThrough(true);
+    app->StartWindow(std::move(view));
+    sess.app = std::move(app);
+    sess.focus_when_shown = !sess.web_url.empty();
+    return true;
+}
+
+bool Editor::OpenBrowserInPlace(const std::string &target, std::string *why) {
+    // (The backend runs every :exec pane's frame -- placing, focus --
+    // a web view's too, though it needs nothing of the windowing system.)
+    EnsureGuiBackend();
+    ExecAppSession sess;
+    sess.web = true;
+    sess.label = "Browser";
+    sess.web_url = Trimmed(target);
+    sess.cwd = ActiveRoot();
+    std::string error;
+    if (!StartBrowserApp(sess, &error)) {
+        status_message_ = "E-Browser: " + error;
+        if (why) *why = error;
+        return false;
+    }
+    const int buffer_id = CreateEmptyBuffer();
+    exec_apps_[buffer_id] = std::move(sess);
+    CurPane().buffer_id = buffer_id;
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    SyncModeToActivePaneBuffer();
+    status_message_ = "Browser -- Ctrl-\\ gives the keyboard back to mep; then H/L back/forward, r reload, o address, i into the page";
+    return true;
+}
+
+mep::gui_embed::WebView *Editor::BrowserOf(int buffer_id) {
+    auto it = exec_apps_.find(buffer_id);
+    if (it == exec_apps_.end() || !it->second.web || !it->second.app) return nullptr;
+    return dynamic_cast<mep::gui_embed::WebView *>(it->second.app->Window());
+}
+
+bool Editor::BrowserAction(const std::string &action, const std::string &arg) {
+    const int buffer_id = CurPane().buffer_id;
+    auto it = exec_apps_.find(buffer_id);
+    if (it == exec_apps_.end() || !it->second.web) return false;
+    mep::gui_embed::WebView *view = BrowserOf(buffer_id);
+    if (!view) {
+        // Closed: it opens again where it was.
+        if (action == "go" && !Trimmed(arg).empty()) it->second.web_url = Trimmed(arg);
+        if (action == "reload" || action == "go") ExecAppRestart(buffer_id);
+        return true;
+    }
+    if (action == "back") view->Back();
+    else if (action == "forward") view->Forward();
+    else if (action == "reload") view->Reload();
+    else if (action == "address") view->EditAddress();
+    else if (action == "go") {
+        if (Trimmed(arg).empty()) view->EditAddress();
+        else view->Load(arg);
+    }
+    // The address bar is the page's: it holds the keyboard.
+    if (action == "address" || (action == "go" && Trimmed(arg).empty())) {
+        if (it->second.app->Focus(true)) exec_app_focus_ = buffer_id;
+    }
+    return true;
+}
+
+bool Editor::BrowserUrl(std::string *url) {
+    auto it = exec_apps_.find(CurPane().buffer_id);
+    if (it == exec_apps_.end() || !it->second.web) return false;
+    mep::gui_embed::WebView *view = BrowserOf(it->first);
+    *url = view ? view->Url() : it->second.web_url;
+    return true;
+}
+
 bool Editor::ExecAppViewOf(int buffer_id, ExecAppView *out) const {
     auto it = exec_apps_.find(buffer_id);
     if (it == exec_apps_.end()) return false;
@@ -106,7 +190,9 @@ bool Editor::ExecAppViewOf(int buffer_id, ExecAppView *out) const {
         }
         case State::Shown: out->shown = true; out->status.clear(); break;
         case State::Exited:
-            if (sess.app->HandedOff() || sess.app->ExitCode() == 0) {
+            if (sess.web) {
+                out->status = "This page was closed -- r opens it again, :bd closes this pane";
+            } else if (sess.app->HandedOff() || sess.app->ExitCode() == 0) {
                 out->status = sess.label + " has closed -- r starts it again, :bd closes this pane";
             } else {
                 const std::vector<std::string> &err = sess.app->Stderr();
@@ -121,6 +207,10 @@ bool Editor::ExecAppViewOf(int buffer_id, ExecAppView *out) const {
 void Editor::ExecAppPlace(int buffer_id, const mep::gui_embed::Rect &full, const mep::gui_embed::Rect &clip) {
     auto it = exec_apps_.find(buffer_id);
     if (it == exec_apps_.end() || !it->second.app) return;
+    // A web view is a real view over mep's window, so a picker or the
+    // which-key popup drawn over the pane would be hidden under it: it
+    // steps aside while one is up.
+    if (it->second.web && (mode_ == Mode::Picker || mode_ == Mode::WhichKey)) return;
     it->second.placed = full;
     it->second.pointer.clip = clip;
     it->second.pointer.placed_now = true;
@@ -151,6 +241,11 @@ void Editor::ExecAppRestart(int buffer_id) {
     ExecAppSession &sess = it->second;
     if (sess.app && sess.app->GetState() != mep::gui_embed::EmbeddedApp::State::Exited) {
         status_message_ = sess.label + " is still running";
+        return;
+    }
+    if (sess.web) {
+        std::string error;
+        if (!StartBrowserApp(sess, &error)) status_message_ = "E-Browser: " + error;
         return;
     }
     auto app = std::make_unique<mep::gui_embed::EmbeddedApp>(*gui_backend_);
@@ -215,6 +310,14 @@ void Editor::ExecAppsTick(bool allow_unowned) {
         const State before = app.GetState();
         app.Tick(now_, allow_unowned);
         const State state = app.GetState();
+        if (sess.web) {
+            // A :Browser pane (and its tab) goes by the page's title.
+            sess.label = app.Title().empty() ? std::string("Browser") : app.Title();
+            if (mep::gui_embed::WebView *view = BrowserOf(buffer_id)) {
+                const std::string url = view->Url();
+                if (!url.empty()) sess.web_url = url;
+            }
+        }
         // Its window just showed in the pane being worked in: it gets the
         // keyboard, the way a new terminal does.
         if (state == State::Shown && sess.focus_when_shown) {
@@ -227,7 +330,8 @@ void Editor::ExecAppsTick(bool allow_unowned) {
         if (app.TakeFocusGained()) {
             // Clicked into (on macOS a click always reaches the program).
             exec_app_focus_ = buffer_id;
-            status_message_ = "The program has the keyboard: Ctrl-\\ or a click outside its window comes back";
+            status_message_ = sess.web ? "The page has the keyboard: Ctrl-\\ or a click outside it comes back to mep"
+                                       : "The program has the keyboard: Ctrl-\\ or a click outside its window comes back";
         }
         if (exec_app_focus_ == buffer_id) {
             bool lost = app.TakeFocusLost() || !app.Focused();
@@ -291,7 +395,13 @@ void Editor::HandleExecAppInput() {
         } else if (cp == 'i' || cp == 'a') {
             ExecAppFocus(buffer_id);
         } else if (cp == 'r') {
-            ExecAppRestart(buffer_id);
+            if (BrowserOf(buffer_id)) BrowserAction("reload");
+            else ExecAppRestart(buffer_id);
+        } else if (BrowserOf(buffer_id)) {
+            // A :Browser pane's own keys, while mep has the keyboard.
+            if (cp == 'H') BrowserAction("back");
+            else if (cp == 'L') BrowserAction("forward");
+            else if (cp == 'o') BrowserAction("address");
         }
         // Anything else is the program's to have, once it has the keyboard.
         cp = gfx::GetCharPressed();

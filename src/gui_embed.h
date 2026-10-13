@@ -152,6 +152,35 @@ public:
 // EmbeddedWindow::Key's modifiers.
 enum KeyMod : unsigned { kModShift = 1, kModCtrl = 2, kModAlt = 4, kModSuper = 8 };
 
+// A web page shown by mep itself, through the platform's WebKit (WKWebView
+// on macOS) -- what :Browser opens. No other program is involved: the page
+// is a view inside mep's own window, so EmbeddedApp::StartWindow takes it
+// in place of a process's window, and the :exec pane machinery places it,
+// hands it the keyboard and takes it back exactly as for a program.
+class WebView : public EmbeddedWindow {
+public:
+    // Goes to `target`: a URL, an absolute path to a local file,
+    // "localhost:8000", "example.com", or anything else as a web search.
+    virtual void Load(const std::string &target) = 0;
+    virtual void Back() = 0;
+    virtual void Forward() = 0;
+    // Loads the page again, or stops it while it is still loading.
+    virtual void Reload() = 0;
+    // Puts the keyboard in the address bar, its text selected.
+    virtual void EditAddress() = 0;
+    // The page's URL, "" before anything has loaded.
+    virtual std::string Url() = 0;
+};
+
+/**
+ * @brief A new web view in mep's window (hidden until placed), or null where there is no WebKit to show one with.
+ * @param native_window_handle gfx::GetNativeWindowHandle()'s value.
+ * @param reserved Which chords stay mep's while the page has the keyboard (Backend::SetReservedChords's terms).
+ * @param why Set to the reason when null is returned.
+ */
+std::unique_ptr<WebView> CreateWebView(void *native_window_handle, std::function<bool(const std::string &key, unsigned mods)> reserved,
+                                       std::string *why);
+
 // The windowing system.
 class Backend {
 public:
@@ -333,6 +362,16 @@ public:
     bool Start(const std::vector<std::string> &argv, const std::string &cwd, std::string *error);
 
     /**
+     * @brief Shows a window mep made itself (a WebView) instead of starting a program: there is no process, the window is
+     * the program -- it has ended once the window is gone, and stopping it asks the window to close.
+     * @param window The window.
+     */
+    void StartWindow(std::unique_ptr<EmbeddedWindow> window);
+    bool InProcess() const { return in_process_; }
+    // The window shown, null while there is none.
+    EmbeddedWindow *Window() const { return window_.get(); }
+
+    /**
      * @brief Once per frame: finds its window, notices the program ending and the window closing, keeps its last picture.
      * @param now Seconds (any monotonic clock).
      * @param allow_unowned Whether an ownerless new window may be taken as its own (Backend::Adopt).
@@ -427,6 +466,7 @@ private:
     bool snapshots_ = true;
     std::vector<std::string> handoff_exes_;  // SetHandoff, plus what its processes ran while it waited
     bool handed_off_ = false;   // its window is a handed-off one
+    bool in_process_ = false;   // its window is mep's own (StartWindow)
     double exited_at_ = -1.0;   // when the process ended (a hand-off is looked for a while after)
     std::string title_;
     Snapshot snapshot_;

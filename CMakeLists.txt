@@ -987,11 +987,12 @@ if(APPLE)
     # gui_embed.h's macOS implementor (Objective-C++, ARC -- the one .mm
     # that holds Cocoa objects in C++ members): Accessibility and
     # CGWindowList from ApplicationServices, pictures from ScreenCaptureKit
-    # (weak: its screenshot API is macOS 14+, checked at run time).
-    target_sources(mep_core PRIVATE src/gui_embed_macos.mm)
-    set_source_files_properties(src/gui_embed_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    # (weak: its screenshot API is macOS 14+, checked at run time). WebKit
+    # is :Browser's web view in mep's own window (gui_embed_webkit_macos.mm).
+    target_sources(mep_core PRIVATE src/gui_embed_macos.mm src/gui_embed_webkit_macos.mm)
+    set_source_files_properties(src/gui_embed_macos.mm src/gui_embed_webkit_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_compile_definitions(mep_core PRIVATE MEP_GUI_EMBED_MACOS=1)
-    target_link_libraries(mep_core PUBLIC "-framework ApplicationServices" "-weak_framework ScreenCaptureKit")
+    target_link_libraries(mep_core PUBLIC "-framework ApplicationServices" "-weak_framework ScreenCaptureKit" "-framework WebKit")
     # X11 programs on a private Xvfb each (gui_embed_xvfb.cpp), layered
     # under the Accessibility backend. Only Xlib's headers are needed to
     # build it (XQuartz's): the libraries are loaded at run time, so mep

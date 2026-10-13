@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 190 =<leader>= sequences registered at startup. Press
+All 191 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -51,6 +51,7 @@ the features live.
 | =<leader>bo= | Browse | [[file:browser.html][The browser pane]] |
 | =<leader>bs= | Scratch buffer | [[file:files.html][Files and buffers]] |
 | =<leader>bv= | browse: toggle HTML file between page and source | [[file:mepml.html][mepml]] |
+| =<leader>bw= | Browser (WebKit) | [[file:browser.html][The browser pane]] |
 | =<leader>ca= | LSP: code action | [[file:lsp.html][Language servers]] |
 | =<leader>dC= | Debug: clear breakpoints in file | [[file:debugging.html][Debugging]] |
 | =<leader>db= | Debug: toggle breakpoint | [[file:debugging.html][Debugging]] |

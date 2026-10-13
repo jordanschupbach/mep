@@ -11,6 +11,8 @@
 | =:Browse <url-or-path>=  | the same                          |
 | =<leader>bO=             | open it in an external window     |
 | =:BrowseExternal=        | the same                          |
+| =<leader>bw=             | open it in WebKit, in the pane    |
+| =:Browser <url-or-path>= | the same                          |
 
 mep loads the page itself -- plain sockets for =http://=, =curl= for
 =https://= -- along with its stylesheets, scripts and images. The page's own
@@ -84,6 +86,40 @@ line breaking inside an expression, no =\newcommand=, and the rows of an
 neither embedded font has a glyph for, and any unknown command, shows its
 own name rather than vanishing -- so a page using something unsupported is
 legible rather than silently wrong.
+
+* WebKit in the pane (=:Browser=)
+
+=:Browser= shows a page with the system's own WebKit -- the engine Safari
+runs on -- inside the pane, instead of mep's renderer. Everything a real
+browser does works there: sign-ins, video, the whole of a page's
+JavaScript, and the sites mep's engine cannot draw yet. With no address it
+opens a blank page with its address bar ready; otherwise it takes the
+same targets as =:Browse=.
+
+macOS only for now. Elsewhere it falls back to =:BrowseExternal='s
+WebKitGTK window, shown as an [[file:exec.html][:exec]] pane.
+
+While the page has the keyboard (after a click into it, =i= or =Enter=):
+
+| Key            | Does                                     |
+|----------------+------------------------------------------|
+| =Ctrl-\=       | give the keyboard back to mep            |
+| =Cmd-L=        | edit the address                         |
+| =Cmd-[= / =Cmd-]= | back / forward                        |
+| =Cmd-R=        | reload                                   |
+| =Cmd-+= / =Cmd--= / =Cmd-0= | zoom in / out / reset       |
+| =Cmd-C=, =Cmd-V=, =Cmd-X=, =Cmd-A=, =Cmd-Z= | the usual editing |
+
+mep's own mod1 chords (moving between panes) stay mep's.
+
+While mep has the keyboard: =H= back, =L= forward, =r= reload, =o= edit
+the address, =i= into the page. =:BrowserBack=, =:BrowserForward=,
+=:BrowserReload= and =:BrowserGo <address>= do the same from the command
+line. The address bar takes =localhost:8000=, =:8000/app=,
+=example.com=, file paths, or anything else as a web search.
+
+The page is a real view over mep's window, so it steps aside while a
+picker or the which-key popup is up.
 
 * How much of a browser is it?
 

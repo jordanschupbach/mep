@@ -19,6 +19,8 @@
 <tr><td><code>:Browse &lt;url-or-path&gt;</code></td><td>the same</td></tr>
 <tr><td><code>&lt;leader&gt;bO</code></td><td>open it in an external window</td></tr>
 <tr><td><code>:BrowseExternal</code></td><td>the same</td></tr>
+<tr><td><code>&lt;leader&gt;bw</code></td><td>open it in WebKit, in the pane</td></tr>
+<tr><td><code>:Browser &lt;url-or-path&gt;</code></td><td>the same</td></tr>
 </table>
 <p>mep loads the page itself -- plain sockets for <code>http://</code>, <code>curl</code> for
 <code>https://</code> -- along with its stylesheets, scripts and images. The page's own
@@ -80,6 +82,33 @@ line breaking inside an expression, no <code>\newcommand</code>, and the rows of
 neither embedded font has a glyph for, and any unknown command, shows its
 own name rather than vanishing -- so a page using something unsupported is
 legible rather than silently wrong.</p>
+<h1>WebKit in the pane (<code>:Browser</code>)</h1>
+<p><code>:Browser</code> shows a page with the system's own WebKit -- the engine Safari
+runs on -- inside the pane, instead of mep's renderer. Everything a real
+browser does works there: sign-ins, video, the whole of a page's
+JavaScript, and the sites mep's engine cannot draw yet. With no address it
+opens a blank page with its address bar ready; otherwise it takes the
+same targets as <code>:Browse</code>.</p>
+<p>macOS only for now. Elsewhere it falls back to <code>:BrowseExternal</code>'s
+WebKitGTK window, shown as an <a href="exec.html">:exec</a> pane.</p>
+<p>While the page has the keyboard (after a click into it, <code>i</code> or <code>Enter</code>):</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Ctrl-\</code></td><td>give the keyboard back to mep</td></tr>
+<tr><td><code>Cmd-L</code></td><td>edit the address</td></tr>
+<tr><td><code>Cmd-[</code> / <code>Cmd-]</code></td><td>back / forward</td></tr>
+<tr><td><code>Cmd-R</code></td><td>reload</td></tr>
+<tr><td><code>Cmd-+</code> / <code>Cmd--</code> / <code>Cmd-0</code></td><td>zoom in / out / reset</td></tr>
+<tr><td><code>Cmd-C</code>, <code>Cmd-V</code>, <code>Cmd-X</code>, <code>Cmd-A</code>, <code>Cmd-Z</code></td><td>the usual editing</td></tr>
+</table>
+<p>mep's own mod1 chords (moving between panes) stay mep's.</p>
+<p>While mep has the keyboard: <code>H</code> back, <code>L</code> forward, <code>r</code> reload, <code>o</code> edit
+the address, <code>i</code> into the page. <code>:BrowserBack</code>, <code>:BrowserForward</code>,
+<code>:BrowserReload</code> and <code>:BrowserGo &lt;address&gt;</code> do the same from the command
+line. The address bar takes <code>localhost:8000</code>, <code>:8000/app</code>,
+<code>example.com</code>, file paths, or anything else as a web search.</p>
+<p>The page is a real view over mep's window, so it steps aside while a
+picker or the which-key popup is up.</p>
 <h1>How much of a browser is it?</h1>
 <p>Measured, not claimed -- see <a href="web-ladder.html">Measuring the engine</a>.</p>
 <h1>See also</h1>

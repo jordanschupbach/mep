@@ -25,7 +25,46 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        dm = datamunge.packages.${system} // {
+        # The locked datamunge commit doesn't build on Linux as checked in:
+        #  * nix/datamunge{lua,guile,octave}.nix interpolate
+        #    `${pkgs.darwin.cctools}/bin/install_name_tool` inside a
+        #    *runtime* `uname = Darwin` branch of installPhase. Nix string
+        #    interpolation isn't lazy about that -- the derivation is
+        #    forced at eval time on every host -- and this nixpkgs
+        #    revision marks cctools as aarch64-darwin-only, so merely
+        #    evaluating the devShell on Linux threw "Refusing to evaluate
+        #    package 'cctools'" (nix-direnv then fell back to its stale
+        #    cached environment on every `direnv reload`).
+        #  * src/datamunge/algorithms/phonetic.cpp calls std::strchr
+        #    without including <cstring>; libc++ on macOS happens to pull
+        #    it in transitively, libstdc++ 15 here does not, so
+        #    libdatamunge itself (and hence every binding) fails to
+        #    compile.
+        # nix/datamunge-linux.patch is the upstream fix for both, applied
+        # to the locked input's source; the datamunge flake is then
+        # re-evaluated from that patched tree with the very same inputs
+        # it would get via `follows` above (nixpkgs/flake-utils are ours,
+        # php-from-source is its own locked subflake), so the package set
+        # is identical to datamunge.packages apart from the patch. This
+        # is import-from-derivation (applyPatches builds at eval time),
+        # which `nix develop`/nix-direnv allow by default. Drop all of it
+        # -- dmSrc, dmFlake, the patch file -- once datamunge carries the
+        # fix itself and the lock is bumped past it.
+        dmSrc = pkgs.applyPatches {
+          name = "datamunge-source-patched";
+          src = datamunge.outPath;
+          patches = [ ./nix/datamunge-linux.patch ];
+        };
+        dmFlake =
+          let
+            outputs = (import "${dmSrc}/flake.nix").outputs {
+              self = outputs // { outPath = dmSrc; };
+              inherit nixpkgs flake-utils;
+              inherit (datamunge.inputs) php-from-source;
+            };
+          in
+          outputs;
+        dm = dmFlake.packages.${system} // {
           # datamunge checks in a SWIG 4.3.1-generated R wrapper that no
           # longer compiles against our nixpkgs' R 4.6: SET_S4_OBJECT was
           # removed from the API and CHARACTER_POINTER became read-only
@@ -34,7 +73,7 @@
           # unshared object, so it sets the S4 bit in place -- and turn the
           # latter's two assignments into SET_STRING_ELT, until datamunge
           # ships a wrapper that builds against R 4.6 itself.
-          datamunger = datamunge.packages.${system}.datamunger.overrideAttrs (old: {
+          datamunger = dmFlake.packages.${system}.datamunger.overrideAttrs (old: {
             postPatch = (old.postPatch or "") + ''
               sed -i -E \
                 -e '1i #ifndef SET_S4_OBJECT\n#define SET_S4_OBJECT(x) ((void) Rf_asS4((x), TRUE, 0))\n#endif' \
@@ -44,10 +83,10 @@
           });
           # octruby's bundle links @rpath/libdatamunge.dylib but carries no
           # LC_RPATH on Darwin, so `require "octruby"` can't load it.
-          octruby = datamunge.packages.${system}.octruby.overrideAttrs (old: {
+          octruby = dmFlake.packages.${system}.octruby.overrideAttrs (old: {
             postFixup = (old.postFixup or "") + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
               for f in $out/lib/octruby/*.bundle; do
-                install_name_tool -add_rpath ${datamunge.packages.${system}.datamunge}/lib/datamunge-0.0.1 "$f"
+                install_name_tool -add_rpath ${dmFlake.packages.${system}.datamunge}/lib/datamunge-0.0.1 "$f"
               done
             '';
           });

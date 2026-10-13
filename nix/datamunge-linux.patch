@@ -1,0 +1,83 @@
+diff -ruN a/nix/datamungeguile.nix b/nix/datamungeguile.nix
+--- a/nix/datamungeguile.nix	2026-10-12 16:38:51.219942614 -0600
++++ b/nix/datamungeguile.nix	2026-10-12 16:38:51.243942843 -0600
+@@ -4,6 +4,11 @@
+ 
+ let
+   datamunge = import ./datamunge.nix { inherit pkgs; };
++  # Only used inside the runtime `uname = Darwin` branch of installPhase,
++  # but Nix string interpolation forces the derivation at eval time on
++  # every host, and nixpkgs marks cctools as Darwin-only -- so gate the
++  # reference itself (empty string on Linux, where it is never run).
++  installNameTool = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin "${pkgs.darwin.cctools}/bin/install_name_tool";
+ in
+ pkgs.stdenv.mkDerivation rec {
+   pname = "datamungeguile";
+@@ -65,7 +70,7 @@
+     fi
+ 
+     if [ "$(uname)" = "Darwin" ]; then
+-      ${pkgs.darwin.cctools}/bin/install_name_tool -add_rpath "$datamungeLibDir" "$soPath" || true
++      ${installNameTool} -add_rpath "$datamungeLibDir" "$soPath" || true
+     else
+       existingRpath="$(${pkgs.patchelf}/bin/patchelf --print-rpath "$soPath" || true)"
+       if [ -n "$existingRpath" ]; then
+diff -ruN a/nix/datamungelua.nix b/nix/datamungelua.nix
+--- a/nix/datamungelua.nix	2026-10-12 16:38:51.192942357 -0600
++++ b/nix/datamungelua.nix	2026-10-12 16:38:51.215942576 -0600
+@@ -4,6 +4,11 @@
+ 
+ let
+   datamunge = import ./datamunge.nix { inherit pkgs; };
++  # Only used inside the runtime `uname = Darwin` branch of installPhase,
++  # but Nix string interpolation forces the derivation at eval time on
++  # every host, and nixpkgs marks cctools as Darwin-only -- so gate the
++  # reference itself (empty string on Linux, where it is never run).
++  installNameTool = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin "${pkgs.darwin.cctools}/bin/install_name_tool";
+   lua = pkgs.lua5_4 or (pkgs.lua54 or pkgs.lua);
+ in
+ pkgs.stdenv.mkDerivation rec {
+@@ -67,7 +72,7 @@
+     if [ "$(uname)" = "Darwin" ]; then
+       # On macOS the Nix-built dylib carries an absolute install_name, so the module
+       # resolves it without rpath patching; just add an rpath for robustness.
+-      ${pkgs.darwin.cctools}/bin/install_name_tool -add_rpath "$datamungeLibDir" "$soPath" || true
++      ${installNameTool} -add_rpath "$datamungeLibDir" "$soPath" || true
+     else
+       existingRpath="$(${pkgs.patchelf}/bin/patchelf --print-rpath "$soPath" || true)"
+       if [ -n "$existingRpath" ]; then
+diff -ruN a/nix/datamungeoctave.nix b/nix/datamungeoctave.nix
+--- a/nix/datamungeoctave.nix	2026-10-12 16:38:51.247942881 -0600
++++ b/nix/datamungeoctave.nix	2026-10-12 16:38:51.271943110 -0600
+@@ -4,6 +4,11 @@
+ 
+ let
+   datamunge = import ./datamunge.nix { inherit pkgs; };
++  # Only used inside the runtime `uname = Darwin` branch of installPhase,
++  # but Nix string interpolation forces the derivation at eval time on
++  # every host, and nixpkgs marks cctools as Darwin-only -- so gate the
++  # reference itself (empty string on Linux, where it is never run).
++  installNameTool = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin "${pkgs.darwin.cctools}/bin/install_name_tool";
+ in
+ pkgs.stdenv.mkDerivation rec {
+   pname = "datamungeoctave";
+@@ -65,7 +70,7 @@
+     fi
+ 
+     if [ "$(uname)" = "Darwin" ]; then
+-      ${pkgs.darwin.cctools}/bin/install_name_tool -add_rpath "$datamungeLibDir" "$octFilePath" || true
++      ${installNameTool} -add_rpath "$datamungeLibDir" "$octFilePath" || true
+     else
+       existingRpath="$(${pkgs.patchelf}/bin/patchelf --print-rpath "$octFilePath" || true)"
+       if [ -n "$existingRpath" ]; then
+diff -ruN a/src/datamunge/algorithms/phonetic.cpp b/src/datamunge/algorithms/phonetic.cpp
+--- a/src/datamunge/algorithms/phonetic.cpp	2026-10-12 16:38:51.276943157 -0600
++++ b/src/datamunge/algorithms/phonetic.cpp	2026-10-12 16:38:51.282943215 -0600
+@@ -3,6 +3,7 @@
+ #include <algorithm>
+ #include <cctype>
+ #include <cstdlib>
++#include <cstring>
+ #include <string>
+ 
+ namespace datamunge::algorithms {

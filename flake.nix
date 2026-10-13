@@ -156,6 +156,32 @@
           sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30";
         };
 
+        # GAP and Maxima have no nixpkgs grammar, so they're built here
+        # from their upstream repos. GAP's is gap-system's own (MIT).
+        # Maxima's only grammar ships without a license: it's fetched and
+        # compiled here but nothing from it is vendored into mep (its
+        # highlight query, kHighlightsMaxima, is mep's own).
+        tsGrammarGap = pkgs.tree-sitter.buildGrammar {
+          language = "gap";
+          version = "0-unstable-2026-06-11";
+          src = pkgs.fetchFromGitHub {
+            owner = "gap-system";
+            repo = "tree-sitter-gap";
+            rev = "96fe2e49745ecd62b80cd19dca01fb52b83f93a1";
+            hash = "sha256-bHbWHfwzQVnbqNZ65Ls2h3hsnIpQpylzy2Sviw8aTcs=";
+          };
+        };
+        tsGrammarMaxima = pkgs.tree-sitter.buildGrammar {
+          language = "maxima";
+          version = "0-unstable-2026-07-19";
+          src = pkgs.fetchFromGitHub {
+            owner = "stewsat";
+            repo = "tree-sitter-maxima";
+            rev = "0d9b026dc53d733a0fc881b69aed6ea3c4a6d198";
+            hash = "sha256-BceVU490wMIMfVDt96CihpWJGBwxWDg48PMqSr/94OQ=";
+          };
+        };
+
         tsGrammars = pkgs.tree-sitter.withPlugins (
           p: with p; [
             tree-sitter-bash
@@ -207,6 +233,24 @@
             tree-sitter-perl
             tree-sitter-nim
             tree-sitter-d
+            # Octave/MATLAB (.m, src/treesitter_queries.h's kHighlightsMatlab).
+            tree-sitter-matlab
+            # Scheme/Tcl (kHighlightsScheme/kHighlightsTcl): the scheme and
+            # tcl babel backends' languages, and the Run button's.
+            tree-sitter-scheme
+            tree-sitter-tcl
+            # SQL/GAP/Maxima: the remaining babel/Run-button languages.
+            tree-sitter-sql
+            tsGrammarGap
+            tsGrammarMaxima
+            # Filetypes src/treesitter.cpp already had a query for but no
+            # grammar was bundled for, so they never highlighted.
+            tree-sitter-groovy
+            tree-sitter-csv
+            tree-sitter-diff
+            tree-sitter-ini
+            tree-sitter-verilog
+            tree-sitter-xml
             # LaTeX/BibTeX highlighting (src/treesitter_queries.h's
             # kHighlightsLatex/kHighlightsBibtex -- written for these
             # grammars specifically, see that header's comment).
@@ -556,6 +600,9 @@
             pkgs.go
             pkgs.bun # TypeScript, via `bun <file>` directly
             pkgs.beamPackages.elixir
+            # escript, the Run button's .erl runner (elixir's own closure
+            # already holds this erlang, it just isn't on PATH by itself).
+            pkgs.beamPackages.erlang
             pkgs.julia-bin
             pkgs.babashka # Clojure, `bb` -- tried before the full `clojure` CLI below
             pkgs.clojure
@@ -578,6 +625,10 @@
             # two-step dmd compile-then-run.
             pkgs.kotlin
             pkgs.ghc
+            # ldc2 (LLVM D compiler): the Run button's `d` default, and the
+            # `d` babel backend's fallback where dmd (Linux-only, below)
+            # is missing.
+            pkgs.ldc
             pkgs.ocaml
             # Maxima is the `maxima` babel backend's own interpreter; gnuplot
             # is what its plotting front ends (plot2d/plot3d, and the draw
@@ -597,6 +648,13 @@
             # block's own #+RESULTS:. (`:packages no` is the per-block way out
             # of that; see help/org-babel.org.)
             pkgs.gap
+            # Dart/Fish/Groovy: Run-button languages that had a grammar but
+            # no toolchain here. sqlite runs .sql files against an in-memory
+            # database (macOS ships one, Linux usually doesn't).
+            pkgs.dart
+            pkgs.fish
+            pkgs.groovy
+            pkgs.sqlite
 
             # LSP servers (mep.lsp_servers in src/main.cpp's kBuiltinLsp,
             # mep.lsp_attach) -- a completely separate concern from the

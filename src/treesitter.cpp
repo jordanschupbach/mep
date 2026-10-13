@@ -180,6 +180,39 @@ struct DynLangEntry {
     const char *query_source;
 };
 
+// .mli files share the OCaml query, except that the interface grammar has
+// no shebang node -- left in, it makes ts_query_new reject the whole query.
+/**
+ * @brief Returns the OCaml highlight query with its shebang capture removed,
+ * for the ocaml_interface grammar; built once for the process lifetime.
+ * @return The adapted query source, stable for QueryFor's pointer-keyed cache.
+ */
+const char *OcamlInterfaceHighlights() {
+    static const std::string query = [] {
+        std::string q = kHighlightsOcaml;
+        const std::string shebang = " (shebang)";
+        size_t pos = q.find(shebang);
+        if (pos != std::string::npos) q.erase(pos, shebang.size());
+        return q;
+    }();
+    return query.c_str();
+}
+
+// tree-sitter-typescript's highlights.scm only covers what TypeScript adds
+// on top of JavaScript -- upstream layers it over the JavaScript query
+// (its tree-sitter.json lists both), and on its own a .ts file got no
+// strings, functions or most keywords. JavaScript's patterns go first so
+// the TypeScript ones, later, win where both match.
+/**
+ * @brief Returns the JavaScript highlight query followed by the TypeScript
+ * one, built once and kept for the process lifetime.
+ * @return The combined query source, stable for QueryFor's pointer-keyed cache.
+ */
+const char *TypescriptHighlights() {
+    static const std::string query = std::string(kHighlightsJavascript) + kHighlightsTypescript;
+    return query.c_str();
+}
+
 /**
  * @brief Returns the process-lifetime table of filetypes with a known
  * highlight query but no compiled-in grammar, keyed by bare file
@@ -203,16 +236,16 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"json", {"json", kHighlightsJson}},
         {"jl", {"julia", kHighlightsJulia}},
         {"ml", {"ocaml", kHighlightsOcaml}},
-        {"mli", {"ocaml_interface", kHighlightsOcaml}},
+        {"mli", {"ocaml_interface", OcamlInterfaceHighlights()}},
         {"php", {"php", kHighlightsPhp}},
         {"rb", {"ruby", kHighlightsRuby}},
         {"rs", {"rust", kHighlightsRust}},
         {"scala", {"scala", kHighlightsScala}},
         {"sbt", {"scala", kHighlightsScala}},
-        {"ts", {"typescript", kHighlightsTypescript}},
-        {"mts", {"typescript", kHighlightsTypescript}},
-        {"cts", {"typescript", kHighlightsTypescript}},
-        {"tsx", {"tsx", kHighlightsTypescript}},
+        {"ts", {"typescript", TypescriptHighlights()}},
+        {"mts", {"typescript", TypescriptHighlights()}},
+        {"cts", {"typescript", TypescriptHighlights()}},
+        {"tsx", {"tsx", TypescriptHighlights()}},
         {"v", {"verilog", kHighlightsVerilog}},
         {"sv", {"verilog", kHighlightsVerilog}},
         {"vh", {"verilog", kHighlightsVerilog}},
@@ -266,6 +299,19 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"d", {"d", kHighlightsD}},
         {"nim", {"nim", kHighlightsNim}},
         {"cr", {"crystal", kHighlightsCrystal}},
+        // .m is MATLAB/Octave here, not Objective-C (no ObjC grammar is
+        // wired up at all).
+        {"m", {"matlab", kHighlightsMatlab}},
+        {"scm", {"scheme", kHighlightsScheme}},
+        {"ss", {"scheme", kHighlightsScheme}},
+        {"tcl", {"tcl", kHighlightsTcl}},
+        {"sql", {"sql", kHighlightsSql}},
+        {"g", {"gap", kHighlightsGap}},
+        {"gi", {"gap", kHighlightsGap}},
+        {"gd", {"gap", kHighlightsGap}},
+        {"gap", {"gap", kHighlightsGap}},
+        {"mac", {"maxima", kHighlightsMaxima}},
+        {"max", {"maxima", kHighlightsMaxima}},
         // LaTeX + BibTeX (latex-lsp's grammars; see kHighlightsLatex's
         // own comment for why the query is written from scratch). .sty/
         // .cls are the same language as .tex proper -- package/class

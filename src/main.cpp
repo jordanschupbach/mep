@@ -13424,8 +13424,8 @@ const char *kBuiltinDap =
     // earlier -O2 (last one wins for both gcc and clang) -- the standard
     // "-g -O0" debug-build combination, not a workaround specific to this
     // wrapper.\n"
-    "  argv[#argv + 1] = '-g'\n"
-    "  argv[#argv + 1] = '-O0'\n"
+    // debug_flags: a compiler whose spelling differs (rustc has no -O0).
+    "  for flag in (cfg.debug_flags or '-g -O0'):gmatch('%S+') do argv[#argv + 1] = flag end\n"
     "  argv[#argv + 1] = '-o'\n"
     "  argv[#argv + 1] = out_path\n"
     "  argv[#argv + 1] = fname\n"
@@ -31705,10 +31705,67 @@ const char *kBuiltinRunButton =
     "  r = {interpreter = 'Rscript', flags = ''},\n"
     "  c = {compiler = 'cc', flags = ''},\n"
     "  cpp = {compiler = 'c++', flags = ''},\n"
+    // .NET 10+ runs a lone .cs file directly (file-based apps), so C#
+    // fits the interpreter shape -- no project file or separate build.
+    "  cs = {interpreter = 'dotnet run', flags = ''},\n"
+    "  f90 = {compiler = 'gfortran', flags = ''},\n"
+    // dmd/ldc2 name their output with -of= rather than -o (output_flag,
+    // read by mep_run_button_command below; '-o ' when unset).
+    "  d = {compiler = 'ldc2', flags = '', output_flag = '-of='},\n"
+    // kotlinc builds a jar (only when -d names a .jar) that java runs;
+    // -include-runtime lives in output_flag so a Setup flags string
+    // can't drop it.
+    "  kt = {compiler = 'kotlinc', flags = '', output_flag = '-include-runtime -d ', output_ext = '.jar', run_prefix = 'java -jar '},\n"
+    "  kts = {interpreter = 'kotlin', flags = ''},\n"
+    "  hs = {interpreter = 'runghc', flags = ''},\n"
+    "  jl = {interpreter = 'julia', flags = ''},\n"
+    "  rb = {interpreter = 'ruby', flags = ''},\n"
+    "  lua = {interpreter = 'lua', flags = ''},\n"
+    "  nim = {interpreter = 'nim r --hints:off', flags = ''},\n"
+    // A .nix file is evaluated, not built: print the value it denotes.
+    "  nix = {interpreter = 'nix eval --file', flags = ''},\n"
+    // octave-cli: no GUI/Qt startup, same as the octave babel entry.
+    "  m = {interpreter = 'octave-cli --quiet --no-window-system', flags = ''},\n"
+    "  sh = {interpreter = 'bash', flags = ''},\n"
+    "  js = {interpreter = 'node', flags = ''},\n"
+    // bun runs TypeScript directly -- no tsc step or tsconfig.
+    "  ts = {interpreter = 'bun', flags = ''},\n"
+    // babashka: instant startup, unlike the JVM `clojure` CLI.
+    "  clj = {interpreter = 'bb', flags = ''},\n"
+    "  cr = {interpreter = 'crystal run', flags = ''},\n"
+    "  exs = {interpreter = 'elixir', flags = ''},\n"
+    // escript runs a module's main/1 straight from source.
+    "  erl = {interpreter = 'escript', flags = ''},\n"
+    "  go = {interpreter = 'go run', flags = ''},\n"
+    // Java 11+ single-file source launch: no javac, no class-name check.
+    "  java = {interpreter = 'java', flags = ''},\n"
+    "  ml = {interpreter = 'ocaml', flags = ''},\n"
+    "  pl = {interpreter = 'perl', flags = ''},\n"
+    "  php = {interpreter = 'php', flags = ''},\n"
+    "  rs = {compiler = 'rustc', flags = '', debug_flags = '-g -C opt-level=0'},\n"
+    "  scala = {interpreter = 'scala', flags = ''},\n"
+    "  zig = {interpreter = 'zig run', flags = ''},\n"
+    "  scm = {interpreter = 'guile --no-auto-compile', flags = ''},\n"
+    "  tcl = {interpreter = 'tclsh', flags = ''},\n"
+    "  dart = {interpreter = 'dart run', flags = ''},\n"
+    "  fish = {interpreter = 'fish', flags = ''},\n"
+    "  groovy = {interpreter = 'groovy', flags = ''},\n"
+    // A fresh in-memory database per run; .sql has no database of its own.
+    "  sql = {interpreter = 'sqlite3 :memory: < {file}', flags = ''},\n"
+    // stdin closed, so a script without a final QUIT; still exits.
+    "  g = {interpreter = 'gap -q {file} < /dev/null', flags = ''},\n"
+    // Script on stdin: unlike -b/--batch, nothing is echoed back.
+    "  mac = {interpreter = 'maxima --very-quiet < {file}', flags = ''},\n"
     "}\n"
     "mep.opt.run_button_defaults.R = mep.opt.run_button_defaults.r\n"
     "mep.opt.run_button_defaults.cc = mep.opt.run_button_defaults.cpp\n"
     "mep.opt.run_button_defaults.cxx = mep.opt.run_button_defaults.cpp\n"
+    "for _, e in ipairs({'f', 'for', 'f95', 'f03', 'f08', 'F', 'F90'}) do\n"
+    "  mep.opt.run_button_defaults[e] = mep.opt.run_button_defaults.f90\n"
+    "end\n"
+    "for alias, ext in pairs({bash = 'sh', mjs = 'js', cjs = 'js', mts = 'ts', ex = 'exs', ss = 'scm', pm = 'pl', gap = 'g', max = 'mac'}) do\n"
+    "  mep.opt.run_button_defaults[alias] = mep.opt.run_button_defaults[ext]\n"
+    "end\n"
     // Lazily loaded (a read-only session that never opens Setup never
     // touches the file) and cached for the process lifetime -- Setup is
     // the only writer, and it updates this same in-memory table right
@@ -31750,8 +31807,11 @@ const char *kBuiltinRunButton =
     "local function mep_run_button_shq(s)\n"
     "  return \"'\" .. tostring(s):gsub(\"'\", \"'\\\\''\") .. \"'\"\n"
     "end\n"
+    // Compiled means the language's default names a compiler, so a new
+    // compiled language (Fortran, say) needs only its defaults entry.
     "local function mep_run_button_is_compiled(ext)\n"
-    "  return ext == 'c' or ext == 'cpp' or ext == 'cc' or ext == 'cxx'\n"
+    "  local default = mep.opt.run_button_defaults[ext]\n"
+    "  return default ~= nil and default.compiler ~= nil\n"
     "end\n"
     // Assembles the one shell line for `ext`: a direct interpreter
     // invocation for py/r, or -- since a compiled language needs a
@@ -31764,8 +31824,10 @@ const char *kBuiltinRunButton =
     "  local flags = cfg.flags or ''\n"
     "  local flag_part = flags ~= '' and (' ' .. flags) or ''\n"
     "  if mep_run_button_is_compiled(ext) then\n"
+    "    local default = mep.opt.run_button_defaults[ext]\n"
     "    local out = os.tmpname()\n"
     "    os.remove(out)\n"
+    "    out = out .. (default.output_ext or '')\n"
     // Flags go AFTER the source file, not between the compiler and it:
     // `pkg-config --cflags --libs` mixes -I/-D (order-independent) with
     // -l link flags, and GNU ld resolves -lfoo left-to-right against
@@ -31773,8 +31835,17 @@ const char *kBuiltinRunButton =
     // before the source file, that ordering silently drops link symbols
     // (a real "undefined reference" caught trying this against a GTK
     // hello-world with flags = '`pkg-config --cflags --libs gtk+-3.0`').\n"
-    "    return cfg.compiler .. ' ' .. mep_run_button_shq(fname) .. flag_part .. ' -o ' .. mep_run_button_shq(out)\n"
-    "      .. ' && ' .. mep_run_button_shq(out)\n"
+    "    local output_flag = default.output_flag or '-o '\n"
+    "    return cfg.compiler .. ' ' .. mep_run_button_shq(fname) .. flag_part .. ' ' .. output_flag .. mep_run_button_shq(out)\n"
+    "      .. ' && ' .. (default.run_prefix or '') .. mep_run_button_shq(out)\n"
+    "  end\n"
+    // An interpreter naming {file} gets the file there instead of last --
+    // for a tool that reads its script on stdin (`sqlite3 :memory: <
+    // {file}`); the flags then follow the program name.
+    "  if cfg.interpreter:find('{file}', 1, true) then\n"
+    "    local program, rest = cfg.interpreter:match('^(%S+)(.*)$')\n"
+    "    local file = mep_run_button_shq(fname)\n"
+    "    return program .. flag_part .. rest:gsub('{file}', function() return file end)\n"
     "  end\n"
     "  return cfg.interpreter .. flag_part .. ' ' .. mep_run_button_shq(fname)\n"
     "end\n"
@@ -46440,9 +46511,12 @@ void DrawAgentStatusBadge(gfx::Vector2 center, float radius, const std::string &
  * @return True if the Run button should be shown for a buffer with this extension.
  */
 bool RunButtonSupportsExtension(const std::string &ext) {
-    static const std::unordered_set<std::string> kExts = {"py",  "r",   "R",   "c",   "cpp", "cc",
-                                                            "cxx", "org", "tex", "Rmd", "rmd", "Rnw", "rnw",
-                                                            "mepml"};
+    static const std::unordered_set<std::string> kExts = {
+        "py",  "r",   "R",   "c",   "cpp", "cc",  "cxx", "org", "tex", "Rmd", "rmd", "Rnw", "rnw", "mepml",
+        "cs",  "f",   "for", "f90", "f95", "f03", "f08", "F",   "F90", "d",   "kt",  "kts", "hs",  "jl",
+        "rb",  "lua", "nim", "nix", "m",   "sh",  "bash", "js", "mjs", "cjs", "ts",  "mts", "clj", "cr",
+        "exs", "ex",  "erl", "go",  "java", "ml", "pl",  "pm",  "php", "rs",  "scala", "zig", "scm", "ss",
+        "tcl", "dart", "fish", "groovy", "sql", "g", "gap", "mac", "max"};
     return kExts.count(ext) != 0;
 }
 

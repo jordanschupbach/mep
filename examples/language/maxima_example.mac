@@ -1,0 +1,25 @@
+/* A small Maxima tour: symbolic algebra, calculus, a function definition,
+   a loop and list operations. <leader>rr feeds it to maxima on stdin, so
+   only what print() shows appears, and maxima exits at the end. */
+
+print("hello, world")$
+
+distance(a, b) := sqrt((a[1] - b[1])^2 + (a[2] - b[2])^2)$
+print("distance =", distance([0, 0], [3, 4]))$
+
+nums: makelist(i, i, 1, 5)$
+print("sum =", apply("+", nums))$
+print("squares =", map(lambda([n], n^2), nums))$
+
+/* Symbolic work: expand, factor, differentiate, integrate, solve. */
+print("expand((x + 1)^3) =", expand((x + 1)^3))$
+print("factor(x^2 - 5*x + 6) =", factor(x^2 - 5*x + 6))$
+print("diff(sin(x)*x^2, x) =", diff(sin(x) * x^2, x))$
+print("integrate(x*exp(x), x) =", integrate(x * exp(x), x))$
+print("solve(x^2 = 2, x) =", solve(x^2 = 2, x))$
+
+fact: 1$
+for i: 1 thru 5 do fact: fact * i$
+print("5! =", fact)$
+
+if fact > 100 then print("big") else print("small")$

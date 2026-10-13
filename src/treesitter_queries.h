@@ -2603,6 +2603,9 @@ static const char *kHighlightsRust = R"TSQ(
 "'" @operator
 )TSQ";
 
+// tree-sitter-scala 0.26.0's own queries/highlights.scm (flake.nix's
+// pinned grammar): the copy vendored before named a "forSome" token that
+// version dropped, so ts_query_new rejected the whole query.
 static const char *kHighlightsScala = R"TSQ(
 ; CREDITS @stumash (stuart.mashaal@gmail.com)
 
@@ -2724,10 +2727,6 @@ static const char *kHighlightsScala = R"TSQ(
 
 (infix_expression operator: (identifier) @operator)
 (infix_expression operator: (operator_identifier) @operator)
-; An operator taking a colon argument parses as a postfix expression call.
-(call_expression
-  function: (postfix_expression (identifier) @operator .)
-  arguments: (colon_argument))
 (infix_type operator: (operator_identifier) @operator)
 (infix_type operator: (operator_identifier) @operator)
 
@@ -2759,7 +2758,7 @@ static const char *kHighlightsScala = R"TSQ(
   "extends"
   "derives"
   "finally"
-  "forSome"
+;; `forSome` existential types not implemented yet
 ;; `macro` not implemented yet
   "object"
   "override"
@@ -2771,16 +2770,11 @@ static const char *kHighlightsScala = R"TSQ(
   "with"
   "given"
   "using"
+  "end"
   "implicit"
+  "extension"
   "with"
 ] @keyword
-
-; `end` is scanner-lexed, so the marker node is the only thing to match.
-(end_marker) @keyword
-
-; `extension` is a soft keyword. Highlight it only where it starts an
-; extension definition, not when used as a plain identifier.
-(extension_definition "extension" @keyword)
 
 [
   "abstract"
@@ -2849,8 +2843,8 @@ static const char *kHighlightsScala = R"TSQ(
 
 "return" @keyword.return
 
-(comment) @spell @comment
-(block_comment) @spell @comment
+(comment) @comment
+(block_comment) @comment
 
 ;; `case` is a conditional keyword in case_block
 
@@ -2873,15 +2867,6 @@ static const char *kHighlightsScala = R"TSQ(
 ;; Scala CLI using directives
 (using_directive_key) @parameter
 (using_directive_value) @string
-
-;; XML literals
-(xml_name) @tag
-(xml_attribute key: (xml_name) @tag.attribute)
-(xml_string) @string
-(xml_text) @spell
-(xml_comment) @spell @comment
-(xml_cdata) @string
-(xml_processing_instruction) @keyword.directive
 )TSQ";
 
 static const char *kHighlightsOcaml = R"TSQ(
@@ -3287,8 +3272,11 @@ static const char *kHighlightsCsv = R"TSQ(
 "," @punctuation.delimiter
 )TSQ";
 
+// tree-sitter-diff 0.1.0's own queries/highlights.scm (flake.nix's pinned
+// grammar); the query vendored before was written for a newer grammar
+// (change/binary_hunk nodes) and failed to compile against this one.
 static const char *kHighlightsDiff = R"TSQ(
-(comment) @comment @spell
+(comment) @comment
 
 [
   (addition)
@@ -3300,8 +3288,6 @@ static const char *kHighlightsDiff = R"TSQ(
   (old_file)
 ] @diff.minus
 
-(change) @diff.delta
-
 (commit) @constant
 
 (location) @attribute
@@ -3312,10 +3298,6 @@ static const char *kHighlightsDiff = R"TSQ(
 
 (filename) @string.special.path
 
-(special) @string.special
-
-"\\" @punctuation.special
-
 (mode) @number
 
 ([
@@ -3324,20 +3306,16 @@ static const char *kHighlightsDiff = R"TSQ(
   "++"
   "+++"
   "++++"
-  ">"
   "-"
   "--"
   "---"
   "----"
-  "<"
-  "!"
 ] @punctuation.special
   (#set! priority 95))
 
 [
   (binary_change)
   (similarity)
-  (dissimilarity)
   (file_change)
 ] @label
 
@@ -3347,30 +3325,6 @@ static const char *kHighlightsDiff = R"TSQ(
 (similarity
   (score) @number
   "%" @number)
-
-(dissimilarity
-  (score) @number
-  "%" @number)
-
-(binary_patch
-  [
-    "GIT"
-    "binary"
-    "patch"
-  ] @label)
-
-(binary_hunk
-  [
-    "literal"
-    "delta"
-  ] @keyword
-  (size) @number)
-
-forward: (binary_hunk
-  (payload) @diff.plus)
-
-reverse: (binary_hunk
-  (payload) @diff.minus)
 )TSQ";
 
 static const char *kHighlightsMake = R"TSQ(
@@ -3546,116 +3500,144 @@ static const char *kHighlightsMake = R"TSQ(
   (#match? @constant.macro "^\.(PHONY|SUFFIXES|DEFAULT|PRECIOUS|INTERMEDIATE|SECONDARY|SECONDEXPANSION|DELETE_ON_ERROR|IGNORE|LOW_RESOLUTION_TIME|SILENT|EXPORT_ALL_VARIABLES|NOTPARALLEL|ONESHELL|POSIX)$"))
 )TSQ";
 
+// tree-sitter-scss 1.0.0's own queries/highlights.scm (flake.nix's pinned
+// grammar), with its two `(match? ...)` predicates given the `#` upstream
+// left off. The query vendored before named nodes this version lacks
+// (js_comment, mixin/function statement fields), so ts_query_new
+// rejected it and .scss had no highlighting.
 static const char *kHighlightsScss = R"TSQ(
-[
-  "@at-root"
-  "@debug"
-  "@error"
-  "@extend"
-  "@forward"
-  "@mixin"
-  "@use"
-  "@warn"
-] @keyword
+(comment) @comment
 
-"@function" @keyword.function
+(tag_name) @tag
+(nesting_selector) @tag
+(universal_selector) @tag
 
-"@return" @keyword.return
+"~" @operator
+">" @operator
+"+" @operator
+"-" @operator
+"*" @operator
+"/" @operator
+"=" @operator
+"^=" @operator
+"|=" @operator
+"~=" @operator
+"$=" @operator
+"*=" @operator
 
-"@include" @keyword.import
+"and" @operator
+"or" @operator
+"not" @operator
+"only" @operator
 
-[
-  "@while"
-  "@each"
-  "@for"
-  "from"
-  "through"
-  "in"
-] @keyword.repeat
+(attribute_selector (plain_value) @string)
+(pseudo_element_selector (tag_name) @attribute)
+(pseudo_class_selector (class_name) @attribute)
 
-(js_comment) @comment @spell
+(class_name) @property
+(id_name) @property
+(namespace_name) @property
+(property_name) @property
+(feature_name) @property
+
+(attribute_name) @attribute
 
 (function_name) @function
 
-[
-  ">="
-  "<="
-] @operator
+((property_name) @variable
+ (#match? @variable "^--"))
+((plain_value) @variable
+ (#match? @variable "^--"))
 
-(mixin_statement
-  name: (identifier) @function)
+"@media" @keyword
+"@import" @keyword
+"@charset" @keyword
+"@namespace" @keyword
+"@supports" @keyword
+"@keyframes" @keyword
+(at_keyword) @keyword
+(to) @keyword
+(from) @keyword
+(important) @keyword
 
-(mixin_statement
-  (parameters
-    (parameter) @variable.parameter))
+(string_value) @string
+(color_value) @string.special
 
-(function_statement
-  name: (identifier) @function)
+(integer_value) @number
+(float_value) @number
+(unit) @type
 
-(function_statement
-  (parameters
-    (parameter) @variable.parameter))
-
-(plain_value) @string
-
-(keyword_query) @function
-
-(identifier) @variable
-
-(variable) @variable
-
-(argument) @variable.parameter
-
-(arguments
-  (variable) @variable.parameter)
-
-[
-  "["
-  "]"
-] @punctuation.bracket
-
-(include_statement
-  (identifier) @function)
+"#" @punctuation.delimiter
+"," @punctuation.delimiter
 )TSQ";
 
+// tree-sitter-svelte 0.11.0's own queries/highlights.scm: the nvim query
+// vendored before used keyword tokens ("as", "key", "snippet", ...) this
+// version doesn't have, so the whole query failed to compile.
 static const char *kHighlightsSvelte = R"TSQ(
-; inherits: html
+; Special identifiers
+;--------------------
 
-(raw_text) @none
+; TODO:
+((element (start_tag (tag_name) @_tag) (text) @text.title)
+ (#match? @_tag "^(h[0-9]|title)$"))
+
+((element (start_tag (tag_name) @_tag) (text) @text.strong)
+ (#match? @_tag "^(strong|b)$"))
+
+((element (start_tag (tag_name) @_tag) (text) @text.emphasis)
+ (#match? @_tag "^(em|i)$"))
+
+((element (start_tag (tag_name) @_tag) (text) @text.strike)
+ (#match? @_tag "^(s|del)$"))
+
+((element (start_tag (tag_name) @_tag) (text) @text.underline)
+ (#eq? @_tag "u"))
+
+((element (start_tag (tag_name) @_tag) (text) @text.literal)
+ (#match? @_tag "^(code|kbd)$"))
+
+((element (start_tag (tag_name) @_tag) (text) @text.uri)
+ (#eq? @_tag "a"))
+
+((attribute
+   (attribute_name) @_attr
+   (quoted_attribute_value (attribute_value) @text.uri))
+ (#match? @_attr "^(href|src)$"))
+
+(tag_name) @tag
+(attribute_name) @property
+(erroneous_end_tag_name) @error
+(comment) @comment
 
 [
-  "as"
-  "key"
-  "html"
-  "snippet"
-  "render"
+  (attribute_value)
+  (quoted_attribute_value)
+] @string
+
+[
+  (text)
+  (raw_text_expr)
+] @none
+
+[
+  (special_block_keyword)
+  (then)
+  (as)
 ] @keyword
-
-"const" @type.qualifier
-
-[
-  "if"
-  "else"
-  "then"
-] @keyword.conditional
-
-"each" @keyword.repeat
-
-[
-  "await"
-  "then"
-] @keyword.coroutine
-
-"catch" @keyword.exception
-
-"debug" @keyword.debug
 
 [
   "{"
   "}"
 ] @punctuation.bracket
 
+"=" @operator
+
 [
+  "<"
+  ">"
+  "</"
+  "/>"
   "#"
   ":"
   "/"
@@ -5041,6 +5023,41 @@ static const char *kHighlightsClojure = R"TSQ(
  "@"
  "~@"
 ] @operator
+
+;; mep's additions (the grammar's own query stops at literals): calls,
+;; definitions and the core special forms/macros. Later patterns win, so
+;; the keyword list overrides the generic call capture.
+
+(sym_lit namespace: (sym_ns) @namespace)
+
+(list_lit . (sym_lit name: (sym_name) @function.call))
+
+(list_lit
+  . (sym_lit name: (sym_name) @_def)
+  . (sym_lit name: (sym_name) @function)
+  (#any-of? @_def "defn" "defn-" "defmacro" "defmulti" "defmethod"))
+
+(list_lit
+  . (sym_lit name: (sym_name) @_def)
+  . (sym_lit name: (sym_name) @type)
+  (#any-of? @_def "defrecord" "deftype" "defprotocol" "definterface" "ns"))
+
+(list_lit
+  . (sym_lit name: (sym_name) @keyword)
+  (#any-of? @keyword
+    "def" "defn" "defn-" "defmacro" "defmulti" "defmethod" "defrecord" "deftype"
+    "defprotocol" "definterface" "defonce" "ns" "fn" "let" "letfn" "loop" "recur"
+    "if" "if-let" "if-not" "when" "when-let" "when-not" "cond" "condp" "case"
+    "do" "doseq" "dotimes" "for" "try" "catch" "finally" "throw" "quote" "var"
+    "->" "->>" "as->" "some->" "some->>" "doto" "binding" "and" "or" "not"))
+
+(list_lit
+  . (sym_lit name: (sym_name) @function.builtin)
+  (#any-of? @function.builtin
+    "println" "print" "prn" "str" "format" "map" "filter" "reduce" "apply"
+    "first" "rest" "count" "conj" "assoc" "get" "into" "group-by" "range"))
+
+(vec_lit (sym_lit name: (sym_name) @variable.parameter))
 )TSQ";
 
 static const char *kHighlightsR = R"TSQ(
@@ -6845,7 +6862,9 @@ static const char *kHighlightsKotlin = R"TSQ(
 ] @number
 
 [
-  (null_literal)
+  ; tree-sitter-kotlin 0.3.8 (flake.nix's) has no null_literal node --
+  ; `null` is a bare token there.
+  "null"
   ; should be highlighted the same as booleans
   (boolean_literal)
 ] @boolean
@@ -7066,33 +7085,42 @@ static const char *kHighlightsKotlin = R"TSQ(
   "}" @punctuation.special)
 )TSQ";
 
+// nvim-treesitter v0.9.1's queries/verilog/highlights.scm (Apache-2.0), the
+// last one written for tree-sitter/tree-sitter-verilog -- the grammar
+// nixpkgs packages. Later nvim-treesitter moved verilog to a different
+// (SystemVerilog) grammar, and the query vendored here before came from
+// that, so most of it named nodes this grammar doesn't have. Minus the
+// "config"/"endconfig" keywords, which this grammar has no tokens for.
 static const char *kHighlightsVerilog = R"TSQ(
 ; Keywords
+
 [
-  "begin"
-  "end"
-  "generate"
-  "endgenerate"
+  ; block delimiters
   (module_keyword)
   "endmodule"
   "program"
   "endprogram"
+  "class"
+  "endclass"
+  "interface"
+  "endinterface"
   "package"
   "endpackage"
   "checker"
   "endchecker"
-  "config"
-  "endconfig"
+
   "pure"
   "virtual"
   "extends"
   "implements"
   "super"
   (class_item_qualifier)
+
   "parameter"
   "localparam"
   "defparam"
   "assign"
+  "typedef"
   "modport"
   "fork"
   "join"
@@ -7100,70 +7128,16 @@ static const char *kHighlightsVerilog = R"TSQ(
   "join_any"
   "default"
   "break"
+  "assert"
   "tagged"
   "extern"
-  "alias"
-  "posedge"
-  "negedge"
-  "bind"
-  "expect"
-  "type"
-  "void"
-  "coverpoint"
-  "cross"
-  "nettype"
-  "export"
-  "force"
-  "release"
-  "timeunit"
-  "timeprecision"
-  "sequence"
-  "endsequence"
-  "property"
-  "endproperty"
-  "clocking"
-  "endclocking"
-  "covergroup"
-  "endgroup"
-  "specify"
-  "endspecify"
-  "primitive"
-  "endprimitive"
-  "wait"
-  "wait_order"
-  "const"
-  "constraint"
-  "unique"
-  "do"
-  "genvar"
-  "inside"
-  "rand"
-  "continue"
-  "randc"
-  "event"
-  "global"
-  "ref"
-  "initial"
-  "string"
   (unique_priority)
-  (bins_keyword)
-  (always_keyword)
 ] @keyword
-
-[
-  "class"
-  "endclass"
-  "interface"
-  "endinterface"
-  "enum"
-  "struct"
-  "union"
-  "typedef"
-] @keyword.type
 
 [
   "function"
   "endfunction"
+
   "task"
   "endtask"
 ] @keyword.function
@@ -7171,49 +7145,52 @@ static const char *kHighlightsVerilog = R"TSQ(
 "return" @keyword.return
 
 [
+  "begin"
+  "end"
+] @label
+
+[
+  (always_keyword)
+  "generate"
   "for"
   "foreach"
   "repeat"
   "forever"
+  "initial"
   "while"
-] @keyword.repeat
-
-; for
-(loop_generate_construct
-  (generate_block
-    [
-      "begin"
-      "end"
-    ] @keyword.conditional))
-
-; foreach
-(loop_statement
-  (statement
-    (statement_item
-      (seq_block
-        [
-          "begin"
-          "end"
-        ] @keyword.conditional))))
-
-; repeat forever while
-(loop_statement
-  (statement_or_null
-    (statement
-      (statement_item
-        (seq_block
-          [
-            "begin"
-            "end"
-          ] @keyword.conditional)))))
+] @repeat
 
 [
   "if"
   "else"
-  "iff"
   (case_keyword)
   "endcase"
-] @keyword.conditional
+] @conditional
+
+(comment) @comment
+
+(include_compiler_directive) @constant.macro
+(package_import_declaration
+ "import" @include)
+
+(package_import_declaration
+ (package_import_item
+  (package_identifier
+   (simple_identifier) @constant)))
+
+(text_macro_identifier
+ (simple_identifier) @constant.macro)
+
+(package_scope
+ (package_identifier
+  (simple_identifier) @constant))
+
+(package_declaration
+ (package_identifier
+  (simple_identifier) @constant))
+
+(parameter_port_list
+ "#" @constructor)
 
 [
   "="
@@ -7226,7 +7203,12 @@ static const char *kHighlightsVerilog = R"TSQ(
   "|"
   "&&"
   "||"
+  ":"
+  "{"
+  "}"
+  "'{"
   "<="
+  "@"
   "=="
   "!="
   "==="
@@ -7239,439 +7221,190 @@ static const char *kHighlightsVerilog = R"TSQ(
   ">>"
   "<<"
   "|="
-  "|=>"
-  "|->"
-  ">>>"
-  "<<<"
-  "->>"
-  "->"
-  "=>"
-  "*>"
-  ".*"
   (unary_operator)
   (inc_or_dec_operator)
-  (queue_dimension)
 ] @operator
-
-"#" @constructor
-
-[
-  ";"
-  "::"
-  ","
-  "."
-  ":"
-] @punctuation.delimiter
-
-(conditional_expression
-  [
-    "?"
-    ":"
-  ] @keyword.conditional.ternary)
-
-[
-  "["
-  "]"
-  "("
-  ")"
-  "{"
-  "}"
-  "'{"
-] @punctuation.bracket
 
 [
   "or"
   "and"
 ] @keyword.operator
 
-[
-  "input"
-  "output"
-  "inout"
-  "signed"
-  "unsigned"
-  "assert"
-  "cover"
-  "assume"
-  "disable"
-  "automatic"
-  "static"
-  (dpi_function_import_property)
-  (dpi_task_import_property)
-] @keyword.modifier
+(cast
+ ["'" "(" ")"] @operator)
 
-[
-  "include"
-  "import"
-  "directive_include"
-] @keyword.import
+(edge_identifier) @attribute
 
-(comment) @comment @spell
-
-[
-  "@"
-  (cycle_delay_range)
-  (delay_control)
-  (cycle_delay)
-  (attribute_instance)
-] @attribute
-
-(attribute_instance
-  (attr_spec
-    (simple_identifier) @property))
-
-[
-  (integral_number)
-  (unbased_unsized_literal)
-  (fixed_point_number)
-  (unsigned_number)
-] @number
+(port_direction) @label
+(port_identifier
+ (simple_identifier) @variable)
 
 [
   (net_type)
   (integer_vector_type)
-  (time_unit)
   (integer_atom_type)
-  (non_integer_type)
 ] @type.builtin
 
-(data_type
-  (simple_identifier) @type.builtin)
-
-; variable
-(list_of_variable_decl_assignments
-  (variable_decl_assignment
-    name: (simple_identifier) @variable))
-
-(hierarchical_identifier
-  (simple_identifier) @variable)
-
-(tf_port_item
-  (simple_identifier) @variable)
-
-port_name: (simple_identifier) @variable
-
-(port
-  (simple_identifier) @variable)
-
-(list_of_port_identifiers
-  (simple_identifier) @variable)
-
-(net_lvalue
-  (simple_identifier) @variable)
-
-(sequence_port_item
-  (simple_identifier) @variable)
-
-(property_port_item
-  (simple_identifier) @variable)
-
-(net_decl_assignment
-  (simple_identifier) @variable)
-
-(ERROR
-  (simple_identifier) @variable)
-
-; variable.member
-(hierarchical_identifier
-  (simple_identifier)
-  (simple_identifier) @variable.member)
-
-(select
-  (simple_identifier) @variable.member)
-
-(named_port_connection
-  port_name: (simple_identifier) @variable.member)
-
-(ordered_port_connection
-  (expression
-    (primary
-      (hierarchical_identifier
-        (simple_identifier) @variable.member))))
-
-(coverage_option
-  (simple_identifier) @variable.member)
-
-; variable.builtin
-(method_call_body
-  arguments: (list_of_arguments
-    (expression) @variable.builtin
-    (#any-of? @variable.builtin "this")))
-
-(implicit_class_handle) @variable.builtin
-
-; variable.parameter
-(named_parameter_assignment
-  (simple_identifier) @variable.parameter)
-
-(parameter_declaration
-  (list_of_param_assignments
-    (param_assignment
-      (simple_identifier) @variable.parameter)))
-
-(local_parameter_declaration
-  (list_of_param_assignments
-    (param_assignment
-      (simple_identifier) @variable.parameter)))
-
-; function builtin
 [
-  (simulation_control_task)
-  (system_tf_identifier)
-  (severity_system_task)
-  (randomize_call)
-  (array_or_queue_method_name)
-  "new"
-] @function.builtin
+  "signed"
+  "unsigned"
+] @type.qualifier
 
-; declaration
-(task_body_declaration
-  .
-  name: (simple_identifier) @function
-  (simple_identifier)? @label)
+(data_type
+ (simple_identifier) @type)
 
-(function_body_declaration
-  .
-  name: (simple_identifier) @function
-  (simple_identifier)? @label)
-
-(function_body_declaration
-  .
-  (data_type_or_void)
-  name: (simple_identifier) @function
-  (simple_identifier)? @label)
-
-(clocking_declaration
-  .
-  name: (simple_identifier) @constructor
-  (simple_identifier)? @label)
-
-(sequence_declaration
-  .
-  name: (simple_identifier) @constructor
-  (simple_identifier)? @label)
-
-(property_declaration
-  .
-  name: (simple_identifier) @constructor
-  (simple_identifier)? @label)
-
-(class_declaration
-  .
-  name: (simple_identifier) @constructor
-  (simple_identifier)? @label)
-
-(interface_class_declaration
-  .
-  name: (simple_identifier) @constructor
-  (simple_identifier)? @label)
-
-(covergroup_declaration
-  .
-  name: (simple_identifier) @constructor
-  (simple_identifier)? @label)
-
-(package_declaration
-  .
-  name: (simple_identifier) @constructor
-  (simple_identifier)? @label)
-
-(checker_declaration
-  .
-  name: (simple_identifier) @constructor
-  (simple_identifier)? @label)
-
-(interface_declaration
-  .
-  [
-    (simple_identifier) @constructor
-    (interface_nonansi_header
-      (simple_identifier) @constructor)
-    (interface_ansi_header
-      (simple_identifier) @constructor)
-  ]
-  (simple_identifier)? @label)
-
-(module_declaration
-  .
-  [
-    (simple_identifier) @constructor
-    (module_nonansi_header
-      (simple_identifier) @constructor)
-    (module_ansi_header
-      (simple_identifier) @constructor)
-  ]
-  (simple_identifier)? @label)
-
-(program_declaration
-  .
-  [
-    (simple_identifier) @constructor
-    (program_nonansi_header
-      (simple_identifier) @constructor)
-    (program_ansi_header
-      (simple_identifier) @constructor)
-  ]
-  (simple_identifier)? @label)
-
-(generate_block
-  name: (simple_identifier) @label)
-
-; function.call
 (method_call_body
-  name: (simple_identifier) @function.call)
+  (method_identifier) @field)
 
-(tf_call
-  (hierarchical_identifier
-    (simple_identifier) @function.call))
+(interface_identifier
+ (simple_identifier) @type)
 
-; instance
-(module_instantiation
-  instance_type: (simple_identifier) @constructor)
+(modport_identifier
+ (modport_identifier
+  (simple_identifier) @field))
 
-(name_of_instance
-  instance_name: (simple_identifier) @module)
+(net_port_type1
+ (simple_identifier) @type)
 
-(sequence_instance
-  (hierarchical_identifier
-    (simple_identifier) @module))
+[
+  (double_quoted_string)
+  (string_literal)
+] @string
 
-(udp_instantiation
-  (simple_identifier) @constructor)
+[
+  (default_nettype_compiler_directive)
+  (timescale_compiler_directive)
+] @preproc
 
-(ansi_port_declaration
-  (interface_port_header
-    interface_name: (simple_identifier) @variable
-    modport_name: (simple_identifier) @variable.member)
-  port_name: (simple_identifier) @variable)
+(include_compiler_directive) @include
 
-; bind
-(bind_directive
-  (bind_target_scope
-    (simple_identifier) @constructor))
-
-(bind_target_instance
-  (hierarchical_identifier
-    (simple_identifier) @module))
-
-; assertion
-(concurrent_assertion_item
-  (simple_identifier) @label)
-
-; converge
-(cover_point
-  name: (simple_identifier) @label)
-
-(cover_cross
-  name: (simple_identifier) @module)
-
-(list_of_cross_items
-  (simple_identifier) @constructor)
-
-;package
-(package_import_item
-  (simple_identifier) @constructor)
-
-; label
+; begin/end label
 (seq_block
-  (simple_identifier) @label)
+ (simple_identifier) @comment)
 
-(statement
-  block_name: (simple_identifier) @label)
-
-; dpi
-(dpi_spec_string) @string
-
-c_name: (c_identifier) @function
-
-(dpi_import_export
-  name: (simple_identifier) @function)
-
-; type def
-(class_type
-  (simple_identifier) @constructor)
-
-(class_type
-  (simple_identifier)
-  (simple_identifier) @type)
-
-(data_type
-  (class_scope
-    (class_type
-      (simple_identifier) @constructor)))
-
-(task_prototype
-  name: (simple_identifier) @function)
-
-(function_prototype
-  name: (simple_identifier) @function)
-
-(type_assignment
-  name: (simple_identifier) @type.definition)
-
-(interface_class_type
-  (simple_identifier) @type.definition)
-
-(package_scope
-  (simple_identifier) @constructor)
-
-(data_declaration
-  (type_declaration
-    type_name: (simple_identifier) @type.definition))
-
-(net_declaration
-  (simple_identifier) @type)
-
-(constraint_declaration
-  (simple_identifier) @constructor)
-
-(method_call
-  (primary
-    (hierarchical_identifier
-      (simple_identifier) @constructor)))
-
-(string_literal
-  (quoted_string) @string)
-
-; include
-(include_statement
-  (file_path_spec) @string.special.path)
-
-; directive
 [
-  "directive_define"
-  "directive_default_nettype"
-  "directive_resetall"
-  "directive_timescale"
-  "directive_undef"
-  "directive_undefineall"
-  "directive_ifdef"
-  "directive_ifndef"
-  "directive_elsif"
-  "directive_endif"
-  "directive_else"
-] @keyword.directive.define
+ ";"
+ "::"
+ ","
+ "."
+] @punctuation.delimiter
 
-(include_compiler_directive
-  (quoted_string) @string.special.path)
-
-(include_compiler_directive
-  (system_lib_string) @string)
 
 (default_nettype_compiler_directive
-  (default_nettype_value) @type.builtin)
+ (default_nettype_value) @string)
 
-(text_macro_definition
-  (text_macro_name
-    (simple_identifier) @keyword.directive))
+(text_macro_identifier
+ (simple_identifier) @constant)
 
-(text_macro_usage) @keyword.directive
+(module_declaration
+ (module_header
+  (simple_identifier) @constructor))
 
-(ifdef_condition
-  (simple_identifier) @keyword.directive)
+(class_constructor_declaration
+ "new" @constructor)
 
-(undefine_compiler_directive
-  (simple_identifier) @keyword.directive)
+(parameter_identifier
+ (simple_identifier) @parameter)
+
+[
+  (integral_number)
+  (unsigned_number)
+  (unbased_unsized_literal)
+] @number
+
+(time_unit) @attribute
+
+(checker_instantiation
+ (checker_identifier
+  (simple_identifier) @constructor))
+
+(module_instantiation
+ (simple_identifier) @constructor)
+
+(name_of_instance
+ (instance_identifier
+  (simple_identifier) @variable))
+
+(interface_port_declaration
+ (interface_identifier
+  (simple_identifier) @type))
+
+(net_declaration
+ (simple_identifier) @type)
+
+(lifetime) @label
+
+(function_identifier 
+ (function_identifier 
+  (simple_identifier) @function))
+
+(function_subroutine_call 
+ (subroutine_call
+  (tf_call
+   (simple_identifier) @function)))
+
+(function_subroutine_call 
+ (subroutine_call
+  (system_tf_call
+   (system_tf_identifier) @function.builtin)))
+
+(task_identifier
+ (task_identifier
+  (simple_identifier) @method))
+
+;;TODO: fixme
+;(assignment_pattern_expression
+ ;(assignment_pattern
+  ;(parameter_identifier) @field))
+
+(type_declaration
+  (data_type ["packed"] @type.qualifier))
+
+(struct_union) @type
+
+[
+  "enum"
+] @type
+
+(enum_name_declaration
+ (enum_identifier
+  (simple_identifier) @constant))
+
+(type_declaration
+ (simple_identifier) @type)
+
+[
+  (integer_atom_type)
+  (non_integer_type)
+  "genvar"
+] @type.builtin
+
+(struct_union_member
+ (list_of_variable_decl_assignments
+  (variable_decl_assignment
+   (simple_identifier) @field)))
+
+(member_identifier
+ (simple_identifier) @field)
+
+(struct_union_member
+ (data_type_or_void
+  (data_type
+   (simple_identifier) @type)))
+
+(type_declaration
+ (simple_identifier) @type)
+
+(generate_block_identifier) @comment
+
+[
+  "["
+  "]"
+  "("
+  ")"
+] @punctuation.bracket
+
+(ERROR) @error
 )TSQ";
 
 static const char *kHighlightsGraphql = R"TSQ(
@@ -8198,7 +7931,6 @@ static const char *kHighlightsPerl = R"TSQ(
   (hash_variable)
   (package_variable)
   (special_scalar_variable)
-  (typeglob)
 ] @variable
 
 [ "if" "elsif" "unless" "else" "when" ] @conditional
@@ -8222,124 +7954,121 @@ static const char *kHighlightsPerl = R"TSQ(
 (module_name) @type
 
 (function_definition name: (identifier) @function)
-(label) @label
 
 (ERROR) @error
 )TSQ";
 
+// tree-sitter-fortran 0.5.1's own queries/highlights.scm (the version
+// flake.nix's grammar bundle pins): the query vendored here before named
+// nodes that grammar lacks (custom_directive, a deallocate_statement
+// keyword), so ts_query_new rejected it and .f90 got no highlighting.
 static const char *kHighlightsFortran = R"TSQ(
-[
- (identifier)
- (module_name)
-] @variable
-
+(identifier) @variable
 (string_literal) @string
 (number_literal) @number
-(statement_label) @number
-(statement_label_reference) @number
 (boolean_literal) @boolean
 (comment) @comment
-(custom_directive) @custom_directive
 
 [
- (derived_type)
- (derived_type_statement)
- (import_statement)
  (intrinsic_type)
- (type_name)
-] @type
-
-(intrinsic_type) @type.builtin
-
-(base_type_specifier
-  (identifier) @type)
+ "allocatable"
+ "attributes"
+ "device"
+ "dimension"
+ "endtype"
+ "global"
+ "grid_global"
+ "host"
+ "import"
+ "in"
+ "inout"
+ "intent"
+ "optional"
+ "out"
+ "pointer"
+ "type"
+ "value"
+ ] @type
 
 [
- (module_statement)
- (submodule_statement)
-] @module
+ "contains"
+ "private"
+ "public"
+ ] @include
 
 [
- (abstract_specifier)
- (access_specifier)
- (block_label)
- (block_label_start_expression)
  (none)
- (procedure_attributes)
- (procedure_qualifier)
- (type_qualifier)
-] @attribute
+ "implicit"
+ ] @attribute
 
 [
- "#define"
- "#elif"
- "#endif"
- "#if"
- "#ifdef"
- (base_type_specifier)
- (block_construct)
- (contains_statement)
+ "endfunction"
+ "endprogram"
+ "endsubroutine"
+ "function"
+ "procedure"
+ "subroutine"
+ ] @keyword.function
+
+[
  (default)
- (end_associate_statement)
- (end_block_construct_statement)
- (end_block_data_statement)
- (end_coarray_critical_statement)
- (end_coarray_team_statement)
- (end_do_loop_statement)
- (end_enum_statement)
- (end_enumeration_type_statement)
- (end_forall_statement)
- (end_function_statement)
- (end_if_statement)
- (end_interface_statement)
- (end_module_procedure_statement)
- (end_module_statement)
- (end_program_statement)
- (end_select_statement)
- (end_submodule_statement)
- (end_subroutine_statement)
- (end_type_statement)
- (end_where_statement)
- (enum_statement)
- (enumeration_type_statement)
- (enumerator_statement)
- (equivalence_statement)
- (function_statement)
- (implicit_statement)
- (interface_statement)
- (keyword_statement)
- (language_binding)
- (namelist_statement)
- (print_statement)
- (procedure_statement)
- (program_statement)
- (subroutine_statement)
-] @keyword
+ (procedure_qualifier)
+ "abstract"
+ "bind"
+ "call"
+ "class"
+ "continue"
+ "cycle"
+ "endenum"
+ "endinterface"
+ "endmodule"
+ "endprocedure"
+ "endprogram"
+ "endsubmodule"
+ "enum"
+ "enumerator"
+ "equivalence"
+ "exit"
+ "extends"
+ "format"
+ "goto"
+ "include"
+ "interface"
+ "intrinsic"
+ "non_intrinsic"
+ "module"
+ "namelist"
+ "only"
+ "parameter"
+ "print"
+ "procedure"
+ "program"
+ "read"
+ "stop"
+ "submodule"
+ "use"
+ "write"
+ ] @keyword
 
-(use_statement "use" @keyword)
-(use_statement "intrinsic" @keyword)
-(included_items "only" @keyword)
-(allocate_statement "allocate" @keyword)
-(deallocate_statement "deallocate" @keyword)
-(subroutine_call "call" @keyword)
-(do_statement "do" @keyword)
-(while_statement "while" @keyword)
-(if_statement ["if" "then"] @keyword)
-(elseif_clause ["else" "if" "elseif"] @keyword)
-(else_clause "else" @keyword)
-(open_statement "open" @keyword)
-(write_statement "write" @keyword)
-(private_statement "private" @keyword)
-(public_statement "public" @keyword)
+"return" @keyword.return
 
+[
+ "else"
+ "elseif"
+ "elsewhere"
+ "endif"
+ "endwhere"
+ "if"
+ "then"
+ "where"
+ ] @conditional
 
-(select_case_statement "select" @keyword "case" @keyword)
-(select_type_statement "select" @keyword "type" @keyword)
-(select_rank_statement "select" @keyword "rank" @keyword)
-(case_statement "case" @keyword)
-(type_statement "type" @keyword)
-(rank_statement "rank" @keyword)
-
+[
+ "do"
+ "enddo"
+ "forall"
+ "while"
+ ] @repeat
 
 [
  "*"
@@ -8353,17 +8082,19 @@ static const char *kHighlightsFortran = R"TSQ(
  ">="
  "=="
  "/="
- ".and."
- ".or."
- ".lt."
- ".gt."
- ".ge."
- ".le."
- ".eq."
- ".eqv."
- ".neqv."
- ".ne."
-] @operator
+ ] @operator
+
+[
+ "\\.and\\."
+ "\\.or\\."
+ "\\.lt\\."
+ "\\.gt\\."
+ "\\.ge\\."
+ "\\.le\\."
+ "\\.eq\\."
+ "\\.eqv\\."
+ "\\.neqv\\."
+ ] @keyword.operator
 
 ;; Brackets
 [
@@ -8373,29 +8104,26 @@ static const char *kHighlightsFortran = R"TSQ(
  "]"
  "<<<"
  ">>>"
-] @punctuation.bracket
+ ] @punctuation.bracket
 
 ;; Delimiter
 [
  "::"
  ","
  "%"
- ":"
-] @punctuation.delimiter
-
-"&" @punctuation.special
+ ] @punctuation.delimiter
 
 (parameters
-  (identifier) @variable.parameter)
+  (identifier) @parameter)
 
 (program_statement
-  (name) @variable)
+  (name) @namespace)
 
 (module_statement
-  (name) @variable)
+  (name) @namespace)
 
 (submodule_statement
-  (module_name) (name) @variable)
+  (module_name) (name) @namespace)
 
 (function_statement
   (name) @function)
@@ -8407,13 +8135,13 @@ static const char *kHighlightsFortran = R"TSQ(
   (name) @function)
 
 (end_program_statement
-  (name) @variable)
+  (name) @namespace)
 
 (end_module_statement
-  (name) @variable)
+  (name) @namespace)
 
 (end_submodule_statement
-  (name) @variable)
+  (name) @namespace)
 
 (end_function_statement
   (name) @function)
@@ -8891,6 +8619,1163 @@ static const char *kHighlightsNim = R"TSQ(
 (infix_expression operator: _ @operator)
 (prefix_expression operator: _ @operator)
 
+)TSQ";
+
+// MATLAB/Octave (.m) -- acristoffers/tree-sitter-matlab's own
+// queries/neovim/highlights.scm (nixpkgs' tree-sitter-matlab ships it),
+// minus nvim's @spell capture. The grammar parses Octave scripts too.
+static const char *kHighlightsMatlab = R"TSQ(
+; Includes
+
+((command_name) @include
+  (#eq? @include "import"))
+
+; Keywords
+
+[
+  "arguments"
+  "classdef"
+  "end"
+  "enumeration"
+  "events"
+  "global"
+  "methods"
+  "persistent"
+  "properties"
+] @keyword
+
+; Conditionals
+
+(if_statement [ "if" "end" ] @conditional)
+(elseif_clause "elseif" @conditional)
+(else_clause "else" @conditional)
+(switch_statement [ "switch" "end" ] @conditional)
+(case_clause "case" @conditional)
+(otherwise_clause "otherwise" @conditional)
+(break_statement) @conditional
+
+; Repeats
+
+(for_statement [ "for" "parfor" "end" ] @repeat)
+(while_statement [ "while" "end" ] @repeat)
+(continue_statement) @repeat
+
+; Exceptions
+
+(try_statement [ "try" "end" ] @exception)
+(catch_clause "catch" @exception)
+
+; Variables
+
+(identifier) @variable
+
+; Constants
+
+(events (identifier) @constant)
+(attribute (identifier) @constant)
+
+"~" @constant.builtin
+
+; Fields/Properties
+
+(field_expression field: (identifier) @field)
+
+(superclass "." (identifier) @property)
+
+(property_name "." (identifier) @property)
+
+(property name: (identifier) @property)
+
+; Types
+
+(class_definition name: (identifier) @type)
+
+(attributes (identifier) @constant)
+
+(enum . (identifier) @type)
+
+((identifier) @type
+  (#lua-match? @type "^_*[A-Z][a-zA-Z0-9_]+$"))
+
+; Functions
+
+(function_definition
+  "function" @keyword.function
+  name: (identifier) @function
+  [ "end" "endfunction" ]? @keyword.function)
+
+(function_signature name: (identifier) @function)
+
+(function_call
+  name: (identifier) @function.call)
+
+(handle_operator (identifier) @function)
+
+(validation_functions (identifier) @function)
+
+(command (command_name) @function.call)
+(command_argument) @parameter
+
+(return_statement) @keyword.return
+
+; Parameters
+
+(function_arguments (identifier) @parameter)
+
+; Punctuation
+
+[ ";" "," "." ] @punctuation.delimiter
+
+[ "(" ")" "[" "]" "{" "}" ] @punctuation.bracket
+
+; Operators
+
+[
+  "+"
+  ".+"
+  "-"
+  ".*"
+  "*"
+  ".*"
+  "/"
+  "./"
+  "\\"
+  ".\\"
+  "^"
+  ".^"
+  "'"
+  ".'"
+  "|"
+  "&"
+  "?"
+  "@"
+  "<"
+  "<="
+  ">"
+  ">="
+  "=="
+  "~="
+  "="
+  "&&"
+  "||"
+  ":"
+] @operator
+
+; Literals
+
+(string) @string
+
+(escape_sequence) @string.escape
+(formatting_sequence) @string.special
+
+(number) @number
+
+((identifier) @boolean
+  (#eq? @boolean "true"))
+((identifier) @boolean
+  (#eq? @boolean "false"))
+
+; Comments
+
+[ (comment) (line_continuation) ] @comment
+
+; Errors
+
+(ERROR) @error
+)TSQ";
+
+// Scheme (.scm/.ss), tree-sitter-scheme: the grammar's own queries/highlights.scm.
+static const char *kHighlightsScheme = R"TSQ(
+["(" ")" "[" "]" "{" "}"] @punctuation.bracket
+
+(number) @number
+(character) @constant.builtin
+(boolean) @constant.builtin
+(symbol) @variable
+
+(string) @string
+
+(escape_sequence) @escape
+
+(list
+  .
+  (symbol) @function)
+
+(list
+  .
+  "["
+  .
+  (symbol)+ @variable
+  .
+  "]")
+
+((symbol) @operator
+ (#match? @operator "^(\\+|-|\\*|/|=|>|<|>=|<=)$"))
+
+(list
+  .
+  (symbol) @keyword
+  (#match? @keyword
+   "^(define-syntax|let\\*|lambda|λ|case|=>|quote-splicing|unquote-splicing|set!|let|letrec|letrec-syntax|let-values|let\\*-values|do|else|define|cond|syntax-rules|unquote|begin|quote|let-syntax|and|if|quasiquote|letrec|delay|or|when|unless|identifier-syntax|assert|library|export|import|rename|only|except|prefix)$"
+   ))
+
+(list
+  .
+  (symbol) @function.builtin
+  (#match? @function.builtin
+   "^(caar|cadr|call-with-input-file|call-with-output-file|cdar|cddr|list|open-input-file|open-output-file|with-input-from-file|with-output-to-file|\\*|\\+|-|/|<|<=|=|>|>=|abs|acos|angle|append|apply|asin|assoc|assq|assv|atan|boolean\\?|caaaar|caaadr|caaar|caadar|caaddr|caadr|cadaar|cadadr|cadar|caddar|cadddr|caddr|call-with-current-continuation|call-with-values|car|cdaaar|cdaadr|cdaar|cdadar|cdaddr|cdadr|cddaar|cddadr|cddar|cdddar|cddddr|cdddr|cdr|ceiling|char->integer|char-alphabetic\\?|char-ci<=\\?|char-ci<\\?|char-ci=\\?|char-ci>=\\?|char-ci>\\?|char-downcase|char-lower-case\\?|char-numeric\\?|char-ready\\?|char-upcase|char-upper-case\\?|char-whitespace\\?|char<=\\?|char<\\?|char=\\?|char>=\\?|char>\\?|char\\?|close-input-port|close-output-port|complex\\?|cons|cos|current-error-port|current-input-port|current-output-port|denominator|display|dynamic-wind|eof-object\\?|eq\\?|equal\\?|eqv\\?|eval|even\\?|exact->inexact|exact\\?|exp|expt|floor|flush-output|for-each|force|gcd|imag-part|inexact->exact|inexact\\?|input-port\\?|integer->char|integer\\?|interaction-environment|lcm|length|list->string|list->vector|list-ref|list-tail|list\\?|load|log|magnitude|make-polar|make-rectangular|make-string|make-vector|map|max|member|memq|memv|min|modulo|negative\\?|newline|not|null-environment|null\\?|number->string|number\\?|numerator|odd\\?|output-port\\?|pair\\?|peek-char|positive\\?|procedure\\?|quotient|rational\\?|rationalize|read|read-char|real-part|real\\?|remainder|reverse|round|scheme-report-environment|set-car!|set-cdr!|sin|sqrt|string|string->list|string->number|string->symbol|string-append|string-ci<=\\?|string-ci<\\?|string-ci=\\?|string-ci>=\\?|string-ci>\\?|string-copy|string-fill!|string-length|string-ref|string-set!|string<=\\?|string<\\?|string=\\?|string>=\\?|string>\\?|string\\?|substring|symbol->string|symbol\\?|tan|transcript-off|transcript-on|truncate|values|vector|vector->list|vector-fill!|vector-length|vector-ref|vector-set!|vector\\?|write|write-char|zero\\?)$"
+   ))
+
+;; quote ;;
+
+;; hardcoded highlight four levels of nested structure
+
+; 'atom
+(quote
+  _ @constant)
+
+; '()
+(quote
+  (_ _* @constant))
+
+; '(())
+(quote
+  (_ (_ _* @constant)))
+
+; '((()))
+(quote
+  (_ (_ (_ _* @constant))))
+
+;; sexp comment ;;
+
+;; hardcoded highlight four levels of nested structure
+
+; #;atom
+(comment
+  _ @comment)
+
+; #;(list)
+(comment
+  (_ _* @comment))
+
+; #;(list (list))
+(comment
+  (_ (_ _* @comment)))
+
+; #;(list (list (list)))
+(comment
+  (_ (_ (_ _ @comment))))
+
+[(comment)
+ (block_comment)
+ (directive)] @comment
+)TSQ";
+
+// Tcl (.tcl), tree-sitter-tcl: the grammar's own queries/highlights.scm.
+static const char *kHighlightsTcl = R"TSQ(
+(comment) @comment
+
+(command name: (simple_word) @function)
+
+"proc" @keyword.function @keyword
+
+(procedure
+  name: (_) @variable
+)
+
+(set (id) @variable)
+
+(argument
+  name: (_) @variable.parameter @variable
+)
+
+((simple_word) @variable.builtin @variable
+               (#any-of? @variable.builtin
+                "argc"
+                "argv"
+                "argv0"
+                "auto_path"
+                "env"
+                "errorCode"
+                "errorInfo"
+                "tcl_interactive"
+                "tcl_library"
+                "tcl_nonwordchars"
+                "tcl_patchLevel"
+                "tcl_pkgPath"
+                "tcl_platform"
+                "tcl_precision"
+                "tcl_rcFileName"
+                "tcl_traceCompile"
+                "tcl_traceExec"
+                "tcl_wordchars"
+                "tcl_version"))
+
+
+"expr" @function.builtin @function
+
+; Highlight switch arguments as string
+(command
+    name: (simple_word) @keyword
+    arguments:
+        (word_list
+            (braced_word
+                (command
+                    name: (simple_word) @string)))
+    (#eq? @keyword "switch"))
+
+(command
+  name: (simple_word) @function.builtin @function
+  (#any-of? @function.builtin
+   "cd"
+   "exec"
+   "exit"
+   "incr"
+   "info"
+   "join"
+   "puts"
+   "regexp"
+   "regsub"
+   "split"
+   "subst"
+   "trace"
+   "source"))
+
+; Highlight unset and variable arguments as variables
+(command
+    name: (simple_word) @keyword
+    arguments: (word_list) @variable
+    (#any-of? @keyword
+        "unset"
+        "variable"))
+
+(command name: (simple_word) @keyword
+         (#any-of? @keyword
+          "append"
+          "break"
+          "catch"
+          "continue"
+          "default"
+          "dict"
+          "error"
+          "eval"
+          "global"
+          "lappend"
+          "lassign"
+          "lindex"
+          "linsert"
+          "list"
+          "llength"
+          "lmap"
+          "lrange"
+          "lrepeat"
+          "lreplace"
+          "lreverse"
+          "lsearch"
+          "lset"
+          "lsort"
+          "package"
+          "return"
+          "trap"
+          "throw"))
+
+[
+ "catch"
+ "error"
+ "global"
+ "namespace"
+ "on"
+ "set"
+ "try"
+ "finally"
+ ] @keyword
+
+(unpack) @operator
+
+[
+ "while"
+ "foreach"
+ ; "for"
+ ] @repeat @keyword
+
+[
+ "if"
+ "else"
+ "elseif"
+ ] @conditional @keyword
+
+[
+ "**"
+ "/" "*" "%" "+" "-"
+ "<<" ">>"
+ ">" "<" ">=" "<="
+ "==" "!="
+ "eq" "ne"
+ "in" "ni"
+ "&"
+ "^"
+ "|"
+ "&&"
+ "||"
+ ] @operator
+
+(variable_substitution) @variable
+(quoted_word) @string
+(escaped_character) @string.escape
+
+[
+ "{" "}"
+ "[" "]"
+ ";"
+ ] @punctuation.bracket @punctuation.delimiter
+
+(number) @number
+
+((simple_word) @number
+               (#match? @number
+                   "^[0-9]+$|^[+-]?[0-9]+$"))
+
+
+((simple_word) @boolean
+               (#any-of? @boolean "true" "false"))
+
+; after apply array auto_execok auto_import auto_load auto_mkindex auto_qualify
+; auto_reset bgerror binary chan clock close coroutine dde encoding eof fblocked
+; fconfigure fcopy file fileevent filename flush format gets glob history http
+; interp load mathfunc mathop memory msgcat my next nextto open parray pid
+; pkg::create pkg_mkIndex platform platform::shell pwd re_syntax read refchan
+; registry rename safe scan seek self socket source string tailcall tcl::prefix
+; tcl_endOfWord tcl_findLibrary tcl_startOfNextWord tcl_startOfPreviousWord
+; tcl_wordBreakAfter tcl_wordBreakBefore tcltest tell time timerate tm
+; transchan unknown unload update uplevel upvar vwait yield yieldto zlib
+)TSQ";
+
+// SQL (.sql), tree-sitter-sql 0.3.11 (DerekStride's): the grammar's own
+// queries/highlights.scm.
+static const char *kHighlightsSql = R"TSQ(
+(object_reference
+  name: (identifier) @type)
+
+(invocation
+  (object_reference
+    name: (identifier) @function.call))
+
+[
+  (keyword_gist)
+  (keyword_btree)
+  (keyword_hash)
+  (keyword_spgist)
+  (keyword_gin)
+  (keyword_brin)
+  (keyword_array)
+  (keyword_object_id)
+] @function.call
+
+(relation
+  alias: (identifier) @variable)
+
+(field
+  name: (identifier) @field)
+
+(term
+  alias: (identifier) @variable)
+
+((term
+   value: (cast
+    name: (keyword_cast) @function.call
+    parameter: [(literal)]?)))
+
+(literal) @string
+(comment) @comment
+(marginalia) @comment
+
+((literal) @number
+   (#match? @number "^[-+]?%d+$"))
+
+((literal) @float
+  (#match? @float "^[-+]?%d*\.%d*$"))
+
+(parameter) @parameter
+
+[
+ (keyword_true)
+ (keyword_false)
+] @boolean
+
+[
+ (keyword_asc)
+ (keyword_desc)
+ (keyword_terminated)
+ (keyword_escaped)
+ (keyword_unsigned)
+ (keyword_nulls)
+ (keyword_last)
+ (keyword_delimited)
+ (keyword_replication)
+ (keyword_auto_increment)
+ (keyword_default)
+ (keyword_collate)
+ (keyword_concurrently)
+ (keyword_engine)
+ (keyword_always)
+ (keyword_generated)
+ (keyword_preceding)
+ (keyword_following)
+ (keyword_first)
+ (keyword_current_timestamp)
+ (keyword_immutable)
+ (keyword_atomic)
+ (keyword_parallel)
+ (keyword_leakproof)
+ (keyword_safe)
+ (keyword_cost)
+ (keyword_strict)
+] @attribute
+
+[
+ (keyword_materialized)
+ (keyword_recursive)
+ (keyword_temp)
+ (keyword_temporary)
+ (keyword_unlogged)
+ (keyword_external)
+ (keyword_parquet)
+ (keyword_csv)
+ (keyword_rcfile)
+ (keyword_textfile)
+ (keyword_orc)
+ (keyword_avro)
+ (keyword_jsonfile)
+ (keyword_sequencefile)
+ (keyword_volatile)
+] @storageclass
+
+[
+ (keyword_case)
+ (keyword_when)
+ (keyword_then)
+ (keyword_else)
+] @conditional
+
+[
+  (keyword_select)
+  (keyword_from)
+  (keyword_where)
+  (keyword_index)
+  (keyword_join)
+  (keyword_primary)
+  (keyword_delete)
+  (keyword_create)
+  (keyword_show)
+  (keyword_unload)
+  (keyword_insert)
+  (keyword_merge)
+  (keyword_distinct)
+  (keyword_replace)
+  (keyword_update)
+  (keyword_into)
+  (keyword_overwrite)
+  (keyword_matched)
+  (keyword_values)
+  (keyword_value)
+  (keyword_attribute)
+  (keyword_set)
+  (keyword_left)
+  (keyword_right)
+  (keyword_outer)
+  (keyword_inner)
+  (keyword_full)
+  (keyword_order)
+  (keyword_partition)
+  (keyword_group)
+  (keyword_with)
+  (keyword_without)
+  (keyword_as)
+  (keyword_having)
+  (keyword_limit)
+  (keyword_offset)
+  (keyword_table)
+  (keyword_tables)
+  (keyword_key)
+  (keyword_references)
+  (keyword_foreign)
+  (keyword_constraint)
+  (keyword_force)
+  (keyword_use)
+  (keyword_for)
+  (keyword_if)
+  (keyword_exists)
+  (keyword_column)
+  (keyword_columns)
+  (keyword_cross)
+  (keyword_lateral)
+  (keyword_natural)
+  (keyword_alter)
+  (keyword_drop)
+  (keyword_add)
+  (keyword_view)
+  (keyword_end)
+  (keyword_is)
+  (keyword_using)
+  (keyword_between)
+  (keyword_window)
+  (keyword_no)
+  (keyword_data)
+  (keyword_type)
+  (keyword_rename)
+  (keyword_to)
+  (keyword_schema)
+  (keyword_owner)
+  (keyword_authorization)
+  (keyword_all)
+  (keyword_any)
+  (keyword_some)
+  (keyword_returning)
+  (keyword_begin)
+  (keyword_commit)
+  (keyword_rollback)
+  (keyword_transaction)
+  (keyword_only)
+  (keyword_like)
+  (keyword_similar)
+  (keyword_over)
+  (keyword_change)
+  (keyword_modify)
+  (keyword_after)
+  (keyword_before)
+  (keyword_range)
+  (keyword_rows)
+  (keyword_groups)
+  (keyword_exclude)
+  (keyword_current)
+  (keyword_ties)
+  (keyword_others)
+  (keyword_zerofill)
+  (keyword_format)
+  (keyword_fields)
+  (keyword_row)
+  (keyword_sort)
+  (keyword_compute)
+  (keyword_comment)
+  (keyword_location)
+  (keyword_cached)
+  (keyword_uncached)
+  (keyword_lines)
+  (keyword_stored)
+  (keyword_virtual)
+  (keyword_partitioned)
+  (keyword_analyze)
+  (keyword_explain)
+  (keyword_verbose)
+  (keyword_truncate)
+  (keyword_rewrite)
+  (keyword_optimize)
+  (keyword_vacuum)
+  (keyword_cache)
+  (keyword_language)
+  (keyword_called)
+  (keyword_conflict)
+  (keyword_declare)
+  (keyword_filter)
+  (keyword_function)
+  (keyword_input)
+  (keyword_name)
+  (keyword_oid)
+  (keyword_oids)
+  (keyword_precision)
+  (keyword_regclass)
+  (keyword_regnamespace)
+  (keyword_regproc)
+  (keyword_regtype)
+  (keyword_restricted)
+  (keyword_return)
+  (keyword_returns)
+  (keyword_separator)
+  (keyword_setof)
+  (keyword_stable)
+  (keyword_support)
+  (keyword_tblproperties)
+  (keyword_trigger)
+  (keyword_unsafe)
+  (keyword_admin)
+  (keyword_connection)
+  (keyword_cycle)
+  (keyword_database)
+  (keyword_encrypted)
+  (keyword_increment)
+  (keyword_logged)
+  (keyword_none)
+  (keyword_owned)
+  (keyword_password)
+  (keyword_reset)
+  (keyword_role)
+  (keyword_sequence)
+  (keyword_start)
+  (keyword_restart)
+  (keyword_tablespace)
+  (keyword_until)
+  (keyword_user)
+  (keyword_valid)
+  (keyword_action)
+  (keyword_definer)
+  (keyword_invoker)
+  (keyword_security)
+  (keyword_extension)
+  (keyword_version)
+  (keyword_out)
+  (keyword_inout)
+  (keyword_variadic)
+  (keyword_ordinality)
+  (keyword_session)
+  (keyword_isolation)
+  (keyword_level)
+  (keyword_serializable)
+  (keyword_repeatable)
+  (keyword_read)
+  (keyword_write)
+  (keyword_committed)
+  (keyword_uncommitted)
+  (keyword_deferrable)
+  (keyword_names)
+  (keyword_zone)
+  (keyword_immediate)
+  (keyword_deferred)
+  (keyword_constraints)
+  (keyword_snapshot)
+  (keyword_characteristics)
+  (keyword_off)
+  (keyword_follows)
+  (keyword_precedes)
+  (keyword_each)
+  (keyword_instead)
+  (keyword_of)
+  (keyword_initially)
+  (keyword_old)
+  (keyword_new)
+  (keyword_referencing)
+  (keyword_statement)
+  (keyword_execute)
+  (keyword_procedure)
+  (keyword_copy)
+  (keyword_delimiter)
+  (keyword_encoding)
+  (keyword_escape)
+  (keyword_force_not_null)
+  (keyword_force_null)
+  (keyword_force_quote)
+  (keyword_freeze)
+  (keyword_header)
+  (keyword_match)
+  (keyword_program)
+  (keyword_quote)
+  (keyword_stdin)
+  (keyword_extended)
+  (keyword_main)
+  (keyword_plain)
+  (keyword_storage)
+  (keyword_compression)
+  (keyword_duplicate)
+] @keyword
+
+[
+ (keyword_restrict)
+ (keyword_unbounded)
+ (keyword_unique)
+ (keyword_cascade)
+ (keyword_delayed)
+ (keyword_high_priority)
+ (keyword_low_priority)
+ (keyword_ignore)
+ (keyword_nothing)
+ (keyword_check)
+ (keyword_option)
+ (keyword_local)
+ (keyword_cascaded)
+ (keyword_wait)
+ (keyword_nowait)
+ (keyword_metadata)
+ (keyword_incremental)
+ (keyword_bin_pack)
+ (keyword_noscan)
+ (keyword_stats)
+ (keyword_statistics)
+ (keyword_maxvalue)
+ (keyword_minvalue)
+] @type.qualifier
+
+[
+  (keyword_int)
+  (keyword_null)
+  (keyword_boolean)
+  (keyword_binary)
+  (keyword_varbinary)
+  (keyword_image)
+  (keyword_bit)
+  (keyword_inet)
+  (keyword_character)
+  (keyword_smallserial)
+  (keyword_serial)
+  (keyword_bigserial)
+  (keyword_smallint)
+  (keyword_mediumint)
+  (keyword_bigint)
+  (keyword_tinyint)
+  (keyword_decimal)
+  (keyword_float)
+  (keyword_double)
+  (keyword_numeric)
+  (keyword_real)
+  (double)
+  (keyword_money)
+  (keyword_smallmoney)
+  (keyword_char)
+  (keyword_nchar)
+  (keyword_varchar)
+  (keyword_nvarchar)
+  (keyword_varying)
+  (keyword_text)
+  (keyword_string)
+  (keyword_uuid)
+  (keyword_json)
+  (keyword_jsonb)
+  (keyword_xml)
+  (keyword_bytea)
+  (keyword_enum)
+  (keyword_date)
+  (keyword_datetime)
+  (keyword_time)
+  (keyword_datetime2)
+  (keyword_datetimeoffset)
+  (keyword_smalldatetime)
+  (keyword_timestamp)
+  (keyword_timestamptz)
+  (keyword_geometry)
+  (keyword_geography)
+  (keyword_box2d)
+  (keyword_box3d)
+  (keyword_interval)
+] @type.builtin
+
+[
+  (keyword_in)
+  (keyword_and)
+  (keyword_or)
+  (keyword_not)
+  (keyword_by)
+  (keyword_on)
+  (keyword_do)
+  (keyword_union)
+  (keyword_except)
+  (keyword_intersect)
+] @keyword.operator
+
+[
+  "+"
+  "-"
+  "*"
+  "/"
+  "%"
+  "^"
+  ":="
+  "="
+  "<"
+  "<="
+  "!="
+  ">="
+  ">"
+  "<>"
+  (op_other)
+  (op_unary_other)
+] @operator
+
+[
+  "("
+  ")"
+] @punctuation.bracket
+
+[
+  ";"
+  ","
+  "."
+] @punctuation.delimiter
+)TSQ";
+
+// GAP (.g/.gi/.gd), gap-system/tree-sitter-gap (MIT): the grammar's own
+// queries/highlights.scm. Its newer nvim capture names (keyword.conditional,
+// number.float, ...) resolve through ts_apply_captures' first-segment fallback.
+static const char *kHighlightsGap = R"TSQ(
+; NOTE: (reiniscirpons) in case multiple queries match, last query wins. So
+; queries should go from least specific to most specific. (This is the default
+; behaviour since tree-sitter 0.22.2)
+(identifier) @variable
+
+; Constants
+; convention: constants are of the form ALL_CAPS_AND_UNDERSCORES and have length at least 2
+((identifier) @constant
+  (#match? @constant "^[A-Z_][A-Z_]+$"))
+
+; Functions
+(assignment_statement
+  left: (identifier) @function
+  right: (function))
+
+(assignment_statement
+  left: (identifier) @function
+  right: (atomic_function))
+
+(assignment_statement
+  left: (identifier) @function
+  right: (lambda))
+
+(call
+  function: (identifier) @function.call)
+
+((call
+  function: (identifier) @function.builtin)
+  (#any-of? @function.builtin "Assert" "Info" "IsBound" "Unbind" "TryNextMethod"))
+
+(parameters
+  (identifier) @variable.parameter)
+
+(qualified_parameters
+  (identifier) @variable.parameter)
+
+(qualified_parameters
+  (qualified_identifier
+    (identifier) @variable.parameter))
+
+(lambda_parameters
+  (identifier) @variable.parameter)
+
+; arg is treated specially when it is the only parameter of a function
+((parameters
+  .
+  (identifier) @variable.parameter.builtin .)
+  (#eq? @variable.parameter.builtin "arg"))
+
+((qualified_parameters
+  .
+  (identifier) @variable.parameter.builtin .)
+  (#eq? @variable.parameter.builtin "arg"))
+
+((qualified_parameters
+  .
+  (qualified_identifier
+    (identifier) @variable.parameter.builtin) .)
+  (#eq? @variable.parameter.builtin "arg"))
+
+((lambda_parameters
+  .
+  (identifier) @variable.parameter.builtin .)
+  (#eq? @variable.parameter.builtin "arg"))
+
+(locals
+  (identifier) @variable.parameter)
+
+; Literals
+(bool) @constant.builtin
+
+(integer) @number
+
+(float) @number.float
+
+(string) @string
+
+(char) @character
+
+(escape_sequence) @string.escape
+
+[
+  (help_topic)
+  (help_book)
+] @string.special
+
+(tilde) @variable.builtin
+
+; Record selectors
+(record_entry
+  left: [
+    (identifier)
+    (integer)
+  ] @variable.member)
+
+(record_selector
+  selector: [
+    (identifier)
+    (integer)
+  ] @variable.member)
+
+(component_selector
+  selector: [
+    (identifier)
+    (integer)
+  ] @variable.member)
+
+(function_call_option
+  [
+    (identifier)
+    (record_entry ;Record entries specify global properties in function calls
+      left: [
+        (identifier)
+        (integer)
+      ])
+  ] @property)
+
+(help_statement
+  (help_selector) @property)
+
+; Operators
+[
+  "+"
+  "-"
+  "*"
+  "/"
+  "^"
+  "->"
+  ":="
+  "<"
+  "<="
+  "<>"
+  "="
+  ">"
+  ">="
+  ".."
+  (ellipsis)
+] @operator
+
+(help_statement
+  (help_operator) @operator)
+
+; Keywords
+[
+  (break_statement)
+  (continue_statement)
+  "atomic"
+  (quit_statement)
+] @keyword
+
+[
+  "function"
+  "local"
+  "end"
+] @keyword.function
+
+[
+  "and"
+  "in"
+  "mod"
+  "not"
+  "or"
+] @keyword.operator
+
+"rec" @keyword.type
+
+[
+  "readonly"
+  "readwrite"
+] @keyword.modifier
+
+(atomic_function
+  "atomic" @keyword.modifier)
+
+[
+  "for"
+  "while"
+  "do"
+  "od"
+  "repeat"
+  "until"
+] @keyword.repeat
+
+[
+  "if"
+  "then"
+  "elif"
+  "else"
+  "fi"
+] @keyword.conditional
+
+"return" @keyword.return
+
+(pragma) @keyword.directive
+
+;Punctuation
+[
+  ","
+  ";"
+  "."
+  "!."
+  ":"
+] @punctuation.delimiter
+
+[
+  "("
+  ")"
+  "["
+  "!["
+  "]"
+  "{"
+  "}"
+] @punctuation.bracket
+
+(help_statement
+  "?" @punctuation.special)
+
+;Comments
+(comment) @comment
+)TSQ";
+
+// Maxima (.mac/.max), stewsat/tree-sitter-maxima -- see the query's own
+// header for why it is mep's own rather than the grammar's.
+static const char *kHighlightsMaxima = R"TSQ(
+; Maxima (stewsat/tree-sitter-maxima). Written for mep: the grammar's own
+; query ships without a license, so none of it is copied here. The grammar
+; has no field names -- a call's head is simply its first atom.
+
+(identifier) @variable
+
+(binary_expression . (atom (identifier) @variable) ":")
+
+(function_call . (atom (identifier) @function.call))
+
+((function_call . (atom (identifier) @function.builtin))
+ (#any-of? @function.builtin
+  "print" "display" "disp" "ldisp" "printf" "makelist" "map" "apply" "lambda"
+  "expand" "factor" "ratsimp" "fullratsimp" "trigsimp" "simplify" "subst" "ev"
+  "diff" "integrate" "limit" "sum" "product" "taylor" "solve" "linsolve"
+  "allroots" "realroots" "sqrt" "abs" "exp" "log" "sin" "cos" "tan" "asin"
+  "acos" "atan" "sinh" "cosh" "tanh" "float" "bfloat" "length" "first" "last"
+  "rest" "append" "cons" "reverse" "sort" "matrix" "determinant" "invert"
+  "transpose" "load" "kill" "plot2d" "plot3d" "return" "error" "is" "mod"))
+
+; f(x) := ..., f(x) ::= ...
+(binary_expression
+  . (function_call . (atom (identifier) @function))
+  [":=" "::="])
+
+(lambda_expression (list (atom (identifier) @variable.parameter)))
+(block_expression . (list (atom (identifier) @variable.parameter)))
+
+((identifier) @constant.builtin
+ (#any-of? @constant.builtin
+  "%pi" "%e" "%i" "%phi" "%gamma" "inf" "minf" "infinity" "und" "ind" "%o"))
+
+((identifier) @boolean (#any-of? @boolean "true" "false"))
+
+["if" "then" "else" "elseif" "unless"] @conditional
+["for" "while" "do" "thru" "step" "next" "in"] @repeat
+["lambda" "block"] @keyword.function
+["and" "or" "not"] @keyword.operator
+
+[":" "::" ":=" "::=" "+" "-" "*" "/" "^" "^^" "." "=" "<" "<=" ">" ">="
+ "!" "!!" "#" "'" "''" "@"] @operator
+
+[";" "$" ","] @punctuation.delimiter
+["(" ")" "[" "]" "{" "}"] @punctuation.bracket
+
+(number) @number
+(string) @string
+(comment) @comment
 )TSQ";
 
 static const char *kHighlightsCrystal = R"TSQ(

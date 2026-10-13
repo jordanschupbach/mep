@@ -14569,17 +14569,27 @@ void Editor::YoutubePlayResult(YoutubeSession &sess, int index) {
     YoutubePlayUrl(sess, sess.results[static_cast<size_t>(index)].url, index);
 }
 
-void Editor::YoutubeNotifyTrack(const YoutubeSession &sess) {
+void Editor::YoutubeNotifyTrack(const YoutubeSession &sess, bool toast) {
     if (sess.now_title.empty()) return;
     // The resolve that would fill sess.info is still in flight at this
-    // point, so the channel can only come from the result row this track
-    // was picked from (absent for a URL opened directly).
-    std::string channel;
-    if (sess.now_result >= 0 && sess.now_result < static_cast<int>(sess.results.size()))
-        channel = sess.results[static_cast<size_t>(sess.now_result)].channel;
-    std::string msg = "Now playing: " + sess.now_title;
-    if (!channel.empty()) msg += " -- " + channel;
-    Notify(msg, NotifyLevel::Info);
+    // point, so the channel -- and the thumbnail, when the result list's
+    // own fetch has reached that row (YoutubeFetchNextThumb) -- can only
+    // come from the result row this track was picked from (absent for a
+    // URL opened directly).
+    NotifyOptions opts;
+    opts.always_toast = toast;
+    if (sess.now_result >= 0 && sess.now_result < static_cast<int>(sess.results.size())) {
+        opts.subtitle = sess.results[static_cast<size_t>(sess.now_result)].channel;
+        auto it = sess.thumbs.find(sess.now_result);
+        if (toast && it != sess.thumbs.end() && !it->second.failed && !it->second.rgba.empty()) {
+            auto preview = std::make_shared<NotifyPreview>();
+            preview->rgba = it->second.rgba;
+            preview->w = it->second.w;
+            preview->h = it->second.h;
+            opts.preview = std::move(preview);
+        }
+    }
+    Notify("Now playing: " + sess.now_title, NotifyLevel::Info, std::move(opts));
 }
 
 void Editor::YoutubeNext(YoutubeSession &sess) {
@@ -14682,6 +14692,8 @@ void Editor::YoutubeStartDecoders(YoutubeSession &sess, double start_sec) {
     sess.position_sec = sess.start_sec;
     sess.wall_started_at = gfx::GetTime();
     sess.wall_elapsed = 0.0;
+    sess.tail_started_at = 0.0;
+    sess.tail_clock = 0.0;
     sess.ended = false;
     sess.buffering = true;
     if (sess.info.has_video && sess.frame_rgba.empty()) {
@@ -14755,7 +14767,19 @@ void Editor::YoutubePoll(int buffer_id) {
         player.TakeAudio(&sess.audio_scratch, SIZE_MAX);
     }
 
-    const double clock = YoutubeClock(sess);
+    double clock = YoutubeClock(sess);
+    // Audio over: finish the video on wall time (see YoutubeSession::
+    // tail_started_at). A pause mid-tail just restarts the tail on resume.
+    if (sess.audio_open) {
+        const bool audio_over = player.AudioDone() && gfx::AudioStreamQueuedFrames(sess.audio) == 0;
+        if (!audio_over || sess.paused) {
+            sess.tail_started_at = 0.0;
+        } else if (sess.tail_started_at <= 0.0) {
+            sess.tail_started_at = gfx::GetTime();
+            sess.tail_clock = std::max(clock, sess.position_sec);
+        }
+        if (sess.tail_started_at > 0.0) clock = std::max(clock, sess.tail_clock + (gfx::GetTime() - sess.tail_started_at));
+    }
     if (!sess.paused) sess.position_sec = std::max(sess.position_sec, clock);
 
     // Video: show the newest frame whose pts the clock has reached.
@@ -14792,9 +14816,16 @@ void Editor::YoutubePoll(int buffer_id) {
     if (video_done && audio_done && !sess.ended) {
         sess.ended = true;
         sess.buffering = false;
-        if (sess.now_result >= 0 && sess.now_result + 1 < static_cast<int>(sess.results.size())) {
-            YoutubePlayResult(sess, sess.now_result + 1);  // playlist-style auto-advance
-            YoutubeNotifyTrack(sess);
+        // Playlist-style auto-advance, with exactly YoutubeNext's idea of
+        // "next": the row after the one playing, or -- for a video opened
+        // by URL, which sits in no row -- the list's selected row, so a
+        // URL followed by a search keeps going too. Announced with a
+        // toast (thumbnail + channel) since the player is usually hidden
+        // when a video runs out and nothing else says it moved on.
+        const int next = sess.now_result >= 0 ? sess.now_result + 1 : sess.selected;
+        if (next >= 0 && next < static_cast<int>(sess.results.size())) {
+            YoutubePlayResult(sess, next);
+            YoutubeNotifyTrack(sess, /*toast=*/true);
         } else {
             YoutubeTeardown(sess);
             sess.playing = false;
@@ -37578,6 +37609,7 @@ void RefreshNotifySidebarSections(Editor &ed, int sidebar_id, const std::vector<
                            : e.level == Editor::NotifyLevel::Debug ? "[DEBUG] "
                                                                     : "[INFO] ";
         w.text = std::string(tag) + e.message;
+        if (!e.subtitle.empty()) w.text += " -- " + e.subtitle;
         w.hl = e.level == Editor::NotifyLevel::Error ? "Error" : e.level == Editor::NotifyLevel::Warn ? "Warn" : "";
         sec.widgets.push_back(std::move(w));
     }
@@ -37585,20 +37617,27 @@ void RefreshNotifySidebarSections(Editor &ed, int sidebar_id, const std::vector<
 }
 }  // namespace
 
-void Editor::Notify(const std::string &msg, NotifyLevel level) {
+void Editor::Notify(const std::string &msg, NotifyLevel level) { Notify(msg, level, NotifyOptions{}); }
+
+void Editor::Notify(const std::string &msg, NotifyLevel level, NotifyOptions opts) {
     status_message_ = msg;  // existing lightweight status-bar sink, unchanged
 
     NotifyEntry entry;
     entry.id = next_notify_id_++;
     entry.message = msg;
+    entry.subtitle = std::move(opts.subtitle);
+    entry.preview = std::move(opts.preview);
     entry.level = level;
     entry.created_at = last_notify_now_;
     entry.expires_at = last_notify_now_ + NotifyTimeoutSeconds(level);
 
     // Only the levels worth interrupting for pop a toast (Warn and Error by
     // default); Info/Debug go straight to the history, which the tab bar's
-    // Notifications button badges until it's viewed.
-    if (notify_toast_min_level_ && level >= *notify_toast_min_level_) {
+    // Notifications button badges until it's viewed. `always_toast` is the
+    // caller saying this one is worth it anyway (toasts off entirely --
+    // nullopt -- still wins).
+    const bool toast = notify_toast_min_level_ && (level >= *notify_toast_min_level_ || opts.always_toast);
+    if (toast) {
         toasts_.push_back(entry);
         if (static_cast<int>(toasts_.size()) > kMaxVisibleToasts) {
             toasts_.erase(toasts_.begin());  // oldest evicted immediately, not queued

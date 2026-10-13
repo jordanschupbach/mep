@@ -37823,27 +37823,98 @@ std::string NotifyLevelGlyph(Editor::NotifyLevel level) {
 }
 
 // Toast stack, top-right corner, newest closest to the corner (Phase 6).
+
+// GPU copies of toast previews (NotifyEntry::preview), keyed by entry id;
+// uploaded on first draw, dropped once the toast is gone.
+std::unordered_map<int, gfx::Texture2D> g_toast_preview_textures;
+std::string YoutubeFitText(const std::string &s, float max_w, float font_size);  // defined with the player below
+
 /**
  * @brief Draws the stack of active toast notifications in the top-right corner, newest
- * closest to the corner.
+ * closest to the corner. A plain toast is one line; one carrying a subtitle or a preview
+ * (the YouTube player's next-track notice) is a card with the picture along its left edge
+ * and the message over the subtitle beside it.
  */
 void DrawToastStack() {
     const auto &toasts = g_editor.Toasts();
+    for (auto it = g_toast_preview_textures.begin(); it != g_toast_preview_textures.end();) {
+        bool live = false;
+        for (const auto &t : toasts) live = live || (t.id == it->first && t.preview);
+        if (!live) {
+            if (it->second.id != 0) gfx::UnloadTexture(it->second);
+            it = g_toast_preview_textures.erase(it);
+        } else {
+            ++it;
+        }
+    }
     if (toasts.empty()) return;
     int screen_w = gfx::GetScreenWidth();
     float font_size = MenuFontSize();
+    const float small = std::round(font_size * 0.85f);
     float y = 8.0f;
     for (auto it = toasts.rbegin(); it != toasts.rend(); ++it) {
-        std::string text = NotifyLevelGlyph(it->level) + "  " + it->message;
-        float text_w = MeasureUiText(text, font_size);
-        float box_w = text_w + 24;
-        float box_h = font_size + 14;
-        float x = static_cast<float>(screen_w) - box_w - 10;
+        const bool rich = !it->subtitle.empty() || it->preview;
+        if (!rich) {
+            std::string text = NotifyLevelGlyph(it->level) + "  " + it->message;
+            float text_w = MeasureUiText(text, font_size);
+            float box_w = text_w + 24;
+            float box_h = font_size + 14;
+            float x = static_cast<float>(screen_w) - box_w - 10;
+            gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w), static_cast<int>(box_h),
+                          ResolveHlGroup("FloatBg"));
+            gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w),
+                                static_cast<int>(box_h), NotifyLevelColor(it->level));
+            DrawUiText(text, gfx::Vector2{x + 12, y + 7}, font_size, ResolveHlGroup("Normal"));
+            y += box_h + 6;
+            continue;
+        }
+        // Card: picture (16:9, two text lines tall) | glyph + message / subtitle.
+        const float pad = 10.0f;
+        const float text_h = font_size + 4.0f + small;
+        const float box_h = std::round(text_h + 2.0f * pad);
+        const float pic_h = box_h - 2.0f * pad;
+        float pic_w = 0.0f;
+        gfx::Texture2D tex{};
+        if (it->preview && it->preview->w > 0 && it->preview->h > 0 && !it->preview->rgba.empty()) {
+            auto found = g_toast_preview_textures.find(it->id);
+            if (found == g_toast_preview_textures.end()) {
+                gfx::Image img{};
+                img.data = const_cast<unsigned char *>(it->preview->rgba.data());
+                img.width = it->preview->w;
+                img.height = it->preview->h;
+                img.mipmaps = 1;
+                img.format = gfx::kPixelFormatR8G8B8A8;
+                found = g_toast_preview_textures.emplace(it->id, gfx::LoadTextureFromImage(img)).first;
+            }
+            tex = found->second;
+            if (tex.id != 0) pic_w = std::round(pic_h * static_cast<float>(tex.width) / static_cast<float>(tex.height));
+        }
+        const std::string glyph = NotifyLevelGlyph(it->level) + "  ";
+        const float glyph_w = MeasureUiText(glyph, font_size);
+        // Keep the card to a sane width: the title gets an ellipsis past
+        // about a third of the screen rather than running the card across
+        // the whole top edge.
+        const float max_text_w = std::max(160.0f, std::min(420.0f, static_cast<float>(screen_w) * 0.35f));
+        const std::string title = YoutubeFitText(it->message, max_text_w - glyph_w, font_size);
+        const std::string sub = YoutubeFitText(it->subtitle, max_text_w - glyph_w, small);
+        const float text_w = std::max(glyph_w + MeasureUiText(title, font_size), glyph_w + MeasureUiText(sub, small));
+        const float box_w = pad + (pic_w > 0.0f ? pic_w + pad : 0.0f) + text_w + pad + 2.0f;
+        const float x = static_cast<float>(screen_w) - box_w - 10;
         gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w), static_cast<int>(box_h),
                       ResolveHlGroup("FloatBg"));
         gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), static_cast<int>(box_w),
                             static_cast<int>(box_h), NotifyLevelColor(it->level));
-        DrawUiText(text, gfx::Vector2{x + 12, y + 7}, font_size, ResolveHlGroup("Normal"));
+        float tx = x + pad;
+        if (pic_w > 0.0f) {
+            gfx::Rectangle src{0, 0, static_cast<float>(tex.width), static_cast<float>(tex.height)};
+            gfx::Rectangle dst{tx, y + pad, pic_w, pic_h};
+            gfx::DrawTexturePro(tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+            tx += pic_w + pad;
+        }
+        const float ty = y + pad;
+        DrawUiText(glyph, gfx::Vector2{tx, ty}, font_size, NotifyLevelColor(it->level));
+        DrawUiText(title, gfx::Vector2{tx + glyph_w, ty}, font_size, ResolveHlGroup("Normal"));
+        if (!sub.empty()) DrawUiText(sub, gfx::Vector2{tx + glyph_w, ty + font_size + 4.0f}, small, ResolveHlGroup("MutedFg"));
         y += box_h + 6;
     }
 }
@@ -40895,6 +40966,33 @@ std::unordered_map<long long, YoutubeThumbTexture> g_youtube_thumb_textures;
 // whenever the track changes.
 std::string g_youtube_chip_title;
 double g_youtube_chip_title_since = 0.0;
+// The pill's right-click miniplayer (DrawYoutubeMiniplayer): a small
+// floating player -- the live picture plus a one-row transport -- popped
+// up above the pill, for peeking at a hidden player (ToggleYoutube) or
+// one scrolled out of view without bringing its pane back. Same
+// single-open, non-modal, click-away-closes convention as
+// g_notebook_kernel_menu_buffer: `g_youtube_mini_anchor` is the pill's
+// own rect (refreshed every frame the pill draws, since its width moves
+// with the time readout), `g_youtube_mini_rect` the popup's, and
+// `g_youtube_mini_pill_drawn` is the pill telling the popup it is still
+// there this frame -- the popup folds up by itself when the track ends
+// or the status bar goes away, instead of floating over nothing.
+bool g_youtube_mini_open = false;
+gfx::Rectangle g_youtube_mini_anchor{};
+gfx::Rectangle g_youtube_mini_rect{};
+bool g_youtube_mini_pill_drawn = false;
+// The floating always-on-top viewer (DrawYoutubePip, opened from the
+// miniplayer's own button): just the picture, drawn after every pane,
+// sidebar, dropdown and toast, moved with a mod1(Alt)+left drag, closed
+// with its button or mod1+d (playback carries on, like hiding the pane).
+// A click on it gives it keyboard focus (HandleYoutubePipInput then eats
+// the keys until Escape or a click elsewhere); the rect is remembered
+// across close/reopen, zero width = not placed yet.
+bool g_youtube_pip_open = false;
+bool g_youtube_pip_focused = false;
+gfx::Rectangle g_youtube_pip_rect{};
+bool g_youtube_pip_dragging = false;
+gfx::Vector2 g_youtube_pip_drag_offset{};
 
 // Chrome text is drawn from an ASCII-only atlas (see DrawUiText), so a
 // title's non-ASCII runs (accents, CJK, emoji) collapse to one '?' rather
@@ -41424,6 +41522,467 @@ void DrawYoutubePane(const Pane &pane, YoutubeSession &sess, float x, float y, f
     // Focus fallback for whatever the regions above don't cover (registered
     // last: first match wins, see DrawPane's own catch-all comment).
     RegisterClickRegion(gfx::Rectangle{x, y, w, h}, [pane_id = pane.id] { g_editor.FocusPaneById(pane_id); });
+}
+
+/**
+ * @brief Draws the status-bar pill's miniplayer popup (right-click on the now-playing pill) when it is
+ * open: the current video frame at thumbnail size, the title, a mute toggle + volume slider, and a
+ * one-row transport (prev / play-pause / next, elapsed/total, click-to-seek bar), anchored just above
+ * the pill. Non-modal -- it floats over whatever is there, closes on a click outside it, a right-click
+ * anywhere, or when the pill itself is gone (track over, status bar hidden).
+ */
+void DrawYoutubeMiniplayer() {
+    // The pill resets this every frame it draws; a frame without the pill
+    // (no track, zen mode, status bar hidden) folds the popup up.
+    const bool pill_drawn = g_youtube_mini_pill_drawn;
+    g_youtube_mini_pill_drawn = false;
+    if (!g_youtube_mini_open) {
+        g_youtube_mini_rect = {};
+        return;
+    }
+    const int buffer_id = g_editor.YoutubeBufferId();
+    YoutubeSession *yt = buffer_id >= 0 ? g_editor.GetYoutubeMutable(buffer_id) : nullptr;
+    if (!pill_drawn || !yt) {
+        g_youtube_mini_open = false;
+        g_youtube_mini_rect = {};
+        return;
+    }
+    YoutubeSession &sess = *yt;
+    // No YoutubePoll here: the pane draws it when the player is visible,
+    // YoutubePollOffscreen when it isn't -- either way frame_rgba is fresh.
+
+    const gfx::Color fg = ResolveHlGroup("Normal");
+    const gfx::Color accent = ResolveHlGroup("Accent");
+    const gfx::Color muted = ResolveHlGroup("MutedFg");
+    const gfx::Color red = ResolveHlGroup("Red");
+    const gfx::Color panel = ResolveHlGroup("Picker");
+    const gfx::Color border = ResolveHlGroup("PickerBorder");
+    const float font_size = MenuFontSize();
+    const float small = std::round(font_size * 0.85f);
+    const float pad = std::round(font_size * 0.6f);
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    const int screen_w = gfx::GetScreenWidth();
+
+    // --- Geometry: 16:9 picture on top, a title row, then the transport row. ---
+    const float r_small = std::round(font_size * 0.8f);
+    const float r_big = std::round(font_size * 1.05f);
+    const float gap = std::round(font_size * 0.5f);
+    float w = std::clamp(std::round(font_size * 24.0f), 240.0f, 420.0f);
+    w = std::min(w, static_cast<float>(screen_w) - 2.0f * static_cast<float>(kMarginX));
+    const float video_h = std::round(w * 9.0f / 16.0f);
+    const float seek_h = std::round(font_size * 0.9f);  // the click-to-seek strip under the picture
+    const float title_h = std::round(font_size * 1.9f);
+    const float bar_h = std::round(r_big * 2.0f + pad * 1.5f);
+    const float h = video_h + seek_h + title_h + bar_h;
+    // Right edge flush with the pill's, bottom just clear of the status bar.
+    float x = g_youtube_mini_anchor.x + g_youtube_mini_anchor.width - w;
+    x = std::clamp(x, static_cast<float>(kMarginX), std::max(static_cast<float>(kMarginX), static_cast<float>(screen_w) - w - kMarginX));
+    float y = std::max(0.0f, g_youtube_mini_anchor.y - 6.0f - h);
+    const gfx::Rectangle rect{x, y, w, h};
+    g_youtube_mini_rect = rect;
+
+    // A right-click anywhere but the popup or its pill dismisses it (the
+    // pill's own right-click toggles it, see the status line).
+    if (gfx::IsMouseButtonPressed(gfx::MouseButton::Right) && !PointInRect(mouse, rect) &&
+        !PointInRect(mouse, g_youtube_mini_anchor)) {
+        g_youtube_mini_open = false;
+        g_youtube_mini_rect = {};
+        return;
+    }
+
+    // Panel. Click regions go in with RegisterClickRegionOnTop so they beat
+    // the pane-wide focus fallbacks underneath; this whole-popup catch-all
+    // is registered first so each control registered after it lands in
+    // front of it, and a click on bare panel neither focuses nor edits
+    // whatever pane the popup happens to float over.
+    gfx::DrawRectangleRec(rect, panel);
+    RegisterClickRegionOnTop(rect, [] {});
+
+    // --- Picture ---
+    const gfx::Rectangle video{x, y, w, video_h};
+    gfx::DrawRectangleRec(video, gfx::Black);
+    gfx::Texture2D tex{};
+    if (GetYoutubeFrameTexture(buffer_id, sess, &tex)) {
+        float scale = std::max(0.0f, std::min(w / static_cast<float>(tex.width), video_h / static_cast<float>(tex.height)));
+        float dw = static_cast<float>(tex.width) * scale;
+        float dh = static_cast<float>(tex.height) * scale;
+        gfx::Rectangle src{0, 0, static_cast<float>(tex.width), static_cast<float>(tex.height)};
+        gfx::Rectangle dst{x + (w - dw) / 2.0f, y + (video_h - dh) / 2.0f, dw, dh};
+        gfx::DrawTexturePro(tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+    } else if (sess.info_valid && !sess.info.has_video) {
+        std::string g = Utf8FromCodepoint(0xf001);  // nf-fa-music
+        float gs = font_size * 2.5f;
+        float gw = MeasureUiText(g, gs);
+        DrawUiText(g, gfx::Vector2{x + (w - gw) / 2.0f, y + (video_h - gs) / 2.0f}, gs, gfx::Fade(fg, 0.5f));
+    }
+    {
+        // Same overlay states as the pane's picture.
+        std::string overlay;
+        if (sess.resolving)
+            overlay = "Resolving stream...";
+        else if (sess.playing && sess.buffering)
+            overlay = "Buffering...";
+        else if (sess.playing && sess.paused)
+            overlay = Utf8FromCodepoint(0xf04c);  // nf-fa-pause
+        else if (!sess.playing && !sess.status.empty())
+            overlay = YoutubeFitText(YoutubeUiText(sess.status), w - 2.0f * pad, small);
+        if (!overlay.empty()) {
+            float ow = MeasureUiText(overlay, small);
+            float ox = x + (w - ow) / 2.0f, oy = y + (video_h - small) / 2.0f;
+            gfx::DrawRectangleRounded(gfx::Rectangle{ox - 8.0f, oy - 5.0f, ow + 16.0f, small + 10.0f}, 0.4f, 6,
+                                      gfx::Fade(gfx::Black, 0.6f));
+            DrawUiText(overlay, gfx::Vector2{ox, oy}, small, gfx::White);
+        }
+    }
+    RegisterClickRegionOnTop(video, [buffer_id] {
+        if (YoutubeSession *s = g_editor.GetYoutubeMutable(buffer_id)) g_editor.YoutubeTogglePause(*s);
+    });
+
+    // --- Seek strip: a full-width progress bar right under the picture
+    // (the pill's own readout rules: nothing to seek while a resolve is
+    // in flight or for a live stream). ---
+    const double dur = g_editor.YoutubeDuration(sess);
+    const double pos = sess.playing ? sess.position_sec : 0.0;
+    const float track_h = std::round(font_size * 0.28f);
+    {
+        const float seek_cy = y + video_h + seek_h / 2.0f;
+        const float prog_x = x + pad, prog_w = w - 2.0f * pad;
+        gfx::Rectangle ptrack{prog_x, seek_cy - track_h / 2.0f, prog_w, track_h};
+        gfx::DrawRectangleRounded(ptrack, 1.0f, 6, gfx::Fade(fg, 0.18f));
+        if (dur > 0.0 && sess.playing) {
+            float t = static_cast<float>(std::clamp(pos / dur, 0.0, 1.0));
+            gfx::DrawRectangleRounded(gfx::Rectangle{prog_x, ptrack.y, prog_w * t, track_h}, 1.0f, 6, red);
+            gfx::DrawCircleV(gfx::Vector2{prog_x + prog_w * t, seek_cy}, track_h * 1.4f, fg);
+        }
+        if (dur > 0.0) {
+            RegisterClickRegionOnTop(gfx::Rectangle{x, y + video_h, w, seek_h}, [buffer_id, prog_x, prog_w, dur] {
+                YoutubeSession *s = g_editor.GetYoutubeMutable(buffer_id);
+                if (!s) return;
+                float t = std::clamp((gfx::GetMousePosition().x - prog_x) / prog_w, 0.0f, 1.0f);
+                g_editor.YoutubeSeekTo(*s, dur * static_cast<double>(t));
+            });
+        }
+    }
+
+    // --- Title row: title, then mute + volume, then expand and close on the right. ---
+    const float title_y = y + video_h + seek_h;
+    const float title_cy = title_y + title_h / 2.0f;
+    auto glyph_button = [&](float gx, int glyph, const std::function<void()> &action) {
+        std::string g = Utf8FromCodepoint(glyph);
+        float gw = MeasureUiText(g, font_size);
+        gfx::Rectangle hit{gx - 4.0f, title_y, gw + 8.0f, title_h};
+        bool hovered = PointInRect(mouse, hit);
+        if (hovered) gfx::DrawRectangleRounded(hit, 0.3f, 4, gfx::Fade(fg, 0.12f));
+        DrawUiText(g, gfx::Vector2{gx, title_cy - font_size / 2.0f}, font_size, hovered ? fg : muted);
+        RegisterClickRegionOnTop(hit, action);
+        return gw;
+    };
+    float right_x = x + w - pad;
+    // Close.
+    {
+        std::string g = Utf8FromCodepoint(0xf00d);  // nf-fa-close
+        right_x -= MeasureUiText(g, font_size);
+        glyph_button(right_x, 0xf00d, [] { g_youtube_mini_open = false; });
+        right_x -= gap;
+    }
+    // Expand: bring the player pane back (ToggleYoutube's own "show"
+    // half) when it is hidden; when it is already on screen there is
+    // nothing to open, so this just folds the popup up.
+    {
+        std::string g = Utf8FromCodepoint(0xf065);  // nf-fa-expand
+        right_x -= MeasureUiText(g, font_size);
+        glyph_button(right_x, 0xf065, [buffer_id] {
+            g_youtube_mini_open = false;
+            if (!g_editor.IsBufferOnScreen(buffer_id)) g_editor.ToggleYoutube();
+        });
+        right_x -= gap;
+    }
+    // Pop out: the floating always-on-top viewer (DrawYoutubePip) in
+    // place of this popup.
+    {
+        std::string g = Utf8FromCodepoint(0xf2d2);  // nf-fa-window_restore
+        right_x -= MeasureUiText(g, font_size);
+        glyph_button(right_x, 0xf2d2, [] {
+            g_youtube_mini_open = false;
+            g_youtube_pip_open = true;
+            g_youtube_pip_focused = true;
+        });
+        right_x -= gap * 1.5f;
+    }
+    // Volume slider + speaker glyph (click = mute), same look as the pane's.
+    const float slider_w = std::round(font_size * 3.5f);
+    const float slider_x = right_x - slider_w;
+    {
+        float vol = sess.muted ? 0.0f : std::clamp(sess.volume, 0.0f, 1.0f);
+        gfx::Rectangle track{slider_x, title_cy - track_h / 2.0f, slider_w, track_h};
+        gfx::DrawRectangleRounded(track, 1.0f, 6, gfx::Fade(fg, 0.18f));
+        gfx::DrawRectangleRounded(gfx::Rectangle{slider_x, track.y, slider_w * vol, track_h}, 1.0f, 6, accent);
+        gfx::DrawCircleV(gfx::Vector2{slider_x + slider_w * vol, title_cy}, track_h * 1.6f, fg);
+        gfx::Rectangle slider_hit{slider_x - r_small, title_y, slider_w + 2.0f * r_small, title_h};
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left) && PointInRect(mouse, slider_hit) && slider_w > 0) {
+            g_editor.YoutubeSetVolume(sess, std::clamp((mouse.x - slider_x) / slider_w, 0.0f, 1.0f));
+        }
+        // A plain press on the slider must not fall through to the
+        // catch-all (harmless) or, worse, to anything under it.
+        RegisterClickRegionOnTop(slider_hit, [] {});
+        int vol_glyph = vol <= 0.001f ? 0xf026 : (vol < 0.5f ? 0xf027 : 0xf028);
+        std::string g = Utf8FromCodepoint(vol_glyph);
+        float vol_x = slider_x - gap - MeasureUiText(g, font_size);
+        glyph_button(vol_x, vol_glyph, [buffer_id] {
+            if (YoutubeSession *s = g_editor.GetYoutubeMutable(buffer_id)) g_editor.YoutubeToggleMute(*s);
+        });
+        right_x = vol_x - gap;
+    }
+    if (!sess.now_title.empty()) {
+        float avail = right_x - (x + pad);
+        DrawUiText(YoutubeFitText(YoutubeUiText(sess.now_title), avail, small), gfx::Vector2{x + pad, title_cy - small / 2.0f},
+                   small, sess.playing ? fg : muted);
+    }
+
+    // --- Transport row ---
+    const float bar_y = title_y + title_h;
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(bar_y), static_cast<int>(w), 1, gfx::Fade(fg, 0.12f));
+    const float cy = bar_y + bar_h / 2.0f;
+    auto circle_button = [&](float ccx, float radius, int glyph, bool filled, const std::function<void(YoutubeSession *)> &action) {
+        float dx = mouse.x - ccx, dy = mouse.y - cy;
+        bool hovered = (dx * dx + dy * dy) <= radius * radius;
+        gfx::Color disc = filled ? (hovered ? accent : gfx::Fade(accent, 0.9f)) : gfx::Fade(fg, hovered ? 0.20f : 0.10f);
+        gfx::DrawCircleV(gfx::Vector2{ccx, cy}, radius, disc);
+        std::string g = Utf8FromCodepoint(glyph);
+        float gs = filled ? font_size : small;
+        float gw = MeasureUiText(g, gs);
+        DrawUiText(g, gfx::Vector2{ccx - gw / 2.0f, cy - gs / 2.0f}, gs, filled ? panel : fg);
+        RegisterClickRegionOnTop(gfx::Rectangle{ccx - radius, cy - radius, radius * 2.0f, radius * 2.0f}, [buffer_id, action] {
+            if (YoutubeSession *s = g_editor.GetYoutubeMutable(buffer_id)) action(s);
+        });
+    };
+    float prev_cx = x + pad + r_small;
+    float play_cx = prev_cx + r_small + gap + r_big;
+    float next_cx = play_cx + r_big + gap + r_small;
+    circle_button(prev_cx, r_small, 0xf048, false, [](YoutubeSession *s) { g_editor.YoutubePrev(*s); });
+    circle_button(play_cx, r_big, (sess.playing && !sess.paused) ? 0xf04c : 0xf04b, true,
+                  [](YoutubeSession *s) { g_editor.YoutubeTogglePause(*s); });
+    circle_button(next_cx, r_small, 0xf051, false, [](YoutubeSession *s) { g_editor.YoutubeNext(*s); });
+
+    // Elapsed/total, right-aligned ("--:--" mid-resolve, "live" with no
+    // duration -- the pill's own readout rules).
+    std::string times = yt::FormatDuration(pos) + " / " + (dur > 0.0 ? yt::FormatDuration(dur) : std::string("live"));
+    if (!sess.playing && !sess.info_valid) times = "";
+    if (!times.empty()) {
+        float times_w = MeasureUiText(times, small);
+        float times_x = std::max(next_cx + r_small + gap, x + w - pad - times_w);
+        DrawUiText(times, gfx::Vector2{times_x, cy - small / 2.0f}, small, muted);
+    }
+
+    gfx::DrawRectangleLinesEx(rect, 1.0f, border);
+}
+
+/**
+ * @brief Closes the floating viewer (DrawYoutubePip); playback itself is untouched.
+ */
+void CloseYoutubePip() {
+    g_youtube_pip_open = false;
+    g_youtube_pip_focused = false;
+    g_youtube_pip_dragging = false;
+}
+
+/**
+ * @brief Draws the floating always-on-top YouTube viewer when it is open: the live picture in a
+ * small frame that a mod1(Alt)+left drag moves anywhere in the window, with a transport strip
+ * (play/pause, seek bar, close) while hovered or focused. Called last in DrawEditor's chrome pass
+ * so nothing but the modal overlays paints over it.
+ */
+void DrawYoutubePip() {
+    if (!g_youtube_pip_open) return;
+    const int buffer_id = g_editor.YoutubeBufferId();
+    YoutubeSession *yt = buffer_id >= 0 ? g_editor.GetYoutubeMutable(buffer_id) : nullptr;
+    // Nothing to show once the player is gone or stopped for good (the
+    // list ran out, an error): fold up rather than frame a black box.
+    if (!yt || yt->now_title.empty() || (!yt->playing && !yt->ended)) {
+        CloseYoutubePip();
+        return;
+    }
+    YoutubeSession &sess = *yt;
+    const gfx::Color fg = ResolveHlGroup("Normal");
+    const gfx::Color accent = ResolveHlGroup("Accent");
+    const gfx::Color border = ResolveHlGroup("PickerBorder");
+    const gfx::Color red = ResolveHlGroup("Red");
+    const float font_size = MenuFontSize();
+    const float small = std::round(font_size * 0.85f);
+    const gfx::Vector2 mouse = gfx::GetMousePosition();
+    const float screen_w = static_cast<float>(gfx::GetScreenWidth());
+    const float screen_h = static_cast<float>(gfx::GetScreenHeight());
+
+    // --- Geometry: a fixed 16:9 frame; first open parks it bottom-right. ---
+    const float w = std::clamp(std::round(font_size * 22.0f), 220.0f, 400.0f);
+    const float h = std::round(w * 9.0f / 16.0f);
+    gfx::Rectangle &rect = g_youtube_pip_rect;
+    if (rect.width <= 0.0f) {
+        rect.x = screen_w - w - 16.0f;
+        rect.y = screen_h - h - 72.0f;
+    }
+    rect.width = w;
+    rect.height = h;
+
+    // mod1+left drag moves it (the press also focuses it, like any click).
+    const bool hovered = PointInRect(mouse, rect);
+    if (!g_youtube_pip_dragging && hovered && g_editor.IsMod1Down() && gfx::IsMouseButtonPressed(gfx::MouseButton::Left)) {
+        g_youtube_pip_dragging = true;
+        g_youtube_pip_drag_offset = gfx::Vector2{mouse.x - rect.x, mouse.y - rect.y};
+        g_youtube_pip_focused = true;
+    }
+    if (g_youtube_pip_dragging) {
+        if (gfx::IsMouseButtonDown(gfx::MouseButton::Left)) {
+            rect.x = mouse.x - g_youtube_pip_drag_offset.x;
+            rect.y = mouse.y - g_youtube_pip_drag_offset.y;
+        } else {
+            g_youtube_pip_dragging = false;
+        }
+    }
+    rect.x = std::clamp(rect.x, 0.0f, std::max(0.0f, screen_w - w));
+    rect.y = std::clamp(rect.y, 0.0f, std::max(0.0f, screen_h - h));
+    const float x = rect.x, y = rect.y;
+
+    // Regions on top of everything else's, catch-all first (see
+    // DrawYoutubeMiniplayer): a bare click focuses the viewer.
+    RegisterClickRegionOnTop(rect, [] { g_youtube_pip_focused = true; });
+
+    // --- Picture ---
+    gfx::DrawRectangleRec(rect, gfx::Black);
+    gfx::Texture2D tex{};
+    if (GetYoutubeFrameTexture(buffer_id, sess, &tex)) {
+        float scale = std::max(0.0f, std::min(w / static_cast<float>(tex.width), h / static_cast<float>(tex.height)));
+        float dw = static_cast<float>(tex.width) * scale;
+        float dh = static_cast<float>(tex.height) * scale;
+        gfx::Rectangle src{0, 0, static_cast<float>(tex.width), static_cast<float>(tex.height)};
+        gfx::Rectangle dst{x + (w - dw) / 2.0f, y + (h - dh) / 2.0f, dw, dh};
+        gfx::DrawTexturePro(tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+    } else if (sess.info_valid && !sess.info.has_video) {
+        std::string g = Utf8FromCodepoint(0xf001);  // nf-fa-music
+        float gs = font_size * 2.5f;
+        float gw = MeasureUiText(g, gs);
+        DrawUiText(g, gfx::Vector2{x + (w - gw) / 2.0f, y + (h - gs) / 2.0f}, gs, gfx::Fade(fg, 0.5f));
+    }
+    {
+        std::string overlay;
+        if (sess.resolving)
+            overlay = "Resolving stream...";
+        else if (sess.playing && sess.buffering)
+            overlay = "Buffering...";
+        else if (sess.playing && sess.paused)
+            overlay = Utf8FromCodepoint(0xf04c);  // nf-fa-pause
+        if (!overlay.empty()) {
+            float ow = MeasureUiText(overlay, small);
+            float ox = x + (w - ow) / 2.0f, oy = y + (h - small) / 2.0f;
+            gfx::DrawRectangleRounded(gfx::Rectangle{ox - 8.0f, oy - 5.0f, ow + 16.0f, small + 10.0f}, 0.4f, 6,
+                                      gfx::Fade(gfx::Black, 0.6f));
+            DrawUiText(overlay, gfx::Vector2{ox, oy}, small, gfx::White);
+        }
+    }
+
+    // --- Transport strip along the bottom, only while hovered/focused/dragging ---
+    if (hovered || g_youtube_pip_focused || g_youtube_pip_dragging) {
+        const float strip_h = std::round(font_size * 1.9f);
+        const float sy = y + h - strip_h;
+        const float cy = sy + strip_h / 2.0f;
+        const float pad = std::round(font_size * 0.5f);
+        gfx::DrawRectangleRec(gfx::Rectangle{x, sy, w, strip_h}, gfx::Fade(gfx::Black, 0.65f));
+        auto glyph_button = [&](float gx, int glyph, const std::function<void()> &action) {
+            std::string g = Utf8FromCodepoint(glyph);
+            float gw = MeasureUiText(g, font_size);
+            gfx::Rectangle hit{gx - 4.0f, sy, gw + 8.0f, strip_h};
+            bool over = PointInRect(mouse, hit);
+            DrawUiText(g, gfx::Vector2{gx, cy - font_size / 2.0f}, font_size, over ? gfx::White : gfx::Fade(gfx::White, 0.8f));
+            RegisterClickRegionOnTop(hit, action);
+            return gw;
+        };
+        float left_x = x + pad;
+        left_x += glyph_button(left_x, (sess.playing && !sess.paused) ? 0xf04c : 0xf04b, [buffer_id] {
+                      g_youtube_pip_focused = true;
+                      if (YoutubeSession *s = g_editor.GetYoutubeMutable(buffer_id)) g_editor.YoutubeTogglePause(*s);
+                  }) + pad;
+        std::string close_g = Utf8FromCodepoint(0xf00d);  // nf-fa-close
+        float right_x = x + w - pad - MeasureUiText(close_g, font_size);
+        glyph_button(right_x, 0xf00d, [] { CloseYoutubePip(); });
+        right_x -= pad;
+        // Seek bar between the two.
+        const double dur = g_editor.YoutubeDuration(sess);
+        const double pos = sess.playing ? sess.position_sec : 0.0;
+        const float track_h = std::round(font_size * 0.28f);
+        const float prog_x = left_x, prog_w = std::max(0.0f, right_x - left_x);
+        if (prog_w > 20.0f) {
+            gfx::Rectangle ptrack{prog_x, cy - track_h / 2.0f, prog_w, track_h};
+            gfx::DrawRectangleRounded(ptrack, 1.0f, 6, gfx::Fade(gfx::White, 0.25f));
+            if (dur > 0.0 && sess.playing) {
+                float t = static_cast<float>(std::clamp(pos / dur, 0.0, 1.0));
+                gfx::DrawRectangleRounded(gfx::Rectangle{prog_x, ptrack.y, prog_w * t, track_h}, 1.0f, 6, red);
+                gfx::DrawCircleV(gfx::Vector2{prog_x + prog_w * t, cy}, track_h * 1.4f, gfx::White);
+            }
+            if (dur > 0.0) {
+                RegisterClickRegionOnTop(gfx::Rectangle{prog_x, sy, prog_w, strip_h}, [buffer_id, prog_x, prog_w, dur] {
+                    g_youtube_pip_focused = true;
+                    YoutubeSession *s = g_editor.GetYoutubeMutable(buffer_id);
+                    if (!s) return;
+                    float t = std::clamp((gfx::GetMousePosition().x - prog_x) / prog_w, 0.0f, 1.0f);
+                    g_editor.YoutubeSeekTo(*s, dur * static_cast<double>(t));
+                });
+            }
+        }
+        // Title and the two gestures, along the top edge.
+        const float top_h = std::round(small + 10.0f);
+        gfx::DrawRectangleRec(gfx::Rectangle{x, y, w, top_h}, gfx::Fade(gfx::Black, 0.65f));
+        const std::string hint = "alt+drag: move   alt+d: close";
+        const float hint_w = MeasureUiText(hint, small);
+        DrawUiText(hint, gfx::Vector2{x + w - pad - hint_w, y + 5.0f}, small, gfx::Fade(gfx::White, 0.7f));
+        const float title_avail = w - 2.0f * pad - hint_w - pad;
+        if (title_avail > 30.0f)
+            DrawUiText(YoutubeFitText(YoutubeUiText(sess.now_title), title_avail, small), gfx::Vector2{x + pad, y + 5.0f}, small,
+                       gfx::White);
+    }
+
+    // Border: accent while it holds keyboard focus.
+    if (g_youtube_pip_focused)
+        gfx::DrawRectangleLinesEx(rect, 2.0f, accent);
+    else
+        gfx::DrawRectangleLinesEx(rect, 1.0f, border);
+}
+
+/**
+ * @brief Keyboard for the floating viewer, checked ahead of the editor's own input each frame:
+ * mod1+d closes it when it is focused or under the mouse; while it holds focus, Space/k
+ * play-pause, n/p step, m mutes, Escape hands focus back, and every other key is swallowed.
+ * @return True when this frame's input was consumed.
+ */
+bool HandleYoutubePipInput() {
+    if (!g_youtube_pip_open) return false;
+    const bool hovered = PointInRect(gfx::GetMousePosition(), g_youtube_pip_rect);
+    auto drain = [] {
+        while (gfx::GetKeyPressed() != gfx::Key::None) {
+        }
+        while (gfx::GetCharPressed() > 0) {
+        }
+    };
+    if ((g_youtube_pip_focused || hovered) && g_editor.IsMod1Down() && gfx::IsKeyPressed(gfx::Key::D)) {
+        CloseYoutubePip();
+        drain();
+        return true;
+    }
+    if (!g_youtube_pip_focused) return false;
+    const int buffer_id = g_editor.YoutubeBufferId();
+    YoutubeSession *s = buffer_id >= 0 ? g_editor.GetYoutubeMutable(buffer_id) : nullptr;
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        g_youtube_pip_focused = false;
+    } else if (s && (gfx::IsKeyPressed(gfx::Key::Space) || gfx::IsKeyPressed(gfx::Key::K))) {
+        g_editor.YoutubeTogglePause(*s);
+    } else if (s && gfx::IsKeyPressed(gfx::Key::N)) {
+        g_editor.YoutubeNext(*s);
+    } else if (s && gfx::IsKeyPressed(gfx::Key::P)) {
+        g_editor.YoutubePrev(*s);
+    } else if (s && gfx::IsKeyPressed(gfx::Key::M)) {
+        g_editor.YoutubeToggleMute(*s);
+    }
+    drain();
+    return true;
 }
 
 // Active pane gets a thicker outline in BorderActive (the same accent-toned
@@ -61136,7 +61695,8 @@ void DrawEditor() {
         // point. It is what the player reports through now that hiding it
         // no longer parks a sentence in the message line: a play/pause
         // icon (clicking the pill toggles, same as the Pomodoro chip's
-        // click), the full title scrolling through a fixed window, and an
+        // click; right-clicking pops up DrawYoutubeMiniplayer above it),
+        // the full title scrolling through a fixed window, and an
         // elapsed/total readout. The window keeps the pill chip-sized no
         // matter how long the title is, and the scroll is what makes the
         // whole title readable anyway.
@@ -61208,6 +61768,17 @@ void DrawEditor() {
                 RegisterClickRegion(chip_rect, [yt_chip_buffer] {
                     if (YoutubeSession *s = g_editor.GetYoutubeMutable(yt_chip_buffer)) g_editor.YoutubeTogglePause(*s);
                 });
+                // Right-click pops the miniplayer up above the pill (or
+                // folds it back up): DrawYoutubeMiniplayer, which reads
+                // the anchor from here every frame since the pill's
+                // width moves with the readout. Checked directly rather
+                // than through g_click_regions, which only knows the left
+                // button.
+                if (gfx::IsMouseButtonPressed(gfx::MouseButton::Right) && PointInRect(gfx::GetMousePosition(), chip_rect)) {
+                    g_youtube_mini_open = !g_youtube_mini_open;
+                }
+                g_youtube_mini_anchor = chip_rect;
+                g_youtube_mini_pill_drawn = true;
                 chip_left = chip_rect.x - 12.0f;
             }
         }
@@ -61364,6 +61935,9 @@ void DrawEditor() {
     DrawOrgInsertBlockMenu();
     // An org pane's export-format dropdown -- likewise.
     DrawOrgExportMenu();
+    // The status-bar pill's right-click miniplayer -- a floating popup
+    // over the pane area, so it goes here with the other dropdowns.
+    DrawYoutubeMiniplayer();
     // Same reasoning as the comment just above (drawn after sidebars, not
     // before, so it sits on top instead of being painted over by one) --
     // this used to be drawn inline with the command-line text itself,
@@ -61405,6 +61979,9 @@ void DrawEditor() {
     }
     if (g_show_help_overlay) DrawHelpOverlay();
     DrawToastStack();
+    // The floating YouTube viewer is pinned above all of the above; only
+    // the two modal pickers below still paint over it.
+    DrawYoutubePip();
     if (g_hint_mode_active) DrawHintOverlay();
     if (g_pane_pick_active) DrawPanePickOverlay();
 
@@ -62123,6 +62700,16 @@ void DispatchChromeClicks() {
         g_org_export_menu_pane = -1;
         g_org_export_menu_rect = {};
     }
+    // ...and for the YouTube pill's miniplayer (DrawYoutubeMiniplayer):
+    // a click outside both it and its pill closes it; a click on the pill
+    // stays the pill's own play/pause toggle, popup still up.
+    if (g_youtube_mini_open && !PointInRect(mouse, g_youtube_mini_rect) && !PointInRect(mouse, g_youtube_mini_anchor)) {
+        g_youtube_mini_open = false;
+        g_youtube_mini_rect = {};
+    }
+    // A click anywhere but the floating viewer (DrawYoutubePip) takes
+    // keyboard focus back from it; its own regions re-assert it.
+    if (g_youtube_pip_focused && !PointInRect(mouse, g_youtube_pip_rect)) g_youtube_pip_focused = false;
     for (const ClickRegion &r : g_click_regions) {
         if (PointInRect(mouse, r.rect)) {
             r.action();
@@ -63431,12 +64018,16 @@ void UpdateDrawFrame() {
         // bar or editor get a look. Armed below, after HandleInput().
         bool pane_pick_consumed = false;
         UDF_TIME("HandlePanePickInput", pane_pick_consumed = !hint_consumed && HandlePanePickInput());
+        // The floating YouTube viewer (DrawYoutubePip): mod1+d, and every
+        // key while it holds focus -- before the menu bar and editor.
+        bool pip_consumed = false;
+        UDF_TIME("HandleYoutubePipInput", pip_consumed = !hint_consumed && !pane_pick_consumed && HandleYoutubePipInput());
         bool menu_consumed = false;
-        UDF_TIME("HandleMenuInput", menu_consumed = !hint_consumed && !pane_pick_consumed && HandleMenuInput());
+        UDF_TIME("HandleMenuInput", menu_consumed = !hint_consumed && !pane_pick_consumed && !pip_consumed && HandleMenuInput());
         // Must precede HandleInput(): that's where the wheel is read, and
         // it scrolls whichever window this hit-test names.
         UpdateWheelHoverTarget();
-        if (!hint_consumed && !pane_pick_consumed && !menu_consumed) UDF_TIME("HandleInput", g_editor.HandleInput());
+        if (!hint_consumed && !pane_pick_consumed && !pip_consumed && !menu_consumed) UDF_TIME("HandleInput", g_editor.HandleInput());
         // The html viewer's plain-'f' link hints (Editor::HandleHtmlInput
         // -> TakeLinkHintRequest): answered here, after HandleInput() has
         // had its say this frame, with a pane-scoped collection instead

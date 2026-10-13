@@ -3141,6 +3141,15 @@ struct YoutubeSession {
     // Wall-clock fallback (no audio): media time = start_sec + wall_elapsed.
     double wall_started_at = 0.0;
     double wall_elapsed = 0.0;
+    // Once the audio has run out (decoded to its end and the device queue
+    // drained) the audio clock stands still -- short of the last pts by
+    // the device's own latency, and short of the video's end whenever its
+    // track runs a little longer -- so the final frames would never be
+    // reached and the stream never counted as ended. From that moment
+    // the clock runs on wall time instead: media time = tail_clock +
+    // (now - tail_started_at). 0 = audio still going (YoutubePoll).
+    double tail_started_at = 0.0;
+    double tail_clock = 0.0;
     bool playing = false;   // a video is loaded and its decoders are running (or finished)
     bool paused = false;
     bool buffering = false;
@@ -4727,12 +4736,35 @@ public:
     // the tab bar's Notifications button (UnreadNotifyCount) until the
     // history panel is viewed.
     enum class NotifyLevel { Debug = 0, Info = 1, Warn = 2, Error = 3 };
+    // A small RGBA picture a toast can carry (the YouTube player's
+    // next-track thumbnail): shared, since an entry is copied into both
+    // the toast stack and the history.
+    struct NotifyPreview {
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+    };
     struct NotifyEntry {
         int id = 0;
         std::string message;
+        // Optional second, dimmer line under `message` (a track's
+        // channel); the history panel folds it into the row's text.
+        std::string subtitle;
+        // Optional picture along the toast's left edge (main.cpp's
+        // DrawToastStack draws a two-line card when either of these is
+        // set); the history panel ignores it.
+        std::shared_ptr<const NotifyPreview> preview;
         NotifyLevel level = NotifyLevel::Info;
         double created_at = 0.0;
         double expires_at = 0.0;  // 0 = never auto-dismiss
+    };
+    // The extras Notify's long form takes beyond message and level.
+    struct NotifyOptions {
+        std::string subtitle;
+        std::shared_ptr<const NotifyPreview> preview;
+        // Pop a toast even when `level` is below the toast threshold
+        // (SetNotifyToastMinLevel) -- for an Info-level event the user
+        // asked to be shown, like the player moving on to the next video.
+        bool always_toast = false;
     };
     /**
      * @brief Pushes a notification: shows a toast, records it in history, and updates the status line.
@@ -4740,6 +4772,10 @@ public:
      * @param level The severity level, which controls toast duration and styling.
      */
     void Notify(const std::string &msg, NotifyLevel level = NotifyLevel::Info);
+    /**
+     * @brief Notify with extras: a subtitle line, a preview picture, and/or a toast regardless of level.
+     */
+    void Notify(const std::string &msg, NotifyLevel level, NotifyOptions opts);
     /**
      * @brief Sets the lowest level that still pops a toast; std::nullopt means no level ever does.
      * @param level The threshold (Warn by default), or std::nullopt to route everything to the history only.
@@ -6573,11 +6609,15 @@ public:
     void YoutubePlayResult(YoutubeSession &sess, int index);
     void YoutubeNext(YoutubeSession &sess);
     void YoutubePrev(YoutubeSession &sess);
-    // Toast for the track that just took over -- the auto-advance at the
-    // end of a video, and n/p. The player is routinely hidden and playing
-    // in the background (ToggleYoutube), where the status-bar now-playing
-    // pill says *what* is on but nothing announces a change of its own.
-    void YoutubeNotifyTrack(const YoutubeSession &sess);
+    // Notification for the track that just took over -- the auto-advance
+    // at the end of a video, and n/p. The player is routinely hidden and
+    // playing in the background (ToggleYoutube), where the status-bar
+    // now-playing pill says *what* is on but nothing announces a change
+    // of its own. Info level, so by default it only reaches the history;
+    // `toast` forces a toast with the track's thumbnail and channel
+    // (NotifyOptions) -- the auto-advance uses it, since nothing the user
+    // did caused that change, while n/p already have the user's attention.
+    void YoutubeNotifyTrack(const YoutubeSession &sess, bool toast = false);
     void YoutubeStepTo(YoutubeSession &sess, int index);
     void YoutubeTogglePause(YoutubeSession &sess);
     void YoutubeSeekTo(YoutubeSession &sess, double sec);

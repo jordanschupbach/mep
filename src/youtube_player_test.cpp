@@ -155,6 +155,60 @@ void TestSearch() {
     CHECK(yt::ParseSearchResponse("{}").empty());
 }
 
+// A next response trimmed to the three places the parser reads: the
+// autoplay set, one end-screen row and the current related column's
+// lockupViewModel (plus a non-video lockup that must be skipped).
+const char *kNext = R"({
+ "contents": {"twoColumnWatchNextResults": {
+  "autoplay": {"autoplay": {"sets": [{"mode": "NORMAL", "autoplayVideo": {
+    "watchEndpoint": {"videoId": "djV11Xbc914", "params": "EAE"}}}], "countDownSecs": 5}},
+  "secondaryResults": {"secondaryResults": {"results": [
+   {"lockupViewModel": {"contentId": "kQX7PbXPzpY", "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+     "contentImage": {"thumbnailViewModel": {"overlays": [{"thumbnailBottomOverlayViewModel": {"badges": [
+       {"thumbnailBadgeViewModel": {"text": "7:11", "badgeStyle": "THUMBNAIL_OVERLAY_BADGE_STYLE_DEFAULT"}}]}}]}},
+     "metadata": {"lockupMetadataViewModel": {"title": {"content": "Funny video"},
+       "metadata": {"contentMetadataViewModel": {"metadataRows": [
+         {"metadataParts": [{"text": {"content": "HiderX"}}]},
+         {"metadataParts": [{"text": {"content": "4.4M"}}, {"text": {"content": "1mo ago"}}]}]}}}}}},
+   {"lockupViewModel": {"contentId": "PLxyz", "contentType": "LOCKUP_CONTENT_TYPE_PLAYLIST",
+     "metadata": {"lockupMetadataViewModel": {"title": {"content": "A playlist"}}}}}
+  ]}}}},
+ "playerOverlays": {"playerOverlayRenderer": {"endScreen": {"watchNextEndScreenRenderer": {"results": [
+   {"endScreenVideoRenderer": {"videoId": "kQX7PbXPzpY", "title": {"simpleText": "Funny video"},
+     "shortBylineText": {"runs": [{"text": "HiderX"}]}, "lengthText": {"simpleText": "7:11"}, "lengthInSeconds": 431,
+     "shortViewCountText": {"simpleText": "4.4M views"}}},
+   {"endScreenVideoRenderer": {"videoId": "n61ULEU7CO0", "title": {"simpleText": "Best of lofi 2021"},
+     "shortBylineText": {"runs": [{"text": "Lofi Girl"}]}, "lengthText": {"simpleText": "6:10:58"}}}
+ ]}}}}
+})";
+
+void TestNext() {
+    const yt::UpNext next = yt::ParseNextResponse(kNext);
+    CHECK(next.autoplay_id == "djV11Xbc914");
+    // The autoplay pick heads the list even though no column lists it;
+    // the two end-screen rows follow, the duplicate lockup and the
+    // playlist lockup are dropped.
+    CHECK(next.videos.size() == 3);
+    CHECK(next.videos[0].id == "djV11Xbc914" && next.videos[0].title == "djV11Xbc914");
+    CHECK(next.videos[0].url == "https://www.youtube.com/watch?v=djV11Xbc914");
+    CHECK(next.videos[1].id == "kQX7PbXPzpY" && next.videos[1].title == "Funny video" && next.videos[1].channel == "HiderX");
+    CHECK(next.videos[1].duration_sec == 431.0);
+    CHECK(next.videos[2].id == "n61ULEU7CO0" && next.videos[2].channel == "Lofi Girl" && next.videos[2].duration_sec == 6 * 3600 + 10 * 60 + 58);
+    // The pick already in a column moves to the front rather than doubling.
+    std::string moved = kNext;
+    const std::string from = "\"videoId\": \"djV11Xbc914\"";
+    moved.replace(moved.find(from), from.size(), "\"videoId\": \"n61ULEU7CO0\"");
+    const yt::UpNext again = yt::ParseNextResponse(moved);
+    CHECK(again.autoplay_id == "n61ULEU7CO0" && again.videos.size() == 2);
+    CHECK(again.videos[0].id == "n61ULEU7CO0" && again.videos[0].title == "Best of lofi 2021" && again.videos[1].id == "kQX7PbXPzpY");
+    // No autoplay set: the column order stands.
+    const yt::UpNext column = yt::ParseNextResponse(std::string(kNext).replace(std::string(kNext).find("autoplayVideo"), 13, "x"));
+    CHECK(column.autoplay_id.empty() && column.videos.size() == 2 && column.videos[0].id == "kQX7PbXPzpY");
+    CHECK(yt::ParseNextResponse("").videos.empty() && yt::ParseNextResponse("{}").videos.empty());
+    const std::string body = yt::NextRequestBody("dQw4w9WgXcQ");
+    CHECK(body.find("\"videoId\":\"dQw4w9WgXcQ\"") != std::string::npos && body.find("\"clientName\":\"WEB\"") != std::string::npos);
+}
+
 void TestArgv() {
     const std::vector<std::string> a = yt::InnertubeArgv(yt::kPlayerEndpoint, Vr(), "{\"x\":1}");
     CHECK(a.front() == "curl" && a.back() == yt::kPlayerEndpoint);
@@ -190,6 +244,7 @@ int main() {
     TestPlayerAdaptive();
     TestPlayerRefusals();
     TestSearch();
+    TestNext();
     TestArgv();
     TestFormatting();
     std::printf("youtube_player_test: all checks passed\n");

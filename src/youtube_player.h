@@ -74,6 +74,18 @@ const Client &SearchClient();
 
 constexpr const char *kPlayerEndpoint = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
 constexpr const char *kSearchEndpoint = "https://www.youtube.com/youtubei/v1/search?prettyPrint=false";
+// The watch page's "up next" data: what YouTube itself would autoplay
+// after a video, plus the rest of its end-screen / related column.
+constexpr const char *kNextEndpoint = "https://www.youtube.com/youtubei/v1/next?prettyPrint=false";
+
+// What a next response says follows one video: `autoplay_id` is the one
+// YouTube's own autoplay would start (empty when it offered none), and
+// `videos` the up-next column in order -- the autoplay pick first, then
+// the end-screen / related videos, each id once.
+struct UpNext {
+    std::string autoplay_id;
+    std::vector<SearchResult> videos;
+};
 
 // The video id in a watch URL (watch?v=, youtu.be/, /shorts/, /embed/,
 // /live/), or `url_or_id` itself when it already is one; "" when there is
@@ -85,6 +97,10 @@ std::string CanonicalVideoUrl(const std::string &url_or_id);
 // Request bodies (JSON) for the player and search endpoints.
 std::string PlayerRequestBody(const Client &client, const std::string &video_id);
 std::string SearchRequestBody(const std::string &query);
+// Request body for the next endpoint (as SearchClient(): WEB, whose
+// response carries durations and view counts), asking what follows
+// `video_id`.
+std::string NextRequestBody(const std::string &video_id);
 
 // Reads a player response into `out`, choosing what to play: the muxed
 // itag 18 when it is listed, else (unless `client.muxed_only`) the best
@@ -98,6 +114,12 @@ bool ParsePlayerResponse(const std::string &json, const Client &client, int max_
 // The video rows of a search response, in order (channels, playlists and
 // shelves are skipped).
 std::vector<SearchResult> ParseSearchResponse(const std::string &json);
+// The up-next data of a next response (see UpNext). Reads the autoplay
+// set, the end-screen rows (endScreenVideoRenderer) and the related
+// column in either of its shapes (compactVideoRenderer, lockupViewModel);
+// an autoplay pick that appears in none of them still heads `videos`,
+// with its id for a title. Empty on anything unparsable.
+UpNext ParseNextResponse(const std::string &json);
 
 // curl command lines: a POST of `body` to an InnerTube endpoint as
 // `client`, and a plain GET (thumbnails).

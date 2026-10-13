@@ -177,6 +177,22 @@ std::string SearchRequestBody(const std::string &query) {
     return body.dump();
 }
 
+std::string NextRequestBody(const std::string &video_id) {
+    Json c = Json::Object();
+    c["clientName"] = SearchClient().name;
+    c["clientVersion"] = SearchClient().version;
+    c["hl"] = "en";
+    c["gl"] = "US";
+    Json context = Json::Object();
+    context["client"] = std::move(c);
+    Json body = Json::Object();
+    body["context"] = std::move(context);
+    body["videoId"] = video_id;
+    body["contentCheckOk"] = true;
+    body["racyCheckOk"] = true;
+    return body.dump();
+}
+
 bool ParsePlayerResponse(const std::string &json, const Client &client, int max_height, StreamInfo *out, std::string *error) {
     auto fail = [&](const std::string &msg) {
         if (error) *error = msg;
@@ -271,6 +287,91 @@ std::vector<SearchResult> ParseSearchResponse(const std::string &json) {
         r.view_count = DigitsValue(views);
         r.is_live = !row->get("lengthText").is_object() && views.find("watching") != std::string::npos;
         out.push_back(std::move(r));
+    }
+    return out;
+}
+
+UpNext ParseNextResponse(const std::string &json) {
+    UpNext out;
+    Json j;
+    if (!Json::Parse(Trim(json), &j)) return out;
+
+    // The autoplay set: contents...autoplay.autoplay.sets[0].autoplayVideo
+    // .watchEndpoint.videoId (two- or single-column, so found by name).
+    std::vector<const Json *> autoplay;
+    Collect(j, "autoplayVideo", &autoplay);
+    for (const Json *a : autoplay) {
+        const std::string id = a->get("watchEndpoint").get("videoId").as_string();
+        if (IsVideoId(id)) {
+            out.autoplay_id = id;
+            break;
+        }
+    }
+
+    auto add = [&](SearchResult r) {
+        if (!IsVideoId(r.id)) return;
+        for (const SearchResult &have : out.videos)
+            if (have.id == r.id) return;
+        r.url = "https://www.youtube.com/watch?v=" + r.id;
+        if (r.title.empty()) r.title = r.id;
+        out.videos.push_back(std::move(r));
+    };
+    // End-screen rows and the older related column share the classic
+    // renderer fields.
+    for (const char *key : {"endScreenVideoRenderer", "compactVideoRenderer"}) {
+        std::vector<const Json *> rows;
+        Collect(j, key, &rows);
+        for (const Json *row : rows) {
+            SearchResult r;
+            r.id = row->get("videoId").as_string();
+            r.title = Text(row->get("title"));
+            r.channel = Text(row->get("shortBylineText"));
+            if (r.channel.empty()) r.channel = Text(row->get("longBylineText"));
+            r.duration_sec = row->get("lengthInSeconds").as_double();
+            if (r.duration_sec <= 0.0) r.duration_sec = ClockSeconds(Text(row->get("lengthText")));
+            const std::string views = Text(row->get("shortViewCountText"));
+            r.view_count = DigitsValue(Text(row->get("viewCountText")));
+            r.is_live = r.duration_sec <= 0.0 && views.find("watching") != std::string::npos;
+            add(std::move(r));
+        }
+    }
+    // The current related column: lockupViewModel {contentId, contentType,
+    // metadata.lockupMetadataViewModel.title.content, ...metadataRows[0]
+    // .metadataParts[0].text.content (the channel)}, its duration in the
+    // thumbnail's bottom-overlay badge text.
+    std::vector<const Json *> lockups;
+    Collect(j, "lockupViewModel", &lockups);
+    for (const Json *l : lockups) {
+        if (l->get("contentType").as_string() != "LOCKUP_CONTENT_TYPE_VIDEO") continue;
+        SearchResult r;
+        r.id = l->get("contentId").as_string();
+        const Json &md = l->get("metadata").get("lockupMetadataViewModel");
+        r.title = md.get("title").get("content").as_string();
+        const Json &rows = md.get("metadata").get("contentMetadataViewModel").get("metadataRows");
+        if (rows.size() > 0) {
+            const Json &parts = rows.items()[0].get("metadataParts");
+            if (parts.size() > 0) r.channel = parts.items()[0].get("text").get("content").as_string();
+        }
+        std::vector<const Json *> badges;
+        Collect(l->get("contentImage"), "thumbnailBadgeViewModel", &badges);
+        for (const Json *b : badges) {
+            const std::string text = b->get("text").as_string();
+            if (text == "LIVE") r.is_live = true;
+            if (r.duration_sec <= 0.0) r.duration_sec = ClockSeconds(text);
+        }
+        add(std::move(r));
+    }
+    // YouTube's own pick heads the list, even when it sits in no column.
+    if (!out.autoplay_id.empty()) {
+        size_t at = out.videos.size();
+        for (size_t i = 0; i < out.videos.size(); i++)
+            if (out.videos[i].id == out.autoplay_id) at = i;
+        if (at == out.videos.size()) {
+            SearchResult r;
+            r.id = out.autoplay_id;
+            add(std::move(r));
+        }
+        std::rotate(out.videos.begin(), out.videos.begin() + static_cast<long>(at), out.videos.begin() + static_cast<long>(at) + 1);
     }
     return out;
 }

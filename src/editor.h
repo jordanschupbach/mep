@@ -3113,12 +3113,32 @@ struct YoutubeSession {
     int thumb_index = -1;
     std::string thumb_bytes;
 
+    // --- Up next: YouTube's own autoplay for the playing video ---
+    // Fetched from the next endpoint as soon as a video starts
+    // (YoutubeFetchUpNext); `up_next[0]` is what YouTube would autoplay,
+    // the rest its end-screen / related column. The end of a video (and
+    // n on a track that came from here rather than the result list) plays
+    // [0] -- YoutubeAutoplayNext -- so playback follows YouTube's trail
+    // instead of marching down the search results. `played_ids` is the
+    // recent history, kept out of the list so the trail doesn't loop.
+    std::vector<yt::SearchResult> up_next;
+    std::string up_next_for;  // the video id the list was fetched for
+    int next_job = 0;
+    Thumb up_next_thumb;  // [0]'s thumbnail, fetched ahead for the now-playing toast
+    int up_next_thumb_job = 0;
+    std::string up_next_thumb_bytes;
+    std::vector<std::string> played_ids;
+
     // --- Now playing ---
     yt::StreamInfo info;
     bool info_valid = false;
     std::string now_url;  // watch URL of the current video
     std::string now_title;
     int now_result = -1;  // index into `results`, -1 when opened by URL
+    // Channel and thumbnail of a track that came from `up_next` (a result
+    // row's own are read from `results`/`thumbs` instead).
+    std::string now_channel;
+    Thumb now_thumb;
     bool resolving = false;
     int resolve_job = 0;
     size_t resolve_client = 0;  // index into yt::PlayerClients() being asked
@@ -6619,6 +6639,13 @@ public:
     // did caused that change, while n/p already have the user's attention.
     void YoutubeNotifyTrack(const YoutubeSession &sess, bool toast = false);
     void YoutubeStepTo(YoutubeSession &sess, int index);
+    // Asks the next endpoint what follows the playing video (fills
+    // YoutubeSession::up_next), then fetches the pick's thumbnail.
+    void YoutubeFetchUpNext(YoutubeSession &sess);
+    void YoutubeFetchUpNextThumb(YoutubeSession &sess);
+    // Plays up_next[0] (YouTube's autoplay pick); false when there is no
+    // list yet (the fetch failed or is still in flight).
+    bool YoutubeAutoplayNext(YoutubeSession &sess);
     void YoutubeTogglePause(YoutubeSession &sess);
     void YoutubeSeekTo(YoutubeSession &sess, double sec);
     void YoutubeSeekBy(YoutubeSession &sess, double delta);

@@ -14554,14 +14554,112 @@ void Editor::YoutubePlayUrl(YoutubeSession &sess, const std::string &url, int re
     YoutubeStop(sess);
     sess.now_url = url;
     sess.now_result = result_index;
+    sess.now_channel.clear();
+    sess.now_thumb = YoutubeSession::Thumb{};
     if (result_index >= 0 && result_index < static_cast<int>(sess.results.size())) {
         sess.now_title = sess.results[static_cast<size_t>(result_index)].title;
         sess.selected = result_index;
     } else {
         sess.now_title = url;
     }
+    const std::string id = yt::VideoId(url);
+    if (!id.empty()) {
+        sess.played_ids.erase(std::remove(sess.played_ids.begin(), sess.played_ids.end(), id), sess.played_ids.end());
+        sess.played_ids.push_back(id);
+        if (sess.played_ids.size() > 50) sess.played_ids.erase(sess.played_ids.begin());
+    }
     sess.playing = true;
     YoutubeStartResolve(sess);
+    YoutubeFetchUpNext(sess);
+}
+
+void Editor::YoutubeFetchUpNext(YoutubeSession &sess) {
+    JobManager &jm = JobManager::Instance();
+    if (sess.next_job > 0) jm.Kill(sess.next_job);
+    if (sess.up_next_thumb_job > 0) jm.Kill(sess.up_next_thumb_job);
+    sess.next_job = 0;
+    sess.up_next_thumb_job = 0;
+    sess.up_next.clear();
+    sess.up_next_thumb = YoutubeSession::Thumb{};
+    sess.up_next_thumb_bytes.clear();
+    const std::string id = yt::VideoId(sess.now_url);
+    sess.up_next_for = id;
+    if (id.empty()) return;
+    const int buffer_id = sess.buffer_id;
+    auto body = std::make_shared<std::string>();
+    JobManager::Callbacks cb;
+    cb.on_stdout = [body](const std::string &line) {
+        *body += line;
+        *body += '\n';
+    };
+    cb.on_exit = [this, buffer_id, id, body](int code) {
+        YoutubeSession *s = GetYoutubeMutable(buffer_id);
+        if (!s || s->up_next_for != id) return;  // a later video's fetch superseded this one
+        s->next_job = 0;
+        if (code != 0) return;
+        yt::UpNext next = yt::ParseNextResponse(*body);
+        // Keep the trail from doubling back on what was just played; if
+        // that empties it, a repeat beats silence.
+        std::vector<yt::SearchResult> fresh;
+        for (yt::SearchResult &r : next.videos) {
+            if (std::find(s->played_ids.begin(), s->played_ids.end(), r.id) == s->played_ids.end()) fresh.push_back(std::move(r));
+        }
+        s->up_next = fresh.empty() ? std::move(next.videos) : std::move(fresh);
+        if (!s->up_next.empty()) YoutubeFetchUpNextThumb(*s);
+        mep::NoteActivity();
+    };
+    sess.next_job = jm.Spawn(yt::InnertubeArgv(yt::kNextEndpoint, yt::SearchClient(), yt::NextRequestBody(id)), "", std::move(cb));
+}
+
+void Editor::YoutubeFetchUpNextThumb(YoutubeSession &sess) {
+    if (sess.up_next.empty() || sess.up_next_thumb_job > 0) return;
+    const std::string id = sess.up_next.front().id;
+    const std::string for_id = sess.up_next_for;
+    const int buffer_id = sess.buffer_id;
+    sess.up_next_thumb_bytes.clear();
+    JobManager::Callbacks cb;
+    cb.on_stdout_raw = [this, buffer_id, for_id](const std::string &chunk) {
+        YoutubeSession *s = GetYoutubeMutable(buffer_id);
+        if (!s || s->up_next_for != for_id) return;
+        s->up_next_thumb_bytes += chunk;
+    };
+    cb.on_exit = [this, buffer_id, for_id, id](int code) {
+        YoutubeSession *s = GetYoutubeMutable(buffer_id);
+        if (!s || s->up_next_for != for_id) return;
+        s->up_next_thumb_job = 0;
+        if (s->up_next.empty() || s->up_next.front().id != id) return;
+        YoutubeSession::Thumb thumb;
+        if (code == 0 && !s->up_next_thumb_bytes.empty()) {
+            int w = 0, h = 0;
+            std::string err;
+            unsigned char *px = jpeg::Decode(reinterpret_cast<const unsigned char *>(s->up_next_thumb_bytes.data()),
+                                             s->up_next_thumb_bytes.size(), &w, &h, &err);
+            if (px && w > 0 && h > 0) {
+                thumb.rgba.assign(px, px + static_cast<size_t>(w) * static_cast<size_t>(h) * 4u);
+                thumb.w = w;
+                thumb.h = h;
+            } else {
+                thumb.failed = true;
+            }
+            std::free(px);
+        } else {
+            thumb.failed = true;
+        }
+        s->up_next_thumb = std::move(thumb);
+        s->up_next_thumb_bytes.clear();
+    };
+    sess.up_next_thumb_job = JobManager::Instance().Spawn(yt::FetchArgv(yt::ThumbnailUrl(id)), "", std::move(cb));
+}
+
+bool Editor::YoutubeAutoplayNext(YoutubeSession &sess) {
+    if (sess.up_next.empty()) return false;
+    const yt::SearchResult pick = sess.up_next.front();
+    YoutubeSession::Thumb thumb = std::move(sess.up_next_thumb);  // YoutubePlayUrl's refetch clears it
+    YoutubePlayUrl(sess, pick.url, -1);
+    sess.now_title = pick.title;
+    sess.now_channel = pick.channel;
+    sess.now_thumb = thumb.failed ? YoutubeSession::Thumb{} : std::move(thumb);
+    return true;
 }
 
 void Editor::YoutubePlayResult(YoutubeSession &sess, int index) {
@@ -14578,21 +14676,33 @@ void Editor::YoutubeNotifyTrack(const YoutubeSession &sess, bool toast) {
     // URL opened directly).
     NotifyOptions opts;
     opts.always_toast = toast;
+    const YoutubeSession::Thumb *thumb = nullptr;
     if (sess.now_result >= 0 && sess.now_result < static_cast<int>(sess.results.size())) {
         opts.subtitle = sess.results[static_cast<size_t>(sess.now_result)].channel;
         auto it = sess.thumbs.find(sess.now_result);
-        if (toast && it != sess.thumbs.end() && !it->second.failed && !it->second.rgba.empty()) {
-            auto preview = std::make_shared<NotifyPreview>();
-            preview->rgba = it->second.rgba;
-            preview->w = it->second.w;
-            preview->h = it->second.h;
-            opts.preview = std::move(preview);
-        }
+        if (it != sess.thumbs.end()) thumb = &it->second;
+    } else {
+        // An up-next track (YoutubeAutoplayNext) carries its own.
+        opts.subtitle = sess.now_channel;
+        thumb = &sess.now_thumb;
+    }
+    if (toast && thumb && !thumb->failed && !thumb->rgba.empty()) {
+        auto preview = std::make_shared<NotifyPreview>();
+        preview->rgba = thumb->rgba;
+        preview->w = thumb->w;
+        preview->h = thumb->h;
+        opts.preview = std::move(preview);
     }
     Notify("Now playing: " + sess.now_title, NotifyLevel::Info, std::move(opts));
 }
 
 void Editor::YoutubeNext(YoutubeSession &sess) {
+    // A track from YouTube's up-next trail (or a bare URL) steps along
+    // that trail; a result row steps down the result list.
+    if (sess.now_result < 0 && YoutubeAutoplayNext(sess)) {
+        YoutubeNotifyTrack(sess);
+        return;
+    }
     int base = sess.now_result >= 0 ? sess.now_result : sess.selected - 1;
     YoutubeStepTo(sess, base + 1);
 }
@@ -14816,14 +14926,16 @@ void Editor::YoutubePoll(int buffer_id) {
     if (video_done && audio_done && !sess.ended) {
         sess.ended = true;
         sess.buffering = false;
-        // Playlist-style auto-advance, with exactly YoutubeNext's idea of
-        // "next": the row after the one playing, or -- for a video opened
-        // by URL, which sits in no row -- the list's selected row, so a
-        // URL followed by a search keeps going too. Announced with a
-        // toast (thumbnail + channel) since the player is usually hidden
-        // when a video runs out and nothing else says it moved on.
+        // Autoplay: YouTube's own pick for what follows this video
+        // (YoutubeAutoplayNext, from the next endpoint), falling back to
+        // the result list when that fetch came up empty -- the row after
+        // the one playing, or the selected row for a bare URL. Announced
+        // with a toast (thumbnail + channel) since the player is usually
+        // hidden when a video runs out and nothing else says it moved on.
         const int next = sess.now_result >= 0 ? sess.now_result + 1 : sess.selected;
-        if (next >= 0 && next < static_cast<int>(sess.results.size())) {
+        if (YoutubeAutoplayNext(sess)) {
+            YoutubeNotifyTrack(sess, /*toast=*/true);
+        } else if (next >= 0 && next < static_cast<int>(sess.results.size())) {
             YoutubePlayResult(sess, next);
             YoutubeNotifyTrack(sess, /*toast=*/true);
         } else {
@@ -19889,6 +20001,8 @@ void Editor::BufferDeleteById(int target, bool force) {
         JobManager &jm = JobManager::Instance();
         if (yit->second.search_job > 0) jm.Kill(yit->second.search_job);
         if (yit->second.thumb_job > 0) jm.Kill(yit->second.thumb_job);
+        if (yit->second.next_job > 0) jm.Kill(yit->second.next_job);
+        if (yit->second.up_next_thumb_job > 0) jm.Kill(yit->second.up_next_thumb_job);
         youtube_sessions_.erase(yit);
     }
 

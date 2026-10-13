@@ -1,0 +1,50 @@
+---
+title: "mep R Markdown example"
+output: html_document
+---
+
+This is a small R Markdown document used to exercise mep's chunk support:
+running chunks, cross-chunk variable resolution, `eval=FALSE`, `echo=FALSE`,
+plots, and errors.
+
+```{r setup}
+n <- 10
+message <- "hello from setup"
+```
+
+The `n` and `message` variables above were defined in the `setup` chunk.
+The next chunk uses them, which also exercises the LSP's cross-chunk context
+(it should not flag `n` or `message` as undefined).
+
+```{r use-vars}
+cat(message, "\n")
+n * 2
+```
+
+This chunk is marked `eval=FALSE`, so it should never run:
+
+```{r skipped, eval=FALSE}
+stop("this chunk must never execute")
+```
+
+This chunk is marked `echo=FALSE`:
+
+```{r hidden, echo=FALSE}
+secret <- 42
+secret <- secret + 1
+secret
+```
+
+A simple plot:
+
+```{r plot-demo}
+plot(1:10, (1:10)^2, type = "b", main = "squares")
+```
+
+A chunk that raises an error on purpose:
+
+```{r error-demo}
+stop("boom: this is an intentional error")
+```
+
+That's the end of the example document.

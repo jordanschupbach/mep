@@ -5,7 +5,7 @@
 
 * Every command
 
-All 426 ex commands mep defines: 147 built in and 280 registered from Lua.
+All 427 ex commands mep defines: 147 built in and 280 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.

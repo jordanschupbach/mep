@@ -109,6 +109,21 @@ line. The address bar takes <code>localhost:8000</code>, <code>:8000/app</code>,
 <code>example.com</code>, file paths, or anything else as a web search.</p>
 <p>The page is a real view over mep's window, so it steps aside while a
 picker or the which-key popup is up.</p>
+<h2>Theme colours</h2>
+<p>Pages are drawn in mep's theme, the way PDFs and <code>:Browse</code> pages are: the
+page's paper becomes the theme's background, its text the theme's
+foreground, and its coloured links, buttons and highlights the nearest
+colour of the theme's palette. A site with a dark mode of its own is
+asked for it when the theme is dark. Images and video keep their colours,
+and so does text over a picture. <code>:colorscheme</code> re-themes open pages
+straight away.</p>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>Ctrl-R</code></td><td>the page's own colours, or the theme's again</td></tr>
+<tr><td><code>:BrowserTheme</code></td><td>the same</td></tr>
+<tr><td><code>:BrowserTheme on/off</code></td><td>set it</td></tr>
+</table>
+<p>The address bar always takes the theme's colours.</p>
 <h1>How much of a browser is it?</h1>
 <p>Measured, not claimed -- see <a href="web-ladder.html">Measuring the engine</a>.</p>
 <h1>See also</h1>

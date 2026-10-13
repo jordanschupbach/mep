@@ -121,6 +121,24 @@ line. The address bar takes =localhost:8000=, =:8000/app=,
 The page is a real view over mep's window, so it steps aside while a
 picker or the which-key popup is up.
 
+** Theme colours
+
+Pages are drawn in mep's theme, the way PDFs and =:Browse= pages are: the
+page's paper becomes the theme's background, its text the theme's
+foreground, and its coloured links, buttons and highlights the nearest
+colour of the theme's palette. A site with a dark mode of its own is
+asked for it when the theme is dark. Images and video keep their colours,
+and so does text over a picture. =:colorscheme= re-themes open pages
+straight away.
+
+| Key / command          | Does                                         |
+|------------------------+----------------------------------------------|
+| =Ctrl-R=               | the page's own colours, or the theme's again |
+| =:BrowserTheme=        | the same                                     |
+| =:BrowserTheme on/off= | set it                                       |
+
+The address bar always takes the theme's colours.
+
 * How much of a browser is it?
 
 Measured, not claimed -- see [[file:web-ladder.html][Measuring the engine]].

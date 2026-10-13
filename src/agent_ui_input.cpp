@@ -137,7 +137,7 @@ bool TypeChar(char c) {
 
 }  // namespace mep::agent_ui
 
-#else  // !MEP_AGENT_UI_X11
+#elif !defined(__APPLE__)  // (macOS: agent_ui_input_macos.mm)
 
 namespace mep::agent_ui {
 void Init(void *) {}

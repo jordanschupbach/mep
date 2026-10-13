@@ -4200,6 +4200,8 @@ const char *kBuiltinTextTools =
     "mep.command('BrowserBack', function() mep.browser('back') end)\n"
     "mep.command('BrowserForward', function() mep.browser('forward') end)\n"
     "mep.command('BrowserReload', function() mep.browser('reload') end)\n"
+    // The page in mep's colours or its own: "on", "off", or a toggle (Ctrl-R).
+    "mep.command('BrowserTheme', function(args) mep.browser('theme', args or '') end)\n"
     "mep.command('BrowserGo', function(args)\n"
     "  if not mep.browser('go', args or '') then mep.browser_command(args) end\n"
     "end)\n"
@@ -42001,7 +42003,13 @@ void DrawYoutubePip() {
         // Title and the two gestures, along the top edge.
         const float top_h = std::round(small + 10.0f);
         gfx::DrawRectangleRec(gfx::Rectangle{x, y, w, top_h}, gfx::Fade(gfx::Black, 0.65f));
-        const std::string hint = YoutubeFitText("alt+drag: move   alt+right-drag: resize   alt+d: close", w - 2.0f * pad, small);
+#if defined(__APPLE__)
+        // (A Ctrl-click is a right-click on the Mac: backend_native_macos.mm.)
+        const char *gestures = "alt+drag: move   alt+ctrl+drag: resize   alt+d: close";
+#else
+        const char *gestures = "alt+drag: move   alt+right-drag: resize   alt+d: close";
+#endif
+        const std::string hint = YoutubeFitText(gestures, w - 2.0f * pad, small);
         const float hint_w = MeasureUiText(hint, small);
         DrawUiText(hint, gfx::Vector2{x + w - pad - hint_w, y + 5.0f}, small, gfx::Fade(gfx::White, 0.7f));
         const float title_avail = w - 2.0f * pad - hint_w - pad;

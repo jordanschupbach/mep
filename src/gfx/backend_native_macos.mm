@@ -192,6 +192,9 @@ struct NativeContext {
     std::deque<unsigned int> char_queue;  // Unicode codepoints, drained by GetCharPressed
 
     bool mouse_down[3] = {};
+    // The left button went down with Control held: a Ctrl-click, the Mac's
+    // right-click, so its release is the right button's too.
+    bool ctrl_click = false;
     bool mouse_pressed[3] = {};
     bool mouse_released[3] = {};
     double mouse_x = 0.0, mouse_y = 0.0;
@@ -450,11 +453,15 @@ void HandleMouseMove(NativeContext *ctx, NSEvent *event) {
         return;
     }
     gfx::HandleMouseMove(ctx, event);
-    gfx::HandleMouseButton(ctx, 0, true);
+    // Ctrl-click is a right-click, as everywhere on the Mac (a trackpad
+    // has no right button unless its secondary click is set up).
+    ctx->ctrl_click = ([event modifierFlags] & NSEventModifierFlagControl) != 0;
+    gfx::HandleMouseButton(ctx, ctx->ctrl_click ? 1 : 0, true);
 }
 - (void)mouseUp:(NSEvent *)event {
     gfx::HandleMouseMove(ctx, event);
-    gfx::HandleMouseButton(ctx, 0, false);
+    gfx::HandleMouseButton(ctx, ctx->ctrl_click ? 1 : 0, false);
+    ctx->ctrl_click = false;
 }
 - (void)rightMouseDown:(NSEvent *)event {
     gfx::HandleMouseMove(ctx, event);

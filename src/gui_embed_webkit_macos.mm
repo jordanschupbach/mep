@@ -21,6 +21,10 @@
 // Accessibility backend's event tap does for a Mac app. It also gives the
 // page the browser's usual Command keys, since mep's menu bar has no Edit
 // menu to route copy/paste through.
+//
+// The theme (SetTheme): the address bar is drawn in mep's colours, the
+// page's prefers-color-scheme follows mep's theme, and web_theme_script.h,
+// run in every page in a script world of its own, recolours the page.
 
 #include "gui_embed.h"
 
@@ -31,11 +35,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <filesystem>
 #include <map>
 #include <string>
 
 #include "gfx/native_window_handle.h"
+#include "web_theme_script.h"
 
 namespace mep::gui_embed {
 class MacWebView;
@@ -131,6 +137,24 @@ NSURL *UrlFor(const std::string &typed) {
     q = [q stringByReplacingOccurrencesOfString:@"&" withString:@"%26"];
     q = [q stringByReplacingOccurrencesOfString:@"+" withString:@"%2B"];
     return [NSURL URLWithString:[@"https://duckduckgo.com/?q=" stringByAppendingString:OrEmpty(q)]];
+}
+
+NSColor *Color(WebView::Rgb c) { return [NSColor colorWithSRGBRed:c.r / 255.0 green:c.g / 255.0 blue:c.b / 255.0 alpha:1.0]; }
+
+std::string Hex(WebView::Rgb c) {
+    char buf[8];
+    std::snprintf(buf, sizeof buf, "#%02x%02x%02x", c.r, c.g, c.b);
+    return buf;
+}
+
+// web_theme_script.h's MEP_THEME.
+std::string ThemeJson(const WebView::Theme &t) {
+    auto q = [](WebView::Rgb c) { return "\"" + Hex(c) + "\""; };
+    return std::string("{\"recolor\":") + (t.recolor ? "true" : "false") + ",\"dark\":" + (t.dark ? "true" : "false") +
+           ",\"bg\":" + q(t.bg) + ",\"fg\":" + q(t.fg) + ",\"dim\":" + q(t.dim) + ",\"selection\":" + q(t.selection) +
+           ",\"border\":" + q(t.border) + ",\"pal\":{\"red\":" + q(t.red) + ",\"green\":" + q(t.green) +
+           ",\"yellow\":" + q(t.yellow) + ",\"blue\":" + q(t.blue) + ",\"purple\":" + q(t.purple) + ",\"cyan\":" + q(t.cyan) +
+           ",\"orange\":" + q(t.orange) + "}}";
 }
 
 NSButton *BarButton(NSString *symbol, NSString *tip, id target, SEL action) {
@@ -333,6 +357,39 @@ public:
 
     std::string Url() override { return alive_ ? Str(web_.URL.absoluteString) : ""; }
 
+    void SetTheme(const Theme &t) override {
+        if (!alive_) return;
+        NSAppearance *look = [NSAppearance appearanceNamed:t.dark ? NSAppearanceNameDarkAqua : NSAppearanceNameAqua];
+        // The address bar: always mep's.
+        bar_.appearance = look;
+        bar_.layer.backgroundColor = Color(t.bar).CGColor;
+        address_.bezeled = NO;
+        address_.drawsBackground = YES;
+        address_.backgroundColor = Color(t.bg);
+        address_.textColor = Color(t.fg);
+        address_.wantsLayer = YES;
+        address_.layer.cornerRadius = 5;
+        address_.layer.borderWidth = 1;
+        address_.layer.borderColor = Color(t.border).CGColor;
+        address_.placeholderAttributedString = [[NSAttributedString alloc]
+            initWithString:@"Search or enter address"
+                attributes:@{NSForegroundColorAttributeName : Color(t.dim), NSFontAttributeName : address_.font}];
+        for (NSButton *b in @[ back_, forward_, reload_ ]) b.contentTintColor = Color(t.fg);
+        // The page: prefers-color-scheme says what mep's theme is (or,
+        // recolouring off, what the system's is), and the script does the
+        // rest -- in pages to come, and in this one.
+        web_.appearance = t.recolor ? look : nil;
+        web_.underPageBackgroundColor = t.recolor ? Color(t.bg) : nil;
+        NSString *source = NS("{ const MEP_THEME = " + ThemeJson(t) + ";\n" + kWebThemeScript + "}\n");
+        WKUserContentController *ucc = web_.configuration.userContentController;
+        [ucc removeAllUserScripts];
+        [ucc addUserScript:[[WKUserScript alloc] initWithSource:source
+                                                   injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                                forMainFrameOnly:NO
+                                                  inContentWorld:ThemeWorld()]];
+        if (web_.URL) [web_ evaluateJavaScript:source inFrame:nil inContentWorld:ThemeWorld() completionHandler:nil];
+    }
+
     // --- From the delegate --------------------------------------------------
 
     // The page has moved on (a link, a redirect, history): the address
@@ -393,6 +450,9 @@ private:
         if (!alive_ || ![r isKindOfClass:[NSView class]]) return false;
         return [static_cast<NSView *>(r) isDescendantOf:container_];
     }
+
+    // The theme script's own: the page cannot reach into it.
+    static WKContentWorld *ThemeWorld() { return [WKContentWorld worldWithName:@"mep-theme"]; }
 
     bool Editing() const {
         NSResponder *r = host_.firstResponder;

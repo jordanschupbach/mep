@@ -170,6 +170,25 @@ public:
     virtual void EditAddress() = 0;
     // The page's URL, "" before anything has loaded.
     virtual std::string Url() = 0;
+
+    // mep's colours, for the page and the address bar to take on.
+    struct Rgb {
+        unsigned char r = 0, g = 0, b = 0;
+    };
+    struct Theme {
+        // False: the page in its own colours (only the address bar follows
+        // mep's).
+        bool recolor = true;
+        bool dark = false;          // what prefers-color-scheme says
+        Rgb bg, fg;                 // the paper and the ink
+        Rgb dim;                    // secondary text (placeholders)
+        Rgb selection, border, bar;  // a text selection, an edge, the address bar
+        // The palette's hues: a coloured link, button or highlight on the
+        // page becomes the nearest of these.
+        Rgb red, green, yellow, blue, purple, cyan, orange;
+    };
+    // Applies `theme` to the page shown now and to every page after it.
+    virtual void SetTheme(const Theme &theme) = 0;
 };
 
 /**

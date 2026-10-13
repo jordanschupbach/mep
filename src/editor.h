@@ -11175,7 +11175,7 @@ public:
      */
     bool OpenBrowserInPlace(const std::string &target, std::string *error = nullptr);
     /**
-     * @brief Acts on the current pane's web view: "back", "forward", "reload", "address" (edit the address), or "go" with `arg`.
+     * @brief Acts on the current pane's web view: "back", "forward", "reload", "address" (edit the address), "go" with `arg`, or "theme" with `arg` "on", "off" or "" (toggle: the page in mep's colours or its own).
      * @return False when the current pane is not a :Browser pane.
      */
     bool BrowserAction(const std::string &action, const std::string &arg = "");
@@ -15174,10 +15174,15 @@ private:
         EmbeddedPointerState pointer;        // (a window mep draws itself)
         bool web = false;               // a :Browser pane: app is a WebView of mep's own, not a program
         std::string web_url;            // ... and where it is (r opens it again there)
+        bool web_theme = true;          // ... drawn in mep's colours (Ctrl-R, :BrowserTheme)
+        int web_theme_epoch = -1;       // the ThemeEpoch() it was last given (-1: not yet)
     };
     // (Re)creates a :Browser pane's web view, at sess.web_url.
     bool StartBrowserApp(ExecAppSession &sess, std::string *error);
     mep::gui_embed::WebView *BrowserOf(int buffer_id);
+    // Hands a :Browser pane's view the current theme, when it (or the
+    // pane's theme on/off) has changed since it was last given one.
+    void SyncBrowserTheme(ExecAppSession &sess, mep::gui_embed::WebView &view);
     std::map<int, ExecAppSession> exec_apps_;
     int exec_app_focus_ = -1;  // the :exec buffer whose program holds the keyboard, or -1
     // Programs of deleted :exec buffers, asked to close and given until the

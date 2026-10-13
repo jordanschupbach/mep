@@ -92,6 +92,9 @@ bool Editor::StartBrowserApp(ExecAppSession &sess, std::string *error) {
     std::unique_ptr<mep::gui_embed::WebView> view = mep::gui_embed::CreateWebView(
         native_window_handle_, [this](const std::string &key, unsigned mods) { return IsReservedChord(key, mods); }, error);
     if (!view) return false;
+    // A new view has no theme yet: it is given one before its first page.
+    sess.web_theme_epoch = -1;
+    SyncBrowserTheme(sess, *view);
     // Nothing to load yet: the address bar takes the keyboard instead.
     if (sess.web_url.empty()) view->EditAddress();
     else view->Load(sess.web_url);
@@ -130,6 +133,38 @@ bool Editor::OpenBrowserInPlace(const std::string &target, std::string *why) {
     return true;
 }
 
+void Editor::SyncBrowserTheme(ExecAppSession &sess, mep::gui_embed::WebView &view) {
+    // (-2: given with recolouring off, so a theme change alone is not news.)
+    const int epoch = sess.web_theme ? theme_epoch_ : -2;
+    if (sess.web_theme_epoch == epoch) return;
+    sess.web_theme_epoch = epoch;
+    using Rgb = mep::gui_embed::WebView::Rgb;
+    auto group = [this](const char *name, Rgb fallback) {
+        ThemeColor c;
+        if (!ResolveHighlight(name, &c)) return fallback;
+        return Rgb{c.r, c.g, c.b};
+    };
+    mep::gui_embed::WebView::Theme t;
+    t.recolor = sess.web_theme;
+    t.bg = group("NormalBg", Rgb{255, 255, 255});
+    t.fg = group("Normal", Rgb{0, 0, 0});
+    t.dim = group("Comment", t.fg);
+    t.selection = group("Visual", t.dim);
+    t.border = group("Border", t.dim);
+    t.bar = group("StatusLine", t.bg);
+    t.red = group("Red", t.fg);
+    t.green = group("Green", t.fg);
+    t.yellow = group("Yellow", t.fg);
+    t.blue = group("Blue", t.fg);
+    t.purple = group("Purple", t.fg);
+    t.cyan = group("Cyan", t.fg);
+    t.orange = group("Orange", t.fg);
+    // A dark theme is one whose paper is darker than its ink.
+    auto luma = [](Rgb c) { return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b; };
+    t.dark = luma(t.bg) < luma(t.fg);
+    view.SetTheme(t);
+}
+
 mep::gui_embed::WebView *Editor::BrowserOf(int buffer_id) {
     auto it = exec_apps_.find(buffer_id);
     if (it == exec_apps_.end() || !it->second.web || !it->second.app) return nullptr;
@@ -143,6 +178,10 @@ bool Editor::BrowserAction(const std::string &action, const std::string &arg) {
     mep::gui_embed::WebView *view = BrowserOf(buffer_id);
     if (!view) {
         // Closed: it opens again where it was.
+        if (action == "theme") {
+            const std::string a = Trimmed(arg);
+            it->second.web_theme = a == "on" ? true : a == "off" ? false : !it->second.web_theme;
+        }
         if (action == "go" && !Trimmed(arg).empty()) it->second.web_url = Trimmed(arg);
         if (action == "reload" || action == "go") ExecAppRestart(buffer_id);
         return true;
@@ -154,6 +193,11 @@ bool Editor::BrowserAction(const std::string &action, const std::string &arg) {
     else if (action == "go") {
         if (Trimmed(arg).empty()) view->EditAddress();
         else view->Load(arg);
+    } else if (action == "theme") {
+        const std::string a = Trimmed(arg);
+        it->second.web_theme = a == "on" ? true : a == "off" ? false : !it->second.web_theme;
+        SyncBrowserTheme(it->second, *view);
+        status_message_ = it->second.web_theme ? "Browser: theme colours" : "Browser: the page's own colours";
     }
     // The address bar is the page's: it holds the keyboard.
     if (action == "address" || (action == "go" && Trimmed(arg).empty())) {
@@ -316,6 +360,8 @@ void Editor::ExecAppsTick(bool allow_unowned) {
             if (mep::gui_embed::WebView *view = BrowserOf(buffer_id)) {
                 const std::string url = view->Url();
                 if (!url.empty()) sess.web_url = url;
+                // A :colorscheme since the last frame.
+                SyncBrowserTheme(sess, *view);
             }
         }
         // Its window just showed in the pane being worked in: it gets the
@@ -384,6 +430,10 @@ void Editor::HandleExecAppInput() {
         return;
     }
     if (gfx::IsKeyPressed(gfx::Key::Enter)) ExecAppFocus(buffer_id);
+    // Ctrl-R: the page in mep's colours or its own, the toggle every
+    // rendered document has (HtmlSession::theme_colors and the rest).
+    const bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::R) && BrowserOf(buffer_id)) BrowserAction("theme");
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
         if (cp == ':') {

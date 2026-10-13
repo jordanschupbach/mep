@@ -38,6 +38,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:BrowserForward= | [[file:browser.html][The browser pane]] |
 | =:BrowserGo= | [[file:browser.html][The browser pane]] |
 | =:BrowserReload= | [[file:browser.html][The browser pane]] |
+| =:BrowserTheme= | [[file:browser.html][The browser pane]] |
 | =:CadExport= | -- |
 | =:CadNew= | -- |
 | =:close= | [[file:command-line.html][The command line]] |

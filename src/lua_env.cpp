@@ -11746,7 +11746,8 @@ int l_browser_open(lua_State *L) {
 }
 
 // mep.browser(action [, arg]): acts on the current pane's web view --
-// "back", "forward", "reload", "address", "go" (to `arg`). False when the
+// "back", "forward", "reload", "address", "go" (to `arg`), "theme" (`arg`
+// "on", "off" or "" to toggle mep's colours on the page). False when the
 // current pane is not a :Browser pane.
 int l_browser(lua_State *L) {
     lua_pushboolean(L, GetEditor(L)->BrowserAction(luaL_checkstring(L, 1), luaL_optstring(L, 2, "")));

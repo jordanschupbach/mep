@@ -1186,6 +1186,11 @@ target_precompile_headers(mep PRIVATE ${MEP_PCH_HEADERS})
 if(EMSCRIPTEN)
     target_sources(mep PRIVATE src/collab_crdt.cpp src/collab_web_session.cpp)
 endif()
+if(APPLE)
+    # agent_ui_input.h's macOS half: NSEvents posted to mep's own queue.
+    target_sources(mep PRIVATE src/agent_ui_input_macos.mm)
+    set_source_files_properties(src/agent_ui_input_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
 if(NOT EMSCRIPTEN AND NOT WIN32 AND NOT APPLE)
     # agent_ui_input.cpp's synthetic-input backend: XTest for injecting
     # mouse/keyboard events (the agent-control socket's "ui.*" methods,

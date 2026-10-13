@@ -172,9 +172,9 @@ std::unique_ptr<Backend> CreateBackend(void *native_window_handle) {
 #endif
 }
 
-#if !defined(MEP_GUI_EMBED_MACOS)
-std::unique_ptr<WebView> CreateWebView(void *, std::function<bool(const std::string &, unsigned)>, std::string *why) {
-    if (why) *why = "a WebKit view inside mep's window is only implemented on macOS so far";
+#if !defined(MEP_GUI_EMBED_MACOS) && !defined(MEP_GUI_EMBED_X11)
+std::unique_ptr<WebView> CreateWebView(Backend &, void *, std::function<bool(const std::string &, unsigned)>, std::string *why) {
+    if (why) *why = "a WebKit view inside mep's window is only implemented on macOS and X11 so far";
     return nullptr;
 }
 #endif

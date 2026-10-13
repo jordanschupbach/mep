@@ -152,6 +152,8 @@ public:
 // EmbeddedWindow::Key's modifiers.
 enum KeyMod : unsigned { kModShift = 1, kModCtrl = 2, kModAlt = 4, kModSuper = 8 };
 
+class Backend;
+
 // A web page shown by mep itself, through the platform's WebKit (WKWebView
 // on macOS) -- what :Browser opens. No other program is involved: the page
 // is a view inside mep's own window, so EmbeddedApp::StartWindow takes it
@@ -193,12 +195,14 @@ public:
 
 /**
  * @brief A new web view in mep's window (hidden until placed), or null where there is no WebKit to show one with.
+ * @param backend The windowing system (outlives the view): on X11 the view is a program of its own, mep-webview, whose
+ * window the backend adopts (gui_embed_webview_x11.cpp); on macOS it is a WKWebView of mep's own and needs nothing of it.
  * @param native_window_handle gfx::GetNativeWindowHandle()'s value.
  * @param reserved Which chords stay mep's while the page has the keyboard (Backend::SetReservedChords's terms).
  * @param why Set to the reason when null is returned.
  */
-std::unique_ptr<WebView> CreateWebView(void *native_window_handle, std::function<bool(const std::string &key, unsigned mods)> reserved,
-                                       std::string *why);
+std::unique_ptr<WebView> CreateWebView(Backend &backend, void *native_window_handle,
+                                       std::function<bool(const std::string &key, unsigned mods)> reserved, std::string *why);
 
 // The windowing system.
 class Backend {

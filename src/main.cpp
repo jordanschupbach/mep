@@ -4172,9 +4172,10 @@ const char *kBuiltinTextTools =
     // mep's window, unlike :BrowseExternal. The target resolves like
     // :Browse's (argument, URL under the cursor, the HTML file being
     // edited) except that with none it opens a blank page with the address
-    // bar ready rather than prompting. Where mep has no WebKit view of its
-    // own (Linux so far), launcher/browser.ts's WebKitGTK window is shown
-    // as an :exec pane instead.
+    // bar ready rather than prompting. On Linux the view is mep-webview
+    // (webview_gtk_main.cpp), a WebKitGTK program adopted into the pane;
+    // where it was not built, launcher/browser.ts's WebKitGTK window is
+    // shown as an :exec pane instead.
     "local function mep_shell_quote(s) return \"'\" .. s:gsub(\"'\", \"'\\\\''\") .. \"'\" end\n"
     "function mep.browser_command(args)\n"
     "  local target = args and args ~= '' and args or nil\n"

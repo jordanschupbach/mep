@@ -856,9 +856,12 @@ add_library(mep_core STATIC
     src/editor_pres.cpp
     # Another program's window inside the document (mepml exec-gui):
     # gui_embed.cpp is the platform-free half, gui_embed_x11.cpp the X11
-    # implementor (compiled to nothing without MEP_GUI_EMBED_X11).
+    # implementor (compiled to nothing without MEP_GUI_EMBED_X11), and
+    # gui_embed_webview_x11.cpp :Browser's web view there -- the mep-webview
+    # program below, adopted like any other (also nothing without it).
     src/gui_embed.cpp
     src/gui_embed_x11.cpp
+    src/gui_embed_webview_x11.cpp
     # POSIX-shaped shims for the Windows build, and the few helpers whose
     # correct implementation genuinely differs per platform (see the
     # header's own scope note).
@@ -982,6 +985,63 @@ endif()
 if(NOT EMSCRIPTEN AND NOT WIN32 AND NOT APPLE)
     # gui_embed.h's X11 implementor, same condition as the gfx backend's.
     target_compile_definitions(mep_core PRIVATE MEP_GUI_EMBED_X11=1)
+    # :Browser's web view on X11 (gui_embed_webview_x11.cpp) is mep-webview,
+    # a WebKitGTK program of its own that mep starts from its own bin
+    # directory and adopts the window of -- see webview_gtk_main.cpp's
+    # header for why a process rather than a widget in mep. Built when
+    # WebKitGTK 6 (the GTK 4 one) is installed; without it mep still
+    # builds, and :Browser says what is missing (then falls back to
+    # launcher/browser.ts's external window, main.cpp's mep.browser_command).
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(MEP_WEBKITGTK QUIET IMPORTED_TARGET webkitgtk-6.0 gtk4)
+    endif()
+    if(MEP_WEBKITGTK_FOUND)
+        add_executable(mep-webview src/webview_gtk_main.cpp)
+        target_include_directories(mep-webview PRIVATE src)
+        # (Not MEP_STRICT_FLAGS: GTK's own cast macros -- G_CALLBACK,
+        # GTK_WINDOW and the rest -- are old-style casts, every one.)
+        target_compile_options(mep-webview PRIVATE -Wall -Wextra -Wshadow ${MEP_SANITIZE_FLAGS})
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT APPLE)
+            # GTK's graphene includes <xmmintrin.h>, and the GCC include
+            # directory the Clang-modules workaround at the top adds as
+            # -isystem (Nix's clang wrapper adds it too) holds GCC's copy,
+            # which Clang cannot compile (GCC-only builtins). Clang's own
+            # copies have to come first: a plain -I is searched before any
+            # -isystem -- but naming Clang's resource directory itself in a
+            # -I is ignored (it is deduplicated against the builtin entry,
+            # which stays last), and -nobuiltininc breaks limits.h's
+            # include_next chain. So: a directory of links to just the
+            # intrinsics headers, which is a directory of its own.
+            execute_process(COMMAND ${CMAKE_CXX_COMPILER} -print-resource-dir OUTPUT_VARIABLE MEP_CLANG_RESOURCE_DIR
+                            OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            if(MEP_CLANG_RESOURCE_DIR AND IS_DIRECTORY "${MEP_CLANG_RESOURCE_DIR}/include")
+                set(MEP_CLANG_INTRINSICS_DIR "${CMAKE_BINARY_DIR}/generated/clang-intrinsics")
+                file(MAKE_DIRECTORY "${MEP_CLANG_INTRINSICS_DIR}")
+                file(GLOB MEP_CLANG_INTRINSICS "${MEP_CLANG_RESOURCE_DIR}/include/*intrin*.h" "${MEP_CLANG_RESOURCE_DIR}/include/mm_malloc.h")
+                foreach(header ${MEP_CLANG_INTRINSICS})
+                    get_filename_component(name "${header}" NAME)
+                    file(CREATE_LINK "${header}" "${MEP_CLANG_INTRINSICS_DIR}/${name}" SYMBOLIC)
+                endforeach()
+                target_compile_options(mep-webview PRIVATE "-I${MEP_CLANG_INTRINSICS_DIR}")
+            endif()
+        endif()
+        target_link_options(mep-webview PRIVATE ${MEP_SANITIZE_FLAGS})
+        target_link_libraries(mep-webview PRIVATE PkgConfig::MEP_WEBKITGTK)
+        # Where GIO's TLS module (glib-networking) lives, when GIO cannot
+        # find it by itself: under Nix nothing installs it into glib's own
+        # module directory, so without this every https:// page fails with
+        # "TLS support is not available". The flake sets it (the devShell
+        # as $MEP_GIO_MODULES, the package as a cmake flag); a distro that
+        # installs glib-networking next to glib needs nothing.
+        set(MEP_GIO_MODULES_DIR "$ENV{MEP_GIO_MODULES}" CACHE PATH "GIO modules directory mep-webview adds to GIO_EXTRA_MODULES")
+        if(MEP_GIO_MODULES_DIR)
+            target_compile_definitions(mep-webview PRIVATE "MEP_GIO_MODULES_DIR=\"${MEP_GIO_MODULES_DIR}\"")
+        endif()
+        install(TARGETS mep-webview RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    else()
+        message(STATUS "webkitgtk-6.0 / gtk4 not found: mep-webview is not built, so :Browser has no web view in the pane")
+    endif()
 endif()
 if(APPLE)
     # gui_embed.h's macOS implementor (Objective-C++, ARC -- the one .mm

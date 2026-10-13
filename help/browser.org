@@ -96,21 +96,27 @@ JavaScript, and the sites mep's engine cannot draw yet. With no address it
 opens a blank page with its address bar ready; otherwise it takes the
 same targets as =:Browse=.
 
-macOS only for now. Elsewhere it falls back to =:BrowseExternal='s
-WebKitGTK window, shown as an [[file:exec.html][:exec]] pane.
+On macOS the view is a WKWebView inside mep's own window. On Linux it is
+WebKitGTK -- the same engine, as GTK 4 ships it -- in =mep-webview=, a small
+program built alongside mep when =webkitgtk-6.0= and =gtk4= are installed,
+whose window mep adopts into the pane the way an [[file:exec.html][:exec]] pane
+adopts any program's. Without it, =:Browser= falls back to
+=:BrowseExternal='s WebKitGTK window shown as an =:exec= pane.
 
 While the page has the keyboard (after a click into it, =i= or =Enter=):
 
 | Key            | Does                                     |
 |----------------+------------------------------------------|
 | =Ctrl-\=       | give the keyboard back to mep            |
-| =Cmd-L=        | edit the address                         |
-| =Cmd-[= / =Cmd-]= | back / forward                        |
-| =Cmd-R=        | reload                                   |
-| =Cmd-+= / =Cmd--= / =Cmd-0= | zoom in / out / reset       |
-| =Cmd-C=, =Cmd-V=, =Cmd-X=, =Cmd-A=, =Cmd-Z= | the usual editing |
+| =Cmd-L= (Linux: =Ctrl-L=) | edit the address              |
+| =Cmd-[= / =Cmd-]= (Linux: =Ctrl-[= / =Ctrl-]=, =Alt-Left= / =Alt-Right=) | back / forward |
+| =Cmd-R= (Linux: =Ctrl-R=, =F5=) | reload                  |
+| =Cmd-+= / =Cmd--= / =Cmd-0= (Linux: =Ctrl-=) | zoom in / out / reset |
+| =Cmd-C=, =Cmd-V=, =Cmd-X=, =Cmd-A=, =Cmd-Z= (Linux: =Ctrl-=) | the usual editing |
 
-mep's own mod1 chords (moving between panes) stay mep's.
+On macOS mep's own mod1 chords (moving between panes) stay mep's; on Linux
+the page has every key but =Ctrl-\= while it holds the keyboard, as any
+embedded program does.
 
 While mep has the keyboard: =H= back, =L= forward, =r= reload, =o= edit
 the address, =i= into the page. =:BrowserBack=, =:BrowserForward=,

@@ -574,7 +574,7 @@ private:
     Rect full_, box_;
 };
 
-std::unique_ptr<WebView> CreateWebView(void *native_window_handle, std::function<bool(const std::string &, unsigned)> reserved,
+std::unique_ptr<WebView> CreateWebView(Backend &, void *native_window_handle, std::function<bool(const std::string &, unsigned)> reserved,
                                        std::string *why) {
     const auto *handle = static_cast<const gfx::NativeWindowHandle *>(native_window_handle);
     NSWindow *host = handle ? (__bridge NSWindow *)handle->display : nil;

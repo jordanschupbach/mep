@@ -90,7 +90,7 @@ void Editor::OpenExecInPlace(const std::string &args) {
 
 bool Editor::StartBrowserApp(ExecAppSession &sess, std::string *error) {
     std::unique_ptr<mep::gui_embed::WebView> view = mep::gui_embed::CreateWebView(
-        native_window_handle_, [this](const std::string &key, unsigned mods) { return IsReservedChord(key, mods); }, error);
+        *gui_backend_, native_window_handle_, [this](const std::string &key, unsigned mods) { return IsReservedChord(key, mods); }, error);
     if (!view) return false;
     // A new view has no theme yet: it is given one before its first page.
     sess.web_theme_epoch = -1;

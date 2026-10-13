@@ -292,6 +292,12 @@
             # see MINIAUDIO_REMOVAL_PLAN.md) -- PulseAudio/PipeWire users
             # are covered transparently via their ALSA compatibility shim.
             pkgs.alsa-lib
+            # mep-webview (src/webview_gtk_main.cpp): the WebKitGTK program
+            # behind a :Browser pane, built alongside mep when CMake's
+            # pkg-config probe finds webkitgtk-6.0 and gtk4.
+            pkgs.webkitgtk_6_0
+            pkgs.gtk4
+            pkgs.glib-networking  # its TLS: see the devShell's own note
           ];
 
           # Lua isn't a CMake project of its own (see CMakeLists.txt's own
@@ -343,7 +349,12 @@
           # because pkgs.ninja is present in nativeBuildInputs; explicit
           # here is one line and doesn't depend on that behavior holding
           # across a nixpkgs bump.
-          cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" "-GNinja" ];
+          cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" "-GNinja" ]
+          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            # mep-webview's GIO TLS module (the devShell exports the same
+            # path as MEP_GIO_MODULES).
+            "-DMEP_GIO_MODULES_DIR=${pkgs.glib-networking}/lib/gio/modules"
+          ];
 
           installPhase = ''
             runHook preInstall
@@ -365,6 +376,10 @@
                         mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-mepml; do
               install -Dm755 "$tool" "$out/bin/$tool"
             done
+            # :Browser's web view on Linux (gui_embed_webview_x11.cpp finds
+            # it beside mep, like the tools above). Linux-only: on Darwin
+            # the view is a WKWebView inside mep itself.
+            [ -f mep-webview ] && install -Dm755 mep-webview "$out/bin/mep-webview"
             install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/help/*.html -t "$out/share/mep/help"
             # Keep runtime assets with the packaged executable.  The native
             # dashboard resolves these relative to $out/bin/mep as
@@ -714,8 +729,16 @@
             # macOS port anyway).
             pkgs.alsa-lib
             # Runtime dep of webview_deno, used by the launcher to open a
-            # native window around the wasm build. Linux-only in nixpkgs.
+            # native window around the wasm build, and what mep-webview
+            # (src/webview_gtk_main.cpp, :Browser's web view) is built
+            # against. Linux-only in nixpkgs.
             pkgs.webkitgtk_6_0
+            # GIO's TLS backend. Nothing in webkitgtk's closure brings it
+            # in, and GIO only finds it through GIO_EXTRA_MODULES -- which
+            # mep-webview sets for itself (and WebKit's network process)
+            # from MEP_GIO_MODULES below; without it every https:// page
+            # is "TLS support is not available".
+            pkgs.glib-networking
             # Built with gcc14Stdenv, not the default gcc15: upstream dmd's
             # own C header importer can't parse gcc 15's system headers,
             # which now use the C23 `nullptr` keyword (stddef.h) -- a real
@@ -741,6 +764,10 @@
           # -- see the tsGrammars comment above.
           shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
             export MEP_WEBVIEW_LD_LIBRARY_PATH="${webviewLibraryPath}"
+            # CMakeLists.txt's MEP_GIO_MODULES_DIR default: compiled into
+            # mep-webview as where GIO's TLS module lives (see
+            # pkgs.glib-networking above).
+            export MEP_GIO_MODULES="${pkgs.glib-networking}/lib/gio/modules"
           '' + ''
             export MEP_TS_PARSER_PATH="${tsGrammars}"
             # BUILD_PERFORMANCE_PLAN.md: CMake reads this env var as its

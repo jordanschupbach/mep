@@ -89,19 +89,25 @@ browser does works there: sign-ins, video, the whole of a page's
 JavaScript, and the sites mep's engine cannot draw yet. With no address it
 opens a blank page with its address bar ready; otherwise it takes the
 same targets as <code>:Browse</code>.</p>
-<p>macOS only for now. Elsewhere it falls back to <code>:BrowseExternal</code>'s
-WebKitGTK window, shown as an <a href="exec.html">:exec</a> pane.</p>
+<p>On macOS the view is a WKWebView inside mep's own window. On Linux it is
+WebKitGTK -- the same engine, as GTK 4 ships it -- in <code>mep-webview</code>, a small
+program built alongside mep when <code>webkitgtk-6.0</code> and <code>gtk4</code> are installed,
+whose window mep adopts into the pane the way an <a href="exec.html">:exec</a> pane
+adopts any program's. Without it, <code>:Browser</code> falls back to
+<code>:BrowseExternal</code>'s WebKitGTK window shown as an <code>:exec</code> pane.</p>
 <p>While the page has the keyboard (after a click into it, <code>i</code> or <code>Enter</code>):</p>
 <table>
 <tr><th>Key</th><th>Does</th></tr>
 <tr><td><code>Ctrl-\</code></td><td>give the keyboard back to mep</td></tr>
-<tr><td><code>Cmd-L</code></td><td>edit the address</td></tr>
-<tr><td><code>Cmd-[</code> / <code>Cmd-]</code></td><td>back / forward</td></tr>
-<tr><td><code>Cmd-R</code></td><td>reload</td></tr>
-<tr><td><code>Cmd-+</code> / <code>Cmd--</code> / <code>Cmd-0</code></td><td>zoom in / out / reset</td></tr>
-<tr><td><code>Cmd-C</code>, <code>Cmd-V</code>, <code>Cmd-X</code>, <code>Cmd-A</code>, <code>Cmd-Z</code></td><td>the usual editing</td></tr>
+<tr><td><code>Cmd-L</code> (Linux: <code>Ctrl-L</code>)</td><td>edit the address</td></tr>
+<tr><td><code>Cmd-[</code> / <code>Cmd-]</code> (Linux: <code>Ctrl-[</code> / <code>Ctrl-]</code>, <code>Alt-Left</code> / <code>Alt-Right</code>)</td><td>back / forward</td></tr>
+<tr><td><code>Cmd-R</code> (Linux: <code>Ctrl-R</code>, <code>F5</code>)</td><td>reload</td></tr>
+<tr><td><code>Cmd-+</code> / <code>Cmd--</code> / <code>Cmd-0</code> (Linux: <code>Ctrl-</code>)</td><td>zoom in / out / reset</td></tr>
+<tr><td><code>Cmd-C</code>, <code>Cmd-V</code>, <code>Cmd-X</code>, <code>Cmd-A</code>, <code>Cmd-Z</code> (Linux: <code>Ctrl-</code>)</td><td>the usual editing</td></tr>
 </table>
-<p>mep's own mod1 chords (moving between panes) stay mep's.</p>
+<p>On macOS mep's own mod1 chords (moving between panes) stay mep's; on Linux
+the page has every key but <code>Ctrl-\</code> while it holds the keyboard, as any
+embedded program does.</p>
 <p>While mep has the keyboard: <code>H</code> back, <code>L</code> forward, <code>r</code> reload, <code>o</code> edit
 the address, <code>i</code> into the page. <code>:BrowserBack</code>, <code>:BrowserForward</code>,
 <code>:BrowserReload</code> and <code>:BrowserGo &lt;address&gt;</code> do the same from the command

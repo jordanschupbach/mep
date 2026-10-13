@@ -1511,6 +1511,11 @@ bool PointInRect(gfx::Vector2 p, const gfx::Rectangle &r) {
 // DrawPaneTree, which must stay in lockstep (see the comment above
 // ComputePaneScreenRects).
 constexpr float kPaneGapPx = 5.0f;
+// The band around a pane or sidebar border the mouse can grab to resize it
+// (ComputePaneScreenRects, DrawSidebars): the border itself and as much
+// again on either side of it -- the drawn border alone is too thin to land
+// on. Invisible: only the hit test is this wide.
+constexpr float kBorderGrabPx = 3.0f * kPaneGapPx;
 
 // One leaf pane's on-screen rect this frame.
 struct PaneScreenRect {
@@ -1585,7 +1590,6 @@ void ComputePaneScreenRects(SplitNode *node, float x, float y, float w, float h)
     const std::vector<VisibleSplitChild> vis = VisibleSplitChildren(node);
     const int n = static_cast<int>(vis.size());
     if (n == 0) return;
-    constexpr float kBorderGrabPx = 6.0f;
     // Shares divide the FULL extent (matching Editor::ComputeRects, which
     // has no notion of pixel gaps), so the gap space is carved out of that
     // full extent rather than added on top of it -- an n-way split's total
@@ -4621,6 +4625,61 @@ const char *kBuiltinFileTree =
     "    mep_tree_after_fs_change()\n"
     "  end)\n"
     "end\n"
+    // y / p: a copy, without typing the destination -- the entry is
+    // remembered (yanked) and pasted into the directory under the cursor
+    // (or the one holding the file there). The paste is a copy, so the
+    // original stays, and what was yanked can be pasted again elsewhere.
+    "local mep_tree_yanked = nil\n"
+    "local function mep_tree_yank(row)\n"
+    "  if not row then return end\n"
+    "  mep_tree_yanked = {path = row.path, name = row.name, is_dir = row.is_dir}\n"
+    "  mep.notify('Yanked ' .. row.name .. (row.is_dir and '/' or '') .. ' -- p pastes a copy')\n"
+    "end\n"
+    // A name that is not taken yet: "name copy", "name copy 2", ... (the
+    // extension kept at the end), when what is pasted lands where an entry
+    // of the same name already is.
+    "local function mep_tree_copy_name(dir, name)\n"
+    "  if not mep_tree_exists(mep_tree_resolve(dir, name)) then return name end\n"
+    "  local stem, ext = name:match('^(.+)(%.[^.]+)$')\n"
+    "  if not stem or stem == '' or name:sub(1, 1) == '.' then stem, ext = name, '' end\n"
+    "  for k = 1, 999 do\n"
+    "    local candidate = stem .. ' copy' .. (k > 1 and (' ' .. k) or '') .. ext\n"
+    "    if not mep_tree_exists(mep_tree_resolve(dir, candidate)) then return candidate end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "local function mep_tree_paste(row)\n"
+    "  local src = mep_tree_yanked\n"
+    "  if not src then\n"
+    "    mep.notify('Nothing yanked -- y yanks the entry under the cursor', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  if not mep_tree_exists(src.path) then\n"
+    "    mep.notify(src.path .. ' is gone', 'warn')\n"
+    "    mep_tree_yanked = nil\n"
+    "    return\n"
+    "  end\n"
+    "  local dir = mep_tree_target_dir(row)\n"
+    "  local src_norm = mep_tree_normalize(src.path)\n"
+    "  if src.is_dir and (mep_tree_normalize(dir) .. '/'):sub(1, #src_norm + 1) == src_norm .. '/' then\n"
+    "    mep.notify('Cannot paste ' .. src.name .. '/ into itself', 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local name = mep_tree_copy_name(dir, src.name)\n"
+    "  if not name then\n"
+    "    mep.notify('No free name for ' .. src.name .. ' in ' .. dir, 'warn')\n"
+    "    return\n"
+    "  end\n"
+    "  local dest = mep_tree_resolve(dir, name)\n"
+    "  mep_tree_mkdir_parents(dest)\n"
+    "  if mep.fs_copy(src.path, dest) then\n"
+    "    mep_tree_expanded[dir] = true\n"
+    "    mep.notify('Pasted ' .. dest)\n"
+    "  else\n"
+    "    mep.notify('Failed to paste to ' .. dest, 'error')\n"
+    "  end\n"
+    "  mep_tree_after_fs_change()\n"
+    "end\n"
     "local function mep_tree_delete(row)\n"
     "  if not row then return end\n"
     "  local what = row.is_dir and ('directory ' .. row.name .. '/ and everything in it') or row.name\n"
@@ -4642,7 +4701,8 @@ const char *kBuiltinFileTree =
     // pane's footer (mep.buffer_set_footer) says which way to go.
     "local MEP_TREE_KEYS = {\n"
     "  {'Enter', 'open the file / expand or collapse the directory'},\n"
-    "  {'a', 'add (end with / for a directory)'}, {'r', 'rename'}, {'d', 'delete'}, {'c', 'copy'},\n"
+    "  {'a', 'add (end with / for a directory)'}, {'r', 'rename'}, {'d', 'delete'}, {'c', 'copy to a name'},\n"
+    "  {'y', 'yank'}, {'p', 'paste a copy of what was yanked here'},\n"
     "  {'Y', 'copy the path'}, {'o', 'open with the OS'},\n"
     "  {'-', 'root up one directory'}, {'C', 'make the directory the root'}, {'R', 'refresh'},\n"
     "  {'H', 'show / hide hidden and git-ignored files'}, {'I', 'image viewer for the directory'}, {'q', 'close the tree'},\n"
@@ -4736,11 +4796,12 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  mep_tree_set_footer()\n"
     "end\n"
-    // Keys that only move/search/scroll/yank pass through to their normal
+    // Keys that only move/search/scroll pass through to their normal
     // Normal-mode meaning; everything else is either a tree action below or
-    // swallowed, so the tree's text can't be edited in place.
+    // swallowed, so the tree's text can't be edited in place. (y is the
+    // tree's own yank: the entry, not the row's text.)
     "local mep_tree_passthrough = {}\n"
-    "for c in ('hjklgGwbWBE0^$HML/?nN*#zZ:\\'`m{}()%fFtT;,123456789Iy'):gmatch('.') do mep_tree_passthrough[c] = true end\n"
+    "for c in ('hjklgGwbWBE0^$HML/?nN*#zZ:\\'`m{}()%fFtT;,123456789I'):gmatch('.') do mep_tree_passthrough[c] = true end\n"
     "local function mep_tree_on_key(k)\n"
     "  mep_tree_sync()\n"
     // While the help view shows, only movement/search passes through (not
@@ -4755,6 +4816,8 @@ const char *kBuiltinFileTree =
     "  elseif k == 'r' then mep_tree_rename(row)\n"
     "  elseif k == 'd' then mep_tree_delete(row)\n"
     "  elseif k == 'c' then mep_tree_copy(row)\n"
+    "  elseif k == 'y' then mep_tree_yank(row)\n"
+    "  elseif k == 'p' then mep_tree_paste(row)\n"
     "  elseif k == 'Y' then\n"
     "    if row then\n"
     "      mep.clipboard_set(row.path)\n"
@@ -38038,7 +38101,6 @@ void DrawSidebars() {
     // longer actually has input focus, so its cursor highlight shouldn't
     // draw as if it still does.
     int focused_id = (g_editor.CurrentMode() == Mode::Sidebar) ? g_editor.FocusedSidebarId() : 0;
-    constexpr float kBorderGrabPx = 6.0f;
 
     // Paints one sidebar into its own rect (a whole dock column for a lone
     // sidebar, one vertical slice of it for a stacked one) and records its

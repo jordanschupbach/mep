@@ -14,11 +14,9 @@ double distance(Point a, Point b) {
 
 int main(void) {
     printf("hello, world\n");
-
     Point a = {0.0, 0.0};
     Point b = {3.0, 4.0};
     printf("distance = %.2f\n", distance(a, b));
-
     return 0;
 }
 

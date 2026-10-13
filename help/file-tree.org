@@ -19,7 +19,9 @@ It is a pane rather than a sidebar, so the usual pane keys work on it.
 | =a=       | add a file -- end the name with =/= for a directory |
 | =r=       | rename                                          |
 | =d=       | delete                                          |
-| =c=       | copy                                            |
+| =c=       | copy, to a name you type                        |
+| =y=       | yank the entry                                  |
+| =p=       | paste a copy of it into the directory under the cursor (or the file's own) -- "name copy" if the name is taken |
 | =Y=       | copy the path to the clipboard                  |
 | =o=       | open with the operating system                  |
 | =-=       | move the root up one directory                  |

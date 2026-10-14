@@ -44,7 +44,7 @@ Automatically: on buffer switch, and on a debounce as you edit.
 |--------------------+---------------------------------------|
 | =:MepSyntax=       | re-highlight the buffer now           |
 | =:MepSyntaxFold=   | build folds from the parse tree       |
-| =:MepColorize=     | draw swatches beside colour literals  |
+| =:MepColorize=     | colour literals drawn on their colour (automatic) |
 
 #+begin_src lua
 mep.syntax_auto = false   -- stop the automatic re-highlight
@@ -61,10 +61,15 @@ in the body, an imported module, a function named rather than called --
 are recoloured over the grammar's own pass. See
 [[file:lsp.html][Language servers]] for that table.
 
-* Colour swatches
+* Colour literals
 
-=:MepColorize= finds colour literals -- =#ff8800=, =rgb(...)= -- and draws
-the actual colour beside them. Useful in a stylesheet or a theme file.
+A colour literal -- =#ff8800=, =#f80=, =rgb(255, 136, 0)=, =rgba(...)=,
+or a CSS colour name such as =navy= or =rebeccapurple= -- is drawn on
+its own colour, in black or white as reads better on it, in every
+buffer: a stylesheet, a theme file, prose that names a colour. It
+follows the typing. =:lua mep.colorize_auto = false= turns it off, and
+=:MepColorize= runs it once by hand; a buffer past 20000 lines is left
+alone.
 
 * See also
 

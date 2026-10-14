@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -761,17 +762,9 @@ Editor::MepmlParseCache &Editor::MepmlCacheEntry(bool with_imports) const {
         plain.valid = true;
         plain.spans_valid = false;
         plain.spans.clear();
-        plain.has_imports = false;
+        // (An \import, or a code block whose code is a file's: mepml::UsesFiles.)
+        plain.has_imports = mepml::UsesFiles(plain.doc);
         plain.generation = ++mepml_parse_generation_;
-        for (const mepml::Block &b : plain.doc.blocks) {
-            if (b.kind == mepml::BlockKind::Import) plain.has_imports = true;
-            if (b.kind == mepml::BlockKind::Meta && b.keyword.size() == 6) {
-                std::string k = b.keyword;
-                for (char &ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-                if (k == "import") plain.has_imports = true;
-            }
-            if (plain.has_imports) break;
-        }
     }
     if (!with_imports || !plain.has_imports) return plain;
 
@@ -804,6 +797,15 @@ Editor::MepmlParseCache &Editor::MepmlCacheEntry(bool with_imports) const {
 }
 
 const mepml::Document &Editor::MepmlParseCurrent(bool with_imports) const { return MepmlCacheEntry(with_imports).doc; }
+
+mepml::Document Editor::MepmlParseBuffer(const Buffer &buf) const {
+    mepml::Document doc = mepml::Parse(buf.lines);
+    if (!mepml::UsesFiles(doc)) return doc;
+    std::string file = buf.filename;
+    std::error_code ec;
+    if (!file.empty() && file[0] != '/') file = std::filesystem::absolute(file, ec).string();
+    return mepml::ParseWithImports(file, buf.lines, ReadFileLines);
+}
 
 const std::vector<mepml::Span> &Editor::MepmlSpansCurrent(bool with_imports) const {
     MepmlParseCache &c = MepmlCacheEntry(with_imports);
@@ -1097,14 +1099,7 @@ bool Editor::MepmlParseReady() {
             r.lines = std::move(lines);
             r.file = file;
             r.plain = mepml::Parse(r.lines);
-            for (const mepml::Block &b : r.plain.blocks) {
-                std::string k = b.keyword;
-                for (char &ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-                if (b.kind == mepml::BlockKind::Import || (b.kind == mepml::BlockKind::Meta && k == "import")) {
-                    r.has_imports = true;
-                    break;
-                }
-            }
+            r.has_imports = mepml::UsesFiles(r.plain);
             r.plain_spans = mepml::Highlight(r.plain, &r.plain_paths, &r.plain_block_nodes);
             if (r.has_imports) {
                 r.imports = mepml::ParseWithImports(file, r.lines, [&r](const std::string &path, std::vector<std::string> *out) {
@@ -1632,6 +1627,44 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 sp.target = target;
                 sp.display = target;
                 buf.org_link_spans[b.line_start].push_back(sp);
+            }
+        }
+        // So is the file a code block includes (`include=path` on its fence).
+        if (b.kind == mepml::BlockKind::Code && b.code_line_start >= 1 && b.code_line_start - 1 < buf.LineCount()) {
+            const std::string target = mepml::IncludeOf(b).path;
+            const int fence_row = b.code_line_start - 1;
+            const std::string &line = buf.lines[static_cast<size_t>(fence_row)];
+            const size_t at = target.empty() ? std::string::npos : line.find(target);
+            if (at != std::string::npos) {
+                Buffer::OrgLinkSpan sp;
+                sp.col_start = static_cast<int>(at);
+                sp.col_end = static_cast<int>(at + target.size());
+                sp.target = target;
+                sp.display = target;
+                buf.org_link_spans[fence_row].push_back(sp);
+            }
+        }
+        // The file's own line numbers down an include block's rows, so a
+        // `lines=` range can be read off the block: inserted before each
+        // row's text (Decoration::virt_insert), the gutter's numbers being
+        // the document's.
+        if (b.kind == mepml::BlockKind::Code && !b.include.empty() && b.include_first >= 1 &&
+            b.code_line_end >= b.code_line_start) {
+            const int last_no = b.include_first + (b.code_line_end - b.code_line_start);
+            const size_t width = std::to_string(last_no).size();
+            for (int r = b.code_line_start; r <= b.code_line_end && r < n; ++r) {
+                if (!in_scope(r)) continue;
+                const std::string num = std::to_string(b.include_first + (r - b.code_line_start));
+                Decoration d;
+                d.row = r;
+                d.col_start = 0;
+                d.col_end = 0;
+                d.virt_overlay = true;
+                d.virt_insert = true;
+                d.virt_text = std::string(width - num.size(), ' ') + num + " \u2502 ";
+                d.virt_text_hl = "LineNr";
+                d.priority = 10;
+                AddDecoration(ns, std::move(d));
             }
         }
         if (b.kind == mepml::BlockKind::TableOfContents || b.kind == mepml::BlockKind::Bibliography) {
@@ -2544,9 +2577,9 @@ void Editor::RecomputeMepmlFolds() {
 bool Editor::MepmlSpliceResults(int buffer_id, int fence_row, const std::string &code, const std::string &output) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-    const mepml::Document doc = mepml::Parse(buf.lines);
+    const mepml::Document doc = MepmlParseBuffer(buf);
     for (const mepml::Block &b : doc.blocks) {
-        if (b.kind != mepml::BlockKind::Code || b.code_line_start - 1 != fence_row) continue;
+        if (!b.origin.empty() || b.kind != mepml::BlockKind::Code || b.code_line_start - 1 != fence_row) continue;
         if (b.code != code) return false;  // edited while it ran
         int first = 0, last = 0;
         mepml::ResultsReplaceRange(b, &first, &last);
@@ -3783,10 +3816,10 @@ int Editor::MepmlTerminalStart(int buffer_id, int fence_row, const std::vector<s
         return -1;
     }
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-    const mepml::Document doc = mepml::Parse(buf.lines);
+    const mepml::Document doc = MepmlParseBuffer(buf);
     const mepml::Block *blk = nullptr;
     for (const mepml::Block &b : doc.blocks)
-        if (b.kind == mepml::BlockKind::Code && b.code_line_start - 1 == fence_row) blk = &b;
+        if (b.origin.empty() && b.kind == mepml::BlockKind::Code && b.code_line_start - 1 == fence_row) blk = &b;
     std::string shell;
     if (!blk || (argv ? argv->empty() : !TerminalShellFor(*blk, &shell))) {
         status_message_ = "Not a block that runs in a terminal (```exec, results=exec, or a shell block with results=terminal)";
@@ -4006,7 +4039,7 @@ void Editor::MepmlTerminalsTick() {
         std::string text;
         for (size_t k = 0; k < screen.size(); ++k) text += (k ? "\n" : "") + screen[k];
         const Buffer &buf = buffers_[static_cast<size_t>(run.buffer_id)];
-        const mepml::Document doc = mepml::Parse(buf.lines);
+        const mepml::Document doc = MepmlParseBuffer(buf);
         if (const mepml::Block *b = BlockForRun(doc, run.code, run.fence_row)) {
             int first = 0, last = 0;
             mepml::ResultsReplaceRange(*b, &first, &last);
@@ -4129,10 +4162,10 @@ int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::s
         return -1;
     }
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-    const mepml::Document doc = mepml::Parse(buf.lines);
+    const mepml::Document doc = MepmlParseBuffer(buf);
     const mepml::Block *blk = nullptr;
     for (const mepml::Block &b : doc.blocks)
-        if (b.kind == mepml::BlockKind::Code && b.code_line_start - 1 == fence_row) blk = &b;
+        if (b.origin.empty() && b.kind == mepml::BlockKind::Code && b.code_line_start - 1 == fence_row) blk = &b;
     const std::string lang = blk ? Lowered(blk->lang) : std::string();
     if (!blk || (argv ? argv->empty() : lang != "exec-gui" && lang != "gui")) {
         status_message_ = "Not a block whose program has a window (```exec-gui, or results=exec-gui)";
@@ -4345,7 +4378,7 @@ void Editor::MepmlGuisTick() {
         std::string text;
         for (size_t k = 0; k < lines.size(); ++k) text += (k ? "\n" : "") + lines[k];
         const Buffer &buf = buffers_[static_cast<size_t>(run.buffer_id)];
-        const mepml::Document doc = mepml::Parse(buf.lines);
+        const mepml::Document doc = MepmlParseBuffer(buf);
         if (const mepml::Block *b = BlockForRun(doc, run.code, run.fence_row)) {
             int first = 0, last = 0;
             mepml::ResultsReplaceRange(*b, &first, &last);
@@ -4955,7 +4988,7 @@ int Editor::MepmlPresentSourceFence(int run_id) const {
     }
     if (buffer < 0 || buffer >= static_cast<int>(buffers_.size())) return -1;
     // Where its block is now (the document may have changed above it).
-    const mepml::Document doc = mepml::Parse(buffers_[static_cast<size_t>(buffer)].lines);
+    const mepml::Document doc = MepmlParseBuffer(buffers_[static_cast<size_t>(buffer)]);
     const mepml::Block *blk = BlockForRun(doc, code, code_fence);
     return blk ? blk->code_line_start - 1 : -1;
 }
@@ -5098,4 +5131,237 @@ bool Editor::Accessibility(int buffer_id, a11y::Document *out, std::string *erro
     }
     if (file.empty() || GetTerminal(buffer_id)) return fail("nothing here to read: open a document (mepml, PDF, HTML, docx, odt, Markdown, Org)");
     return a11y::FromFile(file, out, error);
+}
+
+// ---------------------------------------------------------------------------
+// Include blocks and their files (the declarations' comment in editor.h;
+// mepml::IncludeSyncEdits for the rules).
+
+namespace {
+
+std::string CanonicalFilePath(const std::string &p) {
+    std::error_code ec;
+    const std::filesystem::path c = std::filesystem::weakly_canonical(p, ec);
+    return ec ? p : c.string();
+}
+
+std::vector<std::string> SplitCodeLines(const std::string &code) {
+    std::vector<std::string> out;
+    size_t from = 0;
+    for (;;) {
+        const size_t nl = code.find('\n', from);
+        out.push_back(code.substr(from, nl == std::string::npos ? std::string::npos : nl - from));
+        if (nl == std::string::npos) break;
+        from = nl + 1;
+    }
+    return out;
+}
+
+bool BlankLines(const std::vector<std::string> &lines) {
+    for (const std::string &l : lines)
+        if (l.find_first_not_of(" \t") != std::string::npos) return false;
+    return true;
+}
+
+}  // namespace
+
+bool Editor::MepmlFillIncludes(Buffer &buf, const std::string &path) {
+    if (LspFiletype(path) != "mepml") return false;
+    mepml::Document doc = mepml::Parse(buf.lines);
+    if (!mepml::UsesFiles(doc)) return false;
+    std::string file = path;
+    std::error_code ec;
+    if (!file.empty() && file[0] != '/') file = std::filesystem::absolute(file, ec).string();
+    doc = mepml::ParseWithImports(file, buf.lines, ReadFileLines);
+    buf.mepml_include_synced.clear();
+    std::vector<std::string> notes;
+    const std::vector<mepml::LineEdit> edits = mepml::IncludeSyncEdits(doc, buf.lines, &buf.mepml_include_synced, &notes);
+    for (const mepml::LineEdit &e : edits) {
+        const int n = static_cast<int>(buf.lines.size());
+        const int row = std::max(0, std::min(e.row, n)), row_end = std::max(row, std::min(e.row_end, n));
+        buf.lines.erase(buf.lines.begin() + row, buf.lines.begin() + row_end);
+        buf.lines.insert(buf.lines.begin() + row, e.lines.begin(), e.lines.end());
+    }
+    return !edits.empty();
+}
+
+void Editor::MepmlReplaceRows(int buffer_id, int row, int row_end, const std::vector<std::string> &lines) {
+    ReplaceLinesAt(buffer_id, row, row_end, lines);
+    const int delta = static_cast<int>(lines.size()) - (row_end - row);
+    if (delta == 0) return;
+    for (Project &project : projects_) {
+        for (Workspace &ws : project.workspaces) {
+            for (Tab &tab : ws.tabs) {
+                std::vector<int> pane_ids;
+                CollectLeaves(tab.root.get(), pane_ids);
+                for (int pane_id : pane_ids) {
+                    SplitNode *node = FindNode(tab.root.get(), pane_id);
+                    if (!node || node->pane.buffer_id != buffer_id) continue;
+                    if (node->pane.cursor.row >= row_end) node->pane.cursor.row += delta;
+                    node->pane.cursor = ClampPositionInBuffer(buffer_id, node->pane.cursor);
+                }
+            }
+        }
+    }
+    if (CurPane().buffer_id == buffer_id) ClampCursor();
+}
+
+bool Editor::MepmlSyncIncludesIn(int buffer_id) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.deleted || buf.filename.empty() || buf.mepml_present_view || LspFiletype(buf.filename) != "mepml") return false;
+    const mepml::Document doc = MepmlParseBuffer(buf);
+    std::vector<std::string> notes;
+    const std::vector<mepml::LineEdit> edits = mepml::IncludeSyncEdits(doc, buf.lines, &buf.mepml_include_synced, &notes);
+    const bool was_modified = buf.modified;
+    for (const mepml::LineEdit &e : edits) MepmlReplaceRows(buffer_id, e.row, e.row_end, e.lines);
+    // The file's lines are not an edit of the document.
+    if (!edits.empty()) buf.modified = was_modified;
+    for (const std::string &n : notes) status_message_ += (status_message_.empty() ? "" : "; ") + n;
+    return !edits.empty();
+}
+
+bool Editor::MepmlSyncIncludesOut(int buffer_id, std::vector<std::string> *notes) {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.filename.empty() || LspFiletype(buf.filename) != "mepml") return false;
+    const mepml::Document doc = MepmlParseBuffer(buf);
+    auto note = [&](const std::string &m) {
+        if (notes) notes->push_back(m);
+    };
+    // What each file gets, by block; and the blocks that take their file's
+    // new lines instead (unedited since they last did).
+    struct Put {
+        size_t block = 0;
+        std::vector<std::string> code;
+    };
+    std::map<std::string, std::vector<Put>> per_file;
+    std::vector<size_t> refresh;
+    for (size_t i = 0; i < doc.blocks.size(); ++i) {
+        const mepml::Block &b = doc.blocks[i];
+        if (b.kind != mepml::BlockKind::Code || !b.origin.empty() || b.include.empty()) continue;
+        const std::vector<std::string> own = mepml::IncludeOwnLines(b, buf.lines);
+        if (BlankLines(own)) continue;  // nothing between the fences yet: the file's lines fill them next
+        const std::vector<std::string> file = SplitCodeLines(b.include_code);
+        const std::string key = mepml::IncludeKeyAt(doc, i);
+        const std::string shown = mepml::IncludeOf(b).path;
+        if (own == file) {
+            buf.mepml_include_synced[key] = own;
+            continue;
+        }
+        auto it = buf.mepml_include_synced.find(key);
+        if (it != buf.mepml_include_synced.end() && it->second != file) {
+            if (it->second == own) {
+                refresh.push_back(i);
+                note("block updated from " + shown);
+            } else {
+                note(shown + " changed on disk since the block was edited: not written (the block keeps its lines; :e! takes the file's)");
+            }
+            continue;
+        }
+        per_file[b.include].push_back({i, own});
+    }
+    for (size_t k = refresh.size(); k-- > 0;) {  // (last block first: the rows above stay valid)
+        const mepml::Block &b = doc.blocks[refresh[k]];
+        const std::vector<std::string> file = SplitCodeLines(b.include_code);
+        MepmlReplaceRows(buffer_id, b.code_line_start, std::max(b.code_line_start, b.code_line_end + 1), file);
+        buf.mepml_include_synced[mepml::IncludeKeyAt(doc, refresh[k])] = file;
+    }
+    bool wrote = false;
+    for (auto &kv : per_file) {
+        const std::string &path = kv.first;
+        std::vector<Put> &puts = kv.second;
+        const std::string shown = mepml::IncludeOf(doc.blocks[puts.front().block]).path;
+        std::vector<std::string> lines;
+        if (!ReadFileLines(path, &lines)) {
+            note("cannot read " + shown + ": the block keeps its lines");
+            continue;
+        }
+        // From the bottom of the file up, so each block's lines are still
+        // where the parse found them; blocks over the same lines write once.
+        std::sort(puts.begin(), puts.end(), [&](const Put &a, const Put &c) {
+            return doc.blocks[a.block].include_first > doc.blocks[c.block].include_first;
+        });
+        int limit = std::numeric_limits<int>::max();
+        std::vector<size_t> written;
+        for (const Put &put : puts) {
+            const mepml::Block &b = doc.blocks[put.block];
+            if (b.include_last >= limit) {
+                note("two blocks hold the same lines of " + shown + "; only one was written");
+                continue;
+            }
+            mepml::IncludeWriteBack(b, put.code, &lines);
+            limit = b.include_first;
+            written.push_back(put.block);
+        }
+        if (written.empty()) continue;
+#if defined(__EMSCRIPTEN__)
+        note(shown + " not written (the web build writes no other file); the block keeps its lines");
+        continue;
+#else
+        {
+            std::ofstream out(path, std::ios::binary);
+            if (!out) {
+                note("cannot write " + shown + ": the block keeps its lines");
+                continue;
+            }
+            for (const std::string &l : lines) out << l << "\n";
+        }
+#endif
+        wrote = true;
+        note(shown + " written");
+        for (size_t idx : written) {
+            const mepml::Block &b = doc.blocks[idx];
+            const std::vector<std::string> own = mepml::IncludeOwnLines(b, buf.lines);
+            buf.mepml_include_synced[mepml::IncludeKeyAt(doc, idx)] = own;
+            // A `lines=` that the block outgrew (or no longer fills).
+            const std::string opt = mepml::IncludeLinesOption(mepml::IncludeOf(b).lines, static_cast<int>(own.size()));
+            const int fence = b.code_line_start - 1;
+            if (!opt.empty() && fence >= 0 && fence < static_cast<int>(buf.lines.size()))
+                SetLineAt(buffer_id, fence, mepml::FenceWithOption(buf.lines[static_cast<size_t>(fence)], "lines", opt));
+        }
+        // The file's own buffer, when it is open, shows the new lines --
+        // unless it holds edits of its own, which nothing here may lose.
+        const std::string canon = CanonicalFilePath(path);
+        for (size_t j = 0; j < buffers_.size(); ++j) {
+            Buffer &other = buffers_[j];
+            if (static_cast<int>(j) == buffer_id || other.deleted || other.filename.empty()) continue;
+            if (CanonicalFilePath(ResolveBufferPath(other, other.filename)) != canon) continue;
+            if (other.modified) note(shown + " is open with unsaved changes; that buffer was not updated");
+            else ReloadBufferFromDisk(static_cast<int>(j), false);
+        }
+    }
+    return wrote;
+}
+
+std::vector<std::string> Editor::MepmlLinesForDisk(const Buffer &buf) const {
+    const mepml::Document doc = MepmlParseBuffer(buf);
+    std::map<int, int> skip;  // row -> row_end of each block body the file holds
+    for (const mepml::Block &b : doc.blocks) {
+        if (b.kind != mepml::BlockKind::Code || !b.origin.empty() || b.include.empty()) continue;
+        const std::vector<std::string> own = mepml::IncludeOwnLines(b, buf.lines);
+        if (!own.empty() && own == SplitCodeLines(b.include_code)) skip[b.code_line_start] = b.code_line_end + 1;
+    }
+    if (skip.empty()) return buf.lines;
+    std::vector<std::string> out;
+    out.reserve(buf.lines.size());
+    for (int r = 0; r < static_cast<int>(buf.lines.size());) {
+        auto it = skip.find(r);
+        if (it != skip.end() && it->second > r) {
+            r = it->second;
+            continue;
+        }
+        out.push_back(buf.lines[static_cast<size_t>(r)]);
+        ++r;
+    }
+    return out;
+}
+
+void Editor::MepmlResyncIncludersOf(int saved_buffer_id) {
+    for (size_t i = 0; i < buffers_.size(); ++i) {
+        if (static_cast<int>(i) == saved_buffer_id) continue;
+        const Buffer &buf = buffers_[i];
+        if (buf.deleted || buf.filename.empty() || buf.mepml_present_view || LspFiletype(buf.filename) != "mepml") continue;
+        MepmlSyncIncludesIn(static_cast<int>(i));
+    }
 }

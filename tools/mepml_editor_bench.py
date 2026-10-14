@@ -128,6 +128,9 @@ def main():
     # test.mepml imports its neighbours; give it them.
     for extra in ("refs.mepml", "opts.mepml", "test.mepss"):
         shutil.copy(os.path.join(REPO, extra), work)
+    # ... and includes examples/fit.py in its code blocks.
+    os.makedirs(os.path.join(work, "examples"), exist_ok=True)
+    shutil.copy(os.path.join(REPO, "examples", "fit.py"), os.path.join(work, "examples"))
 
     xvfb = subprocess.Popen(["Xvfb", args.display, "-screen", "0", "1600x1000x24"], stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL)

@@ -21,8 +21,8 @@ work without servers fighting over one project.
 | =K=            | hover documentation           |
 | =gd=           | go to definition              |
 | =Q=            | this line's diagnostics, in a popup |
-| =]e= / =[e=    | next / previous error, then its popup |
-| =]d= / =[d=    | next / previous diagnostic (any severity) |
+| =]e= / =[e=    | next / previous error, its text in a tooltip |
+| =]d= / =[d=    | next / previous diagnostic (any severity), its text in a tooltip |
 | =<leader>dd=   | every diagnostic in the file, in a picker |
 | =<leader>li=   | go to implementation          |
 | =<leader>lt=   | go to type definition         |
@@ -73,10 +73,13 @@ sign column. =Q= shows the current line's diagnostics in a popup, and
 =:MepDiagShow= lists them.
 
 =]e= and =[e= jump to the next and previous *error* in the file (wrapping
-at either end), then pop up that line's errors. For diagnostics of any
-severity -- info, hints and warnings too -- use =]d= and =[d=
-(=mep.lsp_next_diagnostic= / =mep.lsp_prev_diagnostic=), which just move
-the cursor, with no popup.
+at either end), landing on it, and show that line's errors in full in a
+tooltip at the cursor -- the same tooltip =K= uses, so it closes on its
+own with the next move (=]e= again, say) or =Escape=; =Q= opens the
+list below when a message is to be copied. For diagnostics of any severity --
+info, hints and warnings too -- use =]d= and =[d=
+(=mep.lsp_next_diagnostic= / =mep.lsp_prev_diagnostic=), which do the
+same over every diagnostic.
 
 =<leader>dd= (=:MepDiagPicker=) lists every diagnostic in the file in the
 fuzzy picker, like =/= does for lines: one row per diagnostic, sorted by

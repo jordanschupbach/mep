@@ -103,7 +103,7 @@ the features live.
 | =<leader>ka= | mepml: run all code blocks | [[file:mepml.html][mepml]] |
 | =<leader>kc= | mepml: list problems | [[file:mepml.html][mepml]] |
 | =<leader>ke= | mepml: export as... | [[file:mepml.html][mepml]] |
-| =<leader>kf= | mepml: toggle math preview popup while typing | [[file:mepml.html][mepml]] |
+| =<leader>kf= | mepml: toggle the preview popup (math, svg, html) while typing | [[file:mepml.html][mepml]] |
 | =<leader>kh= | mepml: fold/unfold the document header | [[file:mepml.html][mepml]] |
 | =<leader>ki= | mepml: import a document | [[file:mepml.html][mepml]] |
 | =<leader>kl= | mepml: follow link | [[file:mepml.html][mepml]] |
@@ -162,7 +162,7 @@ the features live.
 | =<leader>oti= | Org: toggle inline images | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otl= | Toggle LaTeX/math preview (org/tex) | [[file:mepml.html][mepml]] |
 | =<leader>otm= | Org: toggle markup concealment | [[file:org-basics.html][Org files in mep]] |
-| =<leader>otp= | Toggle math preview popup while typing | [[file:mepml.html][mepml]] |
+| =<leader>otp= | Toggle the preview popup (math, svg, html) while typing | [[file:mepml.html][mepml]] |
 | =<leader>otr= | Org: toggle plain text (no inline rendering) | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>ots= | Org: toggle src-block LSP status | [[file:org-visuals.html][Images, LaTeX and tables]] |
 | =<leader>otv= | Org: toggle view mode (rendered on every line) | [[file:mepml.html][mepml]] |

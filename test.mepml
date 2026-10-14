@@ -379,6 +379,38 @@ root.mainloop()
 // [stopped]
 // result_end
 
+A block with include= takes its code from a file instead of from its own
+lines, which stay empty. The path is relative to the document, as an
+import's is. Everything that reads the block reads the file: the exports
+show its text and running the block runs it. In the editor the card shows
+the options, with the path a link to the file (click it, or <leader>kl):
+
+```{python, include="examples/fit.py"}
+```
+
+lines= keeps part of the file: 12-30 (1-based, both ends in), 12 for one
+line, 12- to the end, -30 from the start:
+
+```{python, include="examples/fit.py", lines=6-7}
+```
+
+region= keeps the lines between a marker comment and the endregion after
+it, written in the file's own comment syntax (`# region model` ...
+`# endregion` in Python, the same after a C or Lua comment opener), so the
+block follows the code as it moves. dedent strips the indentation the lines
+share, which shows a method out of its class; a lines= inside a region
+counts within it:
+
+```{python, include="examples/fit.py", region=model, dedent}
+```
+
+```{python, include="examples/fit.py", region=model, lines=2-3, dedent}
+```
+
+A file that cannot be read, a range the file does not have or a region it
+lacks is an error on the fence, and lines written inside such a block are
+a warning, since the file's replace them.
+
 Slides: `\slide(` on a line of its own, then the slide's content -- any
 blocks at all -- and a line holding just `)` to end it (`\slide{` ... `}`
 and `@slide{` ... `}` work too). A slide's first heading is its title.

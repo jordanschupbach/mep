@@ -2573,7 +2573,223 @@ std::string ResolvePath(const std::string &base_file, const std::string &path) {
     return dir + p;
 }
 
+// ---------------------------------------------------------------------------
+// Code from a file (IncludeSpec)
+
+IncludeSpec IncludeOf(const Block &b) {
+    IncludeSpec spec;
+    if (b.kind != BlockKind::Code) return spec;
+    for (const Option &o : b.options) {
+        const std::string name = Lower(o.name);
+        if (name == "include") spec.path = Trim(o.value.s);
+        else if (name == "lines") spec.lines = Trim(o.value.s);
+        else if (name == "region") spec.region = Trim(o.value.s);
+        else if (name == "dedent") spec.dedent = Lower(Trim(o.value.s)) != "false" && Lower(Trim(o.value.s)) != "no";
+    }
+    if (spec.path.empty()) return IncludeSpec();
+    return spec;
+}
+
+bool UsesFiles(const Document &doc) {
+    for (const Block &b : doc.blocks) {
+        if (b.kind == BlockKind::Import) return true;
+        if (b.kind == BlockKind::Meta && Lower(b.keyword) == "import") return true;
+        if (b.kind == BlockKind::Code && !IncludeOf(b).path.empty()) return true;
+    }
+    return false;
+}
+
 namespace {
+
+// A region marker in a line of source: `region name` or `endregion`
+// (`end region` too) after whatever opens a comment in the file's
+// language -- `#`, `//`, `--`, `;`, `%`, `/*`, `*`, `<!--` -- with a
+// closing `*/` or `-->` ignored. *name is the region's name (an
+// endregion's, if it repeats it) and *end whether it closes one.
+bool RegionMarker(const std::string &line, std::string *name, bool *end) {
+    size_t i = line.find_first_not_of(" \t");
+    if (i == std::string::npos) return false;
+    while (i < line.size() && (line[i] == '#' || line[i] == '/' || line[i] == '-' || line[i] == ';' || line[i] == '%' ||
+                               line[i] == '*' || line[i] == '<' || line[i] == '!' || line[i] == ' ' || line[i] == '\t'))
+        ++i;
+    std::string rest = Lower(line.substr(i));
+    auto word = [&](const std::string &w) {
+        if (rest.rfind(w, 0) != 0) return false;
+        return rest.size() == w.size() || !std::isalnum(static_cast<unsigned char>(rest[w.size()]));
+    };
+    size_t skip = 0;
+    if (word("endregion")) {
+        *end = true;
+        skip = 9;
+    } else if (word("end region")) {
+        *end = true;
+        skip = 10;
+    } else if (word("region")) {
+        *end = false;
+        skip = 6;
+    } else {
+        return false;
+    }
+    std::string n = line.substr(i + skip);
+    for (const char *close : {"*/", "-->"}) {
+        const size_t at = n.rfind(close);
+        if (at != std::string::npos && Trim(n.substr(at + std::strlen(close))).empty()) n = n.substr(0, at);
+    }
+    *name = Trim(n);
+    return true;
+}
+
+// `10`, `10-20`, `10:20`, `10-`, `-20` as a 1-based inclusive range of
+// `n` lines (0 / n + 1 standing in for an open end); false when it is
+// none of those.
+bool ParseLineRange(const std::string &spec, int *from, int *to) {
+    const std::string s = Trim(spec);
+    if (s.empty()) return false;
+    auto number = [](const std::string &t, int *out) {
+        if (t.empty() || t.find_first_not_of("0123456789") != std::string::npos || t.size() > 9) return false;
+        *out = std::atoi(t.c_str());
+        return *out >= 1;
+    };
+    const size_t sep = s.find_first_of("-:");
+    if (sep == std::string::npos) {
+        if (!number(s, from)) return false;
+        *to = *from;
+        return true;
+    }
+    const std::string a = Trim(s.substr(0, sep)), b = Trim(s.substr(sep + 1));
+    if (a.empty() && b.empty()) return false;
+    *from = 1;
+    *to = 0;  // "to the end", resolved by the caller
+    if (!a.empty() && !number(a, from)) return false;
+    if (!b.empty() && !number(b, to)) return false;
+    return true;
+}
+
+}  // namespace
+
+bool SelectIncludeLines(const std::vector<std::string> &lines, const IncludeSpec &spec, int *first, int *last,
+                        std::string *error) {
+    int lo = 0, hi = static_cast<int>(lines.size()) - 1;
+    if (!spec.region.empty()) {
+        int depth = 0;
+        int open = -1;
+        for (int k = 0; k <= hi; ++k) {
+            std::string name;
+            bool end = false;
+            if (!RegionMarker(lines[static_cast<size_t>(k)], &name, &end)) continue;
+            if (open < 0) {
+                if (!end && name == spec.region) open = k;
+                continue;
+            }
+            if (!end) {
+                ++depth;
+            } else if (depth > 0) {
+                --depth;
+            } else {
+                hi = k - 1;
+                break;
+            }
+        }
+        if (open < 0) {
+            *error = "has no region " + spec.region;
+            return false;
+        }
+        lo = open + 1;  // (an unclosed region runs to the end of the file)
+        // The region's text, without the blank lines that set its markers off.
+        while (lo <= hi && Trim(lines[static_cast<size_t>(lo)]).empty()) ++lo;
+        while (hi >= lo && Trim(lines[static_cast<size_t>(hi)]).empty()) --hi;
+    }
+    if (!spec.lines.empty()) {
+        int from = 0, to = 0;
+        if (!ParseLineRange(spec.lines, &from, &to)) {
+            *error = "lines=" + spec.lines + " is not a line or a range of lines (10, 10-20, 10-, -20)";
+            return false;
+        }
+        const int n = hi - lo + 1;
+        if (to == 0) to = n;
+        if (from > n || to > n || from > to) {
+            *error = (spec.region.empty() ? "has " : "region " + spec.region + " has ") + std::to_string(n) +
+                     (n == 1 ? " line" : " lines") + "; lines=" + spec.lines + " is beyond it";
+            return false;
+        }
+        hi = lo + to - 1;
+        lo = lo + from - 1;
+    }
+    *first = lo;
+    *last = hi;
+    return true;
+}
+
+namespace {
+
+// The code block's own fence line within its text: its byte length, for a
+// diagnostic that underlines the fence.
+int FenceLength(const Block &b) {
+    const int idx = b.code_line_start - 1 - b.line_start;
+    if (idx < 0 || static_cast<size_t>(idx) >= b.line_offsets.size()) return static_cast<int>(b.text.size());
+    const size_t from = static_cast<size_t>(b.line_offsets[static_cast<size_t>(idx)]);
+    const size_t to = b.text.find('\n', from);
+    return static_cast<int>((to == std::string::npos ? b.text.size() : to) - from);
+}
+
+// A code block's `include=`: `b.code` becomes the file's lines (those the
+// spec picks), or a diagnostic on the fence says why not.
+void ResolveInclude(const std::string &file, Block &b, const ReadFileFn &read, std::vector<Diagnostic> *diagnostics) {
+    const IncludeSpec spec = IncludeOf(b);
+    if (spec.path.empty()) return;
+    auto diag = [&](Diagnostic::Severity severity, const std::string &msg) {
+        Diagnostic d;
+        d.severity = severity;
+        d.line = b.code_line_start - 1;
+        d.col_start = 0;
+        d.col_end = FenceLength(b);
+        d.message = msg;
+        diagnostics->push_back(d);
+    };
+    const std::string path = ResolvePath(file, spec.path);
+    std::vector<std::string> lines;
+    if (!read(path, &lines)) {
+        diag(Diagnostic::Error, "cannot read include " + spec.path);
+        return;
+    }
+    int first = 0, last = -1;
+    std::string error;
+    if (!SelectIncludeLines(lines, spec, &first, &last, &error)) {
+        diag(Diagnostic::Error, error.rfind("lines=", 0) == 0 ? "include: " + error : "include " + spec.path + " " + error);
+        return;
+    }
+    size_t indent = std::string::npos;
+    if (spec.dedent) {
+        for (int k = first; k <= last; ++k) {
+            const std::string &l = lines[static_cast<size_t>(k)];
+            const size_t lead = l.find_first_not_of(" \t");
+            if (lead == std::string::npos) continue;  // (a blank line shares any indentation)
+            indent = std::min(indent, lead);
+            if (b.include_indent.empty() && lead > 0) b.include_indent = l.substr(0, lead);
+        }
+    }
+    if (indent == std::string::npos || indent == 0) b.include_indent.clear();
+    else b.include_indent.resize(indent);
+    std::string from_file;
+    for (int k = first; k <= last; ++k) {
+        const std::string &l = lines[static_cast<size_t>(k)];
+        if (k > first) from_file += '\n';
+        from_file += indent == std::string::npos || indent == 0 ? l : l.size() <= indent ? std::string() : l.substr(indent);
+    }
+    b.include = path;
+    b.include_first = first + 1;
+    b.include_last = last + 1;
+    b.include_code = from_file;
+    // The block's own lines, when it has any, are its code: in mep they
+    // are the file's lines, being edited (saving the document writes
+    // them back); anywhere else they are what the author wrote.
+    if (Trim(b.code).empty()) {
+        b.code = from_file;
+    } else if (b.code != from_file) {
+        diag(Diagnostic::Info, "the block's lines differ from " + spec.path + " (lines " + std::to_string(first + 1) + "-" +
+                                   std::to_string(last + 1) + "): they are its code, and mep writes them there when the document is saved");
+    }
+}
 
 // `included` holds every file already expanded into this document: a
 // file imported twice (by the header and again in the body, say) is
@@ -2640,7 +2856,8 @@ void Expand(const std::string &file, Document &doc, const ReadFileFn &read, std:
         stack.pop_back();
         for (const Diagnostic &sd : p.doc.diagnostics) {
             if (sd.message.rfind("circular import", 0) != 0 && sd.message.rfind("cannot read import", 0) != 0 &&
-                sd.message.rfind("in ", 0) != 0)
+                sd.message.rfind("in ", 0) != 0 && sd.message.rfind("include", 0) != 0 &&
+                sd.message.rfind("cannot read include", 0) != 0)
                 continue;
             Diagnostic d = sd;
             d.line = b.line_start;
@@ -2691,6 +2908,10 @@ void Expand(const std::string &file, Document &doc, const ReadFileFn &read, std:
             if (!doc.FindOption(o.name)) doc.options.push_back(o);
     }
     doc.blocks = std::move(out);
+    // This file's own code blocks that include a file: their code is read
+    // now (an imported file's were, in its own Expand).
+    for (Block &b : doc.blocks)
+        if (b.kind == BlockKind::Code && b.origin.empty()) ResolveInclude(file, b, read, &doc.diagnostics);
 }
 
 }  // namespace
@@ -2703,6 +2924,152 @@ Document ParseWithImports(const std::string &file, const std::vector<std::string
     Expand(file, p.doc, read, stack, included, true);
     Finish(p.doc);
     return std::move(p.doc);
+}
+
+// ---------------------------------------------------------------------------
+// A block and its file, kept together (see mepml_doc.h)
+
+std::vector<std::string> BlockLines(const Block &b, const std::vector<std::string> &lines) {
+    std::vector<std::string> out;
+    for (int r = b.code_line_start; r <= b.code_line_end && r >= 0 && r < static_cast<int>(lines.size()); ++r)
+        out.push_back(lines[static_cast<size_t>(r)]);
+    return out;
+}
+
+std::string IncludeKey(const Block &b) {
+    const IncludeSpec spec = IncludeOf(b);
+    return b.include + "\n" + spec.lines + "\n" + spec.region + "\n" + (spec.dedent ? "1" : "0");
+}
+
+std::string IncludeKeyAt(const Document &doc, size_t block) {
+    if (block >= doc.blocks.size()) return "";
+    const std::string key = IncludeKey(doc.blocks[block]);
+    int same = 0;
+    for (size_t i = 0; i < block; ++i) {
+        const Block &b = doc.blocks[i];
+        if (b.kind == BlockKind::Code && b.origin.empty() && !b.include.empty() && IncludeKey(b) == key) ++same;
+    }
+    return same == 0 ? key : key + "\n" + std::to_string(same);
+}
+
+std::vector<std::string> IncludeOwnLines(const Block &b, const std::vector<std::string> &lines) {
+    std::vector<std::string> own = BlockLines(b, lines);
+    if (!IncludeOf(b).dedent) return own;
+    size_t indent = std::string::npos;
+    for (const std::string &l : own) {
+        const size_t lead = l.find_first_not_of(" \t");
+        if (lead != std::string::npos) indent = std::min(indent, lead);
+    }
+    if (indent == std::string::npos || indent == 0) return own;
+    for (std::string &l : own) l = l.size() <= indent ? std::string() : l.substr(indent);
+    return own;
+}
+
+namespace {
+
+std::vector<std::string> SplitCode(const std::string &code) {
+    std::vector<std::string> out;
+    size_t from = 0;
+    for (;;) {
+        const size_t nl = code.find('\n', from);
+        out.push_back(code.substr(from, nl == std::string::npos ? std::string::npos : nl - from));
+        if (nl == std::string::npos) break;
+        from = nl + 1;
+    }
+    return out;
+}
+
+bool AllBlank(const std::vector<std::string> &lines) {
+    for (const std::string &l : lines)
+        if (!Trim(l).empty()) return false;
+    return true;
+}
+
+}  // namespace
+
+std::vector<LineEdit> IncludeSyncEdits(const Document &doc, const std::vector<std::string> &lines,
+                                       std::map<std::string, std::vector<std::string>> *synced,
+                                       std::vector<std::string> *notes) {
+    std::vector<LineEdit> edits;
+    for (size_t i = doc.blocks.size(); i-- > 0;) {
+        const Block &b = doc.blocks[i];
+        if (b.kind != BlockKind::Code || !b.origin.empty() || b.include.empty()) continue;
+        const std::vector<std::string> file = SplitCode(b.include_code);
+        const std::vector<std::string> own = IncludeOwnLines(b, lines);
+        const std::string key = IncludeKeyAt(doc, i);
+        const std::string shown = IncludeOf(b).path;
+        auto take_file = [&]() {
+            LineEdit e;
+            e.row = b.code_line_start;
+            e.row_end = std::max(b.code_line_start, b.code_line_end + 1);
+            e.lines = file;
+            edits.push_back(std::move(e));
+        };
+        if (AllBlank(own)) {
+            if (own != file) take_file();
+        } else if (own != file) {
+            auto it = synced->find(key);
+            if (it != synced->end() && it->second == own) {
+                take_file();
+                if (notes) notes->push_back("block updated from " + shown);
+            } else if (it != synced->end() && it->second != file) {
+                if (notes)
+                    notes->push_back(shown + " changed on disk and so did the block that includes it; the block keeps its lines");
+            }
+        }
+        (*synced)[key] = file;
+    }
+    return edits;
+}
+
+void IncludeWriteBack(const Block &b, const std::vector<std::string> &code, std::vector<std::string> *file_lines) {
+    if (b.include_first < 1 || b.include_last < b.include_first || b.include_last > static_cast<int>(file_lines->size()))
+        return;
+    std::vector<std::string> put;
+    put.reserve(code.size());
+    for (const std::string &l : code) put.push_back(Trim(l).empty() ? l : b.include_indent + l);
+    file_lines->erase(file_lines->begin() + (b.include_first - 1), file_lines->begin() + b.include_last);
+    file_lines->insert(file_lines->begin() + (b.include_first - 1), put.begin(), put.end());
+}
+
+std::string IncludeLinesOption(const std::string &spec, int count) {
+    const std::string s = Trim(spec);
+    int from = 0, to = 0;
+    if (s.empty() || count < 1 || !ParseLineRange(s, &from, &to)) return "";
+    const size_t sep_at = s.find_first_of("-:");
+    const std::string sep = sep_at == std::string::npos ? "-" : s.substr(sep_at, 1);
+    if (sep_at != std::string::npos && Trim(s.substr(sep_at + 1)).empty()) return "";  // `12-`: open, still fits
+    if (sep_at != std::string::npos && Trim(s.substr(0, sep_at)).empty())             // `-30`: from the start
+        return to == count ? "" : sep + std::to_string(count);
+    if (to - from + 1 == count) return "";
+    return count == 1 ? std::to_string(from) : std::to_string(from) + sep + std::to_string(from + count - 1);
+}
+
+std::string FenceWithOption(const std::string &fence, const std::string &name, const std::string &value) {
+    const std::string low = Lower(fence), want = Lower(name);
+    size_t at = 0;
+    for (;;) {
+        at = low.find(want, at);
+        if (at == std::string::npos) return fence;
+        const bool starts = at == 0 || !(std::isalnum(static_cast<unsigned char>(low[at - 1])) || low[at - 1] == '_');
+        size_t eq = at + want.size();
+        while (eq < low.size() && (low[eq] == ' ' || low[eq] == '\t')) ++eq;
+        if (starts && eq < low.size() && low[eq] == '=') {
+            size_t v = eq + 1;
+            while (v < fence.size() && (fence[v] == ' ' || fence[v] == '\t')) ++v;
+            size_t end = v;
+            if (v < fence.size() && (fence[v] == '"' || fence[v] == '\'')) {
+                end = fence.find(fence[v], v + 1);
+                end = end == std::string::npos ? fence.size() : end + 1;
+                return fence.substr(0, v) + fence[v] + value + fence[v] + fence.substr(end);
+            }
+            while (end < fence.size() && fence[end] != ',' && fence[end] != '}' && fence[end] != ')' && fence[end] != ' ' &&
+                   fence[end] != '\t')
+                ++end;
+            return fence.substr(0, v) + value + fence.substr(end);
+        }
+        at += want.size();
+    }
 }
 
 // ---------------------------------------------------------------------------

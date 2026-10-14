@@ -3438,7 +3438,10 @@ void PushMepmlValue(lua_State *L, const mepml::Value &v) {
 // mep.mepml_block_at(row) -> the code block covering 1-based `row` (its
 // //? option lines, fences, body or results region), or nil:
 //   { lang, code, fence_row (1-based), options = {name = value, ...},
-//     option_list = {{name=, value=}, ...} }
+//     option_list = {{name=, value=}, ...}, include = path }
+// `code` is what runs: the lines between the fences -- for a block with
+// include= (and `include` that file's resolved path) the file's, which
+// fill empty fences.
 /**
  * @brief Implements mep.mepml_block_at(row): describes the mepml code block at a 1-based row.
  * @param L Lua state; arg 1 is the 1-based row.
@@ -3446,9 +3449,10 @@ void PushMepmlValue(lua_State *L, const mepml::Value &v) {
  */
 int l_mepml_block_at(lua_State *L) {
     const int row = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
-    const mepml::Document &doc = GetEditor(L)->MepmlParseCurrent(false);
+    // (With the files it reads: a block's `include=` code is the file's.)
+    const mepml::Document &doc = GetEditor(L)->MepmlParseCurrent(true);
     for (const mepml::Block &b : doc.blocks) {
-        if (b.kind != mepml::BlockKind::Code || row < b.line_start || row > b.line_end) continue;
+        if (!b.origin.empty() || b.kind != mepml::BlockKind::Code || row < b.line_start || row > b.line_end) continue;
         lua_newtable(L);
         lua_pushlstring(L, b.lang.data(), b.lang.size());
         lua_setfield(L, -2, "lang");
@@ -3456,6 +3460,10 @@ int l_mepml_block_at(lua_State *L) {
         lua_setfield(L, -2, "code");
         lua_pushinteger(L, b.code_line_start);  // fence row, 1-based
         lua_setfield(L, -2, "fence_row");
+        if (!b.include.empty()) {
+            lua_pushlstring(L, b.include.data(), b.include.size());
+            lua_setfield(L, -2, "include");
+        }
         lua_newtable(L);
         for (const mepml::Option &o : b.options) {
             PushMepmlValue(L, o.value);
@@ -3479,19 +3487,25 @@ int l_mepml_block_at(lua_State *L) {
     return 1;
 }
 
-// mep.mepml_code_blocks() -> {{lang=, first=, last=}, ...}: every code
-// block's body rows (1-based, inclusive), for embedded-language highlighting.
+// mep.mepml_code_blocks() -> {{lang=, first=, last=, included=}, ...}: every
+// code block's body rows (1-based, inclusive), for embedded-language
+// highlighting and for running them all. A block whose code is a file's
+// (include=) has included = true and no body rows (first > last).
 /**
  * @brief Implements mep.mepml_code_blocks(): lists the current mepml buffer's code-block bodies.
  * @param L Lua state.
  * @return Number of values pushed (1: the array).
  */
 int l_mepml_code_blocks(lua_State *L) {
-    const mepml::Document &doc = GetEditor(L)->MepmlParseCurrent(false);
+    const mepml::Document &doc = GetEditor(L)->MepmlParseCurrent(true);
     lua_newtable(L);
     lua_Integer k = 1;
     for (const mepml::Block &b : doc.blocks) {
-        if (b.kind != mepml::BlockKind::Code || b.code_line_end < b.code_line_start) continue;
+        if (!b.origin.empty() || b.kind != mepml::BlockKind::Code) continue;
+        // (Nothing between the fences: nothing to run or analyse -- unless
+        // the code is a file's, which runs; `included` says so, and its
+        // first > last.)
+        if (b.code_line_end < b.code_line_start && b.include.empty()) continue;
         lua_newtable(L);
         lua_pushlstring(L, b.lang.data(), b.lang.size());
         lua_setfield(L, -2, "lang");
@@ -3499,6 +3513,10 @@ int l_mepml_code_blocks(lua_State *L) {
         lua_setfield(L, -2, "first");
         lua_pushinteger(L, b.code_line_end + 1);
         lua_setfield(L, -2, "last");
+        if (!b.include.empty()) {
+            lua_pushboolean(L, 1);
+            lua_setfield(L, -2, "included");
+        }
         lua_rawseti(L, -2, k++);
     }
     return 1;

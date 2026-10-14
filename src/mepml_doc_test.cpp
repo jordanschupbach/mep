@@ -1598,6 +1598,190 @@ int main() {
         // here that leads into it ("in loop.mepml: circular import ...").
         CHECK(missing == 1 && cycle == 1);
         CHECK(ResolvePath("/a/b/c.mepml", "./x/y.png") == "/a/b/x/y.png");
+    }
+
+    // --- Code from a file: include=, lines=, region=, dedent.
+    {
+        const Lines fit = {"import numpy as np", "",      "# region model",          "class Model:",
+                           "    def fit(self, x):", "        return np.mean(x)", "# endregion", "",
+                           "print('done')"};
+        std::map<std::string, Lines> files = {{"/d/src/fit.py", fit}};
+        ReadFileFn read = [&](const std::string &p, Lines *out) {
+            auto it = files.find(p);
+            if (it == files.end()) return false;
+            *out = it->second;
+            return true;
+        };
+        const Lines src = {"```{python, include=\"src/fit.py\"}",
+                           "```",
+                           "",
+                           "```{python, include=\"src/fit.py\", lines=\"5-6\", dedent}",
+                           "```",
+                           "",
+                           "```{python, include=\"src/fit.py\", region=model, lines=2-3}",
+                           "```",
+                           "",
+                           "```{python, include=\"src/fit.py\", lines=\"40-\"}",
+                           "```",
+                           "",
+                           "```{python, include=\"nope.py\"}",
+                           "```",
+                           "",
+                           "```{python, include=\"src/fit.py\", region=nothing}",
+                           "```",
+                           "",
+                           "```{python, include=\"src/fit.py\"}",
+                           "x = 1",
+                           "```"};
+        // Parse alone knows the block includes something but not what.
+        const Document plain = Parse(src);
+        CHECK(UsesFiles(plain));
+        CHECK(!UsesFiles(Parse({"```python", "x = 1", "```"})));
+        CHECK(plain.blocks[0].kind == BlockKind::Code && plain.blocks[0].code.empty() && plain.blocks[0].include.empty());
+        CHECK(IncludeOf(plain.blocks[0]).path == "src/fit.py" && IncludeOf(plain.blocks[0]).lines.empty());
+        CHECK(IncludeOf(plain.blocks[1]).lines == "5-6" && IncludeOf(plain.blocks[1]).dedent);
+        CHECK(IncludeOf(plain.blocks[2]).region == "model" && IncludeOf(plain.blocks[2]).lines == "2-3");
+        const Document d = ParseWithImports("/d/main.mepml", src, read);
+        std::vector<const Block *> code;
+        for (const Block &b : d.blocks)
+            if (b.kind == BlockKind::Code) code.push_back(&b);
+        CHECK(code.size() == 7);
+        std::string whole;
+        for (size_t k = 0; k < fit.size(); ++k) whole += (k ? "\n" : "") + fit[k];
+        CHECK(code[0]->code == whole && code[0]->include == "/d/src/fit.py");
+        CHECK(code[0]->include_first == 1 && code[0]->include_last == 9);
+        CHECK(code[0]->code_line_end < code[0]->code_line_start);  // (the fences still hold nothing)
+        CHECK(code[1]->code == "def fit(self, x):\n    return np.mean(x)");
+        CHECK(code[1]->include_first == 5 && code[1]->include_last == 6);
+        CHECK(code[2]->code == "    def fit(self, x):\n        return np.mean(x)");
+        CHECK(code[2]->include_first == 5 && code[2]->include_last == 6);
+        CHECK(code[3]->code.empty() && code[3]->include.empty());
+        CHECK(code[4]->code.empty() && code[5]->code.empty());
+        // The lines written in the block are its code (the file's fill
+        // empty fences); a note says they differ from the file's.
+        CHECK(code[6]->code == "x = 1" && code[6]->include_code == whole && code[6]->include == "/d/src/fit.py");
+        CHECK(code[1]->include_indent == "    " && code[0]->include_indent.empty());
+        int beyond = 0, missing = 0, no_region = 0, differs = 0, errors = 0;
+        for (const Diagnostic &dg : d.diagnostics) {
+            if (dg.severity == Diagnostic::Error) ++errors;
+            if (dg.message == "include src/fit.py has 9 lines; lines=40- is beyond it" && dg.line == 9) ++beyond;
+            if (dg.message == "cannot read include nope.py" && dg.line == 12) ++missing;
+            if (dg.message == "include src/fit.py has no region nothing" && dg.line == 15) ++no_region;
+            if (dg.message.rfind("the block's lines differ from src/fit.py (lines 1-9)", 0) == 0 && dg.line == 18 &&
+                dg.severity == Diagnostic::Info)
+                ++differs;
+        }
+        CHECK(beyond == 1 && missing == 1 && no_region == 1 && differs == 1 && errors == 3);
+
+        // Keeping the blocks and the file together (what mep does around
+        // open, reload and save).
+        {
+            Lines doc_lines = src;
+            std::map<std::string, Lines> synced;
+            std::vector<std::string> notes;
+            // Empty fences take the file's lines; the block with its own
+            // keeps them; the ones that failed have nothing to take.
+            std::vector<LineEdit> edits = IncludeSyncEdits(d, doc_lines, &synced, &notes);
+            CHECK(edits.size() == 3 && notes.empty());
+            CHECK(edits[0].row == 7 && edits[0].row_end == 7 && edits[0].lines.size() == 2);  // (last row first)
+            CHECK(edits[2].row == 1 && edits[2].row_end == 1 && edits[2].lines == fit);
+            for (const LineEdit &e : edits) {
+                doc_lines.erase(doc_lines.begin() + e.row, doc_lines.begin() + e.row_end);
+                doc_lines.insert(doc_lines.begin() + e.row, e.lines.begin(), e.lines.end());
+            }
+            CHECK(doc_lines.size() == src.size() + 9 + 2 + 2);
+            CHECK(doc_lines[1] == "import numpy as np" && doc_lines[10] == "```");
+            CHECK(synced.size() == 4);  // (the two whole-file blocks: one key each)
+            CHECK(IncludeKeyAt(d, 0) == IncludeKey(d.blocks[0]) && IncludeKeyAt(d, 6) == IncludeKey(d.blocks[6]) + "\n1");
+            // Parsed again, the blocks hold the file's lines: nothing to do.
+            Document d2 = ParseWithImports("/d/main.mepml", doc_lines, read);
+            CHECK(IncludeSyncEdits(d2, doc_lines, &synced, &notes).empty() && notes.empty());
+            const Lines fit_lines = BlockLines(d2.blocks[0], doc_lines);
+            CHECK(fit_lines == fit);
+            // The file changes under an unedited block: the block follows.
+            files["/d/src/fit.py"][8] = "print('changed')";
+            Document d3 = ParseWithImports("/d/main.mepml", doc_lines, read);
+            edits = IncludeSyncEdits(d3, doc_lines, &synced, &notes);
+            CHECK(edits.size() == 1 && edits[0].row == 1 && edits[0].row_end == 10 && edits[0].lines[8] == "print('changed')");
+            // (the last block, with its own `x = 1`, is the edited one: noted first)
+            CHECK(notes.size() == 2 && notes[1] == "block updated from src/fit.py" && notes[0].find("changed on disk") != std::string::npos);
+            // ... and under an edited one: the block keeps its lines, noted.
+            notes.clear();
+            doc_lines[9] = "print('mine')";
+            files["/d/src/fit.py"][8] = "print('theirs')";
+            Document d4 = ParseWithImports("/d/main.mepml", doc_lines, read);
+            edits = IncludeSyncEdits(d4, doc_lines, &synced, &notes);
+            CHECK(edits.empty() && notes.size() == 2 && notes[1].find("changed on disk") != std::string::npos);
+            // A dedented block whose lines are all indented: the indentation
+            // they share is the file's to put back, not part of the code.
+            {
+                Lines dd = {"```{python, include=\"src/fit.py\", lines=\"5-6\", dedent}", "  def fit(self, x):", "      return x", "```"};
+                Document d5 = ParseWithImports("/d/main.mepml", dd, read);
+                const Lines own = IncludeOwnLines(d5.blocks[0], dd);
+                CHECK(own.size() == 2 && own[0] == "def fit(self, x):" && own[1] == "    return x");
+                CHECK(BlockLines(d5.blocks[0], dd)[0] == "  def fit(self, x):");
+            }
+            // Written back: the block's lines over the file's, indented as
+            // the file had them.
+            Lines file = files["/d/src/fit.py"];
+            IncludeWriteBack(d4.blocks[0], BlockLines(d4.blocks[0], doc_lines), &file);
+            CHECK(file.size() == 9 && file[8] == "print('mine')");
+            // The dedented method, with one line more, goes back under its
+            // class; its `lines=` then covers one more line.
+            const Block *method = nullptr;
+            for (const Block &b : d4.blocks)
+                if (b.kind == BlockKind::Code && IncludeOf(b).lines == "5-6") method = &b;
+            CHECK(method && method->include_indent == "    ");
+            IncludeWriteBack(*method, {"def fit(self, x):", "    y = np.mean(x)", "", "    return y"}, &file);
+            CHECK(file.size() == 11 && file[4] == "    def fit(self, x):" && file[5] == "        y = np.mean(x)" && file[6].empty() &&
+                  file[7] == "        return y");
+            CHECK(IncludeLinesOption("5-6", 4) == "5-8" && IncludeLinesOption("5-6", 2).empty());
+            CHECK(IncludeLinesOption("5", 1).empty() && IncludeLinesOption("5", 3) == "5-7" && IncludeLinesOption("5-7", 1) == "5");
+            CHECK(IncludeLinesOption("-6", 8) == "-8" && IncludeLinesOption("-6", 6).empty());
+            CHECK(IncludeLinesOption("5-", 40).empty() && IncludeLinesOption("", 3).empty() && IncludeLinesOption("4:5", 3) == "4:6");
+            CHECK(FenceWithOption("```{python, include=\"src/fit.py\", lines=\"5-6\", dedent}", "lines", "5-8") ==
+                  "```{python, include=\"src/fit.py\", lines=\"5-8\", dedent}");
+            CHECK(FenceWithOption("```{python, include=\"src/fit.py\", Lines = 5-6}", "lines", "5-8") ==
+                  "```{python, include=\"src/fit.py\", Lines = 5-8}");
+            CHECK(FenceWithOption("```{python, include=\"lines.py\", outlines=1}", "lines", "2") ==
+                  "```{python, include=\"lines.py\", outlines=1}");
+        }
+        // The fence is what the diagnostic underlines.
+        for (const Diagnostic &dg : d.diagnostics)
+            if (dg.line == 12) CHECK(dg.col_start == 0 && dg.col_end == static_cast<int>(src[12].size()));
+
+        // The selection on its own: open ranges, `:`, nested and unclosed
+        // regions, a region's blank edges.
+        int first = 0, last = 0;
+        std::string err;
+        IncludeSpec s;
+        s.path = "x";
+        s.lines = "-2";
+        CHECK(SelectIncludeLines(fit, s, &first, &last, &err) && first == 0 && last == 1);
+        s.lines = "8-";
+        CHECK(SelectIncludeLines(fit, s, &first, &last, &err) && first == 7 && last == 8);
+        s.lines = "4:5";
+        CHECK(SelectIncludeLines(fit, s, &first, &last, &err) && first == 3 && last == 4);
+        s.lines = "9";
+        CHECK(SelectIncludeLines(fit, s, &first, &last, &err) && first == 8 && last == 8);
+        s.lines = "10";
+        CHECK(!SelectIncludeLines(fit, s, &first, &last, &err) && err.find("beyond") != std::string::npos);
+        s.lines = "b-c";
+        CHECK(!SelectIncludeLines(fit, s, &first, &last, &err) && err.find("not a line") != std::string::npos);
+        s.lines.clear();
+        s.region = "model";
+        CHECK(SelectIncludeLines(fit, s, &first, &last, &err) && first == 3 && last == 5);
+        const Lines nested = {"// region outer", "", "a", "/* region inner */", "b", "/* endregion */", "c", "", "// end region outer", "d",
+                              "-- region tail", "e"};
+        s.region = "outer";
+        CHECK(SelectIncludeLines(nested, s, &first, &last, &err) && first == 2 && last == 6);
+        s.region = "inner";
+        CHECK(SelectIncludeLines(nested, s, &first, &last, &err) && first == 4 && last == 4);
+        s.region = "tail";  // (unclosed: to the end of the file)
+        CHECK(SelectIncludeLines(nested, s, &first, &last, &err) && first == 11 && last == 11);
+        s.region = "outer";
+        s.lines = "2-9";
+        CHECK(!SelectIncludeLines(nested, s, &first, &last, &err) && err == "region outer has 5 lines; lines=2-9 is beyond it");
         CHECK(ResolvePath("/a/b/c.mepml", "/abs") == "/abs");
     }
 

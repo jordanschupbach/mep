@@ -3898,8 +3898,20 @@ const char *kBuiltinTextTools =
     // Opt-in auto-recompute (off by default -- a silent always-on
     // behavior change would surprise existing configs/large files);
     // :lua mep.colorize_auto = true to enable.
-    "mep.colorize_auto = false\n"
+    // On by default: a colour literal (#rrggbb, rgb(), a CSS colour name)
+    // is drawn on its own colour in every buffer (Editor::Colorize; the
+    // very large ones are left alone). `:lua mep.colorize_auto = false`
+    // turns it off. Each buffer gets its scan as it is first shown and
+    // again after its edits.
+    "mep.colorize_auto = true\n"
     "mep.on_buffer_changed(function() if mep.colorize_auto then mep.colorize() end end)\n"
+    "local mep_colorized_buffer = nil\n"
+    "mep.on_frame(function()\n"
+    "  local id = mep.current_buffer()\n"
+    "  if id == mep_colorized_buffer then return end\n"
+    "  mep_colorized_buffer = id\n"
+    "  if mep.colorize_auto then mep.colorize() end\n"
+    "end)\n"
     // MEP_URL_PATTERN's scan (both here and mep.list_urls below) moved
     // to C++ -- Editor::UrlUnderCursor/ListUrls, bound directly as
     // mep.url_under_cursor and (as mep.list_urls_scan) wrapped by
@@ -8493,6 +8505,26 @@ const char *kBuiltinLsp =
     "    return false\n"
     "  end})\n"
     "end\n"
+    // The same diagnostics as a passive tooltip at the cursor
+    // (mep.hover_show): the full text of each, wrapped the way the list
+    // wraps it, one per paragraph. Where the list takes over input until
+    // dismissed, this closes by itself on the next cursor move -- what
+    // "[d"/"]d" and "[e"/"]e" want after a jump (mep_diag_nav below).
+    "local function mep_diag_hover(row_diags)\n"
+    "  local cols = mep.buffer_text_cols(mep.current_buffer())\n"
+    "  local width = math.max(24, math.min(MEP_DIAG_WRAP_WIDTH, (cols or MEP_DIAG_WRAP_WIDTH) - 6))\n"
+    "  local paragraphs = {}\n"
+    "  for _, d in ipairs(row_diags) do\n"
+    "    local sev = MEP_DIAG_SEVERITY[d.severity or 1] or 'Error'\n"
+    "    local text = d.message\n"
+    "    if d.code and d.code ~= '' then text = text .. ' [' .. tostring(d.code) .. ']' end\n"
+    "    if #row_diags > 1 then text = '[' .. sev .. '] ' .. text end\n"
+    "    paragraphs[#paragraphs + 1] = table.concat(mep_diag_wrap(text, width), '\\n')\n"
+    "  end\n"
+    "  local title = #row_diags == 1 and (MEP_DIAG_SEVERITY[row_diags[1].severity or 1] or 'Error')\n"
+    "                or ('Diagnostics (' .. #row_diags .. ')')\n"
+    "  mep.hover_show(title, table.concat(paragraphs, '\\n\\n'))\n"
+    "end\n"
     // One underline decoration per diagnostic (its own exact span, as
     // before), but only *one* sign+virt_text decoration per row instead
     // of one per diagnostic -- previously every diagnostic on a line
@@ -8563,17 +8595,18 @@ const char *kBuiltinLsp =
     // deduped (a real, if minor, pre-existing gap: multiple diagnostics
     // sharing a row used to make that row count once per diagnostic, so
     // "next" could re-land on the same row more than once in a row
-    // before actually advancing) -- then, once landed, pop up that row's
-    // list (mep_diag_popup: Ctrl-N/Ctrl-P to move over it, y/Y to yank a
-    // message, Enter to land on the exact column, Escape to dismiss).
-    // Only for errors ("[e"/"]e"): the reason to jump to an error is to
-    // read it, and a row's badge + single virt_text line is exactly what
-    // can't show a wrapped message or a second diagnostic. The popup shows
-    // the *errors* on the row rather than diagnostics of any severity,
-    // matching what "next/previous error" itself already means. "[d"/"]d"
-    // (errors_only false) just move -- they're for stepping through every
-    // hint and warning quickly, where a popup per stop gets in the way;
-    // <leader>dd's picker is the overview for those.
+    // before actually advancing) -- landing on the first matching
+    // diagnostic's own column, then show the row's matching diagnostics
+    // in the hover tooltip (mep.hover_show) anchored there. The reason to
+    // jump to a diagnostic is to read it, and a row's badge + single
+    // virt_text line is exactly what can't show a wrapped message or a
+    // second diagnostic. The tooltip rather than mep_diag_popup's list:
+    // it takes no input, so the next "]d" moves straight on (the move
+    // closes it, as does Escape), where the list had to be dismissed
+    // first. Q still opens the list for yanking. "[e"/"]e" show the
+    // *errors* on the row rather than diagnostics of any severity,
+    // matching what "next/previous error" itself already means; "[d"/"]d"
+    // show every severity.
     "local function mep_diag_nav(delta, errors_only)\n"
     "  local diags = mep_lsp_diagnostics[mep_lsp_abspath(mep.filename())] or {}\n"
     "  if #diags == 0 then mep.notify('No diagnostics') return end\n"
@@ -8608,17 +8641,14 @@ const char *kBuiltinLsp =
     "    end\n"
     "    target = target or rows[#rows]\n"
     "  end\n"
-    "  mep.set_cursor(target, 1)\n"
-    "  if not errors_only then return end\n"
-    "  local row_diags = mep_diag_at_row(target)\n"
-    "  do\n"
-    "    local errors_here = {}\n"
-    "    for _, d in ipairs(row_diags) do\n"
-    "      if (d.severity or 1) == 1 then errors_here[#errors_here + 1] = d end\n"
-    "    end\n"
-    "    row_diags = errors_here\n"
+    "  local row_diags = {}\n"
+    "  for _, d in ipairs(mep_diag_at_row(target)) do\n"
+    "    if not errors_only or (d.severity or 1) == 1 then row_diags[#row_diags + 1] = d end\n"
     "  end\n"
-    "  if #row_diags > 0 then mep_diag_popup(row_diags) end\n"
+    "  table.sort(row_diags, function(a, b) return a.range.start.character < b.range.start.character end)\n"
+    "  mep.set_cursor(target, row_diags[1] and (row_diags[1].range.start.character + 1) or 1)\n"
+    "  if #row_diags == 0 then return end\n"
+    "  mep_diag_hover(row_diags)\n"
     "end\n"
     "function mep.lsp_next_diagnostic() mep_diag_nav(1, false) end\n"
     "function mep.lsp_prev_diagnostic() mep_diag_nav(-1, false) end\n"
@@ -18952,7 +18982,7 @@ const char *kBuiltinOrgPolyglot =
     "local function mep_polyglot_mepml_blocks()\n"
     "  local blocks = {}\n"
     "  for _, b in ipairs(mep.mepml_code_blocks()) do\n"
-    "    if b.lang ~= '' then\n"
+    "    if b.lang ~= '' and not b.included then\n"
     "      local args = {}\n"
     "      local full = mep.mepml_block_at(b.first)\n"
     "      for _, o in ipairs(full and full.option_list or {}) do args[#args + 1] = ':' .. o.name .. ' ' .. o.value end\n"
@@ -20521,7 +20551,7 @@ const char *kBuiltinOrgLatex =
     // off, the pending render is dropped too, and the scan asks for none.
     "function mep.org_latex_popup_toggle_ui()\n"
     "  local visible = mep.org_latex_popup_toggle()\n"
-    "  mep.notify('Math preview popup: ' .. (visible and 'on' or 'off'))\n"
+    "  mep.notify('Preview popup: ' .. (visible and 'on' or 'off'))\n"
     "  if not visible then\n"
     "    mep_org_latex_preview_wait = nil\n"
     "    mep_org_latex_preview_at = nil\n"
@@ -20530,7 +20560,7 @@ const char *kBuiltinOrgLatex =
     "  mep.org_latex_scan()\n"
     "end\n"
     "mep.command('MepOrgLatexPopupToggle', mep.org_latex_popup_toggle_ui)\n"
-    "mep.leader_map('otp', 'Toggle math preview popup while typing', mep.org_latex_popup_toggle_ui)\n"
+    "mep.leader_map('otp', 'Toggle the preview popup (math, svg, html) while typing', mep.org_latex_popup_toggle_ui)\n"
     // The alt text popup over a hovered mepml block
     // (Editor::MepmlAltPopupVisible): off by default, since an alt text is
     // written for the exports' screen-reader path rather than to be read
@@ -26861,7 +26891,7 @@ const char *kBuiltinMepml =
     "end\n"
     "mep.command('HtmlViewToggle', mep.html_view_toggle_ui)\n"
     "mep.leader_map('bv', 'browse: toggle HTML file between page and source', mep.html_view_toggle_ui)\n"
-    "mep.leader_map('kf', 'mepml: toggle math preview popup while typing',\n"
+    "mep.leader_map('kf', 'mepml: toggle the preview popup (math, svg, html) while typing',\n"
     "  function() mep.org_latex_popup_toggle_ui() end)\n"
     "mep.leader_map('kA', 'mepml: toggle alt text popup on hover',\n"
     "  function() mep.mepml_alt_popup_toggle_ui() end)\n"
@@ -32424,6 +32454,48 @@ const char *kBuiltinRunButton =
     "    mep.notify('Run: ' .. tostring(err), 'error')\n"
     "  end\n"
     "end\n"
+    // Types `cmd` into this tab's popup terminal, opening one first if
+    // needed (a brand-new shell's first line is queued past its startup
+    // instead -- see mep_run_button_pending above). The tail every
+    // terminal-bound run shares: the generic interpreter/compile line and
+    // the `CMD:` override below.\n"
+    "local function mep_run_button_send(cmd)\n"
+    "  local buf, is_new = mep_run_button_ensure_terminal()\n"
+    "  if not buf then mep.notify('Run: could not open a terminal', 'error') return end\n"
+    "  if is_new then\n"
+    "    mep_run_button_pending[#mep_run_button_pending + 1] = {buf = buf, cmd = cmd, at = mep.now() + 0.3}\n"
+    "  else\n"
+    "    mep.terminal_write(buf, cmd .. '\\n')\n"
+    "  end\n"
+    "end\n"
+    // `CMD:` override: a comment line anywhere in the file of the form
+    // `// CMD: <shell line>` replaces whatever Run would otherwise do for
+    // this file -- the per-filetype interpreter/compiler line, an org/
+    // mepml/tex/Rmd/Rnw export, run-all for a notebook, sourcing into an
+    // open language UI mode's console, all of it (checked first in
+    // mep.run_button_run below, before any of those). The line is typed
+    // verbatim into this tab's popup terminal after the buffer is saved,
+    // exactly as the generic path types its own interpreter line, so it
+    // runs in that shell with the shell's own cwd and PATH -- no quoting,
+    // no placeholder substitution. The comment leader is whatever the
+    // file's own syntax uses: any run of non-alphanumeric characters at
+    // the start of the line (`//`, `#`, `--`, `%`, `;`, `/*`, `<!--`,
+    // org's `#+`, mepml's `//?`), and a trailing `*/` or `-->` is dropped
+    // so block-comment syntaxes work too. The keyword is matched case-
+    // insensitively, like `#+EXPORT:` above; the first match wins, and a
+    // `CMD:` with nothing after it is ignored rather than sending an
+    // empty line.\n"
+    "local function mep_run_button_cmd_override()\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local cmd = mep.get_line(i):match('^%s*[^%w%s]+%s*[Cc][Mm][Dd]:%s*(.-)%s*$')\n"
+    "    if cmd then\n"
+    "      cmd = cmd:gsub('%s*%*/$', '')\n"
+    "      cmd = cmd:gsub('%s*%-%->$', '')\n"
+    "      if cmd ~= '' then return cmd end\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
     // Runs (or compiles-then-runs) the *focused pane's* current file --
     // main.cpp's Run button click handler focuses that pane first, same
     // convention as its vsplit/hsplit/close neighbors, so mep.filename()/
@@ -32454,6 +32526,12 @@ const char *kBuiltinRunButton =
     "function mep.run_button_run()\n"
     "  local fname = mep.filename()\n"
     "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
+    "  local override = mep_run_button_cmd_override()\n"
+    "  if override then\n"
+    "    mep.cmd('write')\n"
+    "    mep_run_button_send(override)\n"
+    "    return\n"
+    "  end\n"
     "  local ext = mep_lsp_filetype(fname)\n"
     "  if ext == 'org' then mep.run_button_run_org() return end\n"
     "  if ext == 'mepml' then mep.run_button_run_mepml() return end\n"
@@ -32470,14 +32548,7 @@ const char *kBuiltinRunButton =
     "  local cfg = ext and mep_run_config_for(ext)\n"
     "  if not cfg then mep.notify('Run: no run command configured for this filetype', 'warn') return end\n"
     "  mep.cmd('write')\n"
-    "  local cmd = mep_run_button_command(ext, cfg, fname)\n"
-    "  local buf, is_new = mep_run_button_ensure_terminal()\n"
-    "  if not buf then mep.notify('Run: could not open a terminal', 'error') return end\n"
-    "  if is_new then\n"
-    "    mep_run_button_pending[#mep_run_button_pending + 1] = {buf = buf, cmd = cmd, at = mep.now() + 0.3}\n"
-    "  else\n"
-    "    mep.terminal_write(buf, cmd .. '\\n')\n"
-    "  end\n"
+    "  mep_run_button_send(mep_run_button_command(ext, cfg, fname))\n"
     "end\n"
     "mep.command('MepRunButtonRun', mep.run_button_run)\n"
     "mep.leader_map('rr', 'Run button: run/compile current file', mep.run_button_run)\n"
@@ -57944,15 +58015,21 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             conceal_runs.push_back(ConcealRun{0, head_star_hide, Editor::HeadingIndentColsForRow(buf, row),
                                               std::numeric_limits<int>::max()});
         }
-        if (!plain_row && tbl_wrap == nullptr && !headline_row && !ghost_covers_row(row)) {
+        if (tbl_wrap == nullptr && !headline_row && !ghost_covers_row(row)) {
             const int raw_len = static_cast<int>(raw_line.size());
             for (const Decoration *dp : row_decos) {
                 const Decoration &d = *dp;
+                // A plain row (the cursor's, showing its source) keeps only
+                // its insertions: a prefix that covers no text is no
+                // concealment to lift.
+                if (plain_row && !d.virt_insert) continue;
                 // An empty replacement collapses only when the decoration
                 // asks for pure concealment (Decoration::conceal, mepml):
                 // every other producer's empty overlay is a no-op here.
                 if (d.whole_line || !d.virt_overlay || (d.virt_text.empty() && !d.conceal) || d.virt_text_eol) continue;
-                if (d.col_end <= d.col_start) continue;
+                // (An insertion, Decoration::virt_insert, is a run over no
+                // columns: its replacement's width is pure shift.)
+                if (d.col_end <= d.col_start && !d.virt_insert) continue;
                 // Codepoints, not bytes -- the column count the virt_text
                 // pass itself measures the replacement in (its own
                 // `vtext_cols`), so the hole blanked here is exactly the
@@ -57961,7 +58038,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // scale) columns (Decoration::virt_scale) -- the same
                 // arithmetic the mepml scan lays tables out with.
                 const bool styled_run = d.virt_scale != 1.0f || !d.virt_family.empty();
-                ConcealRun run{d.col_start, d.col_end,
+                ConcealRun run{d.col_start, d.virt_insert ? d.col_start : d.col_end,
                                styled_run ? StyledRunCols(d.virt_text, d.virt_scale, d.virt_family, d.bold, d.italic)
                                           : ByteOffsetToColumn(d.virt_text, static_cast<int>(d.virt_text.size())),
                                std::numeric_limits<int>::max()};
@@ -58869,7 +58946,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // diagnostic message), and the current search match -- `n`
             // lands the cursor *on* its hit, so that is exactly the row
             // whose highlight there is most reason to keep.
-            if (plain_row && !d.whole_line && !d.virt_text_eol && d.hl_group != "IncSearch") continue;
+            if (plain_row && !d.whole_line && !d.virt_text_eol && !d.virt_insert && d.hl_group != "IncSearch") continue;
             // ...and the same for a span the inline-math collapse has
             // taken over (math_runs, above the loop): there is no text
             // left at those columns to underline or recolor.
@@ -58888,6 +58965,38 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // and the text is then redrawn on top of it by the recolor
             // below (the tint decoration carries no text style), so it
             // reads as a marker-pen background rather than a veil.
+            // A colour literal's own colour behind its text
+            // (Decoration::has_bg_color, Editor::Colorize): opaque, the
+            // text over it black or white, whichever reads better on it
+            // (WCAG's relative luminance, split where the contrast with
+            // each is the same).
+            if (d.has_bg_color && !d.whole_line && d.col_end > d.col_start) {
+                const std::string &line = buf.lines[static_cast<size_t>(row)];
+                const int a = std::min(static_cast<int>(line.size()), d.col_start);
+                const int b = std::min(static_cast<int>(line.size()), d.col_end);
+                const gfx::Color bg{d.bg_color.r, d.bg_color.g, d.bg_color.b, 255};
+                auto lin = [](unsigned char v) {
+                    const double c = static_cast<double>(v) / 255.0;
+                    return c <= 0.03928 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+                };
+                const double lum = 0.2126 * lin(bg.r) + 0.7152 * lin(bg.g) + 0.0722 * lin(bg.b);
+                const gfx::Color fg = lum > 0.179 ? gfx::Color{0, 0, 0, 255} : gfx::Color{255, 255, 255, 255};
+                if (b > a) {
+                    ForEachWrapPiece(DispCol(SpanCol(a)), DispCol(SpanCol(b)), row_wrap_cols, text_x, ly, row_pitch,
+                                     [&](float py, float x0, float x1, int, int) {
+                                         gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(py),
+                                                            static_cast<int>(x1 - x0), line_height, bg);
+                                     });
+                    ForEachWrapPiece(DispCol(SpanCol(a)), DispCol(SpanCol(b)), row_wrap_cols, text_x, ly, row_pitch,
+                                     [&](float py, float px, float, int pa, int pb) {
+                                         const int byte_a = DrawLineByteAt(pa);
+                                         std::string part = draw_line.substr(static_cast<size_t>(byte_a),
+                                                                             static_cast<size_t>(DrawLineByteAt(pb) - byte_a));
+                                         gfx::DrawTextEx(g_font, part.c_str(), gfx::Vector2{px, py}, g_font_size, 0, fg);
+                                     });
+                }
+                continue;
+            }
             if (d.bg_fill && !d.whole_line && d.col_end > d.col_start) {
                 const std::string &line = buf.lines[static_cast<size_t>(row)];
                 const int a = std::min(static_cast<int>(line.size()), d.col_start);
@@ -59169,16 +59278,20 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // the columns the collapse blanked for it, and end-of-line
                 // virtual text hangs off the row's *drawn* end rather than
                 // out where its raw text used to reach.
-                int vcol = DispCol(d.virt_text_eol ? static_cast<int>(buf.lines[static_cast<size_t>(row)].size()) + 1
-                                                   : d.col_start);
-                gfx::Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, row_pitch);
-                float vx = vpos.x, vy = vpos.y;
-                gfx::Color vc = ResolveHlGroup(d.virt_text_hl);
-                float vw = gfx::MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x;
                 // Display columns the replacement text itself occupies --
                 // what the wrap grid measures everything in. Codepoints,
                 // not bytes, exactly like DrawLineFast's own column walk.
                 const int vtext_cols = ByteOffsetToColumn(d.virt_text, static_cast<int>(d.virt_text.size()));
+                int vcol = DispCol(d.virt_text_eol ? static_cast<int>(buf.lines[static_cast<size_t>(row)].size()) + 1
+                                                   : d.col_start);
+                // An insertion's run holds no columns, so DispCol(col_start)
+                // is where the text it pushed right now starts: the
+                // inserted text sits in the columns just before that.
+                if (d.virt_overlay && d.virt_insert) vcol = std::max(0, vcol - vtext_cols);
+                gfx::Vector2 vpos = WrapPos(vcol, row_wrap_cols, text_x, ly, row_pitch);
+                float vx = vpos.x, vy = vpos.y;
+                gfx::Color vc = ResolveHlGroup(d.virt_text_hl);
+                float vw = gfx::MeasureTextEx(g_font, d.virt_text.c_str(), g_font_size, 0).x;
                 /**
                  * @brief Draws one run of the replacement text at a position, applying the decoration's italic shear and fake bold.
                  * @param piece The substring to draw.
@@ -60695,40 +60808,45 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::DrawRectangleRoundedLinesEx(cb.rect, rr, 5, cb.active ? 2.0f : 1.0f, border);
     }
 
-    // Math preview popup: the reveal rule (OrgLatexRenderForRow,
-    // OrgLatexInlineRevealed) puts a fragment's raw TeX back while the
-    // cursor is inside it, so the render it would have drawn floats just
-    // above the fragment's first row instead -- source to type in, and
-    // what it typesets to, both in view. Below the last row when there is
-    // no room above. While it is edited the popup follows the typing
-    // (Buffer::org_latex_preview, rendered by kBuiltinOrgLatex's
-    // mep_org_latex_preview), keeping the last render that compiled.
+    // Preview popup: the reveal rule (OrgLatexRenderForRow,
+    // OrgLatexInlineRevealed) puts a fragment's source back while the
+    // cursor is inside it -- a formula's TeX, the markup of SVG or HTML
+    // written in the document or printed by a block (mepml_html_rows) --
+    // so the render it would have drawn floats in the pane's top right
+    // corner instead, out of the way of the text: source to type in, and
+    // what it renders to, both in view. (Bottom right while the cursor's
+    // own row is under it.) While a formula is edited the popup follows
+    // the typing (Buffer::org_latex_preview, rendered by kBuiltinOrgLatex's
+    // mep_org_latex_preview), keeping the last render that compiled. An
+    // edit reaches the popup once the typing has paused for
+    // kPreviewPopupDelay -- until then the render before it stays up, so a
+    // burst of keystrokes lays out once, and a half-typed tag is never
+    // drawn; moving the cursor into another fragment shows it at once.
     // Drawn last (inside the pane's scissor) so it sits over the text.
-    // (Not in mepml view mode: the formula's render is already in place.)
-    if (is_active && show_org_latex && g_editor.OrgPlainCursorLineVisible() && g_editor.OrgLatexPopupVisible() &&
-        !buf.mepml_view && !IsCommandLineMode(g_editor.CurrentMode()) && pane.cursor.row >= pane.scroll_row &&
-        pane.cursor.row < row) {
+    // (Not in mepml view mode: the renders are already in place.)
+    if (is_active && g_editor.OrgLatexPopupVisible() && !buf.mepml_view && !IsCommandLineMode(g_editor.CurrentMode()) &&
+        pane.cursor.row >= pane.scroll_row && pane.cursor.row < row) {
         const int cr = pane.cursor.row;
         std::string preview_path;
-        int first_row = -1, last_row = -1, anchor_col = 0;
+        int first_row = -1, last_row = -1;
+        const bool math_here = show_org_latex && g_editor.OrgPlainCursorLineVisible();
         // The fragment being edited: its own render (the scan defers it
         // while the cursor is in it) comes from Buffer::org_latex_preview.
         // Otherwise, the one it registered before the cursor arrived.
         const Buffer::OrgLatexPreview &pv = buf.org_latex_preview;
         // Its source, laid out by mep's own math engine, while tectonic is
-        // behind it (or has nothing yet): the popup keeps up with every
-        // keystroke instead of trailing a compile by a second or more.
+        // behind it (or has nothing yet): the popup keeps up with the
+        // typing instead of trailing a compile by a second or more.
         std::string live_tex;
-        const bool pv_here = cr >= pv.first_row && cr <= pv.last_row && (!pv.path.empty() || !pv.tex.empty());
+        const bool pv_here = math_here && cr >= pv.first_row && cr <= pv.last_row && (!pv.path.empty() || !pv.tex.empty());
         if (pv_here) {
             if (!pv.tex.empty() && (pv.path.empty() || pv.path_tex != pv.tex)) live_tex = pv.tex;
             else preview_path = pv.path;
             first_row = pv.first_row;
             last_row = pv.last_row;
-            anchor_col = pv.col;
         }
         for (const auto &kv : buf.org_latex_rows) {
-            if (pv_here || !preview_path.empty()) break;
+            if (!math_here || pv_here || !preview_path.empty()) break;
             if (cr >= kv.first && cr <= kv.second.end_row && !kv.second.path.empty()) {
                 preview_path = kv.second.path;
                 first_row = kv.first;
@@ -60736,7 +60854,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 break;
             }
         }
-        if (!pv_here && preview_path.empty()) {
+        if (math_here && !pv_here && preview_path.empty()) {
             auto it = buf.org_latex_inline.find(cr);
             if (it != buf.org_latex_inline.end()) {
                 // Several fragments can share the row: the one under the
@@ -60768,7 +60886,6 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                             const int sl = span.last_row < 0 ? r : span.last_row;
                             if (sf == first_row && sl == last_row && !span.path.empty()) {
                                 preview_path = span.path;
-                                if (r == first_row) anchor_col = span.col_start;  // already a display column
                                 break;
                             }
                         }
@@ -60776,14 +60893,60 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
             }
         }
-        const gfx::Texture2D *tex = preview_path.empty() ? nullptr : GetOrLoadOrgLatexTexture(preview_path);
+        // Markup under the cursor (its in-place render withdrawn by
+        // OrgLatexRenderForRow): the SVG/HTML block or html result it is in.
+        const Buffer::OrgLatexRender *markup = nullptr;
+        if (preview_path.empty() && live_tex.empty() && g_editor.OrgConcealVisible()) {
+            for (const auto &kv : buf.mepml_html_rows) {
+                if (kv.second.term_run >= 0 || kv.second.html.empty()) continue;
+                if (cr >= kv.first && cr <= kv.second.end_row) {
+                    markup = &kv.second;
+                    first_row = kv.first;
+                    last_row = kv.second.end_row;
+                    break;
+                }
+            }
+        }
+        // What the popup shows trails the source by kPreviewPopupDelay (a
+        // compiled PNG already waited that long: it is taken at once), and
+        // changes at once when the cursor is in another fragment.
+        constexpr double kPreviewPopupDelay = 0.4;
+        struct PreviewShown {
+            std::string key, region, pending_key;
+            double pending_since = 0.0;
+            std::string png, tex;
+            Buffer::OrgLatexRender markup;
+        };
+        static PreviewShown shown;
+        {
+            const std::string key = markup ? "H" + markup->html : !live_tex.empty() ? "T" + live_tex : preview_path.empty() ? "" : "P" + preview_path;
+            const std::string region = key.empty() ? "" : std::to_string(pane.buffer_id) + ":" + std::to_string(first_row);
+            const double now = gfx::GetTime();
+            bool adopt = key != shown.key && (key.empty() || region != shown.region || key[0] == 'P');
+            if (!adopt && key != shown.key) {
+                if (key != shown.pending_key) {
+                    shown.pending_key = key;
+                    shown.pending_since = now;
+                }
+                adopt = now - shown.pending_since >= kPreviewPopupDelay;
+            }
+            if (adopt) {
+                shown.key = key;
+                shown.region = region;
+                shown.pending_key.clear();
+                shown.png = preview_path;
+                shown.tex = live_tex;
+                shown.markup = markup ? *markup : Buffer::OrgLatexRender{};
+            }
+        }
+        const gfx::Texture2D *tex = shown.png.empty() ? nullptr : GetOrLoadOrgLatexTexture(shown.png);
         // The live layout, redone only when the source or the font size changes.
         static std::string live_key;
         static MathLayoutResult live_layout;
         const MathLayoutResult *layout = nullptr;
-        if (!live_tex.empty()) {
+        if (!shown.tex.empty()) {
             bool display = false;
-            const std::string inner = StripMathDelimiters(live_tex, &display);
+            const std::string inner = StripMathDelimiters(shown.tex, &display);
             const std::string key = std::to_string(g_font_size) + (display ? "D" : "T") + inner;
             if (key != live_key) {
                 live_layout = LayoutMathExpression(inner, g_font_size, display);
@@ -60791,37 +60954,55 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             if (live_layout.width > 0 && live_layout.height > 0) layout = &live_layout;
         }
-        const float src_w = layout ? layout->width : tex ? static_cast<float>(tex->width) : 0.0f;
-        const float src_h = layout ? layout->height : tex ? static_cast<float>(tex->height) : 0.0f;
+        const float pad = 6.0f;
+        const float content_bottom = content_y + content_h;
+        const float avail_w = std::max(40.0f, w - kMarginX * 2.0f);
+        // The markup, laid out at the popup's width: half the pane, within
+        // reason; what runs past the popup's height is clipped.
+        HtmlLayoutCtx markup_ctx;
+        HtmlLayout markup_layout;
+        float src_w = 0.0f, src_h = 0.0f;
+        if (!shown.markup.html.empty()) {
+            const float box_w = std::min(avail_w, std::clamp(avail_w * 0.5f, 240.0f, 640.0f));
+            const int cols = std::max(12, static_cast<int>((box_w - pad * 2.0f) / std::max(1.0f, g_char_width)));
+            markup_ctx = MepmlHtmlCtx(shown.markup.base_dir, cols);
+            markup_layout = LayoutHtmlDoc(MepmlHtmlDoc(shown.markup.html, shown.markup.base_dir), markup_ctx);
+            src_w = box_w - pad * 2.0f;
+            src_h = std::min(markup_layout.total_height + kMepmlHtmlPad * 2.0f, content_h * 0.6f);
+        } else {
+            src_w = layout ? layout->width : tex ? static_cast<float>(tex->width) : 0.0f;
+            src_h = layout ? layout->height : tex ? static_cast<float>(tex->height) : 0.0f;
+        }
         if (src_w > 0 && src_h > 0) {
-            const float pad = 6.0f;
-            const float content_bottom = content_y + content_h;
-            const float max_w = std::max(40.0f, w - (text_x - x) - kMarginX) - pad * 2.0f;
-            const float max_h = std::max(static_cast<float>(line_height), content_h * 0.45f) - pad * 2.0f;
+            const float max_w = avail_w - pad * 2.0f;
+            const float max_h = std::max(static_cast<float>(line_height), content_h * 0.6f) - pad * 2.0f;
             // A texture shrinks to fit; a layout is drawn at its own size
             // (the pane's scissor clips the rare one wider than the pane).
-            const float scale = layout ? 1.0f : std::min({1.0f, max_w / src_w, max_h / src_h});
+            const float scale = layout || !shown.markup.html.empty() ? 1.0f : std::min({1.0f, max_w / src_w, max_h / src_h});
             const float box_w = src_w * scale + pad * 2.0f;
             const float box_h = src_h * scale + pad * 2.0f;
-            // The fragment's own top and bottom edges on screen (its first
-            // row may have scrolled off the top; RowSlot counts from it).
-            const float top_y = first_row >= pane.scroll_row
-                                    ? content_y + static_cast<float>((RowSlot(first_row) - g_editor.RowTopPadSlots(buf, first_row, pane.text_cols)) * line_height)
-                                    : content_y;
-            const float bottom_y =
-                content_y + static_cast<float>((RowSlot(last_row + 1) - g_editor.RowTopPadSlots(buf, last_row + 1, pane.text_cols)) * line_height);
-            float box_y = top_y - box_h - 2.0f;
-            if (box_y < content_y) box_y = bottom_y + 2.0f;
-            if (box_y + box_h > content_bottom) box_y = std::max(content_y, top_y - box_h - 2.0f);
-            float box_x = text_x + static_cast<float>(anchor_col) * g_char_width - pad;
-            box_x = std::min(box_x, x + w - kMarginX - box_w);
-            box_x = std::max(box_x, x);
+            // Top right; bottom right while the cursor's row would be under it.
+            const float box_x = std::max(x, x + w - kMarginX - box_w);
+            float box_y = content_y + 4.0f;
+            const float cursor_y = content_y + static_cast<float>((RowSlot(cr) - g_editor.RowTopPadSlots(buf, cr, pane.text_cols)) * line_height);
+            if (cursor_y + static_cast<float>(line_height) > box_y && cursor_y < box_y + box_h) {
+                box_y = std::max(content_y, content_bottom - 4.0f - box_h);
+            }
             gfx::DrawRectangle(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w),
                                static_cast<int>(box_h), ResolveHlGroup("FloatBg"));
             gfx::DrawRectangleLines(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w),
                                     static_cast<int>(box_h), ResolveHlGroup("FloatBorder"));
-            if (layout) DrawMathLayout(box_x + pad, box_y + pad, *layout, ResolveHlGroup("Normal"));
-            else gfx::DrawTextureEx(*tex, gfx::Vector2{box_x + pad, box_y + pad}, 0.0f, scale, gfx::White);
+            if (!shown.markup.html.empty()) {
+                gfx::BeginScissorMode(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w), static_cast<int>(box_h));
+                PaintHtmlLayout(markup_layout, markup_ctx, box_x + pad, kMepmlHtmlPad, box_y + pad + kMepmlHtmlPad, box_y + pad,
+                                box_h - pad * 2.0f, false, -1, -1, false);
+                gfx::EndScissorMode();
+                gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(pane_w), static_cast<int>(content_h));  // (the rows' own, as unclip_row restores it)
+            } else if (layout) {
+                DrawMathLayout(box_x + pad, box_y + pad, *layout, ResolveHlGroup("Normal"));
+            } else {
+                gfx::DrawTextureEx(*tex, gfx::Vector2{box_x + pad, box_y + pad}, 0.0f, scale, gfx::White);
+            }
         }
     }
 

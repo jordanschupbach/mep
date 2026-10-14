@@ -2,6 +2,7 @@
 // mepml_convert.h for how the formats divide between this file (writers
 // that walk the parsed mepml::Document) and mep's HTML-based exporters.
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
@@ -24,6 +25,14 @@ namespace mepml {
 // --- formats --------------------------------------------------------------
 
 namespace {
+// The options that made a code block's code a file's (mepml::IncludeOf):
+// an export writes that code out, so it leaves them off the fence.
+bool IsIncludeOption(const std::string &name) {
+    std::string n = name;
+    for (char &c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return n == "include" || n == "lines" || n == "region" || n == "dedent";
+}
+
 // A paragraph of nothing but \raw text: its text is the export's own
 // markup (a whole <w:p>, say), so it gets no paragraph around it.
 bool OnlyRaw(const std::vector<Inline> &ins) {
@@ -474,6 +483,7 @@ struct MdWriter {
                 case BlockKind::Code: {
                     std::string opts;
                     for (const Option &o : b.options) {
+                        if (!b.include.empty() && IsIncludeOption(o.name)) continue;  // (the code is written out)
                         if (!opts.empty()) opts += ", ";
                         opts += o.name + "=\"" + o.value.s + "\"";
                     }
@@ -825,7 +835,8 @@ struct OrgWriter {
                 case BlockKind::MathBlock: blocks.push_back(cap + "\\[\n" + b.code + "\n\\]"); break;
                 case BlockKind::Code: {
                     std::string args;
-                    for (const Option &o : b.options) args += " :" + o.name + " " + o.value.s;
+                    for (const Option &o : b.options)
+                        if (b.include.empty() || !IsIncludeOption(o.name)) args += " :" + o.name + " " + o.value.s;
                     std::string body;
                     std::istringstream ss(b.code);
                     std::string l;

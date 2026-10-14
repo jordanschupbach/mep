@@ -7230,6 +7230,7 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
     if (res.rfind("OK\n", 0) == 0) {
         if (existed) *existed = true;
         buf.lines = SplitIntoLines(res.substr(3));
+        MepmlFillIncludes(buf, path);
     } else {
         // Not found (or no Deno bridge -- e.g. mep.html opened directly in
         // a plain browser tab): start a new empty buffer named `path`,
@@ -7258,6 +7259,9 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
     std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     buf.lines = SplitIntoLines(content);
 #endif
+    // A mepml document's include blocks take their files' lines (see
+    // MepmlFillIncludes): the document on disk holds only the option.
+    MepmlFillIncludes(buf, path);
 
     return store();
 }
@@ -34231,6 +34235,7 @@ bool Editor::ReloadBufferFromDisk(int buffer_id, bool force) {
     PushUndoForBuffer(buffer_id);
     std::vector<std::string> before = std::move(buf.lines);
     buf.lines = SplitIntoLines(content);
+    MepmlFillIncludes(buf, io_path);
     buf.modified = false;
     buf.disk = StatDiskStamp(io_path);
     // Same recovery ReloadCurrentBuffer does, and for the same reason: the
@@ -35933,21 +35938,29 @@ bool AllHexDigits(const std::string &line, int start, int count) {
  * @param g The swatch color's green component (0-255).
  * @param b The swatch color's blue component (0-255).
  */
+// The literal drawn on its own colour (Decoration::has_bg_color), over
+// every other colouring of the span: the point is the colour itself.
 void AddSwatch(Editor *ed, int ns, int row, int col_start, int col_end, int r, int g, int b) {
     Decoration d;
     d.row = row;
     d.col_start = col_start;
     d.col_end = col_end;
-    d.has_swatch = true;
-    d.swatch_color = {static_cast<unsigned char>(r), static_cast<unsigned char>(g), static_cast<unsigned char>(b)};
+    d.has_bg_color = true;
+    d.bg_color = {static_cast<unsigned char>(r), static_cast<unsigned char>(g), static_cast<unsigned char>(b)};
+    d.priority = 50;
     ed->AddDecoration(ns, d);
 }
+// Buffers past this many lines are left uncoloured: the scan runs again
+// after every edit (kBuiltinTextTools), and a whole-buffer pass over a
+// huge file would be paid on each keystroke.
+constexpr int kColorizeMaxLines = 20000;
 }  // namespace
 
 void Editor::Colorize() {
     int ns = CreateNamespace("colorizer");
     ClearNamespace(ns);
     const int n = Buf().LineCount();
+    if (n > kColorizeMaxLines) return;
     for (int row = 0; row < n; row++) {
         const std::string &line = Buf().lines[static_cast<size_t>(row)];
         const int len = static_cast<int>(line.size());
@@ -36033,7 +36046,11 @@ void Editor::Colorize() {
                                     while (p < len && std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(p)]))) p++;
                                     if (p > b_start) {
                                         int b = std::stoi(line.substr(static_cast<size_t>(b_start), static_cast<size_t>(p - b_start)));
-                                        AddSwatch(this, ns, row, i, i + 3, r, g, b);
+                                        // The whole call, through its `)` when it closes on
+                                        // this line (an rgba()'s alpha included).
+                                        int close = p;
+                                        while (close < len && line[static_cast<size_t>(close)] != ')' && line[static_cast<size_t>(close)] != ';') ++close;
+                                        AddSwatch(this, ns, row, i, close < len && line[static_cast<size_t>(close)] == ')' ? close + 1 : p, r, g, b);
                                         matched = true;
                                     }
                                 }
@@ -37996,6 +38013,8 @@ bool Editor::SaveBuffer(Buffer &buf, const std::string &path, bool force) {
     // the buffer at its new file, and that is the file whose changes the
     // next save has to notice.
     if (!buf.filename.empty()) buf.disk = StatDiskStamp(ResolveBufferPath(buf, buf.filename));
+    // A mepml document open elsewhere may take lines from this file.
+    MepmlResyncIncludersOf(guard_buffer_id);
     return true;
 }
 
@@ -38290,9 +38309,21 @@ bool Editor::WriteBufferToPath(Buffer &buf, const std::string &path) {
     // notebook buffer -- whose `lines` are not the file's bytes -- can never
     // reach it.
     const bool realigned = RealignPythonIndent(buffer_id);
+    // A mepml document's include blocks go back to their files first
+    // (MepmlSyncIncludesOut), and the document's own file gets its lines
+    // without theirs (MepmlLinesForDisk); the save then says which files
+    // it wrote, and which block it could not.
+    std::vector<std::string> include_notes;
+    std::vector<std::string> disk_lines;
+    const bool mepml_doc = LspFiletype(path) == "mepml";
+    if (mepml_doc) {
+        MepmlSyncIncludesOut(buffer_id, &include_notes);
+        disk_lines = MepmlLinesForDisk(buf);
+    }
+    const std::vector<std::string> &lines_out = mepml_doc ? disk_lines : buf.lines;
 #if defined(__EMSCRIPTEN__)
     std::string content;
-    for (const auto &l : buf.lines) {
+    for (const auto &l : lines_out) {
         content += l;
         content += "\n";
     }
@@ -38309,6 +38340,7 @@ bool Editor::WriteBufferToPath(Buffer &buf, const std::string &path) {
     save_epoch_++;
     status_message_ = "\"" + path + "\" " + std::to_string(buf.LineCount()) + "L written";
     if (realigned) status_message_ += ", indent realigned";
+    for (const std::string &n : include_notes) status_message_ += "; " + n;
     return true;
 #else
     std::ofstream out(io_path, std::ios::binary);
@@ -38316,12 +38348,13 @@ bool Editor::WriteBufferToPath(Buffer &buf, const std::string &path) {
         status_message_ = "E212: Can't open file for writing";
         return false;
     }
-    for (const auto &l : buf.lines) out << l << "\n";
+    for (const auto &l : lines_out) out << l << "\n";
     buf.filename = path;
     buf.modified = false;
     save_epoch_++;
     status_message_ = "\"" + path + "\" " + std::to_string(buf.LineCount()) + "L written";
     if (realigned) status_message_ += ", indent realigned";
+    for (const std::string &n : include_notes) status_message_ += "; " + n;
     // AFTER THE STREAM IS CLOSED, and that is not tidiness.
     //
     // Part L.4: saving a script a viewer is bound to rebuilds that

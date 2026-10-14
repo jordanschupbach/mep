@@ -29,6 +29,36 @@ A compiled language gets a real two-step build-then-run. The binary lands
 outside the project tree, in a temporary file, so repeated runs never race a
 half-written executable and nothing needs cleaning up.
 
+* Overriding the command with a =CMD:= comment
+
+A comment line anywhere in the file of the form
+
+#+begin_example
+// CMD: make test
+#+end_example
+
+replaces what Run would otherwise do for that file. The buffer is saved,
+then the rest of the line is typed into this tab's terminal exactly as
+written, so it runs in that shell with its own working directory and
+=PATH=. It wins over everything: the per-filetype interpreter or compiler
+line, an org, mepml, LaTeX or R Markdown export, sourcing into an open
+language mode's console.
+
+The comment leader is whatever your file's syntax uses -- =//=, =#=, =--=,
+=%=, =;=, org's =#+=, mepml's =//?=. A block comment works too; a trailing
+=*/= or =-->= is dropped:
+
+#+begin_example
+# CMD: python3 -m pytest tests/ -x
+-- CMD: lua run.lua --verbose
+/* CMD: cc -Wall main.c -o main && ./main */
+#+end_example
+
+The keyword is matched regardless of case, the first match in the file
+wins, and a =CMD:= with nothing after it is ignored. Nothing in the
+command is substituted or quoted -- if you want the file's own name in it,
+write it out.
+
 * Setup
 
 =<leader>rs= (=:MepRunButtonSetup=) prompts for the interpreter or compiler

@@ -557,6 +557,12 @@ struct Decoration {
     std::string virt_text;
     std::string virt_text_hl;
     bool virt_overlay = false;
+    // An overlay over nothing: with virt_overlay, `virt_text` is drawn
+    // before col_start and the row's own text from there on moves right
+    // by its width (col_end is ignored). What a prefix that must not cover
+    // the text needs -- the file's line numbers down an include block
+    // (Editor::MepmlScan) -- where a plain virt_text paints over it.
+    bool virt_insert = false;
     // Anchors virt_text to just past the *end of this row's own text*
     // (buf.lines[row].size()) instead of col_start -- for an annotation
     // that describes the whole line (e.g. a diagnostic message) rather
@@ -602,6 +608,11 @@ struct Decoration {
     // color, not its nearest theme role.
     bool has_swatch = false;
     ThemeColor swatch_color;
+    // The colour itself behind [col_start, col_end), opaque, with the
+    // text over it in black or white as reads better (Editor::Colorize:
+    // a `#rrggbb`, `rgb()` or CSS colour name drawn in its own colour).
+    bool has_bg_color = false;
+    ThemeColor bg_color;
     // Literal RGB text-color override, bypassing the named hl_group lookup
     // entirely -- distinct from has_swatch/swatch_color (which draws a
     // small square *next to* col_start, not a text recolor). Used by
@@ -1017,6 +1028,13 @@ struct Buffer {
     // generated view of the deck's current slide, never written anywhere
     // -- `:w` refuses it, and edits made in its caret mode are undone.
     bool mepml_present_view = false;
+    // A mepml buffer's include blocks (`include=` on a code fence) hold
+    // their file's lines between their fences while the document is open
+    // (Editor::MepmlFillIncludes), and what each file had when the block
+    // last took it is kept here, keyed by mepml::IncludeKey -- how a save
+    // tells a block the user edited from one whose file moved on
+    // (mepml::IncludeSyncEdits, MepmlSyncIncludesOut).
+    std::map<std::string, std::vector<std::string>> mepml_include_synced;
     // mep.buffer_set_hide_line_numbers(id, true): opts a real, ordinary
     // buffer out of the :set number/relativenumber gutter regardless of
     // that global setting -- for a buffer whose lines aren't really "line
@@ -11261,6 +11279,63 @@ public:
      * @return The parsed document; valid until the next call for this buffer and flag sees different text.
      */
     const mepml::Document &MepmlParseCurrent(bool with_imports) const;
+    /**
+     * @brief A fresh parse of `buf` (not the cache), with its imports and its code blocks' included files read when it has any -- for a run's results, which must find the block by the code the run started from.
+     * @param buf The buffer; its filename resolves the paths.
+     * @return The document.
+     */
+    mepml::Document MepmlParseBuffer(const Buffer &buf) const;
+
+    // --- Include blocks and their files (mepml::IncludeSyncEdits) ---
+    //
+    // In the editor, a block with `include=path` on its fence holds the
+    // file's lines between its fences: they draw, run and edit like any
+    // other code. MepmlFillIncludes puts them there as the document is
+    // read; MepmlSyncIncludesOut writes a block's edited lines back to its
+    // file as the document is saved, and MepmlLinesForDisk leaves them out
+    // of what the document's own file gets, so on disk a document carries
+    // only the option. Saving a file re-fills the open documents that
+    // include it (MepmlResyncIncludersOf); a block edited since its file
+    // changed keeps its lines, and the save says so.
+    /**
+     * @brief Fills (or refreshes) the include blocks of a mepml buffer being read from disk straight in its lines: no undo, not a modification.
+     * @param buf The buffer, not necessarily installed yet; its include state is reset.
+     * @param path The document's path, which its includes resolve against.
+     * @return Whether any block's lines changed.
+     */
+    bool MepmlFillIncludes(Buffer &buf, const std::string &path);
+    /**
+     * @brief Brings a live mepml buffer's include blocks up to date with their files, through the undo stack, keeping the panes' cursors on their text and the buffer's modified flag as it was.
+     * @param buffer_id The buffer.
+     * @return Whether any block's lines changed.
+     */
+    bool MepmlSyncIncludesIn(int buffer_id);
+    /**
+     * @brief Writes a mepml buffer's edited include blocks to their files, the save's first step; a block whose file changed under its edits is left alone and noted.
+     * @param buffer_id The buffer.
+     * @param notes What the save should say: files written, blocks refreshed, conflicts.
+     * @return Whether any file was written.
+     */
+    bool MepmlSyncIncludesOut(int buffer_id, std::vector<std::string> *notes);
+    /**
+     * @brief The lines the document's own file gets: `buf.lines` without the bodies of the include blocks that hold their file's lines (a block whose lines differ from its file's keeps them, so nothing is lost).
+     * @param buf The buffer.
+     * @return The lines to write.
+     */
+    std::vector<std::string> MepmlLinesForDisk(const Buffer &buf) const;
+    /**
+     * @brief After a file was written: brings every other open mepml document's include blocks up to date (MepmlSyncIncludesIn), so one that takes lines from it shows them.
+     * @param saved_buffer_id The buffer just saved, left alone.
+     */
+    void MepmlResyncIncludersOf(int saved_buffer_id);
+    /**
+     * @brief ReplaceLinesAt for an include block's rows, with every pane's cursor in this buffer moved past the change so it stays on its text.
+     * @param buffer_id The buffer.
+     * @param row The first row replaced.
+     * @param row_end One past the last row replaced.
+     * @param lines The replacement.
+     */
+    void MepmlReplaceRows(int buffer_id, int row, int row_end, const std::vector<std::string> &lines);
     /**
      * @brief mepml::Highlight of MepmlParseCurrent(with_imports), cached with it.
      * @param with_imports Which cached parse to highlight.

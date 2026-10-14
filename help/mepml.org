@@ -62,7 +62,7 @@ restyles all of them.
 | =<leader>kr=          | raw text or rendered (also the header's eye button)       |
 | =<leader>kv=          | view mode: rendered on every line, the cursor's too (also the header's book button; an org or markdown buffer too) |
 | =<leader>bv=          | an HTML file: its rendered page or its source text         |
-| =<leader>kf=          | toggle the math preview popup shown while typing a formula |
+| =<leader>kf=          | toggle the preview popup: a formula, SVG or HTML the cursor is in, rendered in the pane's top right corner |
 | =<leader>kA=          | toggle the alt text popup shown on hover (off by default) |
 | =<leader>kp=          | present the slides, filling the editor (also the header's screen button, on a presentation) |
 | =<leader>kP=          | present the slides full screen                            |
@@ -600,8 +600,14 @@ $$
 Maths is typeset in the buffer with the same preview org uses
 (=<leader>otl= toggles it; it needs =tectonic= and =pdftoppm=). While
 the cursor is in a formula its source shows, and what it typesets to
-floats in a popup beside it as you type; =<leader>kf= (or =<leader>otp=,
-=:MepOrgLatexPopupToggle=) turns that popup off and on. An
+floats in a popup in the pane's top right corner, out of the way of the
+text (bottom right while the cursor's own row is under it); the same
+popup shows SVG or HTML written in the document, or printed by a code
+block, while the cursor is in its markup. The popup follows the typing
+after a short pause -- a burst of keystrokes renders once, with the
+render before it up until then -- and changes at once when the cursor
+moves into another formula or block. =<leader>kf= (or =<leader>otp=,
+=:MepOrgLatexPopupToggle=) turns it off and on. An
 =\alttext(...)= right after a formula says how it is read aloud: a screen
 reader speaks that instead of the symbols (see Accessibility, below). A lone
 dollar amount such as =$5= is never maths.
@@ -657,6 +663,59 @@ A program that would rather write the file itself finds its path in the
 =\image(squares.png)= line: the editor draws the figure inside the output
 card, and the export shows it as an image. The block's =\caption= then
 captions the figure.
+
+** Code from a file
+
+A block with an =include= option takes its code from a file instead of
+from the lines between its fences, which stay empty:
+
+#+begin_example
+```{python, include="src/fit.py"}
+```
+
+```{python, include="src/fit.py", lines=12-30}
+```
+
+```{python, include="src/fit.py", region=model, dedent}
+```
+#+end_example
+
+The path is relative to the document, as an import's is. =lines= keeps
+part of the file: =12-30= (1-based, both ends included), =12= for one
+line, =12-= to the end, =-30= from the start. =region= keeps the lines
+between a marker comment in the file and the =endregion= after it,
+written in the file's own comment syntax -- =# region model= ...
+=# endregion= in Python, =// region model= in C++ or JavaScript,
+=-- region model= in Lua or SQL, =%% region model= in MATLAB,
+=<!-- region model -->= in HTML -- so the block follows the code as it
+moves. A =lines= inside a =region= counts within the region. =dedent=
+strips the indentation the lines share, which lets a method be shown
+out of its class.
+
+Everything that reads the block reads the file: the exports show its
+text, running the block runs it, and the slides and the Org, Markdown
+and HTML outputs carry the code itself rather than the option. A file
+that cannot be read, a range it does not have or a region it lacks is
+an error on the fence.
+
+In mep the file's lines sit between the fences while the document is
+open -- drawn, run and edited like any other code block, each with the
+file's own line number before it (the gutter's numbers stay the
+document's), so a =lines=== range can be read off the block -- and go
+back to the file when the document is saved: =:w= writes the edited lines
+over the ones the block took (a =lines=== range that the block outgrew
+is rewritten to fit; a region's markers stay where they are), then
+writes the document itself with the fences empty again, so the file
+on disk carries only the option. The save says which files it wrote.
+A file open in another pane shows the new lines, unless that pane has
+unsaved changes of its own, which are left alone. Saving the file in
+mep, or =:e=, brings the block up to date the other way. A block that
+was edited while its file changed on disk keeps its lines, the save
+says so, and =:e!= takes the file's instead; until then the lines stay
+in the document, and the fence shows that they differ from the file's.
+The path on the fence is a link to the file (click it, or =<leader>kl=).
+Lines written between the fences of such a block elsewhere than in mep
+are its code too, with the same note.
 
 ** What the exports show
 
@@ -1050,7 +1109,9 @@ the elements of the same name inside it, blank lines and all.
 
 In the editor the markup is drawn in place by mep's own HTML engine, laid
 out to the text width; its source comes back while the cursor is inside
-it, as an html result's does. Relative paths in it (an =<img src>=, a
+it, as an html result's does, and the render moves to the preview popup
+in the pane's top right corner (=<leader>kf=, see Maths above), where it
+follows the typing after a short pause. Relative paths in it (an =<img src>=, a
 stylesheet) start from the document's directory.
 
 An SVG is a figure: numbered, captioned and described by =\alttext= like

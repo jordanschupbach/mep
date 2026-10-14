@@ -33,6 +33,25 @@ would expect and stays there.</p>
 <p>A compiled language gets a real two-step build-then-run. The binary lands
 outside the project tree, in a temporary file, so repeated runs never race a
 half-written executable and nothing needs cleaning up.</p>
+<h1>Overriding the command with a <code>CMD:</code> comment</h1>
+<p>A comment line anywhere in the file of the form</p>
+<pre>// CMD: make test</pre>
+<p>replaces what Run would otherwise do for that file. The buffer is saved,
+then the rest of the line is typed into this tab's terminal exactly as
+written, so it runs in that shell with its own working directory and
+<code>PATH</code>. It wins over everything: the per-filetype interpreter or compiler
+line, an org, mepml, LaTeX or R Markdown export, sourcing into an open
+language mode's console.</p>
+<p>The comment leader is whatever your file's syntax uses -- <code>//</code>, <code>#</code>, <code>--</code>,
+<code>%</code>, <code>;</code>, org's <code>#+</code>, mepml's <code>//?</code>. A block comment works too; a trailing
+<code>*/</code> or <code>--&gt;</code> is dropped:</p>
+<pre># CMD: python3 -m pytest tests/ -x
+-- CMD: lua run.lua --verbose
+/* CMD: cc -Wall main.c -o main &amp;&amp; ./main */</pre>
+<p>The keyword is matched regardless of case, the first match in the file
+wins, and a <code>CMD:</code> with nothing after it is ignored. Nothing in the
+command is substituted or quoted -- if you want the file's own name in it,
+write it out.</p>
 <h1>Setup</h1>
 <p><code>&lt;leader&gt;rs</code> (<code>:MepRunButtonSetup</code>) prompts for the interpreter or compiler
 and the flags to use for the current filetype, and saves them <b>per project</b>.

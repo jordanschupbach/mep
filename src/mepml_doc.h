@@ -227,6 +227,18 @@ struct Block {
     std::string lang;            // Code
     std::string code;            // Code body (between fences); MathBlock TeX
     int code_line_start = -1, code_line_end = -1;  // body lines, inclusive; empty => start > end
+    // Code from a file (an `include=path` option, see IncludeSpec): the
+    // file's resolved path and the 1-based lines of it `code` holds, set
+    // by ParseWithImports once the file is read. Empty / -1 otherwise.
+    std::string include;
+    int include_first = -1, include_last = -1;
+    // Those lines as the block shows them (dedented when it says so),
+    // and the indentation `dedent` took off them, to put back when the
+    // block's lines go back into the file (IncludeWriteBack). `code` is
+    // this when the block holds nothing between its fences; a block that
+    // does holds its own lines, which are its code (and the file's, once
+    // the document is saved in mep).
+    std::string include_code, include_indent;
     // Code results: the `// result_begin:` ... `// result_end` region right
     // after the closing fence, if present (line indices, inclusive, markers
     // included), plus the result text with the `// ` prefixes stripped.
@@ -452,6 +464,82 @@ std::vector<Inline> ParseInlines(const std::string &text, int *footnote_counter 
 using ReadFileFn = std::function<bool(const std::string &path, std::vector<std::string> *lines)>;
 std::string ResolvePath(const std::string &base_file, const std::string &path);
 Document ParseWithImports(const std::string &file, const std::vector<std::string> &lines, const ReadFileFn &read);
+
+// Code from a file: a code block with an `include=path` option takes its
+// body from that file (the path resolved against the document that holds
+// the block, as an \import's is) rather than from the lines between its
+// fences, which are left empty. `lines=10-20` keeps those lines of it
+// (1-based, inclusive: `10` one line, `10-` to the end, `-20` from the
+// start); `region=name` the lines between a `region name` marker and the
+// `endregion` after it, written as comments in the file's own language
+// (`# region name` / `# endregion`, `// region name`, `-- region name`,
+// `%% region name`, `<!-- region name -->` ...; a `lines=` then counts
+// within the region); `dedent` strips the indentation the lines share.
+// ParseWithImports fills `code` from the file -- so every export, the
+// runs, the slides and the LSP see the file's text -- and Parse alone
+// leaves it empty; a file that cannot be read, a range the file does
+// not have or a region it lacks is a diagnostic on the block's fence.
+struct IncludeSpec {
+    std::string path;    // as written; empty when the block includes nothing
+    std::string lines;   // the lines= option as written, "" for all
+    std::string region;  // the region= option, "" for none
+    bool dedent = false;
+};
+IncludeSpec IncludeOf(const Block &b);
+// The include that `spec` takes from `lines`: [*first, *last] (0-based,
+// inclusive) -- false, with *error the diagnostic's text, when the file
+// has no such lines or region. (ParseWithImports' own step, exposed so a
+// tool can show what a block would include.)
+bool SelectIncludeLines(const std::vector<std::string> &lines, const IncludeSpec &spec, int *first, int *last,
+                        std::string *error);
+// Whether this document reads other files -- an \import, or a code block
+// that includes one -- so that ParseWithImports knows more than Parse.
+bool UsesFiles(const Document &doc);
+
+// A block and its file, kept together. The lines between the fences, when
+// there are any, are the block's code; the file's fill empty fences. So a
+// document on disk carries only the option, and in the editor the file's
+// lines sit between the fences -- to read, run and edit -- and go back to
+// the file when the document is saved. The parser's side of that:
+// IncludeSyncEdits says how empty or stale fences take the file's lines,
+// IncludeWriteBack how a block's lines go into its file, and
+// IncludeLinesOption what a `lines=` that no longer fits should read.
+struct LineEdit {
+    int row = 0, row_end = 0;  // rows [row, row_end) of the document become `lines`
+    std::vector<std::string> lines;
+};
+// `b`'s own lines: those between its fences (none when it holds nothing).
+std::vector<std::string> BlockLines(const Block &b, const std::vector<std::string> &lines);
+// What identifies an include for `synced` below: its file and the part of
+// it the block takes -- and, for a second block over the same part, which
+// one it is (IncludeKeyAt; IncludeKey is the common part).
+std::string IncludeKey(const Block &b);
+std::string IncludeKeyAt(const Document &doc, size_t block);
+// `b`'s own lines as its file would hold them: BlockLines, with the
+// indentation they share taken off when the block dedents (what the file
+// gives back after IncludeWriteBack puts the file's indentation on them).
+std::vector<std::string> IncludeOwnLines(const Block &b, const std::vector<std::string> &lines);
+// The edits that bring `doc`'s include blocks (ParseWithImports', the
+// files read) up to date with their files. A block with nothing between
+// its fences takes the file's lines. One whose lines are what the file
+// had when it was last synced (`synced`, keyed by IncludeKey, which this
+// brings up to date) takes the file's new lines, with a note. One edited
+// since keeps its lines -- and when its file changed too, a note says so.
+// The edits come last row first, so applying them in order keeps every
+// row valid.
+std::vector<LineEdit> IncludeSyncEdits(const Document &doc, const std::vector<std::string> &lines,
+                                       std::map<std::string, std::vector<std::string>> *synced,
+                                       std::vector<std::string> *notes);
+// `code` (IncludeOwnLines) written over lines [include_first, include_last]
+// of `b`'s file, the file's indentation put back when the block dedented.
+void IncludeWriteBack(const Block &b, const std::vector<std::string> &code, std::vector<std::string> *file_lines);
+// The `lines=` option for a block that now holds `count` lines: "" when
+// the option needs no change (no `lines=`, an open `12-`, or a range that
+// still fits), else the range from the same first line.
+std::string IncludeLinesOption(const std::string &spec, int count);
+// `fence` with the value of its option `name` replaced by `value` (the
+// fence as it was when it has no such option).
+std::string FenceWithOption(const std::string &fence, const std::string &name, const std::string &value);
 
 // ---------------------------------------------------------------------------
 // User commands and export conditions.

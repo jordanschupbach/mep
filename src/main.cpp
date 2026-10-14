@@ -52646,6 +52646,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // EndScissorMode() -- see the hover-tooltip comment down there.
     float hover_cursor_x = 0, hover_cursor_y = 0, hover_cursor_row_top = 0;
     bool hover_cursor_valid = false;
+    // Columns an insertion (Decoration::virt_insert) on the cursor's row
+    // pushes its text right by, ahead of the cursor: set by the row loop,
+    // applied to the caret drawn after it from the raw column.
+    int cursor_insert_shift = 0;
     bool hover_cursor_prefer_above = false;
 
     const Buffer &buf = g_editor.GetBuffer(pane.buffer_id);
@@ -58203,6 +58207,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             disp_line.append(raw_line, static_cast<size_t>(pos));
         }
         const std::string &draw_line = conceal_runs.empty() ? raw_line : disp_line;
+        if (is_active && row == pane.cursor.row) {
+            cursor_insert_shift = 0;
+            const int ccol = ByteOffsetToColumn(raw_line, pane.cursor.col);
+            for (const ConcealRun &r : conceal_runs)
+                if (r.col_end == r.col_start && ccol >= r.col_start) cursor_insert_shift += r.draw_cols;
+        }
         /**
          * @brief A decoration's byte offset (tree-sitter, LSP, spell: all byte offsets) as the column it sits at.
          * @param byte The byte offset into the raw row.
@@ -59886,7 +59896,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // column instead of drifting right by 2 for every multi-byte
         // UTF-8 character (e.g. an icon glyph) preceding it on the line.
         const std::string &cursor_line = buf.lines[static_cast<size_t>(pane.cursor.row)];
-        int cursor_display_col = ByteOffsetToColumn(cursor_line, pane.cursor.col);
+        int cursor_display_col = ByteOffsetToColumn(cursor_line, pane.cursor.col) + cursor_insert_shift;
         // Wrapped lines of a row with tall inline maths sit further apart
         // (the draw loop's row_pitch).
         gfx::Vector2 cursor_pos = WrapPos(cursor_display_col, cursor_wrap_cols, text_x - cursor_row_shift, content_y + static_cast<float>(cursor_slot * line_height),

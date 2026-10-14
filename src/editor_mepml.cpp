@@ -1644,29 +1644,6 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
                 buf.org_link_spans[fence_row].push_back(sp);
             }
         }
-        // The file's own line numbers down an include block's rows, so a
-        // `lines=` range can be read off the block: inserted before each
-        // row's text (Decoration::virt_insert), the gutter's numbers being
-        // the document's.
-        if (b.kind == mepml::BlockKind::Code && !b.include.empty() && b.include_first >= 1 &&
-            b.code_line_end >= b.code_line_start) {
-            const int last_no = b.include_first + (b.code_line_end - b.code_line_start);
-            const size_t width = std::to_string(last_no).size();
-            for (int r = b.code_line_start; r <= b.code_line_end && r < n; ++r) {
-                if (!in_scope(r)) continue;
-                const std::string num = std::to_string(b.include_first + (r - b.code_line_start));
-                Decoration d;
-                d.row = r;
-                d.col_start = 0;
-                d.col_end = 0;
-                d.virt_overlay = true;
-                d.virt_insert = true;
-                d.virt_text = std::string(width - num.size(), ' ') + num + " \u2502 ";
-                d.virt_text_hl = "LineNr";
-                d.priority = 10;
-                AddDecoration(ns, std::move(d));
-            }
-        }
         if (b.kind == mepml::BlockKind::TableOfContents || b.kind == mepml::BlockKind::Bibliography) {
             Buffer::MepmlVirtualBlock vb;
             const int width = std::max(20, TextWidth());
@@ -1772,6 +1749,32 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
 
     const std::unordered_set<int> revealed_rows = revealed_for(doc, cur_row);
     if (!patch) MepmlBuildCards(doc);
+    // The file's own line numbers down an include block's rows, so a
+    // `lines=` range can be read off the block: inserted before each
+    // row's text (Decoration::virt_insert), the gutter's numbers being the
+    // document's. In a patch as in a full scan: the cursor's row is
+    // re-emitted, numbered as before.
+    for (const mepml::Block &b : doc.blocks) {
+        if (!b.origin.empty() || b.kind != mepml::BlockKind::Code || b.include.empty() || b.include_first < 1 ||
+            b.code_line_end < b.code_line_start)
+            continue;
+        const int last_no = b.include_first + (b.code_line_end - b.code_line_start);
+        const size_t width = std::to_string(last_no).size();
+        for (int r = b.code_line_start; r <= b.code_line_end && r < n; ++r) {
+            if (!in_scope(r)) continue;
+            const std::string num = std::to_string(b.include_first + (r - b.code_line_start));
+            Decoration d;
+            d.row = r;
+            d.col_start = 0;
+            d.col_end = 0;
+            d.virt_overlay = true;
+            d.virt_insert = true;
+            d.virt_text = std::string(width - num.size(), ' ') + num + " \u2502 ";
+            d.virt_text_hl = "LineNr";
+            d.priority = 10;
+            AddDecoration(ns, std::move(d));
+        }
+    }
     // Table rows laid out by MepmlTableLayout below (every row of a table
     // but the cursor's, while concealing): their pipes are drawn there,
     // so the per-span pass leaves them alone.

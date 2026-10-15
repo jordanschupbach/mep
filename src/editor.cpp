@@ -29340,6 +29340,18 @@ std::string IconForFilename(const std::string &name) {
         {"php", 0xe608},  {"csv", 0xe64a},  {"env", 0xf462},
         {"git", 0xe702},  {"png", 0xe60d},  {"jpg", 0xe60d},  {"jpeg", 0xe60d}, {"gif", 0xe60d},  {"svg", 0xf0721},
         {"pdf", 0xeaeb},  {"zip", 0xf410},  {"tar", 0xf410},  {"gz", 0xf410},
+        // Remaining languages with examples under examples/language/. All
+        // glyphs are inside kIconCodepointRanges (main.cpp), so no font
+        // subset regeneration is needed.
+        {"clj", 0xe768},  {"cljc", 0xe768}, {"cljs", 0xe790}, {"cr", 0xe62f},   {"d", 0xe7af},    {"dart", 0xe798},
+        {"erl", 0xe7b1},  {"hrl", 0xe7b1},  {"ex", 0xe62d},   {"exs", 0xe62d},  {"f90", 0xe7de},  {"f95", 0xe7de},
+        {"f03", 0xe7de},  {"f", 0xe7de},    {"for", 0xe7de},  {"fish", 0xee41}, {"g", 0xf1ec},    {"gap", 0xf1ec},
+        {"gi", 0xf1ec},   {"groovy", 0xe775}, {"gradle", 0xe775}, {"hs", 0xe777}, {"lhs", 0xe777}, {"ipynb", 0xe678},
+        {"jl", 0xe624},   {"kt", 0xe634},   {"kts", 0xe634},  {"m", 0xe82a},    {"mac", 0xeee0},  {"wxm", 0xeee0},
+        {"ml", 0xe67a},   {"mli", 0xe67a},  {"nim", 0xe677},  {"nims", 0xe677}, {"nix", 0xe843},  {"pl", 0xe67e},
+        {"pm", 0xe67e},   {"r", 0xe68a},    {"rmd", 0xe68a},  {"scala", 0xe737}, {"sc", 0xe737},  {"scm", 0xe6b1},
+        {"ss", 0xe6b1},   {"rkt", 0xe6b1},  {"lisp", 0xe6b0}, {"tcl", 0xedf7},  {"tex", 0xe69b},  {"sty", 0xe69b},
+        {"bib", 0xe69b},  {"zig", 0xe6a9},  {"mjs", 0xe60c},  {"cjs", 0xe60c},  {"mepml", 0xe633},
     };
     auto by_ext = kByExt.find(ext);
     if (by_ext != kByExt.end()) return Utf8FromCodepoint(by_ext->second);
@@ -29378,6 +29390,17 @@ std::string HlGroupForFilename(const std::string &name) {
         {"log", "MutedFg"}, {"cs", "Red"},      {"php", "Purple"},  {"csv", "Green"},   {"env", "Yellow"},
         {"git", "Orange"},  {"png", "Purple"},  {"jpg", "Purple"},  {"jpeg", "Purple"}, {"gif", "Purple"},
         {"svg", "Purple"},  {"pdf", "Red"},     {"zip", "Orange"},  {"tar", "Orange"},  {"gz", "Orange"},
+        {"clj", "Green"},   {"cljc", "Green"},  {"cljs", "Blue"},   {"cr", "MutedFg"},  {"d", "Red"},
+        {"dart", "Cyan"},   {"erl", "Red"},     {"hrl", "Red"},     {"ex", "Purple"},   {"exs", "Purple"},
+        {"f90", "Purple"},  {"f95", "Purple"},  {"f03", "Purple"},  {"f", "Purple"},    {"for", "Purple"},
+        {"fish", "Green"},  {"g", "Cyan"},      {"gap", "Cyan"},    {"gi", "Cyan"},     {"groovy", "Cyan"},
+        {"gradle", "Cyan"}, {"hs", "Purple"},   {"lhs", "Purple"},  {"ipynb", "Orange"}, {"jl", "Purple"},
+        {"kt", "Purple"},   {"kts", "Purple"},  {"m", "Orange"},    {"mac", "Red"},     {"wxm", "Red"},
+        {"ml", "Orange"},   {"mli", "Orange"},  {"nim", "Yellow"},  {"nims", "Yellow"}, {"nix", "Blue"},
+        {"pl", "Blue"},     {"pm", "Blue"},     {"r", "Blue"},      {"rmd", "Blue"},    {"scala", "Red"},
+        {"sc", "Red"},      {"scm", "Red"},     {"ss", "Red"},      {"rkt", "Red"},     {"lisp", "Purple"},
+        {"tcl", "Blue"},    {"tex", "Green"},   {"sty", "Green"},   {"bib", "Green"},   {"zig", "Orange"},
+        {"mjs", "Yellow"},  {"cjs", "Yellow"},  {"mepml", "Cyan"},
     };
     auto by_ext = kByExt.find(ext);
     if (by_ext != kByExt.end()) return by_ext->second;

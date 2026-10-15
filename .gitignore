@@ -24,3 +24,4 @@ README.md
 examples/nafems/film/
 examples/nafems/fv42.step
 tools/__pycache__/
+.metals/

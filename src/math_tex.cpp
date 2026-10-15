@@ -38,8 +38,9 @@ std::string MathUtf8(int cp) {
 
 // One symbol command's expansion: the Unicode codepoint it draws as, and
 // the TeX atom class that decides how much air goes around it. Every
-// codepoint listed here must also be in main.cpp's kMathCodepoints (the
-// baked glyph set) or it draws as a missing-glyph box.
+// codepoint listed here must also be in main.cpp's kMathCodepoints or
+// kMathSerifCodepoints (the baked glyph sets) or it draws as a
+// missing-glyph box.
 struct MathSymbol {
     int cp;
     MathClass cls;
@@ -97,6 +98,7 @@ const std::unordered_map<std::string, MathSymbol> &SymbolTable() {
         {"approx", {0x2248, MathClass::Rel}},    {"equiv", {0x2261, MathClass::Rel}},
         {"sim", {0x223c, MathClass::Rel}},       {"simeq", {0x2243, MathClass::Rel}},
         {"cong", {0x2245, MathClass::Rel}},      {"asymp", {0x224d, MathClass::Rel}},
+        {"propto", {0x221d, MathClass::Rel}},
              
             {"ll", {0x226a, MathClass::Rel}},
         {"gg", {0x226b, MathClass::Rel}},        {"prec", {0x227a, MathClass::Rel}},
@@ -145,6 +147,8 @@ const std::unordered_map<std::string, MathSymbol> &SymbolTable() {
         {"lbrace", {0x7b, MathClass::Open}},     {"rbrace", {0x7d, MathClass::Close}},
         {"lbrack", {0x5b, MathClass::Open}},     {"rbrack", {0x5d, MathClass::Close}},
         {"vert", {0x7c, MathClass::Ord}},        {"Vert", {0x2016, MathClass::Ord}},
+        {"lvert", {0x7c, MathClass::Open}},      {"rvert", {0x7c, MathClass::Close}},
+        {"lVert", {0x2016, MathClass::Open}},    {"rVert", {0x2016, MathClass::Close}},
         {"backslash", {0x5c, MathClass::Ord}},
 
         // --- Everything else: ordinary atoms.

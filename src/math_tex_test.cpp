@@ -165,6 +165,11 @@ int main() {
         CHECK(OnlyTerm(ParseTexMath("\\left. x \\right|")).open_delim.empty());
         // A Greek letter is ordinary, whatever else it looks like.
         CHECK(OnlyTerm(ParseTexMath("\\pi")).cls == MathClass::Ord);
+        // amsmath's paired bars are fences, unlike a bare `|`/`\vert`.
+        CHECK(OnlyTerm(ParseTexMath("\\lvert")).cls == MathClass::Open);
+        CHECK(OnlyTerm(ParseTexMath("\\rVert")).cls == MathClass::Close);
+        CHECK(Flatten(ParseTexMath("\\lvert x\\rvert")) == "|x|");
+        CHECK(OnlyTerm(ParseTexMath("\\propto")).cls == MathClass::Rel);
     }
 
     // --- Inter-atom spacing ------------------------------------------

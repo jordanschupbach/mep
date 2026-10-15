@@ -51,6 +51,7 @@
 ; --- directives
 (import ["\\" "@"] @keyword.directive "import" @keyword.directive)
 (image ["\\" "@"] @keyword.directive "image" @keyword.directive)
+(video ["\\" "@"] @keyword.directive "video" @keyword.directive)
 (caption ["\\" "@"] @keyword.directive "caption" @keyword.directive)
 (alttext ["\\" "@"] @keyword.directive "alttext" @keyword.directive)
 (bibliography) @keyword.directive

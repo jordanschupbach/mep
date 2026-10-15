@@ -385,6 +385,14 @@ struct Builder {
                 break;
             }
             case BlockKind::Image: Picture(items, b.value, b.alt, Caption(b, label)); break;
+            case BlockKind::Video: {
+                // (A deck cannot play it: the file is named where it goes.)
+                Para p;
+                p.kind = ParaKind::Caption;
+                p.runs.push_back(Plain("[video: " + b.value + "]"));
+                TextItem(items).push_back(p);
+                break;
+            }
             case BlockKind::Svg:
             case BlockKind::Html: {
                 // Markup a deck cannot hold: what it shows, in words -- its

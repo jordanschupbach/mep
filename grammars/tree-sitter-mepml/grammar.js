@@ -149,6 +149,7 @@ module.exports = grammar({
       $.rule_line,
       $.import,
       $.image,
+      $.video,
       $.citation,
       $.bibtex_entry,
       $.bibliography,
@@ -314,6 +315,11 @@ module.exports = grammar({
     import: $ => seq($._directive_start, choice(seq('\\', 'import', $._paren_path_group), seq('@', 'import', $._path_group)), $._line_end),
     image: $ => prec.right(seq(
       $._directive_start, choice(seq('\\', 'image', $._paren_path_group), seq('@', 'image', $._path_group)), $._line_end,
+      choice(repeat($._attribute), $._results_attributes),
+    )),
+    // A figure that plays, captioned and described like an image.
+    video: $ => prec.right(seq(
+      $._directive_start, choice(seq('\\', 'video', $._paren_path_group), seq('@', 'video', $._path_group)), $._line_end,
       choice(repeat($._attribute), $._results_attributes),
     )),
     _path_group: $ => seq('{', optional(field('path', $.path)), '}'),

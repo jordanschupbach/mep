@@ -468,6 +468,10 @@
         {
           "type": "toc",
           "named": true
+        },
+        {
+          "type": "video",
+          "named": true
         }
       ]
     }
@@ -1376,6 +1380,10 @@
         },
         {
           "type": "toc",
+          "named": true
+        },
+        {
+          "type": "video",
           "named": true
         }
       ]
@@ -2875,6 +2883,10 @@
         {
           "type": "toc",
           "named": true
+        },
+        {
+          "type": "video",
+          "named": true
         }
       ]
     }
@@ -3001,6 +3013,10 @@
         },
         {
           "type": "toc",
+          "named": true
+        },
+        {
+          "type": "video",
           "named": true
         }
       ]
@@ -3835,6 +3851,44 @@
     }
   },
   {
+    "type": "video",
+    "named": true,
+    "fields": {
+      "path": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "path",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "alttext",
+          "named": true
+        },
+        {
+          "type": "caption",
+          "named": true
+        },
+        {
+          "type": "inline_comment",
+          "named": true
+        },
+        {
+          "type": "result_end",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "(",
     "named": false
   },
@@ -4317,6 +4371,10 @@
   {
     "type": "verbatim",
     "named": true
+  },
+  {
+    "type": "video",
+    "named": false
   },
   {
     "type": "warning",

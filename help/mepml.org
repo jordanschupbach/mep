@@ -68,6 +68,7 @@ restyles all of them.
 | =<leader>kP=          | present the slides full screen                            |
 | =:MepmlExecute=       | run the code block under the cursor                       |
 | =:MepmlExecuteAll=    | run every code block                                      |
+| =:MepmlVideoToggle=   | play or pause the =\video= on (or near) the cursor's row   |
 | =:MepmlStop=          | stop the running block under the cursor                   |
 | =:MepmlTerminal=      | type into the running block's terminal                    |
 | =:MepmlExport= [fmt]  | export as =fmt= (html pdf docx odt rtf md org tex txt all) |
@@ -664,6 +665,34 @@ A program that would rather write the file itself finds its path in the
 card, and the export shows it as an image. The block's =\caption= then
 captions the figure.
 
+A =file= with a video's extension (=.mp4=, =.m4v=, =.mov=, =.webm=,
+=.mkv=, =.avi=, =.ogv=) -- or a block with =results=video= -- makes a
+video instead of a picture. No plot device is opened for it: the program
+writes the file itself (at =MEP_FILE=, or wherever it likes under the
+document's directory -- the newest file of that extension is taken, as
+for a picture), and the results then hold a =\video(anim.mp4)= line, which
+the editor plays in place and the HTML export writes as a =<video>=:
+
+#+begin_example
+```{python, file="figs/orbit.mp4"}
+import os
+from matplotlib import animation, pyplot as plt
+fig, ax = plt.subplots()
+dot, = ax.plot([0], [0], "o")
+ax.set_xlim(-1, 1); ax.set_ylim(-1, 1)
+def step(i):
+    import math
+    dot.set_data([math.cos(i / 10)], [math.sin(i / 10)])
+animation.FuncAnimation(fig, step, frames=63).save(os.environ["MEP_FILE"], fps=20)
+```
+\caption(One orbit)
+#+end_example
+
+mep plays MP4 files (H.264 video, AAC audio) and Motion-JPEG =.mov= files
+with its own decoders; a file in another format is named in the figure's
+place, with a note to convert it (=ffmpeg -i in.webm -c:v libx264 -pix_fmt
+yuv420p -c:a aac out.mp4=).
+
 ** Code from a file
 
 A block with an =include= option takes its code from a file instead of
@@ -1006,12 +1035,16 @@ not; they keep running while other slides show, and stop (each leaving
 its picture as its results) when the presentation ends. =C-c C-c= on a
 slide stops or restarts them.
 
-* Images and tables
+* Images, videos and tables
 
 #+begin_example
 \image(./figures/plot.png)
 \caption(A caption, with *formatting*)
 \alttext(What the image shows)
+
+\video(./figures/orbit.mp4)
+\caption(A figure that plays)
+\alttext(A dot going round a circle)
 
 | Left | Centre | Right |
 | :--- | :----: | ----: |
@@ -1026,6 +1059,16 @@ slide stops or restarts them.
 the image, table, display maths, code block or SVG/HTML block they describe. Either can
 run over several lines, with its parentheses wherever suits, up to the next
 blank line; the line breaks read as spaces. Images are drawn in the buffer.
+
+A =\video(path)= is a figure that plays: the editor draws the clip where a
+picture would be, with a transport bar under it -- click the picture (or
+its play button) to play or pause, drag along the bar to seek. While the
+cursor is in its block (the =\video= line and its caption, or the code
+block that made it) the source shows instead, and the video pauses. The
+HTML export writes a =<video controls>= element; the other exports name
+the file in its place. mep decodes MP4 (H.264, with or without AAC audio)
+and Motion-JPEG =.mov= files itself. A video is numbered among the
+figures, and its =\alttext= is what a screen reader says for it.
 
 Figures (images, and code blocks that drew one) and tables are numbered:
 a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in

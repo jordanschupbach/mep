@@ -3420,6 +3420,16 @@ int l_mepml_scan(lua_State *L) {
  * @param L Lua state.
  * @return Number of values pushed (0).
  */
+/**
+ * @brief Implements mep.mepml_video_toggle(): plays or pauses the video drawn at (or near) the cursor.
+ * @param L Lua state.
+ * @return Number of values pushed (1: whether a video was there to toggle).
+ */
+int l_mepml_video_toggle(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->MepmlVideoToggleAtCursor() ? 1 : 0);
+    return 1;
+}
+
 int l_mepml_folds(lua_State *L) {
     GetEditor(L)->RecomputeMepmlFolds();
     return 0;
@@ -7395,7 +7405,9 @@ int l_fs_image_stamps(lua_State *L) {
     lua_newtable(L);
 #if !defined(__EMSCRIPTEN__)
     namespace fs = std::filesystem;
-    static const char *const kExts[] = {".png", ".svg", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".pdf"};
+    // (Pictures, and the videos a block's file= may ask for.)
+    static const char *const kExts[] = {".png", ".svg", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".pdf",
+                                        ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".ogv"};
     static const char *const kSkip[] = {"node_modules", "_deps", "target", "__pycache__", "CMakeFiles"};
     constexpr int kMaxEntries = 20000;
     std::error_code ec;
@@ -15489,6 +15501,7 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_link_at", l_mepml_link_at},
     {"mepml_terminal_start", l_mepml_terminal_start},
     {"mepml_gui_start", l_mepml_gui_start},
+    {"mepml_video_toggle", l_mepml_video_toggle},
     {"mepml_terminal_stop", l_mepml_terminal_stop},
     {"mepml_terminal_focus", l_mepml_terminal_focus},
     {"mepml_export_html", l_mepml_export_html},

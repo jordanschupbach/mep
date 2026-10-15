@@ -15,6 +15,7 @@
 #include "image_doc.h"
 #include "image_procgen.h"
 #include "jpeg_codec.h"
+#include "mp4_demux.h"
 #include "js_engine.h"
 #include "model3d_blend_import.h"
 #include "model3d_doc.h"
@@ -27902,7 +27903,431 @@ void Editor::SetOrgImageRowSize(int buffer_id, int row, int px_w, int px_h) {
     }
 }
 
-void Editor::ClearOrgImageRows() { Buf().org_image_rows.clear(); }
+void Editor::ClearOrgImageRows() {
+    Buf().org_image_rows.clear();
+    Buf().mepml_hidden_videos.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Videos drawn inside documents: InlineVideo (editor.h).
+
+namespace {
+
+// mp4::Player reads through a ByteSource: here a plain file.
+class InlineVideoFileSource final : public mp4::ByteSource {
+  public:
+    explicit InlineVideoFileSource(const std::string &path) : f_(std::fopen(path.c_str(), "rb")) {}
+    ~InlineVideoFileSource() override {
+        if (f_) std::fclose(f_);
+    }
+    InlineVideoFileSource(const InlineVideoFileSource &) = delete;
+    InlineVideoFileSource &operator=(const InlineVideoFileSource &) = delete;
+    bool ok() const { return f_ != nullptr; }
+    bool Read(uint8_t *dst, size_t n) override {
+        if (!f_ || std::fread(dst, 1, n, f_) != n) return false;
+        pos_ += n;
+        return true;
+    }
+    bool SeekTo(uint64_t offset) override {
+        if (!f_ || std::fseek(f_, static_cast<long>(offset), SEEK_SET) != 0) return false;
+        pos_ = offset;
+        return true;
+    }
+    uint64_t Offset() const override { return pos_; }
+
+  private:
+    FILE *f_ = nullptr;
+    uint64_t pos_ = 0;
+};
+
+std::unique_ptr<mp4::ByteSource> InlineVideoFileFactory(const mp4::PlayerSource &s, const std::atomic<bool> *) {
+    auto src = std::make_unique<InlineVideoFileSource>(s.url);
+    if (!src->ok()) return nullptr;
+    return src;
+}
+
+// Frame serials run across every clip, so a clip opened again at the same
+// path (InlineVideoInvalidate, then InlineVideoFor) never repeats a serial
+// main.cpp's texture cache still holds for the old one.
+int g_inline_video_frame_serial = 0;
+
+// The file's write time as a number that changes when it is rewritten
+// (its sign means nothing: libc++'s file clock counts from a later
+// epoch, so today's stamps are negative); false when the file is not there.
+bool InlineVideoStamp(const std::string &path, long long *stamp) {
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(path, ec);
+    if (ec) return false;
+    *stamp = static_cast<long long>(t.time_since_epoch().count());
+    return true;
+}
+
+// Opens the clip's file: its dimensions, duration and tracks, and which
+// decoder plays it. A .mov is tried as mep's own Motion-JPEG first, then
+// (a QuickTime file from elsewhere) as an MP4. `error` says why a file
+// cannot play.
+void InlineVideoOpen(InlineVideo &v) {
+    v.backend = InlineVideo::Backend::None;
+    v.error.clear();
+    v.width = v.height = 0;
+    v.duration = 0.0;
+    v.has_audio = false;
+    v.mov = mov::MovFile{};
+    v.mov_frame = -1;
+    if (!InlineVideoStamp(v.path, &v.stamp)) {
+        v.error = "file not found";
+        return;
+    }
+    std::string err;
+    if (IsMovPath(v.path)) {
+        mov::MovFile mf;
+        if (mov::OpenMovFile(v.path, &mf, &err)) {
+            v.backend = InlineVideo::Backend::Mov;
+            v.mov = std::move(mf);
+            v.width = v.mov.width;
+            v.height = v.mov.height;
+            v.duration = v.mov.fps > 0.0 ? static_cast<double>(v.mov.frame_index.size()) / v.mov.fps : 0.0;
+            return;
+        }
+    }
+    InlineVideoFileSource src(v.path);
+    mp4::Reader reader;
+    if (!src.ok() || !reader.Open(&src, &err)) {
+        const std::string why = err.empty() ? std::string("cannot read the file") : err;
+        v.error = mepml::IsVideoPath(v.path) && !IsMovPath(v.path) && v.path.size() > 4 &&
+                          (v.path.compare(v.path.size() - 4, 4, ".mp4") != 0 && v.path.compare(v.path.size() - 4, 4, ".m4v") != 0)
+                      ? "mep plays MP4 (H.264, AAC) and Motion-JPEG .mov files; convert this one with ffmpeg"
+                      : why;
+        return;
+    }
+    const mp4::Movie &movie = reader.movie();
+    const int vt = movie.VideoTrack();
+    if (vt < 0) {
+        v.error = "no H.264 video track";
+        return;
+    }
+    v.backend = InlineVideo::Backend::Mp4;
+    v.width = movie.tracks[static_cast<size_t>(vt)].width;
+    v.height = movie.tracks[static_cast<size_t>(vt)].height;
+    v.duration = movie.duration_sec;
+    v.has_audio = movie.AudioTrack() >= 0;
+}
+
+void InlineVideoStopPlayer(InlineVideo &v) {
+    if (v.player) {
+        v.player->Stop();
+        v.player.reset();
+    }
+    if (v.audio_open) {
+        gfx::CloseAudioStream(v.audio);
+        v.audio = gfx::AudioStream{};
+        v.audio_open = false;
+    }
+    v.audio_scratch.clear();
+    v.poster_pending = false;
+    v.tail_started_at = 0.0;
+    v.tail_clock = 0.0;
+}
+
+// Starts the MP4 decoder at `at` seconds (a muxed file feeds both queues
+// from one read; a silent one only the frames).
+void InlineVideoStartPlayer(InlineVideo &v, double at) {
+    InlineVideoStopPlayer(v);
+    v.player = std::make_unique<mp4::Player>();
+    mp4::PlayerSource src;
+    src.url = v.path;
+    v.player->Start(src, v.has_audio ? src : mp4::PlayerSource{}, at, &InlineVideoFileFactory);
+    v.start_sec = at;
+}
+
+// Shows frame `idx` of a Motion-JPEG clip (decoded now: one JPEG).
+void InlineVideoShowMovFrame(InlineVideo &v, int idx) {
+    const int n = static_cast<int>(v.mov.frame_index.size());
+    if (n <= 0) return;
+    idx = std::clamp(idx, 0, n - 1);
+    if (idx == v.mov_frame) return;
+    const std::vector<unsigned char> bytes = mov::ReadMovFrameJpeg(v.path, v.mov, idx);
+    if (bytes.empty()) return;
+    int w = 0, h = 0;
+    std::string err;
+    unsigned char *decoded = jpeg::Decode(bytes.data(), bytes.size(), &w, &h, &err);
+    if (!decoded) return;
+    v.rgba.assign(decoded, decoded + static_cast<size_t>(w) * static_cast<size_t>(h) * 4u);
+    std::free(decoded);
+    v.frame_w = w;
+    v.frame_h = h;
+    v.frame_serial = ++g_inline_video_frame_serial;
+    v.mov_frame = idx;
+}
+
+// The first frame (or the one at `position`), to show while the clip is
+// paused: a Motion-JPEG clip decodes it now; an MP4 starts its decoder,
+// and InlineVideoPoll takes the first frame it delivers and stops it.
+void InlineVideoFetchPoster(InlineVideo &v) {
+    if (v.backend == InlineVideo::Backend::Mov) {
+        InlineVideoShowMovFrame(v, v.mov.fps > 0.0 ? static_cast<int>(v.position * v.mov.fps) : 0);
+    } else if (v.backend == InlineVideo::Backend::Mp4) {
+        InlineVideoStartPlayer(v, v.position);
+        v.poster_pending = true;
+    }
+}
+
+}  // namespace
+
+InlineVideo *Editor::InlineVideoFor(const std::string &path) {
+    auto it = inline_videos_.find(path);
+    if (it == inline_videos_.end()) {
+        InlineVideo v;
+        v.path = path;
+        InlineVideoOpen(v);
+        it = inline_videos_.emplace(path, std::move(v)).first;
+        InlineVideoFetchPoster(it->second);
+    } else if (long long now = 0; !it->second.playing && !it->second.poster_pending && InlineVideoStamp(path, &now) && now != it->second.stamp) {
+        // The file changed under it (a block ran again): start over.
+        InlineVideo &v = it->second;
+        InlineVideoStopPlayer(v);
+        v.rgba.clear();
+        v.frame_w = v.frame_h = 0;
+        v.frame_serial = ++g_inline_video_frame_serial;
+        v.position = 0.0;
+        v.ended = false;
+        InlineVideoOpen(v);
+        InlineVideoFetchPoster(v);
+    }
+    return &it->second;
+}
+
+void Editor::InlineVideoToggle(InlineVideo &v) {
+    if (!v.error.empty() || v.backend == InlineVideo::Backend::None) return;
+    if (v.playing) {
+        InlineVideoPoll(v);  // `position` as of now
+        v.playing = false;
+        // (An MP4's decoder goes; play starts it again from `position`.)
+        if (v.backend == InlineVideo::Backend::Mp4) InlineVideoStopPlayer(v);
+        return;
+    }
+    if (v.ended || v.position >= v.duration - 1e-3) v.position = 0.0;  // play again from the start
+    v.ended = false;
+    if (v.backend == InlineVideo::Backend::Mp4) InlineVideoStartPlayer(v, v.position);
+    v.wall_base = v.position;
+    v.wall_started_at = gfx::GetTime();
+    v.playing = true;
+}
+
+void Editor::InlineVideoSeek(InlineVideo &v, double sec) {
+    if (!v.error.empty() || v.backend == InlineVideo::Backend::None) return;
+    sec = std::clamp(sec, 0.0, std::max(0.0, v.duration));
+    v.position = sec;
+    v.ended = false;
+    v.wall_base = sec;
+    v.wall_started_at = gfx::GetTime();
+    if (v.backend == InlineVideo::Backend::Mov) {
+        InlineVideoShowMovFrame(v, v.mov.fps > 0.0 ? static_cast<int>(sec * v.mov.fps) : 0);
+        return;
+    }
+    if (v.playing) InlineVideoStartPlayer(v, sec);
+    else InlineVideoFetchPoster(v);
+}
+
+void Editor::InlineVideoPoll(InlineVideo &v) {
+    if (!v.error.empty()) return;
+    const double now = gfx::GetTime();
+    if (v.backend == InlineVideo::Backend::Mov) {
+        if (!v.playing) return;
+        double pos = v.wall_base + (now - v.wall_started_at);
+        if (pos >= v.duration) {
+            pos = v.duration;
+            v.playing = false;
+            v.ended = true;
+        }
+        v.position = pos;
+        InlineVideoShowMovFrame(v, v.mov.fps > 0.0 ? static_cast<int>(pos * v.mov.fps) : 0);
+        return;
+    }
+    if (v.backend != InlineVideo::Backend::Mp4 || !v.player) return;
+    mp4::Player &player = *v.player;
+    std::string err;
+    if (player.Failed(&err)) {
+        v.error = err;
+        v.playing = false;
+        InlineVideoStopPlayer(v);
+        return;
+    }
+    if (v.poster_pending) {
+        std::vector<uint8_t> frame;
+        int w = 0, h = 0;
+        double pts = 0.0;
+        if (player.PopFrame(&frame, &w, &h, &pts)) {
+            v.rgba = std::move(frame);
+            v.frame_w = w;
+            v.frame_h = h;
+            v.frame_serial = ++g_inline_video_frame_serial;
+            InlineVideoStopPlayer(v);
+        } else if (player.VideoDone()) {
+            InlineVideoStopPlayer(v);
+        }
+        return;
+    }
+    if (!v.playing) return;
+
+    // The audio device opens once the decoder knows the track's format.
+    if (v.has_audio && !v.audio_open && !v.audio_unavailable && player.AudioRate() > 0) {
+        v.audio_rate = player.AudioRate();
+        v.audio_channels = player.AudioChannels();
+        if (!gfx::IsAudioDeviceReady()) gfx::InitAudioDevice();
+        if (gfx::IsAudioDeviceReady()) {
+            v.audio = gfx::OpenAudioStream(v.audio_channels, v.audio_rate);
+            v.audio_open = v.audio.backend_handle != nullptr;
+        }
+        if (v.audio_open) {
+            gfx::SetAudioStreamVolume(v.audio, 1.0f);
+            gfx::SetAudioStreamPaused(v.audio, false);
+        } else {
+            v.audio_unavailable = true;
+            v.wall_base = v.start_sec;
+            v.wall_started_at = now;
+        }
+    }
+    // Audio: about a second ahead of the device (or, with none, taken and
+    // dropped so the decoding keeps moving).
+    if (v.audio_open) {
+        const size_t want = static_cast<size_t>(v.audio_rate);
+        const size_t queued = gfx::AudioStreamQueuedFrames(v.audio);
+        if (queued < want) {
+            v.audio_scratch.clear();
+            if (player.TakeAudio(&v.audio_scratch, want - queued) > 0)
+                gfx::PushAudioStream(v.audio, v.audio_scratch.data(), v.audio_scratch.size());
+        }
+    } else if (v.has_audio && v.audio_unavailable) {
+        v.audio_scratch.clear();
+        player.TakeAudio(&v.audio_scratch, SIZE_MAX);
+    }
+
+    // The clock: the audio device's, else wall time (while the audio's
+    // format is still unknown it waits at the start rather than run
+    // ahead and jump back).
+    double clock = 0.0;
+    if (v.audio_open) clock = v.start_sec + gfx::AudioStreamPlayedSeconds(v.audio);
+    else if (v.has_audio && !v.audio_unavailable) clock = v.start_sec;
+    else clock = v.wall_base + (now - v.wall_started_at);
+    if (v.audio_open) {
+        // Audio over: the video's tail runs on wall time (see YoutubeSession::tail_started_at).
+        const bool audio_over = player.AudioDone() && gfx::AudioStreamQueuedFrames(v.audio) == 0;
+        if (!audio_over) {
+            v.tail_started_at = 0.0;
+        } else if (v.tail_started_at <= 0.0) {
+            v.tail_started_at = now;
+            v.tail_clock = std::max(clock, v.position);
+        }
+        if (v.tail_started_at > 0.0) clock = std::max(clock, v.tail_clock + (now - v.tail_started_at));
+    }
+    v.position = std::max(v.position, clock);
+
+    // The newest frame the clock has reached.
+    double pts = 0.0;
+    bool took = false;
+    std::vector<uint8_t> frame;
+    int w = 0, h = 0;
+    while (player.PeekFrame(&pts) && pts <= clock + 0.002) {
+        player.PopFrame(&frame, &w, &h, &pts);
+        took = true;
+    }
+    if (took) {
+        v.rgba = std::move(frame);
+        v.frame_w = w;
+        v.frame_h = h;
+        v.frame_serial = ++g_inline_video_frame_serial;
+    }
+
+    const bool video_done = player.VideoDone();
+    const bool audio_done = player.AudioDone() && (!v.audio_open || gfx::AudioStreamQueuedFrames(v.audio) == 0);
+    if (video_done && audio_done) {
+        v.playing = false;
+        v.ended = true;
+        v.position = v.duration;
+        InlineVideoStopPlayer(v);
+    }
+}
+
+void Editor::InlineVideosTick() {
+    for (auto &kv : inline_videos_) {
+        InlineVideo &v = kv.second;
+        if (v.playing || v.poster_pending) InlineVideoPoll(v);
+    }
+}
+
+void Editor::InlineVideoInvalidate(const std::string &path) {
+    auto it = inline_videos_.find(path);
+    if (it == inline_videos_.end()) return;
+    InlineVideoStopPlayer(it->second);
+    inline_videos_.erase(it);
+}
+
+bool Editor::MepmlVideoToggleAtCursor() {
+    const Buffer &buf = Buf();
+    const int at = CurPane().cursor.row;
+    // The clip on the cursor's row, else the nearest one a few rows away
+    // (the cursor sits on the caption or the results marker as often as
+    // on the \video line itself).
+    const Buffer::OrgImageRender *best = nullptr;
+    int best_dist = 0;
+    for (const auto &kv : buf.org_image_rows) {
+        if (!kv.second.video) continue;
+        const int dist = std::abs(kv.first - at);
+        if (dist > 6) continue;
+        if (!best || dist < best_dist) {
+            best = &kv.second;
+            best_dist = dist;
+        }
+    }
+    if (!best) return false;
+    InlineVideoToggle(*InlineVideoFor(best->path));
+    return true;
+}
+
+void Editor::MepmlVideoRevealTick() {
+    const int cur_buf = CurPane().buffer_id;
+    for (size_t bi = 0; bi < buffers_.size(); ++bi) {
+        Buffer &buf = buffers_[bi];
+        if (buf.deleted) continue;
+        const int cursor = static_cast<int>(bi) == cur_buf ? CurPane().cursor.row : -1;
+        auto inside = [cursor](const Buffer::OrgImageRender &r) {
+            return cursor >= 0 && r.reveal_first >= 0 && cursor >= r.reveal_first && cursor <= r.reveal_last;
+        };
+        for (auto it = buf.mepml_hidden_videos.begin(); it != buf.mepml_hidden_videos.end();) {
+            if (inside(it->second)) {
+                ++it;
+                continue;
+            }
+            buf.org_image_rows[it->first] = std::move(it->second);
+            it = buf.mepml_hidden_videos.erase(it);
+        }
+        for (auto it = buf.org_image_rows.begin(); it != buf.org_image_rows.end();) {
+            if (!it->second.video || !inside(it->second)) {
+                ++it;
+                continue;
+            }
+            // (Out of sight, it stops: no sound from a clip nobody can see.)
+            auto v = inline_videos_.find(it->second.path);
+            if (v != inline_videos_.end() && v->second.playing) InlineVideoToggle(v->second);
+            buf.mepml_hidden_videos[it->first] = std::move(it->second);
+            it = buf.org_image_rows.erase(it);
+        }
+    }
+}
+
+void Editor::SetOrgVideoRow(int row, const std::string &path, int reveal_first, int reveal_last) {
+    if (row < 0 || row >= Buf().LineCount()) return;
+    Buffer::OrgImageRender entry;
+    entry.path = path;
+    entry.video = true;
+    entry.reveal_first = reveal_first;
+    entry.reveal_last = reveal_last;
+    const InlineVideo *v = InlineVideoFor(path);
+    entry.width = v->width;
+    entry.height = v->height;
+    Buf().org_image_rows[row] = std::move(entry);
+}
 
 bool Editor::ToggleOrgImages() {
     org_images_visible_ = !org_images_visible_;

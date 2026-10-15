@@ -318,6 +318,28 @@ struct Out {
         Coalesce(segs);
         std::string text = Trim(RenderSegs(segs));
         if (text.empty()) return;
+        // "[video: path]": what the formats that cannot play one (text,
+        // the office packages) write in a \video's place -- the video again.
+        // (Read from the plain text: rendered as mepml, its brackets are escaped.)
+        {
+            std::string plain;
+            bool all_text = true;
+            for (const Seg &s : segs) {
+                if (s.kind != Seg::Text) all_text = false;
+                else plain += s.text;
+            }
+            plain = Trim(plain);
+            if (all_text && StartsWith(plain, "[video: ") && plain.back() == ']' && plain.find('\n') == std::string::npos) {
+                Video(Trim(plain.substr(8, plain.size() - 9)), "");
+                return;
+            }
+            // (One a code block made goes back into its results.)
+            if (all_text && StartsWith(plain, "[video output: ") && plain.back() == ']' && plain.find('\n') == std::string::npos) {
+                const std::string path = Trim(plain.substr(15, plain.size() - 16));
+                if (!ResultImages({path})) Video(path, "");
+                return;
+            }
+        }
         std::vector<std::string> lines = SplitLines(text);
         std::string o;
         for (const std::string &l : lines) {
@@ -378,7 +400,7 @@ struct Out {
     bool ResultImages(const std::vector<std::string> &paths) {
         if (last != kCode || paths.empty()) return false;
         std::vector<std::string> lines;
-        for (const std::string &p : paths) lines.push_back("\\image(" + ParenEsc(p) + ")");
+        for (const std::string &p : paths) lines.push_back((IsVideoPath(p) ? "\\video(" : "\\image(") + ParenEsc(p) + ")");
         static const std::string kEnd = "\n// result_end";
         std::string &b = blocks.back();
         if (b.size() >= kEnd.size() && b.compare(b.size() - kEnd.size(), kEnd.size(), kEnd) == 0 &&
@@ -403,6 +425,13 @@ struct Out {
     }
     // `decorative`: the picture is marked as saying nothing (alt="" with
     // role="presentation"): `\alttext()`.
+    void Video(const std::string &src, const std::string &alt, bool decorative = false) {
+        if (src.empty()) return;
+        std::string o = "\\video(" + ParenEsc(src) + ")";
+        if (!alt.empty()) o += "\n\\alttext(" + ParenEsc(alt) + ")";
+        else if (decorative) o += "\n\\alttext()";
+        Block(o, kFigure);
+    }
     void Image(const std::string &src, const std::string &alt, bool decorative = false) {
         if (src.empty()) return;
         std::string o = "\\image(" + ParenEsc(src) + ")";
@@ -653,6 +682,14 @@ struct HtmlReader {
     static std::string Attr(const DomNode *n, const char *name) {
         auto it = n->attrs.find(name);
         return it == n->attrs.end() ? std::string() : it->second;
+    }
+    // An <img>'s src, or a <video>'s: its own, else its first <source>'s.
+    static std::string VideoOrImageSrc(const DomNode *n) {
+        std::string src = Attr(n, "src");
+        if (!src.empty() || n->tag != "video") return src;
+        for (const auto &c : n->children)
+            if (c->type == DomNodeType::Element && c->tag == "source" && !Attr(c.get(), "src").empty()) return Attr(c.get(), "src");
+        return src;
     }
     static bool HasClass(const DomNode *n, const std::string &cls) {
         std::istringstream ss(Attr(n, "class"));
@@ -948,7 +985,7 @@ struct HtmlReader {
             std::function<void(const DomNode *)> walk = [&](const DomNode *t) {
                 for (const auto &c : t->children) {
                     if (c->type != DomNodeType::Element) continue;
-                    if (c->tag == "img") srcs.push_back(Attr(c.get(), "src"));
+                    if (c->tag == "img" || c->tag == "video") srcs.push_back(VideoOrImageSrc(c.get()));
                     else if (c->tag == "figcaption") cap = InlOf(c.get());
                     else walk(c.get());
                 }
@@ -969,7 +1006,7 @@ struct HtmlReader {
                 if (c->type != DomNodeType::Element) continue;
                 if (IsMarkupDiv(c.get())) {
                     if (!markup && !img) markup = c.get();
-                } else if (c->tag == "img" && !img && !markup) {
+                } else if ((c->tag == "img" || c->tag == "video") && !img && !markup) {
                     img = c.get();
                 } else if (c->tag == "figcaption") {
                     caption = InlOf(c.get());
@@ -981,6 +1018,9 @@ struct HtmlReader {
         find(n);
         if (markup) {
             Markup(markup);
+        } else if (img && img->tag == "video") {
+            // (Its accessible name stands for an alt text; aria-hidden for a decoration.)
+            out.Video(VideoOrImageSrc(img), Attr(img, "aria-label"), Attr(img, "aria-hidden") == "true");
         } else if (img) {
             const std::string role = Attr(img, "role");
             out.Image(Attr(img, "src"), Attr(img, "alt"), img->attrs.count("alt") && (role == "presentation" || role == "none"));
@@ -1013,7 +1053,7 @@ struct HtmlReader {
             }
             if (c->type != DomNodeType::Element) continue;
             const std::string &t = c->tag;
-            if (!IsBlockTag(t) && t != "img") {
+            if (!IsBlockTag(t) && t != "img" && t != "video") {
                 Inl(c, Fmt(), pending);
                 continue;
             }
@@ -1060,6 +1100,8 @@ struct HtmlReader {
                 Markup(c);
             } else if (t == "img") {
                 out.Image(Attr(c, "src"), Attr(c, "alt"));
+            } else if (t == "video") {
+                out.Video(VideoOrImageSrc(c), Attr(c, "aria-label"), Attr(c, "aria-hidden") == "true");
             } else if (t == "hr") {
                 out.Rule();
             } else if (t == "blockquote") {
@@ -2005,7 +2047,12 @@ struct MdReader {
                         } else if (lt == "```output") {
                             fenced = true;
                         } else if (StartsWith(lt, "![") && lt.back() == ')' && lt.find("](") != std::string::npos) {
-                            res.push_back("\\image(" + ParenEsc(lt.substr(lt.rfind("](") + 2, lt.size() - lt.rfind("](") - 3)) + ")");
+                            const std::string p = lt.substr(lt.rfind("](") + 2, lt.size() - lt.rfind("](") - 3);
+                            res.push_back((mepml::IsVideoPath(p) ? "\\video(" : "\\image(") + ParenEsc(p) + ")");
+                        } else if (StartsWith(lt, "<video") && lt.find(" src=\"") != std::string::npos) {
+                            // (A video the block made: MdFigure's element.)
+                            const size_t s = lt.find(" src=\"") + 6, e = lt.find('"', s);
+                            if (e != std::string::npos) res.push_back("\\video(" + ParenEsc(lt.substr(s, e - s)) + ")");
                         }
                     }
                     i = n;
@@ -2080,7 +2127,9 @@ struct MdReader {
                 for (; k < lines.size() && !Trim(lines[k]).empty(); ++k) html += lines[k] + "\n";
                 // SVG, or HTML mepml reads as a block of its own, whose
                 // element closes where the Markdown block ends: kept as it is.
-                if (!MarkupBlockTag(t).empty()) {
+                // (A <video> is what ToMarkdown writes for \video: it is read
+                // back as one, below, not kept as markup.)
+                if (!MarkupBlockTag(t).empty() && MarkupBlockTag(t) != "video") {
                     const std::vector<std::string> block(lines.begin() + static_cast<std::ptrdiff_t>(i),
                                                          lines.begin() + static_cast<std::ptrdiff_t>(k));
                     if (MarkupBlockClose(block, 0) == static_cast<int>(block.size()) - 1) {
@@ -2107,7 +2156,7 @@ struct MdReader {
                          if (!cur.empty()) v.push_back(cur);
                          return v;
                      }())
-                    out.Block(blk);
+                    out.Block(blk, StartsWith(blk, "\\video(") ? Out::kFigure : Out::kOther);
                 continue;
             }
             // Tables.
@@ -2448,8 +2497,10 @@ struct OrgReader {
                 std::string desc = mid == std::string::npos ? "" : target.substr(mid + 2);
                 if (mid != std::string::npos) target = target.substr(0, mid);
                 if (StartsWith(target, "file:")) target = target.substr(5);
-                if (IsImagePath(target)) {
-                    out.Image(target, desc.empty() ? pending_alt : desc, desc.empty() && have_alt && pending_alt.empty());
+                if (IsImagePath(target) || mepml::IsVideoPath(target)) {
+                    // (A link to a video on a line of its own is what the Org export writes for \video.)
+                    if (IsImagePath(target)) out.Image(target, desc.empty() ? pending_alt : desc, desc.empty() && have_alt && pending_alt.empty());
+                    else out.Video(target, desc.empty() ? pending_alt : desc, desc.empty() && have_alt && pending_alt.empty());
                     pending_alt.clear();
                     have_alt = false;
                     TakeCaption();
@@ -2548,7 +2599,7 @@ struct OrgReader {
                         // A picture among the output, kept where it was printed.
                         std::string target = tk.substr(2, tk.find(']') - 2);
                         if (StartsWith(target, "file:")) target = target.substr(5);
-                        res.push_back("\\image(" + ParenEsc(target) + ")");
+                        res.push_back((mepml::IsVideoPath(target) ? "\\video(" : "\\image(") + ParenEsc(target) + ")");
                     } else {
                         break;
                     }

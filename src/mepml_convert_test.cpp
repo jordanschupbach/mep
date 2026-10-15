@@ -112,7 +112,8 @@ Lines Signature(const Document &doc, const Keeps &k) {
                 s = std::string(b.kind == BlockKind::Svg ? "S " : "X ") + Squash(b.code);
                 break;
             case BlockKind::Image:
-                s = "I";
+            case BlockKind::Video:
+                s = b.kind == BlockKind::Video ? "V" : "I";
                 if (k.captions) s += " caption=" + Plain(b.caption_inlines);
                 break;
             case BlockKind::Table:
@@ -498,10 +499,11 @@ void TestPictures() {
     const Document doc = Parse({"//? Title: T", "", "\\image(assets/a.png)", "", "```r", "plot(1)", "```", "// result_begin:",
                                 "// \\image(figs/plot.png)", "// result_end", "", "| @image{assets/a.png} | x |", "",
                                 "\\image(../shared/up.png)", "", "\\image(missing.png)", "", "\\image(/abs/p.png)", "",
-                                "\\image(https://x.y/r.png)"});
+                                "\\image(https://x.y/r.png)", "", "\\video(figs/orbit.mp4)", "\\alttext(An orbit)"});
+    // (A video is mirrored into the build directory like a picture.)
     const std::vector<std::string> pics = DocumentPictures(doc);
-    CHECK(pics.size() == 3);
-    CHECK(pics[0] == "assets/a.png" && pics[1] == "figs/plot.png" && pics[2] == "missing.png");
+    CHECK(pics.size() == 4);
+    CHECK(pics[0] == "assets/a.png" && pics[1] == "figs/plot.png" && pics[2] == "missing.png" && pics[3] == "figs/orbit.mp4");
     auto file = [](const fs::path &p) {
         std::ifstream f(p, std::ios::binary);
         return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
@@ -514,6 +516,8 @@ void TestPictures() {
     CHECK(!fs::exists(build / "missing.png") && !fs::exists(root / "shared" / "build"));
     CHECK(file(build / "doc.md").find("![](assets/a.png)") != std::string::npos);
     CHECK(file(build / "doc.md").find("![](../shared/up.png)") != std::string::npos);
+    // Markdown has no video of its own: the HTML element, which it lets through.
+    CHECK(file(build / "doc.md").find("<video controls src=\"figs/orbit.mp4\" aria-label=\"An orbit\"></video>") != std::string::npos);
     // HTML: the same paths; the one that climbs out is named from build/.
     CHECK(ExportFile(doc, (build / "doc.html").string(), src.string(), &err));
     const std::string html = file(build / "doc.html");
@@ -522,6 +526,7 @@ void TestPictures() {
     CHECK(html.find("<img src=\"../../shared/up.png\"") != std::string::npos);
     CHECK(html.find("<img src=\"missing.png\"") != std::string::npos);
     CHECK(html.find("<img src=\"/abs/p.png\"") != std::string::npos);
+    CHECK(html.find("<video controls preload=\"metadata\" src=\"figs/orbit.mp4\" aria-label=\"An orbit\"></video>") != std::string::npos);
     // Org into another directory altogether (an absolute Build:).
     CHECK(ExportFile(doc, (elsewhere / "doc.org").string(), src.string(), &err));
     CHECK(file(elsewhere / "assets" / "a.png") == "A");

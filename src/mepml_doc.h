@@ -116,6 +116,11 @@ enum class BlockKind {
     MathBlock,     // $$ ... $$  or  \[ ... \]
     Code,          // ```{lang, opts} ... ```
     Image,         // \image(path) (or @image{path})
+    // \video(path): a figure that plays -- an MP4 (H.264, with or without
+    // AAC audio) or a Motion-JPEG .mov. `value` is the path, and a
+    // \caption / \alttext attach as to an image. The editor plays it in
+    // place; the HTML export writes a <video> element.
+    Video,
     Table,         // | a | b |
     List,          // - item / 1. item / - [ ] task
     Rule,          // --- (3+ of - = _ *)
@@ -245,7 +250,9 @@ struct Block {
     int result_line_start = -1, result_line_end = -1;
     std::vector<std::string> result_lines;
     // Result lines that are a figure the block produced (`// \image(path)`,
-    // written by a run with a `file=` option): line index and path.
+    // or `// \video(path)` for a file= with a video's extension, written
+    // by a run with a `file=` option): line index and path. A video among
+    // them is told by its path (IsVideoPath).
     std::vector<std::pair<int, std::string>> result_images;
     // What the results are: "" for plain text output, "html" for HTML the
     // block produced (a `results=html` option, recorded on the results'
@@ -675,8 +682,13 @@ const std::vector<std::string> &ElementNames();
 bool IsBlockElement(const std::string &name);
 
 // A results line (its `// ` prefix already stripped) that names a figure:
-// `\image(path)` (or `@image{path}`). Sets *path.
-bool ResultImagePath(const std::string &text, std::string *path);
+// `\image(path)` (or `@image{path}`), or `\video(path)` for one that
+// plays. Sets *path, and *video to whether the line is a \video.
+bool ResultImagePath(const std::string &text, std::string *path, bool *video = nullptr);
+// Whether a figure's path names a video by its extension (.mp4, .m4v,
+// .mov, .webm, .mkv, .avi, .ogv): what a run's file= writes as \video()
+// rather than \image(), and what an export plays rather than shows.
+bool IsVideoPath(const std::string &path);
 
 // SVG and HTML written into a document (BlockKind::Svg / Html): the tag
 // `line` opens a markup block with ("svg", "div", "table" ...), "" for a
@@ -686,9 +698,9 @@ std::string MarkupBlockTag(const std::string &line);
 // when it never does (or lines[first] opens none).
 int MarkupBlockClose(const std::vector<std::string> &lines, int first);
 
-// A block that is a picture of its own: an \image, an <svg>, or HTML
-// with a \caption. (A code block that drew a figure is one too, where
-// its results are shown: see BlockLabels.)
+// A block that is a picture of its own: an \image, a \video, an <svg>, or
+// HTML with a \caption. (A code block that drew a figure is one too,
+// where its results are shown: see BlockLabels.)
 bool IsFigure(const Block &b);
 
 // "Figure N" / "Table N" for every numbered block, "" for the rest,

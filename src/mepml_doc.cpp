@@ -463,8 +463,8 @@ bool TryMath(InlineCtx &ctx, int i, int e, Inline *node) {
 // user command (\define), or of \when / \otherwise.
 bool IsBuiltinCommandName(const std::string &name) {
     static const std::set<std::string> k = {"f",      "fs",      "color",        "fn",         "cite",
-                                            "citep",  "alttext", "caption",      "image",      "import",
-                                            "citation", "toc",   "bibliography", "printbibliography",
+                                            "citep",  "alttext", "caption",      "image",      "video",
+                                            "import", "citation", "toc",   "bibliography", "printbibliography",
                                             "abstract", "slide", "define",       "raw",
                                             "boxed",    "class",    "columns",      "column",
                                             "tabs",     "tab"};
@@ -934,8 +934,8 @@ bool IsResultEnd(const std::string &line) {
 }
 
 bool IsKnownDirective(const std::string &name) {
-    return name == "import" || name == "citation" || name == "image" || name == "caption" || name == "alttext" ||
-           name == "bibliography" || name == "printbibliography" || name == "toc" || name == "abstract" ||
+    return name == "import" || name == "citation" || name == "image" || name == "video" || name == "caption" ||
+           name == "alttext" || name == "bibliography" || name == "printbibliography" || name == "toc" || name == "abstract" ||
            IsBibtexType(name);
 }
 
@@ -1229,8 +1229,8 @@ struct Parser {
         Block &b = doc.blocks.back();
         const int prev = markdown_result_ends.count(i - 1) ? i - 2 : i - 1;
         if (b.line_end != prev) return -1;
-        if (b.kind != BlockKind::Image && b.kind != BlockKind::Table && b.kind != BlockKind::MathBlock &&
-            b.kind != BlockKind::Code && b.kind != BlockKind::Svg && b.kind != BlockKind::Html)
+        if (b.kind != BlockKind::Image && b.kind != BlockKind::Video && b.kind != BlockKind::Table &&
+            b.kind != BlockKind::MathBlock && b.kind != BlockKind::Code && b.kind != BlockKind::Svg && b.kind != BlockKind::Html)
             return -1;
         int col = Indent(L(i)) + 1 + Len(name);
         int after = -1;
@@ -1507,7 +1507,7 @@ struct Parser {
                 MakeBlock(name == "toc" ? BlockKind::TableOfContents : BlockKind::Bibliography, i, i));
             return i + 1;
         }
-        if (name == "import" || name == "image") {
+        if (name == "import" || name == "image" || name == "video") {
             int after = -1;
             std::string arg = OneLineGroup(i, col, &after);
             if (after < 0) {
@@ -1516,7 +1516,7 @@ struct Parser {
                 return i + 1;
             }
             CheckTrailing(i, after);
-            Block b = MakeBlock(name == "import" ? BlockKind::Import : BlockKind::Image, i, i);
+            Block b = MakeBlock(name == "import" ? BlockKind::Import : name == "video" ? BlockKind::Video : BlockKind::Image, i, i);
             b.value = Trim(arg);
             if (b.value.empty()) Diag(Diagnostic::Error, i, 0, Len(s), std::string(1, sigil) + name + " needs a path");
             doc.blocks.push_back(std::move(b));
@@ -2503,12 +2503,27 @@ std::vector<std::vector<Inline>> AbstractParagraphs(const Block &b) {
     return out;
 }
 
-bool ResultImagePath(const std::string &text, std::string *path) {
+bool ResultImagePath(const std::string &text, std::string *path, bool *video) {
     std::string t = Trim(text);
-    if (!((t.rfind("\\image(", 0) == 0 && t.back() == ')') || (t.rfind("@image{", 0) == 0 && t.back() == '}')))
-        return false;
+    const bool image = (t.rfind("\\image(", 0) == 0 && t.back() == ')') || (t.rfind("@image{", 0) == 0 && t.back() == '}');
+    const bool vid = (t.rfind("\\video(", 0) == 0 && t.back() == ')') || (t.rfind("@video{", 0) == 0 && t.back() == '}');
+    if (!image && !vid) return false;
     *path = Trim(t.substr(7, t.size() - 8));
+    if (video) *video = vid;
     return !path->empty();
+}
+
+bool IsVideoPath(const std::string &path) {
+    const size_t dot = path.find_last_of('.');
+    if (dot == std::string::npos || path.find_first_of("/\\", dot) != std::string::npos) return false;
+    std::string ext = Lower(path.substr(dot + 1));
+    // (A URL's query string is not part of the extension.)
+    const size_t q = ext.find_first_of("?#");
+    if (q != std::string::npos) ext.erase(q);
+    static const char *const kExts[] = {"mp4", "m4v", "mov", "webm", "mkv", "avi", "ogv"};
+    for (const char *e : kExts)
+        if (ext == e) return true;
+    return false;
 }
 
 std::string MarkupBlockTag(const std::string &line) { return MarkupTagAt(line); }
@@ -2520,7 +2535,8 @@ int MarkupBlockClose(const std::vector<std::string> &lines, int first) {
 }
 
 bool IsFigure(const Block &b) {
-    return b.kind == BlockKind::Image || b.kind == BlockKind::Svg || (b.kind == BlockKind::Html && b.caption_line >= 0);
+    return b.kind == BlockKind::Image || b.kind == BlockKind::Video || b.kind == BlockKind::Svg ||
+           (b.kind == BlockKind::Html && b.caption_line >= 0);
 }
 
 std::vector<std::string> BlockLabels(const Document &doc) {
@@ -3363,6 +3379,7 @@ std::vector<std::string> ExpandCommands(const std::vector<std::string> &lines,
             case BlockKind::Paragraph:
             case BlockKind::Heading:
             case BlockKind::Image:
+            case BlockKind::Video:
             case BlockKind::Table:
             case BlockKind::List:
             case BlockKind::Abstract:
@@ -4022,6 +4039,7 @@ struct Emitter {
                 Directive(blk.line_start, blk.value);
                 break;
             case BlockKind::Image:
+            case BlockKind::Video:
             case BlockKind::Table:
             case BlockKind::MathBlock:
             case BlockKind::Svg:
@@ -4031,7 +4049,7 @@ struct Emitter {
                 if (blk.caption_line >= 0) body_end = std::min(body_end, blk.caption_line - 1);
                 if (blk.alt_line >= 0) body_end = std::min(body_end, blk.alt_line - 1);
                 if (blk.kind == BlockKind::Table && blk.rows_end >= 0) body_end = std::min(body_end, blk.rows_end);
-                if (blk.kind == BlockKind::Image) {
+                if (blk.kind == BlockKind::Image || blk.kind == BlockKind::Video) {
                     Directive(blk.line_start, blk.value);
                 } else if (blk.kind == BlockKind::MathBlock) {
                     Span m = At_(node);
@@ -4401,6 +4419,7 @@ Element ElementForBlock(const Block &b) {
         case BlockKind::MathBlock: return Element("math-block");
         case BlockKind::Code: return Element("code", "lang", b.lang);
         case BlockKind::Image: return Element("image");
+        case BlockKind::Video: return Element("video");
         case BlockKind::Svg: return Element("svg");
         case BlockKind::Html: return Element("html", "tag", b.keyword);
         case BlockKind::Table: return Element("table");
@@ -4592,6 +4611,7 @@ std::string ElementTreeJson(const Document &doc) {
             case BlockKind::Meta:
             case BlockKind::Import:
             case BlockKind::Image:
+            case BlockKind::Video:
             case BlockKind::Citation:
                 head += ",\"text\":" + JsonString(b.value);
                 break;
@@ -4637,7 +4657,7 @@ const std::vector<std::string> &ElementNames() {
     static const std::vector<std::string> k = {
         // Blocks.
         "document", "header", "meta", "heading", "paragraph", "comment", "callout", "abstract", "slide", "box", "columns", "column",
-        "tabs", "tab", "list", "list-item", "table", "table-cell", "code", "results", "math-block", "image", "svg", "html", "caption", "alt-text", "rule", "toc",
+        "tabs", "tab", "list", "list-item", "table", "table-cell", "code", "results", "math-block", "image", "video", "svg", "html", "caption", "alt-text", "rule", "toc",
         "bibliography", "import", "citation", "define", "raw", "command",
         // Inlines (comment, raw and command are both).
         "bold", "italic", "underline", "superscript", "subscript", "small", "big", "mono", "highlight", "strike", "insert", "delete",
@@ -4650,7 +4670,7 @@ bool IsBlockElement(const std::string &name) {
     static const std::set<std::string> k = {
         "document", "header",   "meta",   "heading",    "paragraph", "comment",  "callout", "abstract",     "slide",  "box",
         "columns",  "column",   "tabs",   "tab",
-        "list",     "list-item", "table",  "table-cell", "code",      "results",  "math-block", "image",     "caption", "alt-text",
+        "list",     "list-item", "table",  "table-cell", "code",      "results",  "math-block", "image",     "video", "caption", "alt-text",
         "rule",     "toc",      "bibliography", "import", "citation",  "define", "svg", "html",
     };
     return k.count(name) > 0;
@@ -5231,6 +5251,7 @@ bool CssSelectorFor(const style::Selector &sel, CssTarget *out) {
             }
         } else if (n == "results") one = ".results";
         else if (n == "image") one = "img";
+        else if (n == "video") one = "video";
         else if (n == "caption") one = ":is(.caption, figcaption:not(.lang))";
         else if (n == "rule") {
             one = "hr";
@@ -5661,6 +5682,16 @@ struct HtmlWriter {
         return " alt=\"" + Esc(b.alt) + "\"";
     }
 
+    // A figure that plays: a <video> with the browser's own controls, its
+    // \alttext as its accessible name (an empty one hides it from readers,
+    // as for a picture), and no autoplay -- the reader starts it.
+    std::string VideoTag(const std::string &path, const Block &b) {
+        std::string aria;
+        if (b.alt_line >= 0 || !b.alt.empty())
+            aria = b.alt.empty() ? " aria-hidden=\"true\"" : " aria-label=\"" + Esc(b.alt) + "\"";
+        return "<video controls preload=\"metadata\" src=\"" + Esc(Src(path)) + "\"" + aria + "></video>";
+    }
+
     std::string Caption(const Block &b) {
         if (b.caption_inlines.empty()) return "";
         return Inlines(b.caption_inlines);
@@ -5742,7 +5773,9 @@ struct HtmlWriter {
                     // One figure for all of the block's plots, under one caption.
                     // (The class tells mep's importer they are the block's results.)
                     out += "<figure class=\"result-images\">";
-                    for (const auto &img : b.result_images) out += "<img src=\"" + Esc(Src(img.second)) + "\"" + ImgAlt(b) + ">";
+                    for (const auto &img : b.result_images)
+                        out += IsVideoPath(img.second) ? VideoTag(img.second, b)
+                                                       : "<img src=\"" + Esc(Src(img.second)) + "\"" + ImgAlt(b) + ">";
                     if (!b.caption_inlines.empty())
                         out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";
                     out += "</figure>\n";
@@ -5751,8 +5784,10 @@ struct HtmlWriter {
                 }
                 break;
             }
-            case BlockKind::Image: {
-                out += "<figure><img src=\"" + Esc(Src(b.value)) + "\"" + ImgAlt(b) + ">";
+            case BlockKind::Image:
+            case BlockKind::Video: {
+                out += "<figure>" + (b.kind == BlockKind::Video ? VideoTag(b.value, b)
+                                                                : "<img src=\"" + Esc(Src(b.value)) + "\"" + ImgAlt(b) + ">");
                 if (!b.caption_inlines.empty())
                     out += "<figcaption>" + Esc(label) + ": " + Caption(b) + "</figcaption>";
                 out += "</figure>\n";

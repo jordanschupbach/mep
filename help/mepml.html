@@ -66,12 +66,13 @@ restyles all of them.</p>
 <tr><td><code>&lt;leader&gt;kr</code></td><td>raw text or rendered (also the header's eye button)</td></tr>
 <tr><td><code>&lt;leader&gt;kv</code></td><td>view mode: rendered on every line, the cursor's too (also the header's book button; an org or markdown buffer too)</td></tr>
 <tr><td><code>&lt;leader&gt;bv</code></td><td>an HTML file: its rendered page or its source text</td></tr>
-<tr><td><code>&lt;leader&gt;kf</code></td><td>toggle the math preview popup shown while typing a formula</td></tr>
+<tr><td><code>&lt;leader&gt;kf</code></td><td>toggle the preview popup: a formula, SVG or HTML the cursor is in, rendered in the pane's top right corner</td></tr>
 <tr><td><code>&lt;leader&gt;kA</code></td><td>toggle the alt text popup shown on hover (off by default)</td></tr>
 <tr><td><code>&lt;leader&gt;kp</code></td><td>present the slides, filling the editor (also the header's screen button, on a presentation)</td></tr>
 <tr><td><code>&lt;leader&gt;kP</code></td><td>present the slides full screen</td></tr>
 <tr><td><code>:MepmlExecute</code></td><td>run the code block under the cursor</td></tr>
 <tr><td><code>:MepmlExecuteAll</code></td><td>run every code block</td></tr>
+<tr><td><code>:MepmlVideoToggle</code></td><td>play or pause the <code>\video</code> on (or near) the cursor's row</td></tr>
 <tr><td><code>:MepmlStop</code></td><td>stop the running block under the cursor</td></tr>
 <tr><td><code>:MepmlTerminal</code></td><td>type into the running block's terminal</td></tr>
 <tr><td><code>:MepmlExport</code> [fmt]</td><td>export as <code>fmt</code> (html pdf docx odt rtf md org tex txt all)</td></tr>
@@ -505,8 +506,14 @@ $$
 <p>Maths is typeset in the buffer with the same preview org uses
 (<code>&lt;leader&gt;otl</code> toggles it; it needs <code>tectonic</code> and <code>pdftoppm</code>). While
 the cursor is in a formula its source shows, and what it typesets to
-floats in a popup beside it as you type; <code>&lt;leader&gt;kf</code> (or <code>&lt;leader&gt;otp</code>,
-<code>:MepOrgLatexPopupToggle</code>) turns that popup off and on. An
+floats in a popup in the pane's top right corner, out of the way of the
+text (bottom right while the cursor's own row is under it); the same
+popup shows SVG or HTML written in the document, or printed by a code
+block, while the cursor is in its markup. The popup follows the typing
+after a short pause -- a burst of keystrokes renders once, with the
+render before it up until then -- and changes at once when the cursor
+moves into another formula or block. <code>&lt;leader&gt;kf</code> (or <code>&lt;leader&gt;otp</code>,
+<code>:MepOrgLatexPopupToggle</code>) turns it off and on. An
 <code>\alttext(...)</code> right after a formula says how it is read aloud: a screen
 reader speaks that instead of the symbols (see Accessibility, below). A lone
 dollar amount such as <code>$5</code> is never maths.</p>
@@ -547,6 +554,74 @@ int main() { make_plot().save_svg("plot.svg"); }
 <code>\image(squares.png)</code> line: the editor draws the figure inside the output
 card, and the export shows it as an image. The block's <code>\caption</code> then
 captions the figure.</p>
+<p>A <code>file</code> with a video's extension (<code>.mp4</code>, <code>.m4v</code>, <code>.mov</code>, <code>.webm</code>,
+<code>.mkv</code>, <code>.avi</code>, <code>.ogv</code>) -- or a block with <code>results=video</code> -- makes a
+video instead of a picture. No plot device is opened for it: the program
+writes the file itself (at <code>MEP_FILE</code>, or wherever it likes under the
+document's directory -- the newest file of that extension is taken, as
+for a picture), and the results then hold a <code>\video(anim.mp4)</code> line, which
+the editor plays in place and the HTML export writes as a <code>&lt;video&gt;</code>:</p>
+<pre>```{python, file="figs/orbit.mp4"}
+import os
+from matplotlib import animation, pyplot as plt
+fig, ax = plt.subplots()
+dot, = ax.plot([0], [0], "o")
+ax.set_xlim(-1, 1); ax.set_ylim(-1, 1)
+def step(i):
+    import math
+    dot.set_data([math.cos(i / 10)], [math.sin(i / 10)])
+animation.FuncAnimation(fig, step, frames=63).save(os.environ["MEP_FILE"], fps=20)
+```
+\caption(One orbit)</pre>
+<p>mep plays MP4 files (H.264 video, AAC audio) and Motion-JPEG <code>.mov</code> files
+with its own decoders; a file in another format is named in the figure's
+place, with a note to convert it (=ffmpeg -i in.webm -c:v libx264 -pix_fmt
+yuv420p -c:a aac out.mp4=).</p>
+<h2>Code from a file</h2>
+<p>A block with an <code>include</code> option takes its code from a file instead of
+from the lines between its fences, which stay empty:</p>
+<pre>```{python, include="src/fit.py"}
+```
+
+```{python, include="src/fit.py", lines=12-30}
+```
+
+```{python, include="src/fit.py", region=model, dedent}
+```</pre>
+<p>The path is relative to the document, as an import's is. <code>lines</code> keeps
+part of the file: <code>12-30</code> (1-based, both ends included), <code>12</code> for one
+line, <code>12-</code> to the end, <code>-30</code> from the start. <code>region</code> keeps the lines
+between a marker comment in the file and the <code>endregion</code> after it,
+written in the file's own comment syntax -- <code># region model</code> ...
+<code># endregion</code> in Python, <code>// region model</code> in C++ or JavaScript,
+<code>-- region model</code> in Lua or SQL, <code>%% region model</code> in MATLAB,
+<code>&lt;!-- region model --&gt;</code> in HTML -- so the block follows the code as it
+moves. A <code>lines</code> inside a <code>region</code> counts within the region. <code>dedent</code>
+strips the indentation the lines share, which lets a method be shown
+out of its class.</p>
+<p>Everything that reads the block reads the file: the exports show its
+text, running the block runs it, and the slides and the Org, Markdown
+and HTML outputs carry the code itself rather than the option. A file
+that cannot be read, a range it does not have or a region it lacks is
+an error on the fence.</p>
+<p>In mep the file's lines sit between the fences while the document is
+open -- drawn, run and edited like any other code block, each with the
+file's own line number before it (the gutter's numbers stay the
+document's), so a <code>lines==</code> range can be read off the block -- and go
+back to the file when the document is saved: <code>:w</code> writes the edited lines
+over the ones the block took (a <code>lines==</code> range that the block outgrew
+is rewritten to fit; a region's markers stay where they are), then
+writes the document itself with the fences empty again, so the file
+on disk carries only the option. The save says which files it wrote.
+A file open in another pane shows the new lines, unless that pane has
+unsaved changes of its own, which are left alone. Saving the file in
+mep, or <code>:e</code>, brings the block up to date the other way. A block that
+was edited while its file changed on disk keeps its lines, the save
+says so, and <code>:e!</code> takes the file's instead; until then the lines stay
+in the document, and the fence shows that they differ from the file's.
+The path on the fence is a link to the file (click it, or <code>&lt;leader&gt;kl</code>).
+Lines written between the fences of such a block elsewhere than in mep
+are its code too, with the same note.</p>
 <h2>What the exports show</h2>
 <p>By default an export shows each code block and its results. org-babel's
 <code>exports</code> option changes that: <code>code</code>, <code>results</code>, <code>both</code> or <code>none</code>. Set it
@@ -768,10 +843,14 @@ themselves when the slide is shown and run live on it, code hidden or
 not; they keep running while other slides show, and stop (each leaving
 its picture as its results) when the presentation ends. <code>C-c C-c</code> on a
 slide stops or restarts them.</p>
-<h1>Images and tables</h1>
+<h1>Images, videos and tables</h1>
 <pre>\image(./figures/plot.png)
 \caption(A caption, with *formatting*)
 \alttext(What the image shows)
+
+\video(./figures/orbit.mp4)
+\caption(A figure that plays)
+\alttext(A dot going round a circle)
 
 | Left | Centre | Right |
 | :--- | :----: | ----: |
@@ -784,6 +863,15 @@ slide stops or restarts them.</p>
 the image, table, display maths, code block or SVG/HTML block they describe. Either can
 run over several lines, with its parentheses wherever suits, up to the next
 blank line; the line breaks read as spaces. Images are drawn in the buffer.</p>
+<p>A <code>\video(path)</code> is a figure that plays: the editor draws the clip where a
+picture would be, with a transport bar under it -- click the picture (or
+its play button) to play or pause, drag along the bar to seek. While the
+cursor is in its block (the <code>\video</code> line and its caption, or the code
+block that made it) the source shows instead, and the video pauses. The
+HTML export writes a <code>&lt;video controls&gt;</code> element; the other exports name
+the file in its place. mep decodes MP4 (H.264, with or without AAC audio)
+and Motion-JPEG <code>.mov</code> files itself. A video is numbered among the
+figures, and its <code>\alttext</code> is what a screen reader says for it.</p>
 <p>Figures (images, and code blocks that drew one) and tables are numbered:
 a caption reads "Figure 2: ..." or "Table 1: ..." in the editor and in
 the export alike. In the editor a caption is wrapped to the text width
@@ -847,7 +935,9 @@ the elements of the same name inside it, blank lines and all.</p>
 &lt;/details&gt;</pre>
 <p>In the editor the markup is drawn in place by mep's own HTML engine, laid
 out to the text width; its source comes back while the cursor is inside
-it, as an html result's does. Relative paths in it (an <code>&lt;img src&gt;</code>, a
+it, as an html result's does, and the render moves to the preview popup
+in the pane's top right corner (<code>&lt;leader&gt;kf</code>, see Maths above), where it
+follows the typing after a short pause. Relative paths in it (an <code>&lt;img src&gt;</code>, a
 stylesheet) start from the document's directory.</p>
 <p>An SVG is a figure: numbered, captioned and described by <code>\alttext</code> like
 an image (an empty <code>\alttext()</code> marks it as decoration). HTML is a figure

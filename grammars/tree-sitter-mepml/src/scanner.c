@@ -284,7 +284,7 @@ static void top_depth_add(Scanner *s, int d) {
 
 // The directives written `\name(...)` (or bare, `\toc`) at a line's start.
 static bool is_backslash_directive(const char *name) {
-    static const char *const kNames[] = {"import", "citation", "image", "caption", "alttext", "bibliography", "toc", "abstract"};
+    static const char *const kNames[] = {"import", "citation", "image", "video", "caption", "alttext", "bibliography", "toc", "abstract"};
     for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
         if (strcmp(name, kNames[i]) == 0) return true;
     return false;

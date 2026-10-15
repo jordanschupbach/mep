@@ -183,7 +183,7 @@ heading::markup, callout::markup, cite::markup { color: inherit; }
 callout *::markup { color: inherit; }
 abstract::markup, slide::markup, command::markup, raw::markup, define::markup,
 caption::markup, alt-text::markup,
-image::markup, import::markup, toc::markup, bibliography::markup { color: theme(Cyan, #1b7f86); }
+image::markup, video::markup, import::markup, toc::markup, bibliography::markup { color: theme(Cyan, #1b7f86); }
 box::markup { color: var(--accent); }
 
 /* A line drawn as its source cannot show size: colour hints at it. */

@@ -447,7 +447,7 @@ std::vector<MepmlLspDiagnostic> MepmlLspDiagnostics(const std::vector<std::strin
     for (const Block &b : doc.blocks) {
         if (!b.origin.empty()) continue;
         auto line_len = [&](int line) { return line >= 0 && line < static_cast<int>(lines.size()) ? Len(lines[static_cast<size_t>(line)]) : 0; };
-        if ((b.kind == BlockKind::Image || b.kind == BlockKind::Svg) && b.alt_line < 0)
+        if ((b.kind == BlockKind::Image || b.kind == BlockKind::Video || b.kind == BlockKind::Svg) && b.alt_line < 0)
             add(b.line_start, 0, line_len(b.line_start), MepmlLspSeverity::Hint, "a11y-figure-alt",
                 "figure has no \\alttext(...) for readers who cannot see it (\\alttext() if it only decorates)");
         if (b.kind == BlockKind::Code && !b.result_images.empty() && b.alt_line < 0)
@@ -563,16 +563,20 @@ std::vector<MepmlLspDiagnostic> MepmlLspDiagnostics(const std::vector<std::strin
             }
         }
         // Files a block names.
-        if (files && b.kind == BlockKind::Image && !b.value.empty() && !FileExists(Resolve(opts, b.value))) {
+        if (files && (b.kind == BlockKind::Image || b.kind == BlockKind::Video) && !b.value.empty() && !FileExists(Resolve(opts, b.value))) {
             const KeyRange r = DirectivePathRange(lines[static_cast<size_t>(b.line_start)], b.line_start);
-            add(r.line, r.col_start, r.col_end, MepmlLspSeverity::Warning, "image-missing", "image " + b.value + " does not exist");
+            const bool video = b.kind == BlockKind::Video;
+            add(r.line, r.col_start, r.col_end, MepmlLspSeverity::Warning, video ? "video-missing" : "image-missing",
+                std::string(video ? "video " : "image ") + b.value + " does not exist");
         }
         if (files && b.kind == BlockKind::Code) {
             for (const auto &img : b.result_images) {
                 if (FileExists(Resolve(opts, img.second))) continue;
                 const KeyRange r = DirectivePathRange(lines[static_cast<size_t>(img.first)], img.first);
-                add(r.line, r.col_start, r.col_end, MepmlLspSeverity::Warning, "image-missing",
-                    "figure " + img.second + " does not exist (run the block again to redraw it)");
+                const bool video = mepml::IsVideoPath(img.second);
+                add(r.line, r.col_start, r.col_end, MepmlLspSeverity::Warning, video ? "video-missing" : "image-missing",
+                    std::string(video ? "video " : "figure ") + img.second + " does not exist (run the block again to " +
+                        (video ? "make" : "redraw") + " it)");
             }
         }
         // Tables whose rows disagree about the column count.
@@ -640,6 +644,7 @@ struct Vocab {
 const std::vector<Vocab> &DirectiveVocab() {
     static const std::vector<Vocab> v = {
         {"image", "\\image(path)", "A figure: the picture at path (relative to this file). Follow it with \\caption() and \\alttext()."},
+        {"video", "\\video(path)", "A figure that plays: the video at path (relative to this file) -- an MP4 (H.264, AAC) or a Motion-JPEG .mov. The editor plays it in place, the HTML export writes a <video>. Follow it with \\caption() and \\alttext()."},
         {"caption", "\\caption(text)", "The caption of the image, table, code block or display maths right above. Numbered as Figure N / Table N."},
         {"alttext", "\\alttext(text)", "What stands for the figure, maths or table above for readers who cannot see it: a screen reader reads it in a figure's place, as how a formula is said, as what a table shows. An empty one -- \\alttext() -- under a figure says it only decorates."},
         {"import", "\\import(path)", "Includes another mepml (or .bib) file here: its blocks, citations and options join this document."},
@@ -931,6 +936,10 @@ std::vector<MepmlLspCompletionItem> MepmlLspCompletions(const std::vector<std::s
             Offer(out, typed, col, PathCands(opts, typed, {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp"}));
             return out;
         }
+        if (directive && name == "video") {
+            Offer(out, typed, col, PathCands(opts, typed, {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".ogv"}));
+            return out;
+        }
         if (directive && name == "import") {
             Offer(out, typed, col, PathCands(opts, typed, {".mepml", ".bib"}));
             return out;
@@ -1124,10 +1133,11 @@ MepmlLspHoverInfo MepmlLspHover(const std::vector<std::string> &lines, int line,
             return found(0, Len(l), "Heading, level " + std::to_string(b->level) + "\n\nAnchor: #" + slug + "\nLinks to it: " + std::to_string(links));
         }
         case BlockKind::Image:
+        case BlockKind::Video:
         case BlockKind::Import: {
             if (line != b->line_start) break;
             const std::string path = Resolve(opts, b->value);
-            std::string t = VocabDoc(DirectiveVocab(), b->kind == BlockKind::Image ? "image" : "import") + "\n\n" + path;
+            std::string t = VocabDoc(DirectiveVocab(), b->kind == BlockKind::Image ? "image" : b->kind == BlockKind::Video ? "video" : "import") + "\n\n" + path;
             if (opts.check_files && !FileExists(path)) t += " (does not exist)";
             return found(ind, Len(l), t);
         }
@@ -1354,7 +1364,8 @@ MepmlLspLocation MepmlLspDefinition(const std::vector<std::string> &lines, int l
         loc.path = Resolve(opts, Trim(b->value));
         return loc;
     }
-    if ((b->kind == BlockKind::Image || b->kind == BlockKind::Import) && line == b->line_start && !b->value.empty()) {
+    if ((b->kind == BlockKind::Image || b->kind == BlockKind::Video || b->kind == BlockKind::Import) && line == b->line_start &&
+        !b->value.empty()) {
         loc.found = true;
         loc.path = Resolve(opts, b->value);
         return loc;
@@ -1512,10 +1523,10 @@ std::vector<MepmlLspSymbol> MepmlLspSymbols(const std::vector<std::string> &line
             s.detail = label.empty() ? b.lang : label;
             if (b.code_line_start > 0) s.sel_line = b.code_line_start - 1;  // the fence
             s.sel_col_end = Len(lines[static_cast<size_t>(s.sel_line)]);
-        } else if (b.kind == BlockKind::Image) {
+        } else if (b.kind == BlockKind::Image || b.kind == BlockKind::Video) {
             s.kind = MepmlLspSymbolKind::Object;
             s.name = b.caption.empty() ? b.value : b.caption;
-            s.detail = label.empty() ? "figure" : label;
+            s.detail = label.empty() ? (b.kind == BlockKind::Video ? "video" : "figure") : label;
         } else if (b.kind == BlockKind::Svg || b.kind == BlockKind::Html) {
             s.kind = MepmlLspSymbolKind::Object;
             s.name = b.caption.empty() ? "<" + b.keyword + ">" : b.caption;

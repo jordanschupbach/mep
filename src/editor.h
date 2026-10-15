@@ -1285,8 +1285,21 @@ struct Buffer {
         std::string path;
         int width = 0;
         int height = 0;
+        // A mepml \video(path) (or a code block's video result): the row
+        // draws the clip's current frame and a transport bar under it
+        // (Editor::InlineVideoFor, DrawPane's inline-video branch) rather
+        // than a picture; width/height are the clip's, 0/0 until known.
+        bool video = false;
+        // A video's block (the \video line and its caption, or the code
+        // block whose result it is): while the cursor is inside it the
+        // row shows its source (Editor::MepmlVideoRevealTick).
+        int reveal_first = -1, reveal_last = -1;
     };
     std::unordered_map<int, OrgImageRender> org_image_rows;
+    // Video rows taken out of org_image_rows while the cursor is in their
+    // block, put back when it leaves (MepmlVideoRevealTick). Every
+    // renderer path reads org_image_rows alone, so they all agree.
+    std::unordered_map<int, OrgImageRender> mepml_hidden_videos;
 
     // mepml headings (Editor::MepmlScan): row -> `>` depth, for exactly the
     // rows the parser read as headings -- a `> x` line inside a code block
@@ -3021,6 +3034,64 @@ struct PdfSession {
 // Decoded frames are cached windowed around `current_frame`, evicted
 // outside that window every call to Editor::EnsureVideoFramesDecoded --
 // the exact same lazy/bounded-memory shape as PdfSession::rasters +
+// One \video(path) drawn inside a document (Editor::MepmlScan registers
+// its row in Buffer::org_image_rows with `video` set; DrawPane, main.cpp,
+// draws it), keyed by the file's resolved path so the same clip on several
+// rows, or in several buffers, is decoded once. Two decoders: a Motion-
+// JPEG .mov (mov_container.h, read a frame at a time as VideoSession does)
+// and an MP4 through mp4::Player, whose threads decode H.264 and AAC from
+// the file -- Editor::InlineVideoPoll takes what the clock has reached,
+// paced by the audio device when the clip has sound (as YoutubePoll is),
+// else by wall time. A clip that cannot be decoded keeps `error`, drawn
+// in its place.
+struct InlineVideo {
+    std::string path;
+    enum class Backend { None, Mov, Mp4 } backend = Backend::None;
+    std::string error;  // why it cannot play; "" when it can
+    int width = 0, height = 0;
+    double duration = 0.0;  // seconds
+    bool has_audio = false;
+    long long stamp = 0;  // the file's write time when opened: a rewrite reopens it
+
+    // .mov: the frame index `rgba` holds (-1: none yet).
+    mov::MovFile mov;
+    int mov_frame = -1;
+
+    // .mp4: the player runs while the clip plays, and once at open to
+    // fetch the first frame as its poster (`poster_pending`); it is
+    // stopped and dropped when the clip pauses, so a document full of
+    // clips keeps no decoder threads and no queued frames around.
+    std::unique_ptr<mp4::Player> player;
+    bool poster_pending = false;
+    double start_sec = 0.0;  // where the player was last started
+    gfx::AudioStream audio{};
+    bool audio_open = false;
+    bool audio_unavailable = false;
+    int audio_rate = 0, audio_channels = 0;
+    std::vector<int16_t> audio_scratch;
+    double tail_started_at = 0.0, tail_clock = 0.0;  // the video's tail after the audio ends (see YoutubeSession)
+
+    // Playback: `position` is the media time on screen; while playing
+    // without audio it is wall_base + (now - wall_started_at).
+    bool playing = false;
+    bool ended = false;
+    double position = 0.0;
+    double wall_started_at = 0.0;
+    double wall_base = 0.0;
+    // A drag along the transport bar: the knob follows the mouse
+    // (`scrub_to`) and the clip seeks there when the button is released
+    // (an MP4 restarts its decoder on a seek, too much for every frame of
+    // a drag).
+    bool scrubbing = false;
+    double scrub_to = 0.0;
+
+    // The frame on screen (frame_w x frame_h RGBA); `frame_serial` bumps
+    // whenever it changes, so main.cpp re-uploads only then.
+    std::vector<uint8_t> rgba;
+    int frame_w = 0, frame_h = 0;
+    int frame_serial = 0;
+};
+
 // Editor::EnsurePdfPagesRastered, just windowed around a playhead moving
 // through time instead of a page anchor moving through scroll position.
 // Unlike a PDF page, a given frame index's decoded pixels never change
@@ -6682,6 +6753,30 @@ public:
     // no pane in the active tab is drawing (hidden by ToggleYoutube, or
     // left in another tab), so a video keeps playing while out of sight.
     void YoutubePollOffscreen();
+
+    // --- Videos drawn inside documents (mepml \video(path); see
+    // InlineVideo). DrawPane reads the clip's frame and state through
+    // InlineVideoFor and acts on its controls through the toggle/seek
+    // calls; InlineVideosTick, once per frame from the main loop, keeps
+    // every playing clip moving whether or not a pane draws it. ---
+    /** @brief The clip at `path` (resolved), opened on first use or after the file changed; never null. */
+    InlineVideo *InlineVideoFor(const std::string &path);
+    /** @brief Play when paused or ended (from the start again), pause when playing. */
+    void InlineVideoToggle(InlineVideo &v);
+    /** @brief Moves to `sec` (clamped to the clip), keeping whether it plays. */
+    void InlineVideoSeek(InlineVideo &v, double sec);
+    /** @brief Advances the clip's clock and takes the frame (and audio) it has reached. */
+    void InlineVideoPoll(InlineVideo &v);
+    /** @brief Polls every clip that is playing or still fetching its poster. */
+    void InlineVideosTick();
+    /** @brief Forgets the clip at `path` (a run rewrote the file): the next draw reopens it. */
+    void InlineVideoInvalidate(const std::string &path);
+    /** @brief Plays or pauses the clip on (or nearest, within a few rows of) the cursor's row: the
+     * keyboard's way to the picture's click (:MepmlVideoToggle). False when no clip is near. */
+    bool MepmlVideoToggleAtCursor();
+    /** @brief Once per frame: a video whose block holds the current pane's cursor shows its source
+     * (its row leaves org_image_rows, and it pauses); the others are drawn. */
+    void MepmlVideoRevealTick();
     // Duration of the loaded video in seconds (0 if unknown/live).
     double YoutubeDuration(const YoutubeSession &sess) const;
 
@@ -11577,6 +11672,10 @@ public:
      * @param path The resolved image file path.
      */
     void SetOrgImageRow(int row, const std::string &path);
+    // The same for a mepml \video(path) (or a code block's video result):
+    // the row draws the clip (InlineVideo) with a transport bar under it,
+    // sized from the clip's own dimensions once the file is opened.
+    void SetOrgVideoRow(int row, const std::string &path, int reveal_first = -1, int reveal_last = -1);
     // Corrects a registered row's recorded pixel size in `buffer_id`
     // without re-resolving its path -- DrawPane's own escape hatch for
     // the one case the scan can't see: an image file regenerated in
@@ -11601,8 +11700,12 @@ public:
      * @return The layout every slot-counting site must agree on.
      */
     OrgImageLayout OrgImageLayoutForRow(const Buffer::OrgImageRender &img, int avail_cols) const {
-        return ::OrgImageLayoutFor(img.width, img.height, static_cast<float>(render_char_width_),
-                                   static_cast<float>(render_line_height_), avail_cols, text_width_);
+        OrgImageLayout lay = ::OrgImageLayoutFor(img.width, img.height, static_cast<float>(render_char_width_),
+                                                 static_cast<float>(render_line_height_), avail_cols, text_width_);
+        // A video's transport bar takes the row under its picture (the
+        // picture itself keeps `height`; the bar is one line tall).
+        if (img.video) lay.slots += 1;
+        return lay;
     }
     // Clears every entry -- called by mep.org_image_scan() before
     // rescanning, mirroring ClearFoldsFromProvider's clear-and-replace
@@ -15299,6 +15402,11 @@ private:
     // Keyed by buffer_id -- one entry per open video-playback pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, VideoSession> video_sessions_;
+    // Keyed by resolved path -- the clips mepml documents draw in place
+    // (InlineVideoFor). Dropped when a run rewrites the file
+    // (InlineVideoInvalidate); otherwise kept, a paused clip holding only
+    // its frame.
+    std::unordered_map<std::string, InlineVideo> inline_videos_;
     // Keyed by buffer_id -- one entry per open music-player pane. Unlike the
     // maps above these ARE torn down (the loaded gfx::Sound is unloaded) when
     // the buffer closes, see the erase site in CloseBuffer/DeleteBuffer.

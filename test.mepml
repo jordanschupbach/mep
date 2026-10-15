@@ -75,6 +75,31 @@ echo "Hello, world"
 \image(./filepath/ornament.png)
 \alttext()
 
+// A figure that plays: a file= with a video's extension makes the block's result a
+// \video() line, which the editor plays in place (the HTML export writes a <video>).
+// The program writes the file itself, at $MEP_FILE; no plot device is opened for it.
+```{python, file="orbit.mp4"}
+import math, os
+import matplotlib
+matplotlib.use("Agg")
+from matplotlib import animation, pyplot as plt
+fig, ax = plt.subplots(figsize=(3, 3))
+ax.set_xlim(-1.2, 1.2); ax.set_ylim(-1.2, 1.2); ax.set_aspect("equal")
+dot, = ax.plot([1], [0], "o", markersize=12)
+def step(i):
+    t = 2 * math.pi * i / 60
+    dot.set_data([math.cos(t)], [math.sin(t)])
+    return dot,
+animation.FuncAnimation(fig, step, frames=60).save(os.environ["MEP_FILE"], writer="ffmpeg", fps=20)
+print("saved")
+```
+// result_begin:
+// saved
+// \video(orbit.mp4)
+// result_end
+\caption(One orbit, drawn by Python)
+\alttext(A dot going round a circle)
+
 >>> Heading Level 3
 
 | Col 1 | Col 2 |

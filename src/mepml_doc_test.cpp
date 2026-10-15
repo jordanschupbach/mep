@@ -667,6 +667,12 @@ int main() {
         std::string p;
         CHECK(ResultImagePath("  @image{ x/y.png } ", &p) && p == "x/y.png");
         CHECK(!ResultImagePath("@image{}", &p) && !ResultImagePath("text @image{x}", &p));
+        // A `\video(path)` result line is a figure too, told apart by the flag (and its path).
+        bool video = false;
+        CHECK(ResultImagePath("\\video(figs/orbit.mp4)", &p, &video) && p == "figs/orbit.mp4" && video);
+        CHECK(ResultImagePath("\\image(a.png)", &p, &video) && !video);
+        CHECK(IsVideoPath("figs/orbit.mp4") && IsVideoPath("a/b.MOV") && IsVideoPath("x.webm?v=1") && !IsVideoPath("plot.png") &&
+              !IsVideoPath("dir.mp4/plot.png") && !IsVideoPath("noext"));
         std::vector<std::string> labels = BlockLabels(d);
         CHECK(labels[0] == "Figure 1" && labels[1] == "Figure 2" && labels[2] == "Table 1");
         std::vector<Span> spans = Highlight(d);
@@ -680,6 +686,26 @@ int main() {
         CHECK(html.find("<figcaption>Figure 2: Second</figcaption>") != std::string::npos);
         CHECK(html.find("<caption>Table 1: Tab</caption>") != std::string::npos);
         CHECK(html.find("@image{plot.png}") == std::string::npos);
+        // --- A video: `\video(path)` is a figure that plays -- numbered with
+        //     the pictures, captioned and described like one, a <video> in
+        //     HTML; a block's `// \video(path)` result the same.
+        {
+            Document v = Parse({"\\video(figs/orbit.mp4)", "\\caption(An orbit)", "\\alttext(A dot going round)", "",
+                                "```{python, file=\"anim.mp4\"}", "save()", "```", "// result_begin:", "// \\video(anim.mp4)",
+                                "// result_end", "", "\\image(still.png)", "\\alttext()"});
+            CHECK(v.blocks.size() == 3 && v.blocks[0].kind == BlockKind::Video && v.blocks[0].value == "figs/orbit.mp4");
+            CHECK(v.blocks[0].caption == "An orbit" && v.blocks[0].alt == "A dot going round" && IsFigure(v.blocks[0]));
+            CHECK(v.blocks[1].result_images.size() == 1 && v.blocks[1].result_images[0].second == "anim.mp4");
+            const std::vector<std::string> vl = BlockLabels(v);
+            CHECK(vl[0] == "Figure 1" && vl[1] == "Figure 2" && vl[2] == "Figure 3");
+            const std::string vh = ToHtml(v);
+            CHECK(vh.find("<figure><video controls preload=\"metadata\" src=\"figs/orbit.mp4\" aria-label=\"A dot going round\"></video>"
+                          "<figcaption>Figure 1: An orbit</figcaption></figure>") != std::string::npos);
+            CHECK(vh.find("<figure class=\"result-images\"><video controls preload=\"metadata\" src=\"anim.mp4\"></video>") != std::string::npos);
+            CHECK(vh.find("<img src=\"still.png\" alt=\"\" role=\"presentation\">") != std::string::npos);
+            // (`\video(` is mepml's own, not a call of a user command.)
+            CHECK(Parse({"\\video(x.mp4)"}).blocks[0].kind != BlockKind::Command);
+        }
         // A table scrolls in its own box rather than past the margin; the
         // page is sized for a phone's width.
         CHECK(html.find("<div class=\"table-wrap\"><table><caption>Table 1: Tab</caption>") != std::string::npos);
@@ -1901,6 +1927,12 @@ int main() {
         CHECK(count[BlockKind::Heading] >= 4);
         CHECK(count[BlockKind::Code] >= 4);
         CHECK(count[BlockKind::Image] == 3);
+        // (Its video is a Python block's file= result: a `// \video(orbit.mp4)` line.)
+        bool orbit = false;
+        for (const Block &b : d.blocks)
+            for (const auto &im : b.result_images)
+                if (b.kind == BlockKind::Code && im.second == "orbit.mp4" && IsVideoPath(im.second)) orbit = true;
+        CHECK(orbit);
         CHECK(count[BlockKind::Table] == 4);  // two typed, one GFM, one printed by a block
         CHECK(count[BlockKind::MathBlock] == 3);
         CHECK(count[BlockKind::BoxBegin] == 9 && count[BlockKind::BoxEnd] == 6);  // (the last two: the style sheets' remark and axiom)

@@ -379,6 +379,22 @@ std::string CitationsMepml(const Document &doc) {
 // A figure whose \alttext is empty: it only decorates the page.
 bool Decorative(const Block &b) { return b.alt_line >= 0 && b.alt.empty(); }
 
+// A figure in Markdown: a picture as `![alt](path)`, a video as the HTML
+// element Markdown lets through (no Markdown of its own plays one).
+// What a format that cannot play a video writes in its place: "[video:
+// path]" for a \video, "[video output: path]" for one a code block made
+// (the importer gives that back to the block's results).
+std::string VideoStandIn(const std::string &path, bool result) {
+    return std::string(result ? "[video output: " : "[video: ") + path + "]";
+}
+
+std::string MdFigure(const std::string &path, const std::string &alt) {
+    if (!IsVideoPath(path)) return "![" + alt + "](" + path + ")";
+    std::string a;
+    for (char c : alt) a += c == '"' ? std::string("&quot;") : c == '<' ? std::string("&lt;") : c == '&' ? std::string("&amp;") : std::string(1, c);
+    return "<video controls src=\"" + path + "\"" + (alt.empty() ? "" : " aria-label=\"" + a + "\"") + "></video>";
+}
+
 struct MdWriter {
     const Document &doc;
     std::vector<std::pair<int, std::string>> footnotes;
@@ -516,7 +532,7 @@ struct MdWriter {
                             std::string img;
                             if (ResultImagePath(l, &img)) {
                                 flush_run();
-                                region += "\n\n![" + b.alt + "](" + img + ")";
+                                region += "\n\n" + MdFigure(img, b.alt);
                             } else {
                                 run += (run.empty() ? "" : "\n") + l;
                             }
@@ -531,13 +547,14 @@ struct MdWriter {
                         para("```output\n" + Join(text, "\n") + "\n```");
                     std::string figs;
                     if (show_results)
-                        for (const auto &im : b.result_images) figs += (figs.empty() ? "" : "\n") + ("![" + b.alt + "](" + im.second + ")");
+                        for (const auto &im : b.result_images) figs += (figs.empty() ? "" : "\n") + MdFigure(im.second, b.alt);
                     if (!figs.empty()) para(captioned(figs));
                     else if (!caption.empty() && !out.empty()) para("*" + caption + "*");
                     if (!out.empty()) blocks.push_back(out);
                     break;
                 }
-                case BlockKind::Image: blocks.push_back(captioned("![" + b.alt + "](" + b.value + ")")); break;
+                case BlockKind::Image:
+                case BlockKind::Video: blocks.push_back(captioned(MdFigure(b.value, b.alt))); break;
                 // Markdown keeps HTML as it is -- up to a blank line, which
                 // ends it there: so the markup's own blank lines go.
                 case BlockKind::Svg:
@@ -864,6 +881,7 @@ struct OrgWriter {
                 }
                 // (#+ATTR_HTML's :alt is what Org's own HTML export reads a picture as.)
                 case BlockKind::Image:
+                case BlockKind::Video:
                     blocks.push_back(cap + (b.alt_line >= 0 ? "#+ATTR_HTML: :alt " + b.alt + "\n" : "") + "[[file:" + b.value + "]]");
                     break;
                 case BlockKind::Svg:
@@ -1037,13 +1055,14 @@ struct TextWriter {
                     const std::string lead = show_code ? "    > " : "    ";
                     for (const std::string &rl : show_results ? ResultTextLines(b) : std::vector<std::string>()) {
                         std::string img;
-                        out += lead + (b.result_format.empty() && ResultImagePath(rl, &img) ? "[figure: " + img + "]" : rl) + "\n";
+                        out += lead + (b.result_format.empty() && ResultImagePath(rl, &img) ? (IsVideoPath(img) ? "[video: " : "[figure: ") + img + "]" : rl) + "\n";
                     }
                     if (!out.empty()) out.pop_back();
                     if (!out.empty()) blocks.push_back(out + cap);
                     break;
                 }
                 case BlockKind::Image: blocks.push_back("[figure: " + b.value + "]" + cap); break;
+                case BlockKind::Video: blocks.push_back("[video: " + b.value + "]" + cap); break;
                 case BlockKind::Svg: blocks.push_back("[figure" + (b.alt.empty() ? std::string() : ": " + b.alt) + "]" + cap); break;
                 case BlockKind::Html: {
                     const std::string text = MarkupStandIn(b) + cap;
@@ -1342,6 +1361,13 @@ struct RtfWriter {
     std::vector<bool> lists{};  // \lsN (N = index + 1) -> numbered?
     static std::string Bookmark(const std::string &name) { return "{\\*\\bkmkstart " + name + "}{\\*\\bkmkend " + name + "}"; }
 
+    // A figure: its picture, or -- for a video, which RTF cannot hold --
+    // a centred line naming the file, so the document still says what
+    // belongs there.
+    std::string Figure(const std::string &path, const std::string &alt = "", bool decorative = false, bool result = false) {
+        if (!IsVideoPath(path)) return Picture(path, alt, decorative, result);
+        return Para("\\qc", std::string(result ? "{\\*\\mepmlresult}" : "") + Esc(VideoStandIn(path, result)));
+    }
     // `result`: a picture a code block printed (see the importer's
     // Assembler::Image), marked by an optional destination readers skip.
     std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false, bool result = false) {
@@ -1420,12 +1446,13 @@ struct RtfWriter {
                             std::string img;
                             if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += Para(style + gray, Esc(rl));
                         }
-                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b), true);
+                        for (const auto &im : b.result_images) body += Figure(im.second, b.alt, Decorative(b), true);
                     }
                     if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
                 }
-                case BlockKind::Image: body += Picture(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
+                case BlockKind::Image:
+                case BlockKind::Video: body += Figure(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
                 case BlockKind::Svg:
                 case BlockKind::Html: {
                     // (Its markup rides along in the properties: OfficeProps.)
@@ -1765,6 +1792,12 @@ struct DocxWriter {
     }
     static std::string Style(const std::string &s) { return "<w:pStyle w:val=\"" + s + "\"/>"; }
 
+    // A figure: its picture, or -- for a video, which the document cannot
+    // play -- a centred line naming the file.
+    std::string Figure(const std::string &path, const std::string &alt = "", bool decorative = false, bool result = false) {
+        if (!IsVideoPath(path)) return Picture(path, alt, decorative, result);
+        return P("<w:jc w:val=\"center\"/>", Run(VideoStandIn(path, result), DocxRunFmt{}));
+    }
     // `result`: a picture a code block printed, named "Result N" rather
     // than "Picture N" so the importer gives it back to the block.
     std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false, bool result = false) {
@@ -1862,12 +1895,13 @@ struct DocxWriter {
                             std::string img;
                             if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P(Style("SourceCode"), rl.empty() ? std::string() : Run(rl, out));
                         }
-                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b), true);
+                        for (const auto &im : b.result_images) body += Figure(im.second, b.alt, Decorative(b), true);
                     }
                     if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
                 }
-                case BlockKind::Image: body += Picture(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
+                case BlockKind::Image:
+                case BlockKind::Video: body += Figure(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
                 case BlockKind::Svg:
                 case BlockKind::Html: {
                     // (Its markup rides along in the properties: OfficeProps.)
@@ -2249,6 +2283,12 @@ struct OdtWriter {
         return "<text:p" + (style.empty() ? std::string() : " text:style-name=\"" + style + "\"") + ">" + body + "</text:p>";
     }
 
+    // A figure: its picture, or -- for a video, which the document cannot
+    // play -- a centred line naming the file.
+    std::string Figure(const std::string &path, const std::string &alt = "", bool decorative = false, bool result = false) {
+        if (!IsVideoPath(path)) return Picture(path, alt, decorative, result);
+        return P("", Run(VideoStandIn(path, result), OdtFmt{}));
+    }
     // `result`: a picture a code block printed, named "resultN" rather
     // than "imageN" so the importer gives it back to the block.
     std::string Picture(const std::string &path, const std::string &alt = "", bool decorative = false, bool result = false) {
@@ -2331,12 +2371,13 @@ struct OdtWriter {
                             std::string img;
                             if (!b.result_format.empty() || !ResultImagePath(rl, &img)) body += P("Preformatted_20_Text", Run(rl, out));
                         }
-                        for (const auto &im : b.result_images) body += Picture(im.second, b.alt, Decorative(b), true);
+                        for (const auto &im : b.result_images) body += Figure(im.second, b.alt, Decorative(b), true);
                     }
                     if (body.size() > before) body += Caption(labels[bi], b.caption_inlines);
                     break;
                 }
-                case BlockKind::Image: body += Picture(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
+                case BlockKind::Image:
+                case BlockKind::Video: body += Figure(b.value, b.alt, Decorative(b)) + Caption(labels[bi], b.caption_inlines); break;
                 case BlockKind::Svg:
                 case BlockKind::Html: {
                     // (Its markup rides along in the properties: OfficeProps.)
@@ -2988,7 +3029,7 @@ std::vector<std::string> DocumentPictures(const Document &doc) {
         if (std::find(out.begin(), out.end(), p) == out.end()) out.push_back(p);
     };
     for (const Block &b : doc.blocks) {
-        if (b.kind == BlockKind::Image) add(b.value);
+        if (b.kind == BlockKind::Image || b.kind == BlockKind::Video) add(b.value);
         if (b.kind == BlockKind::Code && b.result_format.empty())
             for (const auto &im : b.result_images) add(im.second);
         for (const auto &row : b.rows)

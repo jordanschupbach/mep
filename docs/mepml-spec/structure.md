@@ -42,6 +42,7 @@ content or nothing.
 | `results` | `format` = `text` \| `html` \| `markdown` \| `terminal` \| `gui` | — (markdown: blocks) | `// result_begin:` ... `// result_end` |
 | `math-block` | | — | `$$ ... $$`, `\[ ... \]` |
 | `image` | | — | `\image(path)` |
+| `video` | | — | `\video(path)`: a figure that plays (an MP4 or a Motion-JPEG `.mov`); a code block's `// \video(path)` result line is one too |
 | `svg` | | — (its markup) | `<svg ...>` at the start of a line, up to the line its `</svg>` closes on |
 | `html` | `tag` (the opening tag, lowercase: `div`, `table`, `details` ...) | — (its markup) | a line starting with an HTML block tag, up to the line that element closes on |
 | `caption` | `of` = `figure` \| `table` \| `math` \| `code` | inlines | `\caption(...)` under a block |
@@ -160,8 +161,8 @@ with `::name`:
 A part inherits from its element.
 
 A block that stands for something drawn elsewhere — `\image(path)`,
-`\import(path)`, `\toc`, `\bibliography` — has its whole source line as
-its `::markup`. The entries of a `toc` are `heading[level]` elements inside
+`\video(path)`, `\import(path)`, `\toc`, `\bibliography` — has its whole
+source line as its `::markup`. The entries of a `toc` are `heading[level]` elements inside
 it, those of a `bibliography` hold `cite` and `italic`, so a sheet's rules
 for those reach them (`toc heading[level=1] { ... }`).
 
@@ -178,9 +179,9 @@ inside the author's.
 Counters are structure, not style: a renderer does not choose them.
 
 - `slide[number]`: 1-based, document order.
-- Figures (an `image`, an `svg`, a captioned `html` block, or a `code`
-  block that produced one) share one sequence; tables have their own. Blocks an export leaves out are not
-  numbered.
+- Figures (an `image`, a `video`, an `svg`, a captioned `html` block, or a
+  `code` block that produced one) share one sequence; tables have their
+  own. Blocks an export leaves out are not numbered.
 - `footnote[number]`: 1-based, document order.
 
 A sheet decides the words around a number (`content: "Figure %n"`), never
@@ -203,8 +204,8 @@ every renderer and export carries it as far as its format can:
   screen reader announces first and picks its voice by.
 - **Alternative text.** An `alt-text` (`\alttext(...)`) stands for the
   block it is written under:
-  - under an `image` or an `svg`, or a `code` block that drew a figure, it
-    is read in the picture's place;
+  - under an `image`, a `video` or an `svg`, or a `code` block that drew a
+    figure, it is read in the picture's place (a video's, before it plays);
   - under an `html` block, it describes it -- read before it, as for a
     table;
   - under a `math-block`, or right after inline `math`, it is how the
@@ -213,7 +214,8 @@ every renderer and export carries it as far as its format can:
     equals a over b");
   - under a `table`, it says what the table shows -- a description, read
     before the cells, not instead of them.
-- **Decoration.** An empty `alt-text` (`\alttext()`) under an `image` or an `svg` says
+- **Decoration.** An empty `alt-text` (`\alttext()`) under an `image`, a
+  `video` or an `svg` says
   the picture only decorates the page: it is left out of what is read. This
   is different from no `alt-text` at all, which leaves the picture
   undescribed.

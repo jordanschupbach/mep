@@ -227,6 +227,14 @@ struct Builder {
                     out->push_back(std::move(f));
                     break;
                 }
+                case BlockKind::Video: {
+                    // A figure that plays: read as its \alttext, like a picture.
+                    Node f = Figure(b, -1);
+                    f.tag = "video";
+                    Caption(b, labels[bi], &f);
+                    out->push_back(std::move(f));
+                    break;
+                }
                 case BlockKind::Svg: {
                     // A picture: read as its \alttext, like an image.
                     Node f = Figure(b, -1);
@@ -269,6 +277,7 @@ struct Builder {
                     }
                     for (size_t k = 0; k < b.result_images.size(); ++k) {
                         Node f = Figure(b, b.result_images[k].first);
+                        if (IsVideoPath(b.result_images[k].second)) f.tag = "video";
                         if (k + 1 == b.result_images.size()) Caption(b, labels[bi], &f);
                         out->push_back(std::move(f));
                     }

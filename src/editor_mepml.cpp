@@ -1680,10 +1680,14 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
             buf.mepml_fold_summaries[b.line_start] = std::move(sum);
             buf.mepml_virtual_rows[b.line_start] = std::move(vb);
         }
-        if (b.kind == mepml::BlockKind::Image && !b.value.empty()) {
+        if ((b.kind == mepml::BlockKind::Image || b.kind == mepml::BlockKind::Video) && !b.value.empty()) {
             std::string resolved = OrgResolvePath(b.value);
             std::error_code ec;
-            if (std::filesystem::exists(resolved, ec)) SetOrgImageRow(b.line_start, resolved);
+            if (std::filesystem::exists(resolved, ec)) {
+                // (A video draws its clip, with a transport bar, where a picture would be.)
+                if (b.kind == mepml::BlockKind::Video) SetOrgVideoRow(b.line_start, resolved, b.line_start, b.line_end);
+                else SetOrgImageRow(b.line_start, resolved);
+            }
         }
         // SVG and HTML written in the document: its lines draw as the
         // rendered markup, at the height it lays out to -- its source back
@@ -1722,7 +1726,10 @@ void Editor::MepmlScan(int ns, bool own_diagnostics) {
         for (const auto &img : b.result_images) {
             std::string resolved = OrgResolvePath(img.second);
             std::error_code ec;
-            if (std::filesystem::exists(resolved, ec)) SetOrgImageRow(img.first, resolved);
+            if (!std::filesystem::exists(resolved, ec)) continue;
+            // (A `// \video(...)` result -- a file= with a video's extension -- plays in place.)
+            if (mepml::IsVideoPath(img.second)) SetOrgVideoRow(img.first, resolved, b.line_start, b.line_end);
+            else SetOrgImageRow(img.first, resolved);
         }
         links(b, b.inlines);
         links(b, b.caption_inlines);

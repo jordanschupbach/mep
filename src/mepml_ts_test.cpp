@@ -101,6 +101,7 @@ bool Expected(const mepml::Block &b, Expect *e) {
             e->start = b.code_line_start - 1;
             return true;
         case BlockKind::Image: e->type = "image"; return true;
+        case BlockKind::Video: e->type = "video"; return true;
         case BlockKind::Table: e->type = "table"; return true;
         case BlockKind::Svg: e->type = "svg_block"; return true;
         case BlockKind::Html: e->type = "html_block"; return true;
@@ -181,7 +182,7 @@ void CheckAgreement(TSParser *parser, const Lines &lines, const char *what) {
     // keeps inline comments for prose); only prose ones are compared.
     std::set<int> directive_rows;
     for (const TsNode &n : nodes)
-        if (n.type == "image" || n.type == "import" || n.type == "display_math" || n.type == "bibliography" ||
+        if (n.type == "image" || n.type == "video" || n.type == "import" || n.type == "display_math" || n.type == "bibliography" ||
             n.type == "toc" || n.type == "caption" || n.type == "alttext" || n.type == "slide_open" ||
             n.type == "slide_close" || n.type == "box_close")
             directive_rows.insert(n.start_row);

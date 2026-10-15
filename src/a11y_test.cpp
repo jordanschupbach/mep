@@ -227,6 +227,9 @@ void TestMepml() {
     // An empty \alttext() is decoration; none at all is a problem.
     CHECK(!HasIssue(mepml::Accessibility(mepml::Parse({"//? Title: T", "//? Lang: en", "", "\\image(a.png)", "\\alttext()"})), "figure-alt"));
     CHECK(IssueLine(mepml::Accessibility(mepml::Parse({"\\image(a.png)"})), "figure-alt") == 0);
+    // A video is a figure too: described by its \alttext, or decoration.
+    CHECK(IssueLine(mepml::Accessibility(mepml::Parse({"\\video(a.mp4)"})), "figure-alt") == 0);
+    CHECK(!HasIssue(mepml::Accessibility(mepml::Parse({"//? Title: T", "//? Lang: en", "", "\\video(a.mp4)", "\\alttext(An orbit)"})), "figure-alt"));
     // The editor's presentation view shows a slide to an audience: alt
     // text is not on the page (captions are).
     const std::vector<mepml::PresentationPage> pages = mepml::PresentationPages(

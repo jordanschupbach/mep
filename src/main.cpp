@@ -26481,13 +26481,24 @@ const char *kBuiltinMepml =
     "  local fig = blk.options.file\n"
     "  if fig ~= nil then fig = tostring(fig) end\n"
     "  if fig == '' then fig = nil end\n"
+    // A video: file= with a video's extension (mepml::IsVideoPath's list),
+    // or results=video. No plot device is opened for it -- the program
+    // writes the file itself (its path is $MEP_FILE, as for a picture),
+    // or saves it wherever it likes under the document's directory and
+    // the newest file of that extension is taken -- and a \video() line
+    // joins the results, which the editor plays in place.
+    "  local video = false\n"
+    "  if fig then\n"
+    "    local e = (fig:match('%.([^./]+)$') or ''):lower()\n"
+    "    video = res == 'video' or e == 'mp4' or e == 'm4v' or e == 'mov' or e == 'webm' or e == 'mkv' or e == 'avi' or e == 'ogv'\n"
+    "  end\n"
     "  local fig_path = fig and (fig:sub(1, 1) == '/' and fig or (dir .. '/' .. fig:gsub('^%./', ''))) or nil\n"
     "  local body = mep_mepml_split(blk.code)\n"
     "  local modes = {}\n"
     "  local before, target_before, env = nil, nil, nil\n"
     "  if fig_path then\n"
-    "    modes.graphics = true\n"
-    "    if lang == 'python' and not lang_def.graphics_wrap then\n"
+    "    modes.graphics = not video\n"
+    "    if lang == 'python' and not lang_def.graphics_wrap and not video then\n"
     "      table.insert(body, 1, \"import matplotlib; matplotlib.use('Agg')\")\n"
     "      body[#body + 1] = 'import matplotlib.pyplot as _mep_plt'\n"
     "      body[#body + 1] = string.format('_mep_plt.savefig(%q, bbox_inches=\"tight\")', fig_path)\n"
@@ -26527,7 +26538,7 @@ const char *kBuiltinMepml =
     "      local ok, why = mep_mepml_capture_figure(dir, before, target_before, fig_path, fig)\n"
     "      if ok then\n"
     "        mep.org_image_invalidate(fig_path)  -- a re-run redraws, not a cached texture\n"
-    "        text = text .. (text ~= '' and '\\n' or '') .. '\\\\image(' .. fig .. ')'\n"
+    "        text = text .. (text ~= '' and '\\n' or '') .. (video and '\\\\video(' or '\\\\image(') .. fig .. ')'\n"
     "      else\n"
     "        mep.notify('mepml: ' .. why, 'warn')\n"
     "      end\n"
@@ -26540,6 +26551,11 @@ const char *kBuiltinMepml =
     // the document's block for the slide's, Editor::MepmlPresentRunBlocks).
     "function mep.mepml_run_block_at(row) mep_mepml_run_block(row) end\n"
     "mep.command('MepmlExecute', mep.mepml_execute)\n"
+    // A \video on (or near) the cursor's row plays or pauses, as a click
+    // on its picture does.
+    "mep.command('MepmlVideoToggle', function()\n"
+    "  if not mep.mepml_video_toggle() then mep.notify('No video near the cursor (in its block, the source shows instead)', 'warn') end\n"
+    "end)\n"
     "\n"
     "-- Every code block in the document, top to bottom, each started only once\n"
     "-- the previous one's results are in (so the rows it looks up stay valid).\n"
@@ -40880,6 +40896,140 @@ void PruneVideoFrameTextures(int buffer_id, const VideoSession &sess) {
             ++it;
         }
     }
+}
+
+// The frame of each clip drawn inside a document (InlineVideo, editor.h)
+// as a GPU texture, keyed by the clip's path and re-uploaded only when its
+// frame_serial moves on -- in place when the size is unchanged.
+struct InlineVideoTexture {
+    gfx::Texture2D tex{};
+    int serial = -1;
+    int w = 0, h = 0;
+    bool ok = false;
+};
+std::unordered_map<std::string, InlineVideoTexture> g_inline_video_textures;
+
+/**
+ * @brief The clip's current frame as a texture, uploaded or updated when the frame changed.
+ * @param v The clip.
+ * @return The texture, or nullptr while the clip has no frame yet.
+ */
+const gfx::Texture2D *InlineVideoFrameTexture(const InlineVideo &v) {
+    if (v.rgba.empty() || v.frame_w <= 0 || v.frame_h <= 0) return nullptr;
+    InlineVideoTexture &e = g_inline_video_textures[v.path];
+    if (e.ok && e.serial == v.frame_serial) return &e.tex;
+    if (e.ok && e.w == v.frame_w && e.h == v.frame_h) {
+        gfx::UpdateTexture(e.tex, v.rgba.data());
+    } else {
+        if (e.ok) gfx::UnloadTexture(e.tex);
+        gfx::Image img{};
+        img.data = const_cast<uint8_t *>(v.rgba.data());
+        img.width = v.frame_w;
+        img.height = v.frame_h;
+        img.mipmaps = 1;
+        img.format = gfx::kPixelFormatR8G8B8A8;
+        e.tex = gfx::LoadTextureFromImage(img);
+        e.ok = true;
+        e.w = v.frame_w;
+        e.h = v.frame_h;
+    }
+    e.serial = v.frame_serial;
+    return &e.tex;
+}
+
+// "m:ss" for a transport bar's readout.
+std::string InlineVideoClock(double sec) {
+    const int s = std::max(0, static_cast<int>(std::lround(sec)));
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%d:%02d", s / 60, s % 60);
+    return buf;
+}
+
+/**
+ * @brief Draws a mepml \video(path) row: the clip's frame letterboxed in the figure's box (a click
+ * plays or pauses it), and a one-line transport bar under it -- play/pause, a scrub bar that drags,
+ * and the time readout. `lay` is the row's layout (OrgImageLayoutForRow: the picture's height plus
+ * one line for the bar).
+ * @param img The row's registry entry (its path resolved).
+ * @param lay The row's layout.
+ * @param text_x Left edge of the text column.
+ * @param ly Top of the row.
+ * @param line_height The row height in pixels.
+ * @param is_active Whether the pane is the active one.
+ */
+void DrawInlineVideoRow(const Buffer::OrgImageRender &img, const OrgImageLayout &lay, float text_x, float ly, int line_height,
+                        bool is_active) {
+    InlineVideo *v = g_editor.InlineVideoFor(img.path);
+    const std::string path = img.path;
+    const float x = text_x + lay.offset_x;
+    const float w = std::max(1.0f, lay.width);
+    const float pic_h = std::max(static_cast<float>(line_height), lay.height);
+    const gfx::Rectangle box{x, ly, w, pic_h};
+    gfx::DrawRectangleRec(box, gfx::Black);
+    if (const gfx::Texture2D *tex = InlineVideoFrameTexture(*v)) {
+        const float scale = std::max(0.0f, std::min(w / static_cast<float>(tex->width), pic_h / static_cast<float>(tex->height)));
+        const float dw = static_cast<float>(tex->width) * scale, dh = static_cast<float>(tex->height) * scale;
+        const gfx::Rectangle src{0, 0, static_cast<float>(tex->width), static_cast<float>(tex->height)};
+        const gfx::Rectangle dst{x + (w - dw) / 2.0f, ly + (pic_h - dh) / 2.0f, dw, dh};
+        gfx::DrawTexturePro(*tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+    }
+    const float font_size = MenuFontSize();
+    if (!v->error.empty()) {
+        const std::string msg = "[video: " + v->error + " -- " + path + "]";
+        DrawUiText(msg, gfx::Vector2{x + 6.0f, ly + 4.0f}, font_size, ResolveHlGroup("Warn"));
+    } else if (!v->playing) {
+        // A play mark over a paused clip, as every player shows.
+        const std::string glyph = Utf8FromCodepoint(0xf04b);  // nf-fa-play
+        const float gs = std::min(pic_h * 0.4f, 48.0f);
+        const float gw = MeasureUiText(glyph, gs);
+        DrawUiText(glyph, gfx::Vector2{x + (w - gw) / 2.0f, ly + (pic_h - gs) / 2.0f}, gs, gfx::Fade(gfx::White, 0.75f));
+    }
+    // (On top: the pane's catch-all focus region, registered earlier,
+    // would otherwise win the click -- first match wins.)
+    RegisterClickRegionOnTop(box, [path] { g_editor.InlineVideoToggle(*g_editor.InlineVideoFor(path)); });
+
+    // --- Transport bar: one line under the picture ---
+    const float bar_y = ly + pic_h;
+    const float bar_h = static_cast<float>(line_height);
+    gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(bar_y), static_cast<int>(w), static_cast<int>(bar_h), ResolveHlGroup("MenuBar"));
+    const std::string play_glyph = Utf8FromCodepoint(v->playing ? 0xf04c : 0xf04b);  // nf-fa-pause / nf-fa-play
+    const float btn_w = std::max(28.0f, MeasureUiText(" " + play_glyph + " ", font_size) + 6.0f);
+    const gfx::Rectangle btn{x + 2.0f, bar_y + 1.0f, btn_w, bar_h - 2.0f};
+    gfx::DrawRectangleRec(btn, ResolveHlGroup(is_active ? "TabActive" : "NormalBg"));
+    DrawUiText(play_glyph, gfx::Vector2{btn.x + (btn.width - MeasureUiText(play_glyph, font_size)) / 2.0f, btn.y + (btn.height - font_size) / 2.0f},
+               font_size, ResolveHlGroup("Normal"));
+    RegisterClickRegionOnTop(btn, [path] { g_editor.InlineVideoToggle(*g_editor.InlineVideoFor(path)); });
+
+    const double shown = v->scrubbing ? v->scrub_to : v->position;
+    const std::string status = InlineVideoClock(shown) + " / " + InlineVideoClock(v->duration);
+    const float status_w = MeasureUiText(status, font_size);
+    const float scrub_x = btn.x + btn.width + 8.0f;
+    const float scrub_w = std::max(0.0f, x + w - scrub_x - status_w - 12.0f);
+    const gfx::Rectangle scrub{scrub_x, bar_y + bar_h / 2.0f - 2.0f, scrub_w, 4.0f};
+    gfx::DrawRectangleRec(scrub, ResolveHlGroup("Border"));
+    if (v->duration > 0.0 && scrub_w > 0.0f) {
+        const float t = static_cast<float>(std::clamp(shown / v->duration, 0.0, 1.0));
+        gfx::DrawRectangle(static_cast<int>(scrub.x), static_cast<int>(scrub.y), static_cast<int>(scrub_w * t), static_cast<int>(scrub.height),
+                           ResolveHlGroup("TabActive"));
+        const float knob_x = scrub.x + scrub_w * t;
+        gfx::DrawRectangle(static_cast<int>(knob_x - 2.0f), static_cast<int>(bar_y + 3.0f), 4, static_cast<int>(bar_h - 6.0f), ResolveHlGroup("Normal"));
+    }
+    // A drag along the bar moves the knob; releasing it seeks there
+    // (DrawVideoPane's polling shape, with the seek deferred: an MP4
+    // restarts its decoder on a seek).
+    if (v->error.empty() && v->duration > 0.0 && scrub_w > 0.0f) {
+        const gfx::Vector2 mouse = gfx::GetMousePosition();
+        const bool in_bar = mouse.x >= scrub.x - 4.0f && mouse.x <= scrub.x + scrub_w + 4.0f && mouse.y >= bar_y && mouse.y <= bar_y + bar_h;
+        const bool down = gfx::IsMouseButtonDown(gfx::MouseButton::Left);
+        if (down && (in_bar || v->scrubbing)) {
+            v->scrubbing = true;
+            v->scrub_to = std::clamp(static_cast<double>((mouse.x - scrub.x) / scrub_w), 0.0, 1.0) * v->duration;
+        } else if (!down && v->scrubbing) {
+            v->scrubbing = false;
+            g_editor.InlineVideoSeek(*v, v->scrub_to);
+        }
+    }
+    DrawUiText(status, gfx::Vector2{scrub_x + scrub_w + 6.0f, bar_y + (bar_h - font_size) / 2.0f}, font_size, ResolveHlGroup("Normal"));
 }
 
 /**
@@ -57642,6 +57792,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (img_it != buf.org_image_rows.end()) {
                 const Buffer::OrgImageRender &img = img_it->second;
                 const OrgImageLayout lay = g_editor.OrgImageLayoutForRow(img, row_text_cols);
+                // A mepml \video(path): its clip and transport bar in the
+                // figure's place (Editor::InlineVideoFor).
+                if (img.video) {
+                    DrawInlineVideoRow(img, lay, text_x, ly, line_height, is_active);
+                    visual_slot += lay.slots - 1;
+                    continue;
+                }
                 const gfx::Texture2D *tex = GetOrLoadOrgInlineImageTexture(img.path);
                 if (tex) {
                     // The registry's recorded size is what `lay` was
@@ -64314,6 +64471,10 @@ void UpdateDrawFrame() {
         // YouTube players no pane is drawing (hidden with <leader>yt, or in
         // another tab) still need their per-frame feed to keep playing.
         g_editor.YoutubePollOffscreen();
+        // Videos playing inside documents keep going whether or not a pane draws them.
+        g_editor.InlineVideosTick();
+        // A video whose block holds the cursor shows its source instead.
+        g_editor.MepmlVideoRevealTick();
         // :Mail lists on screen re-sync with the server every few minutes.
         g_editor.MailTick();
         // mepml blocks whose program ended: their final screens become results.
@@ -64576,7 +64737,10 @@ void SetFontSizePx(float px) {
 // live in the anonymous namespace above; lua_env.cpp's own
 // mep.org_image_invalidate binding reaches it through this externally-
 // linked wrapper.
-void InvalidateOrgInlineImageTexture(const std::string &path) { EvictOrgInlineImageTexture(path); }
+void InvalidateOrgInlineImageTexture(const std::string &path) {
+    EvictOrgInlineImageTexture(path);
+    g_editor.InlineVideoInvalidate(path);  // (a block's file= may be a clip)
+}
 
 // mep never calls TraceLog itself -- every message that reaches here is
 // raylib's own internal diagnostic chatter (texture/shader/font load

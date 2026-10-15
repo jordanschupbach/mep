@@ -176,6 +176,7 @@ void TestFiles() {
         "@image{img/gone.png}",  // the older spelling
         "As \\cite(imp) says, see [the notes|notes.pdf].",
         "\\image(im",
+        "\\video(img/gone.mp4)",
     };
     // Style sheets the header names: a missing one, a faulty one, a good one.
     std::ofstream(dir / "good.mepss") << "bold { color: red; }\n";
@@ -197,6 +198,7 @@ void TestFiles() {
     const std::vector<MepmlLspDiagnostic> ds = MepmlLspDiagnostics(doc, opts);
     CHECK(!Has(ds, "image-missing", 1));
     CHECK(Has(ds, "image-missing", 2));
+    CHECK(Has(ds, "video-missing", 5) && !Has(ds, "image-missing", 5));
     CHECK(!Has(ds, "unknown-citation"));  // defined in the import
     CHECK(Has(ds, "missing-file", 3));
     // Definition of an imported citation: the other file.
@@ -243,6 +245,8 @@ void TestCompletion() {
     };
     const std::optional<MepmlLspCompletionItem> d = at("\\im", "\\image");
     CHECK(d && d->insert_text == "image(" && d->replace_start == 1);
+    const std::optional<MepmlLspCompletionItem> vid = at("\\vi", "\\video");
+    CHECK(vid && vid->insert_text == "video(" && vid->replace_start == 1);
     CHECK(at("\\to", "\\toc") && at("\\to", "\\toc")->insert_text == "toc");
     CHECK(!at("text \\im", "\\image").has_value());  // a directive starts its line
     // The older `@` spelling completes to the new one, `@` and all.

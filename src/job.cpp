@@ -192,7 +192,12 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
 #endif
 }
 
-Job::Job(Task task) : is_task_(true) {
+Job::Job(Task task)
+    : Job(TaskEx([t = std::move(task)](const EmitLine &out, const EmitLine &, const std::atomic<bool> &cancelled) {
+          return t ? t(out, cancelled) : -1;
+      })) {}
+
+Job::Job(TaskEx task) : is_task_(true) {
 #if defined(__EMSCRIPTEN__)
     // No threads to lean on here: run it to completion right now. The
     // lines still only reach callbacks via PollAll, as for any job.
@@ -229,17 +234,18 @@ Job::Job(Task task) : is_task_(true) {
 #endif
 }
 
-void Job::RunTask(Task task) {
+void Job::RunTask(TaskEx task) {
     /**
      * @brief Queues one line of the task's output, blocking while the queue is over its cap.
+     * @param is_stderr Whether the line is stderr (JobLine::is_stderr).
      * @param line The line to queue.
      */
-    EmitLine emit = [this](const std::string &line) {
+    auto push = [this](bool is_stderr, const std::string &line) {
         for (;;) {
             {
                 std::lock_guard<std::mutex> lk(mu_);
                 if (pending_.size() < kMaxPendingTaskLines || task_cancelled_.load()) {
-                    pending_.push_back({false, line});
+                    pending_.push_back({is_stderr, line});
                     break;
                 }
             }
@@ -250,11 +256,12 @@ void Job::RunTask(Task task) {
         // come and drain, so don't pay for it on every line.
         if (pending_lines_since_wake_++ % 256 == 0) mep::WakeMainLoop();
     };
-    exit_code_ = task ? task(emit, task_cancelled_) : -1;
+    EmitLine emit = [&push](const std::string &line) { push(false, line); };
+    EmitLine emit_err = [&push](const std::string &line) { push(true, line); };
+    exit_code_ = task ? task(emit, emit_err, task_cancelled_) : -1;
     finished_ = true;
     mep::WakeMainLoop();
 }
-
 Job::~Job() {
     if (is_task_) {
         task_cancelled_ = true;
@@ -595,6 +602,17 @@ int JobManager::SpawnTask(Job::Task task, Callbacks callbacks, const std::string
     entry.debug_cmd = debug_name;
     entry.job = std::make_shared<Job>(std::move(task));
     callbacks.on_stdout_raw = nullptr;  // a task only ever emits lines
+    entry.callbacks = std::move(callbacks);
+    jobs_.push_back(std::move(entry));
+    return jobs_.back().id;
+}
+
+int JobManager::SpawnTaskEx(Job::TaskEx task, Callbacks callbacks, const std::string &debug_name) {
+    Entry entry;
+    entry.id = next_id_++;
+    entry.debug_cmd = debug_name;
+    entry.job = std::make_shared<Job>(std::move(task));
+    callbacks.on_stdout_raw = nullptr;
     entry.callbacks = std::move(callbacks);
     jobs_.push_back(std::move(entry));
     return jobs_.back().id;

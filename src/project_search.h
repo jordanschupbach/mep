@@ -47,6 +47,7 @@ struct Options {
     // '/' matches an entry's name at any depth, like rg's.
     std::vector<std::string> globs;
     std::vector<std::string> paths;  // empty: the cwd, printed without a prefix
+    int max_depth = -1;              // --max-depth/-d: entries deeper than this are skipped (-1: no limit)
 };
 
 /**

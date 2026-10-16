@@ -64,7 +64,7 @@ std::string Stamp(const std::string &path) {
     const auto size = fs::file_size(path, ec);
     const auto time = fs::last_write_time(path, ec);
     if (ec) return path + ":?";
-    return path + ":" + std::to_string(size) + ":" + std::to_string(time.time_since_epoch().count());
+    return path + ":" + std::to_string(size) + ":" + std::to_string(static_cast<long long>(time.time_since_epoch().count()));
 }
 
 std::vector<std::string> SplitPath(const std::string &s) {

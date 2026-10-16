@@ -217,8 +217,9 @@ help: build-native
     shopt -s nullglob
     # The Lua API reference is generated from src/lua_env.cpp's own binding
     # table -- ~445 entries is not something to hand-maintain -- so refresh
-    # those sources before exporting anything.
-    python3 scripts/gen_reference_pages.py
+    # those sources before exporting anything (tools/gen_reference_pages.cpp).
+    cmake --build {{native_build_dir}} --target mep-gen-reference-pages
+    ./{{native_build_dir}}/mep-gen-reference-pages
     for src in help/*.org; do
         # _-prefixed sources are not pages: help/_template.org is the
         # starting point a new page is copied from, and would otherwise
@@ -250,8 +251,10 @@ readme: build-native
 # much of mep's command/<leader> surface the manual actually mentions.
 # Coverage is reported but only enforced with --strict, since the manual is
 # being written incrementally (plans/HELP_DOCS_PLAN.md).
+# The checker is tools/check_help.cpp, built on demand as mep-check-help.
 help-check *ARGS: build-native
-    python3 scripts/check_help.py {{native_build_dir}}/mep {{ARGS}}
+    cmake --build {{native_build_dir}} --target mep-check-help
+    ./{{native_build_dir}}/mep-check-help {{native_build_dir}}/mep {{ARGS}}
 
 # Bump the devShell's datamunge input (and so its language bindings) to the
 # latest commit on github:jordanschupbach/datamunge (main). Takes effect on the
@@ -359,8 +362,13 @@ install-app prefix=(env("HOME") / ".local") dest=(env("HOME") / "Applications"):
     write_plist "$app" com.mep.launcher '
       <key>LSUIElement</key><true/>'
     # LSUIElement: the launcher shows no Dock tile -- mep, its child, has its own.
+    # NSMicrophoneUsageDescription: speech-to-text records the microphone
+    # in-process (src/audio_capture_macos.mm). The inner bundle is mep's
+    # responsible app, and without this key macOS kills mep outright the
+    # first time it would ask for microphone access.
     write_plist "$inner" com.mep.editor '
-      <key>LSUIElement</key><true/>'
+      <key>LSUIElement</key><true/>
+      <key>NSMicrophoneUsageDescription</key><string>mep records the microphone for speech-to-text dictation.</string>'
     # Signed with the stable certificate, the Accessibility grant survives
     # reinstalls; ad-hoc, it holds until the launcher itself changes.
     if security find-certificate -c "{{macos_sign_identity}}" >/dev/null 2>&1 &&
@@ -406,6 +414,13 @@ clean:
 clean:
     if exist build rmdir /s /q build
 
+# Fails on anything scripts/deps-allowlist.txt does not classify
+# (plans/DEPENDENCY_REMOVAL_PLAN.md, Phase 0). Also part of `just test`.
+# Dependency audit: the libraries mep links and the programs its code runs.
+[unix]
+deps-audit: build-native
+    scripts/deps-audit.sh {{native_build_dir}}/mep
+
 # Build and run every *-test binary that needs no display: the pure
 # DOM/CSS, workspace-helper and collab tests. Exits non-zero on the first
 # failure (each binary aborts on a failed CHECK()).
@@ -424,8 +439,11 @@ test: build-native
     # recipe under `set -e` -- a pre-existing failure, but one that would
     # otherwise mean this check never ran at all.
     echo "== check_help"
-    python3 scripts/check_help.py {{native_build_dir}}/mep --strict
-    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
+    cmake --build {{native_build_dir}} --target mep-check-help
+    ./{{native_build_dir}}/mep-check-help {{native_build_dir}}/mep --strict
+    echo "== deps-audit"
+    scripts/deps-audit.sh {{native_build_dir}}/mep
+    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then
@@ -505,15 +523,16 @@ bench-mepml *args: build-native
 # The tests that drive a real `mep` window: the agent-RPC test (spawns
 # mep, needs a display and a working GL driver -- under Xvfb that means a
 # GPU-capable/llvmpipe driver; the sandbox WORKSPACES_PLAN.md was written
-# in segfaults in raylib's InitWindow) and the MCP server end-to-end test
-# (deno, same display requirement since it spawns mep too). Builds its own
-# EXCLUDE_FROM_ALL target explicitly, same reasoning as `test` above --
+# in segfaults in raylib's InitWindow) and the MCP bridge end-to-end test
+# (mep-mcp-live-test: spawns mep plus mep-mcp, same display requirement).
+# Builds its own EXCLUDE_FROM_ALL targets explicitly, same reasoning as
+# `test` above --
 # `mep` itself doesn't need this since it's still part of the default
 # `all` build `build-native` already does.
 test-gui: build-native
     #!/usr/bin/env bash
     set -euo pipefail
-    cmake --build {{native_build_dir}} -j --target mep-agent-rpc-test mep-quit-live-test mep-session-restore-test mep-cad-live-test mep-cad-sketch-live-test mep-cad-fem-api-live-test mep-viewer-live-test
+    cmake --build {{native_build_dir}} -j --target mep-agent-rpc-test mep-quit-live-test mep-session-restore-test mep-cad-live-test mep-cad-sketch-live-test mep-cad-fem-api-live-test mep-viewer-live-test mep-mcp mep-mcp-live-test
     echo "== mep-agent-rpc-test"
     "./{{native_build_dir}}/mep-agent-rpc-test" "./{{native_build_dir}}/mep"
     # Quitting: :qa! has to end the process even with children whose
@@ -540,8 +559,10 @@ test-gui: build-native
     # real pane.
     echo "== mep-viewer-live-test"
     "./{{native_build_dir}}/mep-viewer-live-test" "./{{native_build_dir}}/mep"
-    echo "== mcp/server_test.ts"
-    MEP_BINARY="$(realpath {{native_build_dir}}/mep)" deno test --allow-all mcp/server_test.ts
+    # The MCP bridge (mep-mcp) driven over its stdio transport the way an
+    # MCP client drives it, against a real mep behind it.
+    echo "== mep-mcp-live-test"
+    "./{{native_build_dir}}/mep-mcp-live-test" "./{{native_build_dir}}/mep"
     # PDF selection end to end: annotate mode's caret, `v`, `y`, and the
     # passage mep.pdf_selection() hands an AI prompt. That layer is only
     # reachable from a running editor -- the AI client is Lua embedded in
@@ -653,7 +674,8 @@ lint-tidy:
 # tables rather than being called directly, and would be pure noise).
 #
 # Filters compile_commands.json down to mep's own src/ first
-# (scripts/filter_compile_commands.py) so only our own .cpp files are
+# (tools/filter_compile_commands.cpp, the mep-filter-compile-commands
+# host tool) so only our own .cpp files are
 # used as translation units -- but cppcheck (unlike clang-tidy's
 # HeaderFilterRegex) has no concept of "only report diagnostics located
 # in these paths": it happily walks into and reports on any header a
@@ -679,7 +701,8 @@ lint-cppcheck:
     set -euo pipefail
     filtered="$(mktemp --suffix=.json)"
     trap 'rm -f "$filtered"' EXIT
-    python3 scripts/filter_compile_commands.py {{native_build_dir}}/compile_commands.json "$filtered"
+    cmake --build {{native_build_dir}} --target mep-filter-compile-commands
+    ./{{native_build_dir}}/mep-filter-compile-commands {{native_build_dir}}/compile_commands.json "$filtered"
     cppcheck --project="$filtered" \
         --enable=warning,style,performance,portability \
         --suppress=useStlAlgorithm \

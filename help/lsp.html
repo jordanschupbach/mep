@@ -25,8 +25,8 @@ work without servers fighting over one project.</p>
 <tr><td><code>K</code></td><td>hover documentation</td></tr>
 <tr><td><code>gd</code></td><td>go to definition</td></tr>
 <tr><td><code>Q</code></td><td>this line's diagnostics, in a popup</td></tr>
-<tr><td><code>]e</code> / <code>[e</code></td><td>next / previous error, then its popup</td></tr>
-<tr><td><code>]d</code> / <code>[d</code></td><td>next / previous diagnostic (any severity)</td></tr>
+<tr><td><code>]e</code> / <code>[e</code></td><td>next / previous error, its text in a tooltip</td></tr>
+<tr><td><code>]d</code> / <code>[d</code></td><td>next / previous diagnostic (any severity), its text in a tooltip</td></tr>
 <tr><td><code>&lt;leader&gt;dd</code></td><td>every diagnostic in the file, in a picker</td></tr>
 <tr><td><code>&lt;leader&gt;li</code></td><td>go to implementation</td></tr>
 <tr><td><code>&lt;leader&gt;lt</code></td><td>go to type definition</td></tr>
@@ -65,10 +65,13 @@ docstring for everything.</p>
 sign column. <code>Q</code> shows the current line's diagnostics in a popup, and
 <code>:MepDiagShow</code> lists them.</p>
 <p><code>]e</code> and <code>[e</code> jump to the next and previous <b>error</b> in the file (wrapping
-at either end), then pop up that line's errors. For diagnostics of any
-severity -- info, hints and warnings too -- use <code>]d</code> and <code>[d</code>
-(<code>mep.lsp_next_diagnostic</code> / <code>mep.lsp_prev_diagnostic</code>), which just move
-the cursor, with no popup.</p>
+at either end), landing on it, and show that line's errors in full in a
+tooltip at the cursor -- the same tooltip <code>K</code> uses, so it closes on its
+own with the next move (<code>]e</code> again, say) or <code>Escape</code>; <code>Q</code> opens the
+list below when a message is to be copied. For diagnostics of any severity --
+info, hints and warnings too -- use <code>]d</code> and <code>[d</code>
+(<code>mep.lsp_next_diagnostic</code> / <code>mep.lsp_prev_diagnostic</code>), which do the
+same over every diagnostic.</p>
 <p><code>&lt;leader&gt;dd</code> (<code>:MepDiagPicker</code>) lists every diagnostic in the file in the
 fuzzy picker, like <code>/</code> does for lines: one row per diagnostic, sorted by
 position, with its severity and first line of the message. Type to filter,

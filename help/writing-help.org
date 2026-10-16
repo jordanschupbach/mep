@@ -107,7 +107,7 @@ If it says a page is stale, you edited the Org and forgot =just help=.
 
 * Generated pages
 
-Four pages are not written by hand. =scripts/gen_reference_pages.py= builds
+Four pages are not written by hand. =tools/gen_reference_pages.cpp= builds
 the six Lua API pages from =src/lua_env.cpp='s binding table, and the
 command and key indexes from the command and =leader_map= registrations.
 

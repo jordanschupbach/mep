@@ -122,6 +122,15 @@ something you asked for by name.</p>
 <tr><td></td><td><code>:MepGitFetch</code></td><td>fetch</td></tr>
 </table>
 <p>Pushing a branch with no upstream offers to set one.</p>
+<h1>Where git runs</h1>
+<p>Everything local -- status, log, graph, diffs, staging, commit and its
+hooks, branches, checkout, stash, clean, worktrees, fast-forward merges --
+is done by mep's own git implementation, on a background thread, with no
+<code>git</code> program needed. Push, pull and fetch still run the <code>git</code> command, as do
+a merge that is not a fast-forward, a rebase, and a stash that has to be
+merged into local edits. From Lua, <code>mep.git.run(argv, opts, cb)</code> runs a git
+command the same way, and <code>mep.git.use_cli(true)</code> sends everything to the
+<code>git</code> command instead.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="git-hunks.html">Working with hunks</a> -- staging a change smaller than a file.</li>

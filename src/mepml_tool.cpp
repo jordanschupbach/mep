@@ -209,7 +209,7 @@ int Usage() {
                  "  --no-notice leaves out the comment at the top saying the file is generated)\n"
                  "  TEX OPTIONS, for pdf: --tex-engine builtin|system ($MEP_TEX_ENGINE, else builtin)\n"
                  "  and --tex-command tectonic|pdflatex|xelatex|lualatex|latexmk|'ARGV'\n"
-                 "  ($MEP_TEX_COMMAND, else tectonic; in an ARGV %f is the .tex and %o the output dir)\n"
+                 "  ($MEP_TEX_COMMAND, else tectonic; in an ARGV %%f is the .tex and %%o the output dir)\n"
                  "  import to .mepml from: html md org rtf docx odt txt\n");
     return 2;
 }

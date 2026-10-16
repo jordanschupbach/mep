@@ -11233,6 +11233,17 @@ public:
     int MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::string> *argv = nullptr,
                       const std::vector<std::string> &temp_files = {});
     /**
+     * @brief Shows a results=web block's page in mep's own web view (the one :Browser uses), in its results.
+     * @param buffer_id The mepml buffer.
+     * @param fence_row The block's opening fence row (0-based).
+     * @param url The page to load, or "" to load the first http(s) address `server_argv` prints.
+     * @param server_argv The web app's command line (what babel prepared), empty for a plain page; it is stopped with the run.
+     * @param temp_files Files to delete once the run is done.
+     * @return The run's id, or -1 (with a status message) when it cannot start.
+     */
+    int MepmlWebStart(int buffer_id, int fence_row, const std::string &url, const std::vector<std::string> &server_argv,
+                      const std::vector<std::string> &temp_files = {});
+    /**
      * @brief Whether `run_id` is a GUI run (not a terminal one).
      */
     bool MepmlIsGuiRun(int run_id) const { return mepml_guis_.count(run_id) != 0; }
@@ -13769,7 +13780,11 @@ private:
     // Finds-or-creates the buffer for `path` (same filename dedup FindOr-
     // CreateBuffer/OpenImageInPlace use). A non-.blend source imports and
     // registers its Model3DSession synchronously via LoadModel3DFile, same
-    // as always. A .blend source instead registers a placeholder session
+    // as always. A .blend source goes through mep's own reader
+    // (LoadBlendFile, model3d_blend_import.h) the same synchronous way,
+    // unless mep.opt.blend_importer selects the Blender CLI ('blender',
+    // or 'auto' after the builtin reader failed). The CLI path
+    // instead registers a placeholder session
     // (Model3DSession::blend_import_pending = true, empty scene) right
     // away and starts the Blender conversion on a background JobManager
     // job (Model3DFinishBlendImport below completes it from PollAll(), not
@@ -15338,8 +15353,25 @@ private:
         std::vector<std::string> temp_files;
         mep::gui_embed::Rect placed;  // this frame's area (a click outside it takes the keyboard back)
         EmbeddedPointerState pointer;      // (a window mep draws itself)
+        // results=web shown in mep's own web view (MepmlWebStart): the view
+        // (owned by `app`), and the server whose address it waits for.
+        mep::gui_embed::WebView *web_view = nullptr;
+        int server_job = 0;                   // JobManager id, 0 = none (or ended)
+        bool server_url = false;              // the view was pointed at the address it printed
+        std::string server_failure;           // why the page never showed ("" = it did, or still might)
+        std::vector<std::string> server_log;  // what the server printed (the last lines)
     };
     std::map<int, MepmlGuiRun> mepml_guis_;
+    // MepmlGuiStart and MepmlWebStart: `web_url` non-null shows a web view
+    // (loading *web_url, or what `server_argv` prints) instead of starting
+    // `argv` as a program with a window of its own.
+    int MepmlGuiStartImpl(int buffer_id, int fence_row, const std::vector<std::string> *argv,
+                          const std::vector<std::string> &temp_files, const std::string *web_url,
+                          const std::vector<std::string> *server_argv);
+    /** @brief A web run's server printed `line` (MepmlWebStart): the first http(s) address in it is loaded. */
+    void MepmlWebServerLine(int run_id, const std::string &line);
+    /** @brief A web run's server ended: before it named an address, the run ends too, with its output. */
+    void MepmlWebServerExit(int run_id, int code);
     // :exec panes, keyed by buffer id (editor_exec.cpp).
     struct ExecAppSession {
         std::unique_ptr<mep::gui_embed::EmbeddedApp> app;
@@ -15360,6 +15392,8 @@ private:
     mep::gui_embed::WebView *BrowserOf(int buffer_id);
     // Hands a :Browser pane's view the current theme, when it (or the
     // pane's theme on/off) has changed since it was last given one.
+    // mep's colours for a web view; `recolor` false leaves the page its own (only the address bar follows mep's).
+    mep::gui_embed::WebView::Theme BrowserTheme(bool recolor);
     void SyncBrowserTheme(ExecAppSession &sess, mep::gui_embed::WebView &view);
     std::map<int, ExecAppSession> exec_apps_;
     int exec_app_focus_ = -1;  // the :exec buffer whose program holds the keyboard, or -1

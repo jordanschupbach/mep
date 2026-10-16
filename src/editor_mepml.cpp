@@ -4167,6 +4167,22 @@ mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags
 
 int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::string> *argv,
                           const std::vector<std::string> &temp_files) {
+    return MepmlGuiStartImpl(buffer_id, fence_row, argv, temp_files, nullptr, nullptr);
+}
+
+int Editor::MepmlWebStart(int buffer_id, int fence_row, const std::string &url, const std::vector<std::string> &server_argv,
+                          const std::vector<std::string> &temp_files) {
+    if (url.empty() && server_argv.empty()) {
+        status_message_ = "Nothing to show: no page and no web app";
+        RemoveTempFiles(temp_files);
+        return -1;
+    }
+    return MepmlGuiStartImpl(buffer_id, fence_row, nullptr, temp_files, &url, &server_argv);
+}
+
+int Editor::MepmlGuiStartImpl(int buffer_id, int fence_row, const std::vector<std::string> *argv,
+                              const std::vector<std::string> &temp_files, const std::string *web_url,
+                              const std::vector<std::string> *server_argv) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) {
         RemoveTempFiles(temp_files);
         return -1;
@@ -4177,14 +4193,14 @@ int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::s
     for (const mepml::Block &b : doc.blocks)
         if (b.origin.empty() && b.kind == mepml::BlockKind::Code && b.code_line_start - 1 == fence_row) blk = &b;
     const std::string lang = blk ? Lowered(blk->lang) : std::string();
-    if (!blk || (argv ? argv->empty() : lang != "exec-gui" && lang != "gui")) {
+    if (!blk || (!web_url && (argv ? argv->empty() : lang != "exec-gui" && lang != "gui"))) {
         status_message_ = "Not a block whose program has a window (```exec-gui, or results=exec-gui)";
         RemoveTempFiles(temp_files);
         return -1;
     }
     std::string command = blk->code;
     while (!command.empty() && (command.back() == '\n' || command.back() == ' ')) command.pop_back();
-    if (!argv && command.find_first_not_of(" \t\n") == std::string::npos) {
+    if (!argv && !web_url && command.find_first_not_of(" \t\n") == std::string::npos) {
         status_message_ = "The block has nothing to run";
         return -1;
     }
@@ -4205,16 +4221,36 @@ int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::s
         if (!ec && !doc_file.parent_path().empty()) cwd = doc_file.parent_path().string();
     }
     auto app = std::make_unique<mep::gui_embed::EmbeddedApp>(*gui_backend_);
-    const std::vector<std::string> cmd = argv ? *argv : std::vector<std::string>{"/bin/sh", "-c", command};
     std::string error;
-    if (!app->Start(cmd, cwd, &error)) {
-        status_message_ = error;
-        RemoveTempFiles(temp_files);
-        return -1;
+    mep::gui_embed::WebView *web_view = nullptr;
+    if (web_url) {
+        // The page in mep's own web view -- what :Browser shows -- rather
+        // than in a browser program of its own (plans/DEPENDENCY_REMOVAL_PLAN.md).
+        std::unique_ptr<mep::gui_embed::WebView> view = mep::gui_embed::CreateWebView(
+            *gui_backend_, native_window_handle_,
+            [this](const std::string &key, unsigned mods) { return IsReservedChord(key, mods); }, &error);
+        if (!view) {
+            status_message_ = "E-web: " + error;
+            RemoveTempFiles(temp_files);
+            return -1;
+        }
+        // The program's own page, in its own colours.
+        view->SetTheme(BrowserTheme(false));
+        if (!web_url->empty()) view->Load(*web_url);
+        web_view = view.get();
+        app->StartWindow(std::move(view));
+    } else {
+        const std::vector<std::string> cmd = argv ? *argv : std::vector<std::string>{"/bin/sh", "-c", command};
+        if (!app->Start(cmd, cwd, &error)) {
+            status_message_ = error;
+            RemoveTempFiles(temp_files);
+            return -1;
+        }
     }
     const int id = next_mepml_term_++;
     MepmlGuiRun &run = mepml_guis_[id];
     run.app = std::move(app);
+    run.web_view = web_view;
     run.buffer_id = buffer_id;
     run.code = blk->code;
     run.fence_row = fence_row;
@@ -4228,7 +4264,7 @@ int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::s
     run.label = !argv                              ? command.substr(0, command.find('\n'))
                 : (res == "web" || res == "app") ? (lang == "html" ? std::string("web page") : blk->lang + " web app")
                                                  : blk->lang + " program";
-    run.web = res == "web" || res == "app";
+    run.web = web_url || res == "web" || res == "app";
     // A web page is part of what it shows: hovering and dragging reach it
     // without a click to hand it the keyboard first.
     if (run.web) run.app->SetPointerThrough(true);
@@ -4242,6 +4278,19 @@ int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::s
     if (first == last && first > static_cast<int>(buf.lines.size())) first = last = static_cast<int>(buf.lines.size());
     ReplaceLinesAt(buffer_id, first, last, {"// result_begin: gui", "// [running] " + run.label, "// result_end"});
     run.results_end = first + 2;
+    if (web_url && web_url->empty() && server_argv && !server_argv->empty()) {
+        // The web app: started here, and its page loaded once it prints
+        // where it listens (Shiny's "Listening on http://127.0.0.1:...").
+        JobManager::Callbacks cb;
+        cb.on_stdout = [this, id](const std::string &line) { MepmlWebServerLine(id, line); };
+        cb.on_stderr = [this, id](const std::string &line) { MepmlWebServerLine(id, line); };
+        cb.on_exit = [this, id](int code) { MepmlWebServerExit(id, code); };
+        run.server_job = JobManager::Instance().Spawn(*server_argv, cwd, std::move(cb));
+        if (run.server_job == 0) {
+            run.server_failure = "[could not start " + (*server_argv)[0] + "]";
+            run.app->Stop();
+        }
+    }
     status_message_ = "Running " + run.label + " -- its window shows in the results; Enter or a click types into it, C-c C-k stops it";
     return id;
 }
@@ -4319,12 +4368,18 @@ void Editor::MepmlGuisTick() {
         MepmlGuiRun &run = it->second;
         if (run.buffer_id < 0 || run.buffer_id >= static_cast<int>(buffers_.size())) {
             if (mepml_gui_focus_ == it->first) mepml_gui_focus_ = -1;
+            if (run.server_job != 0) JobManager::Instance().Kill(run.server_job);
             run.app.reset();
             RemoveTempFiles(run.temp_files);
             it = mepml_guis_.erase(it);
             continue;
         }
         run.app->Tick(now_, waiting == 1);
+        if (run.server_job != 0 && !run.server_url && run.server_failure.empty() && run.app->StartedAt() >= 0 &&
+            now_ - run.app->StartedAt() > 120.0) {
+            run.server_failure = "[no web address after two minutes]";
+            run.app->Stop();
+        }
         if (run.app->TakeFocusGained()) {
             // A web page (or, on macOS, any program) clicked into: it has the keyboard now.
             mepml_gui_focus_ = it->first;
@@ -4374,9 +4429,14 @@ void Editor::MepmlGuisTick() {
                 }
             }
         }
-        const std::vector<std::string> &out = run.app->Stdout();
+        // (A web app's own output is only worth keeping when its page never showed.)
+        static const std::vector<std::string> kNone;
+        const std::vector<std::string> &out =
+            !run.web_view ? run.app->Stdout() : (run.server_failure.empty() ? kNone : run.server_log);
         for (size_t k = out.size() > 40 ? out.size() - 40 : 0; k < out.size(); ++k) lines.push_back(out[k]);
-        if (run.app->Stops() > 0) {
+        if (!run.server_failure.empty()) {
+            lines.push_back(run.server_failure);
+        } else if (run.app->Stops() > 0) {
             // A web page or app runs until it is stopped: its picture says it all.
             if (!run.web || lines.empty()) lines.push_back("[stopped]");
         } else if (run.app->ExitCode() != 0) {
@@ -4396,6 +4456,7 @@ void Editor::MepmlGuisTick() {
             ReplaceLinesAt(run.buffer_id, first, last, mepml::FormatResults(text));
         }
         if (mepml_gui_focus_ == it->first) mepml_gui_focus_ = -1;
+        if (run.server_job != 0) JobManager::Instance().Kill(run.server_job);
         run.app.reset();
         RemoveTempFiles(run.temp_files);
         it = mepml_guis_.erase(it);
@@ -4404,6 +4465,36 @@ void Editor::MepmlGuisTick() {
     // The :exec panes share the backend (one Pump, above) and the rule
     // about ownerless windows.
     ExecAppsTick(waiting == 1);
+}
+
+void Editor::MepmlWebServerLine(int run_id, const std::string &line) {
+    auto it = mepml_guis_.find(run_id);
+    if (it == mepml_guis_.end()) return;
+    MepmlGuiRun &run = it->second;
+    run.server_log.push_back(line);
+    if (run.server_log.size() > 200) run.server_log.erase(run.server_log.begin());
+    if (run.server_url || !run.web_view) return;
+    size_t at = line.find("http://");
+    const size_t https = line.find("https://");
+    if (https != std::string::npos && (at == std::string::npos || https < at)) at = https;
+    if (at == std::string::npos) return;
+    size_t end = at;
+    while (end < line.size() && !std::strchr(" \t\"'<>", line[end])) ++end;
+    std::string url = line.substr(at, end - at);
+    while (!url.empty() && std::strchr(".,;)]", url.back())) url.pop_back();
+    run.server_url = true;
+    run.web_view->Load(url);
+}
+
+void Editor::MepmlWebServerExit(int run_id, int code) {
+    auto it = mepml_guis_.find(run_id);
+    if (it == mepml_guis_.end()) return;
+    MepmlGuiRun &run = it->second;
+    run.server_job = 0;
+    if (run.server_url) return;  // its page stays, as a browser's would
+    run.server_failure = code == 127 ? "[the program could not be started]"
+                                     : "[the program ended without printing a web address]";
+    run.app->Stop();
 }
 
 // --- The presentation view ---------------------------------------------------

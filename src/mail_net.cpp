@@ -1152,12 +1152,9 @@ void ForgetKeychainSecret(const Account &a) {
 bool MacKeychainWriteLocked(const Account &a, const std::string &secret, std::string *error, bool interactive) {
     using keychain::Status;
     Status del = keychain::Delete(kService, a.email, false);
-    if (del == Status::Denied) {
-        // Made by the `security` command (older mep): that command may delete it.
-        RunProcess({"security", "delete-generic-password", "-s", kService, "-a", a.email}, "", 30000, nullptr);
-        del = keychain::Delete(kService, a.email, false);
-        if (del == Status::Denied && interactive) del = keychain::Delete(kService, a.email, true);  // an older mep build's
-    }
+    // Made by another mep build, or by the `security` command (older mep):
+    // macOS asks once before an item that does not trust this build goes.
+    if (del == Status::Denied && interactive) del = keychain::Delete(kService, a.email, true);
     // Silently first; macOS may want the user's permission before an app
     // adds to the login keychain, which only an interactive save asks for.
     Status st = keychain::Add(kService, a.email, KeychainLabel(a), secret, false);
@@ -1201,27 +1198,16 @@ std::string MacKeychainRead(const Account &a, std::string *error) {
         return secret;
     }
     if (st == Status::Denied) {
-        // Attributes need no permission: they say who made the item.
-        bool marked = false;
-        if (keychain::Probe(kService, a.email, &marked) == Status::Ok && !marked) {
-            // An item the `security` command made (older versions of mep): read it
-            // once that way, then make it mep's own -- after which `security`, like
-            // every other program, has to ask.
-            ProcResult p = RunProcess({"security", "find-generic-password", "-s", kService, "-a", a.email, "-w"}, "",
-                                      30000, nullptr);
-            std::string legacy = FirstLine(p.out);
-            if (p.exit_code == 0 && !legacy.empty()) {
-                std::string ignored;
-                MacKeychainWriteLocked(a, legacy, &ignored, true);
-                CacheKeychainSecret(a, legacy);
-                return legacy;
-            }
-        }
         // Made by another build of mep (an ad-hoc signed binary is a new program
-        // to macOS after every rebuild or install): one dialog, then cached for
-        // the session. "Always Allow" lets this build read it from now on.
+        // to macOS after every rebuild or install) or by the `security` command
+        // (older mep): one dialog, then cached for the session, and rewritten so
+        // it trusts this build alone.
         st = keychain::Read(kService, a.email, true, &secret, &ours);
         if (st == Status::Ok) {
+            if (!ours) {
+                std::string ignored;
+                MacKeychainWriteLocked(a, secret, &ignored, false);
+            }
             CacheKeychainSecret(a, secret);
             return secret;
         }
@@ -1362,7 +1348,7 @@ void ForgetSecret(const Account &a) {
 #if defined(__APPLE__)
     ForgetKeychainSecret(a);
     if (mail::keychain::Delete(kService, a.email, false) == mail::keychain::Status::Denied) {
-        RunProcess({"security", "delete-generic-password", "-s", kService, "-a", a.email}, "", 30000, nullptr);
+        mail::keychain::Delete(kService, a.email, true);
     }
 #elif !defined(_WIN32)
     if (mep::compat::ProgramOnPath("secret-tool")) {

@@ -138,3 +138,16 @@ highlight query, embed it in `src/treesitter_queries.h`, and add a
 `DynamicLanguageTable` entry in `src/treesitter.cpp` naming the
 grammar's `tree_sitter_<name>` symbol — no local grammar source needed,
 since Nix (or the tree-sitter CLI) does the actual compiling.
+
+## Lua
+
+| | |
+|---|---|
+| Source | https://www.lua.org/ftp/lua-5.4.7.tar.gz (SHA-256 `9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30`) |
+| Vendored | `src/*.c`, `src/*.h` minus `lua.c`/`luac.c` (the standalone executables' `main()`), plus `LICENSE` |
+
+Built as the static `lua` library by CMakeLists.txt. It used to be
+downloaded at configure time with `FetchContent`; it lives here so a build
+needs no network (plans/DEPENDENCY_REMOVAL_PLAN.md). To upgrade, replace
+`src/` from the new release tarball (dropping `lua.c`/`luac.c`) and update
+the version here and in flake.nix's `lua5_4` comment.

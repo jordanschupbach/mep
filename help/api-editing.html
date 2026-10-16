@@ -17,12 +17,14 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (244)</h1>
+<h1>The bindings (250)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
 <tr><th>Function</th><th>Does</th></tr>
 <tr><td><code>mep.a11y</code></td><td>the accessibility view of a buffer's document</td></tr>
+<tr><td><code>mep.audio_record_start</code></td><td>starts in-house microphone recording into WAV segments</td></tr>
+<tr><td><code>mep.audio_record_stop</code></td><td>ends an mep.audio_record_start recording (its final segment and on_exit still follow)</td></tr>
 <tr><td><code>mep.border_toggle</code></td><td>hides the menu bar, tab bar and status line together if any is showing, otherwise shows all three</td></tr>
 <tr><td><code>mep.browser</code></td><td>acts on the current pane's web view --</td></tr>
 <tr><td><code>mep.browser_open</code></td><td>a WebKit web view in the current pane</td></tr>
@@ -90,6 +92,7 @@ that it does nothing.</p>
 <tr><td><code>mep.current_pane_id</code></td><td>returns the active pane's id</td></tr>
 <tr><td><code>mep.current_tab_id</code></td><td>returns the active tab's stable id</td></tr>
 <tr><td><code>mep.cursor</code></td><td>returns the current cursor position</td></tr>
+<tr><td><code>mep.defer</code></td><td>calls fn once, on the main thread, after `seconds` -- without blocking the editor (an in-process job that waits; mep.job_kill(id) cancels it before...</td></tr>
 <tr><td><code>mep.doc_view</code></td><td>--</td></tr>
 <tr><td><code>mep.doc_view_toggle</code></td><td>--</td></tr>
 <tr><td><code>mep.filename</code></td><td>--</td></tr>
@@ -147,7 +150,10 @@ that it does nothing.</p>
 <tr><td><code>mep.mepml_video_toggle</code></td><td>plays or pauses the video drawn at (or near) the cursor</td></tr>
 <tr><td><code>mep.mepml_view</code></td><td>whether the current buffer is in mepml view mode</td></tr>
 <tr><td><code>mep.mepml_view_toggle</code></td><td>flips the current mepml buffer's view mode</td></tr>
+<tr><td><code>mep.mepml_web_start</code></td><td>a web page in a block's results</td></tr>
 <tr><td><code>mep.mod1_name</code></td><td>returns the display name of whichever modifier is currently mod1</td></tr>
+<tr><td><code>mep.model3d_set_blend_importer</code></td><td>--</td></tr>
+<tr><td><code>mep.native_file_dialog</code></td><td>the platform's own modal "open file" dialog (file_dialog.h)</td></tr>
 <tr><td><code>mep.panebar_set_visible</code></td><td>shows or hides the header strip above every pane outright</td></tr>
 <tr><td><code>mep.panebar_toggle</code></td><td>shows/hides the header strip above every pane</td></tr>
 <tr><td><code>mep.panebar_visible</code></td><td>returns whether the per-pane header strips are shown</td></tr>

@@ -1,15 +1,13 @@
-// A dependency-free replacement for mcp/server.ts: speaks the Model
-// Context Protocol directly over stdio (newline-delimited JSON-RPC 2.0,
-// per the MCP spec's stdio transport) and relays every tool call onto
-// mep's own agent-control Unix socket (src/agent_rpc.h/.cpp, Content-
-// Length-framed JSON-RPC 2.0, via rpc_framing.h). Exists so that using
-// mep's MCP integration needs nothing beyond a C++ toolchain -- no Deno/
-// Node/npm runtime, no @modelcontextprotocol/sdk, no zod -- since
-// mcp/server.ts turned out to depend on a `deno` binary that isn't
-// guaranteed to be on $PATH outside this project's own `nix develop`
-// shell. mcp/server.ts + mcp/mep_client.ts remain as a reference
-// implementation/fallback; this binary is the one `claude mcp add`
-// should point at going forward (see README.html's setup instructions).
+// mep's MCP server (built as `mep-mcp`): speaks the Model Context
+// Protocol directly over stdio (newline-delimited JSON-RPC 2.0, per the
+// MCP spec's stdio transport) and relays every tool call onto mep's own
+// agent-control Unix socket (src/agent_rpc.h/.cpp, Content-Length-framed
+// JSON-RPC 2.0, via rpc_framing.h). Dependency-free on purpose: using
+// mep's MCP integration needs nothing beyond a C++ toolchain -- no
+// Deno/Node/npm runtime, no @modelcontextprotocol/sdk, no zod. (It
+// replaced an earlier Deno/TypeScript server, since removed.) This is the
+// binary `claude mcp add` points at (see MEP_AGENT_API.md). Its
+// end-to-end test is src/mcp_live_test.cpp (`just test-gui`).
 //
 // Deliberately single-threaded and fully synchronous: an MCP client
 // drives this over stdio one request at a time and waits for each
@@ -21,7 +19,7 @@
 //
 // Not linked against mep_core/raylib (see CMakeLists.txt) -- this talks
 // to an already-running mep purely as an external client of its Unix
-// socket, the same way `socat`, a human, or mcp/mep_client.ts would.
+// socket, the same way `socat` or a human would.
 
 #include "cad_fem_methods.h"
 #include "json.h"
@@ -47,13 +45,11 @@ namespace {
 
 // --- mep agent-socket client ------------------------------------------------
 
-// Mirrors mcp/mep_client.ts's discoverSocketPath(): an explicit
-// MEP_AGENT_SOCKET always wins; otherwise exactly one `*.sock` under
+// An explicit MEP_AGENT_SOCKET always wins; otherwise exactly one `*.sock` under
 // MepAgentSocketDir() (persist.h -- the same helper mep's own
 // src/agent_rpc.cpp binds its listening socket under, so this can never
 // drift out of sync with where mep actually puts it) is used
-// automatically. Zero or several are both errors, same as the JS
-// version, for the same reason: guessing which of several running mep
+// automatically. Zero or several are both errors: guessing which of several running mep
 // windows to drive would be worse than asking.
 std::string DiscoverSocketPath() {
     if (const char *env = std::getenv("MEP_AGENT_SOCKET")) return env;
@@ -84,11 +80,9 @@ std::string DiscoverSocketPath() {
 }
 
 // One persistent connection to mep's agent socket, reconnected on demand
-// after a drop -- mirrors MepClient's own lifecycle (mcp/mep_client.ts)
-// but synchronous throughout instead of promise-based, since this whole
-// process only ever does one thing at a time (see this file's own top
-// comment). `events_`/`parsed_queue_` mirror MepClient's #events/#framer
-// split: parsed_queue_ holds frames read off the wire but not yet
+// after a drop -- synchronous throughout, since this whole process only
+// ever does one thing at a time (see this file's own top comment).
+// parsed_queue_ holds frames read off the wire but not yet
 // classified as "the answer to the call in progress" vs "an unsolicited
 // event.* push"; events_ holds the latter, for mep_poll_events to drain.
 class MepSocket {
@@ -257,11 +251,9 @@ private:
 MepSocket g_mep;
 
 // --- Tool table --------------------------------------------------------
-// One entry per mcp_server.ts registerTool call it mirrors -- keep the
-// two in sync by hand (see this file's own top comment on why both
-// still exist). `input_schema` is a literal JSON Schema object (as raw
-// text, parsed once into the table below) standing in for what the JS
-// side's zod schemas produce; every default value (button="left",
+// One entry per hand-written MCP tool (the CAD/FEM tools are generated
+// separately, below). `input_schema` is a literal JSON Schema object (as
+// raw text, parsed into JSON when tools/list is answered); every default value (button="left",
 // clicks=1, steps=12, ...) is applied by the mep-side C++ handler itself
 // (main.cpp's RegisterUiAutomationMethods, agent_rpc.cpp's Dispatch), not
 // here, so omitting an optional argument is always safe. `rpc_method`
@@ -272,7 +264,7 @@ struct ToolSpec {
     const char *rpc_method;
     const char *description;
     const char *input_schema;  // JSON Schema, as literal text
-    bool read_only;            // matches server.ts's READ_ONLY_METHODS
+    bool read_only;            // never auto-nudges the status badge (see AnnounceWorking)
 };
 
 constexpr const char *kNoInput = R"({"type":"object"})";
@@ -1099,13 +1091,15 @@ Json ToolErrorResult(const std::string &message) {
     return out;
 }
 
-// Mirrors server.ts's own module-scope `lastKnownStatus` and callTool():
-// auto-nudges the tab-bar status badge to "thinking" the moment any
-// non-read-only tool runs right after a stale "done"/unset status, and
-// tracks buffer.insertText/setLine/replaceLines as an implicit "writing"
-// the same way agent_rpc.cpp's own Connection::status auto-transition
-// does -- see server.ts's own comment for the full "reported bug" story
-// behind why this exists.
+// The status this bridge last reported: auto-nudges the tab-bar status
+// badge to "thinking" the moment any non-read-only tool runs right after
+// a stale "done"/unset status, and tracks buffer.insertText/setLine/
+// replaceLines as an implicit "writing" the same way agent_rpc.cpp's own
+// Connection::status auto-transition does. Why it exists (a reported
+// bug): after "done", the badge never moved again on the next question
+// in the same conversation, because nothing forces the model to remember
+// calling mep_set_status("thinking") itself first. Read-only tools
+// (introspection) deliberately leave "done" alone.
 std::string g_last_status;
 
 // --- CAD and FEM tools (plans/CAD_FEM_PLAN.md Part K.3) --------------------
@@ -1288,8 +1282,7 @@ void HandleMessage(const Json &req) {
     WriteMessage(response);
 }
 
-// Best-effort self-identification at startup, mirroring server.ts's own
-// top-level try/catch: a failure here (mep not running yet, ambiguous
+// Best-effort self-identification at startup: a failure here (mep not running yet, ambiguous
 // socket) is logged to stderr but never fatal -- the first real tool
 // call surfaces the same error to the model clearly enough on its own.
 void IdentifyAtStartup() {

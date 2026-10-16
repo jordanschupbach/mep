@@ -1,0 +1,21 @@
+Test fixtures read by mep-blend-import-test and mep-model3d-doc-test.
+
+blend/ -- real .blend files saved by Blender, used unmodified except for the
+container (the "*_zstd" / "*_gzip" ones that Blender itself did not
+compress were compressed with the zstd / gzip command-line tools, which
+Blender reads the same way):
+
+  cube_v502_zstd.blend            tests/scenes/00_extras.blend
+  hierarchy_v502_zstd.blend       tests/scenes/39_parenting_full_hierarchy.blend
+  custom_normals_v400_zstd.blend  tests/scenes/10_custom_normals.blend (zstd -19)
+  mesh_instances_v303_zstd.blend  tests/scenes/25_mesh_instances.blend (zstd -19)
+  parent_inverse_v279_gzip.blend  tests/scenes/06_parent-inverse-anim.blend (gzip -9)
+    from https://github.com/KhronosGroup/glTF-Blender-IO (Apache License 2.0)
+
+  cube_hierarchy_v248_ptr4.blend        test/models/BLEND/CubeHierarchy_248.blend
+  four_materials_v248_ptr4_zstd.blend   test/models/BLEND/4Cubes4Mats_248.blend (zstd -19)
+    from https://github.com/assimp/assimp (BSD 3-Clause License)
+
+zstd/ -- MakeZstdTestData() (src/blend_import_test.cpp) output compressed
+by the reference zstd 1.5.7 CLI with the options in each file name
+(l = level, check = --check, smallblocks = -B4096 --no-content-size).

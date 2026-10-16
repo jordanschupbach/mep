@@ -2684,7 +2684,7 @@ void FlushAgentEvents(Editor &editor, const std::vector<Connection *> &conns) {
 // Removes other mep instances' leftover *.sock files whose listening process
 // is gone -- e.g. mep was killed rather than exiting via :qa! (the only path
 // that runs Stop()'s own unlink). Left in place, a dead file makes
-// mcp/mep_client.ts's discoverSocketPath() glob match more than one socket,
+// mep-mcp's DiscoverSocketPath() (mcp_bridge.cpp) match more than one socket,
 // which it treats as an unresolvable ambiguity (several live mep windows is
 // a real case it refuses to guess between) -- so the MCP server's startup
 // session.identify silently fails and the tab-bar agent chip never appears,

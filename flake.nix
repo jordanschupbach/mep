@@ -142,20 +142,6 @@
         # install dir are checked too (lower priority) -- see
         # DynamicSearchPaths' doc comment in treesitter.cpp for that list.
 
-        # mep's CMakeLists.txt pulls Lua in at configure time via
-        # FetchContent (URL), which needs network access -- fine for `just
-        # build-native` in the devShell, but Nix's build sandbox has none.
-        # Fetched here instead as a regular Nix derivation (network
-        # allowed for fixed-output derivations, verified by hash) and
-        # handed back to the same FetchContent machinery via
-        # FETCHCONTENT_SOURCE_DIR_LUA, so CMakeLists.txt itself needs no
-        # changes. This hash mirrors CMakeLists.txt's own URL_HASH and
-        # must be kept in sync with it.
-        luaTarball = pkgs.fetchurl {
-          url = "https://www.lua.org/ftp/lua-5.4.7.tar.gz";
-          sha256 = "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30";
-        };
-
         # GAP and Maxima have no nixpkgs grammar, so they're built here
         # from their upstream repos. GAP's is gap-system's own (MIT).
         # Maxima's only grammar ships without a license: it's fetched and
@@ -353,20 +339,7 @@
             pkgs.glib-networking  # its TLS: see the devShell's own note
           ];
 
-          # Lua isn't a CMake project of its own (see CMakeLists.txt's own
-          # comment: it globs src/*.c by hand), so FetchContent just needs
-          # the tarball extracted somewhere on disk -- unpack it ourselves
-          # since FETCHCONTENT_FULLY_DISCONNECTED skips that step.
-          # cmakeFlagsArray (not cmakeFlags) because $NIX_BUILD_TOP's value
-          # isn't known until the build runs.
-          preConfigure = ''
-            mkdir -p "$NIX_BUILD_TOP/lua-src"
-            tar xzf ${luaTarball} --strip-components=1 -C "$NIX_BUILD_TOP/lua-src"
-            cmakeFlagsArray+=(
-              "-DFETCHCONTENT_SOURCE_DIR_LUA=$NIX_BUILD_TOP/lua-src"
-              "-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
-            )
-          '' + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
+          preConfigure = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
             # CMakeLists.txt pins the system CLT SDK and the host's own
             # macOS version whenever /usr/bin/sw_vers exists, for the
             # Homebrew-LLVM build -- and with the Darwin sandbox off (the
@@ -533,7 +506,7 @@
             # entry here since pkgs.mkShell already puts the default
             # stdenv's C/C++ compiler on PATH (needed to build mep itself).
             # Lua 5.4 (not LuaJIT) to match mep's own vendored interpreter
-            # version exactly (see luaTarball above, lua-5.4.7) -- some
+            # version exactly (third_party/lua, lua-5.4.7) -- some
             # `#+begin_src lua` blocks (e.g. integer-division `//`,
             # bitwise operators) are 5.4 syntax LuaJIT's 5.1-with-
             # extensions dialect doesn't accept.

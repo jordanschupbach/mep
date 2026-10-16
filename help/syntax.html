@@ -38,7 +38,7 @@ than replacing it.</p>
 <tr><th>Command</th><th>Does</th></tr>
 <tr><td><code>:MepSyntax</code></td><td>re-highlight the buffer now</td></tr>
 <tr><td><code>:MepSyntaxFold</code></td><td>build folds from the parse tree</td></tr>
-<tr><td><code>:MepColorize</code></td><td>draw swatches beside colour literals</td></tr>
+<tr><td><code>:MepColorize</code></td><td>colour literals drawn on their colour (automatic)</td></tr>
 </table>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.syntax_auto = <span class="tok-cyan">false</span>   <span class="tok-comment">-- stop the automatic re-highlight</span></code></pre></div>
 <h1>Changing the colours</h1>
@@ -49,9 +49,14 @@ table -- see <a href="highlight-groups.html">Highlight groups</a>.</p>
 in the body, an imported module, a function named rather than called --
 are recoloured over the grammar's own pass. See
 <a href="lsp.html">Language servers</a> for that table.</p>
-<h1>Colour swatches</h1>
-<p><code>:MepColorize</code> finds colour literals -- <code>#ff8800</code>, <code>rgb(...)</code> -- and draws
-the actual colour beside them. Useful in a stylesheet or a theme file.</p>
+<h1>Colour literals</h1>
+<p>A colour literal -- <code>#ff8800</code>, <code>#f80</code>, <code>rgb(255, 136, 0)</code>, <code>rgba(...)</code>,
+or a CSS colour name such as <code>navy</code> or <code>rebeccapurple</code> -- is drawn on
+its own colour, in black or white as reads better on it, in every
+buffer: a stylesheet, a theme file, prose that names a colour. It
+follows the typing. <code>:lua mep.colorize_auto = false</code> turns it off, and
+<code>:MepColorize</code> runs it once by hand; a buffer past 20000 lines is left
+alone.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="highlight-groups.html">Highlight groups</a> -- what the captures resolve to.</li>

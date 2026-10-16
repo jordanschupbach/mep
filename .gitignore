@@ -3,7 +3,10 @@ build/
 compile_commands.json
 mep.nvim
 result
-test/
+# test/ is scratch space, except test/fixtures/ (committed test inputs, e.g.
+# the .blend files mep-blend-import-test reads).
+test/*
+!test/fixtures/
 tmp/
 .ts-grammars/
 examples/gantt_example.gantt.*

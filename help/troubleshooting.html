@@ -43,10 +43,13 @@ format with. See <a href="formatting.html">Formatting</a> for adding one.</p>
 Ruby and Bash are offered only when found. <code>&lt;leader&gt;jK</code> shows which kernel
 a cell is set to.</p>
 <h1>A <code>.blend</code> file opens empty</h1>
-<p>It is still converting. mep runs Blender's own command line on a background
-job, so the pane switches immediately and fills in when the conversion
-finishes. If Blender is not on <code>$PATH</code>, it never will -- that is the one
-3D format that needs an external tool.</p>
+<p>mep reads <code>.blend</code> files itself, so check the notification first: an
+object built entirely by modifiers (a Subdivision or Geometry Nodes stack
+on an almost empty mesh) shows only its base mesh, because the reader does
+not evaluate modifiers. With <code>mep.opt.blend_importer</code> set to ='blender'=
+(or ='auto'= after the reader failed) mep instead runs Blender's own
+command line on a background job; the pane fills in when that conversion
+finishes, and never will if Blender is not on <code>$PATH</code>.</p>
 <h1>The wasm build cannot open files</h1>
 <p>Correct, and expected. Opening <code>build/web/mep.html</code> in a plain browser tab
 has no file bridge behind it, so <code>:e</code>, <code>:w</code> and <code>:source</code> fail with an

@@ -100,7 +100,7 @@ std::string UnpackTexBundle(const std::string &bundle, const std::string &cache_
         return "";
     }
     const std::string key = Hex(pdfcrypt::Md5(fs::absolute(bundle).string() + ":" + std::to_string(size0) + ":" +
-                                              std::to_string(time0.time_since_epoch().count())))
+                                              std::to_string(static_cast<long long>(time0.time_since_epoch().count()))))
                                 .substr(0, 16);
     const std::string dir = cache_dir + "/bundle-" + key;
     if (IsFile(dir + "/.complete")) return dir;

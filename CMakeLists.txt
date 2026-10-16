@@ -49,6 +49,29 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Emscripten's CMake platform file points C++ module dependency scanning at
+# `emscan-deps`, but some emscripten packages (nixpkgs' 6.0.x) ship only
+# `emscan-deps.py` without the shell wrapper every other em* tool gets
+# (which sets EM_CACHE before running the Python). Generate that wrapper
+# in the build tree when it is missing, so scanning works either way.
+if(EMSCRIPTEN AND CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS
+   AND NOT EXISTS "${CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS}"
+   AND EXISTS "${CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS}.py")
+    set(MEP_EMSCAN_DEPS_WRAPPER "${CMAKE_BINARY_DIR}/emscan-deps")
+    set(MEP_EMSCAN_DEPS_SETUP "")
+    if(EXISTS "${EMSCRIPTEN_ROOT_PATH}/locate_cache.sh")
+        set(MEP_EMSCAN_DEPS_SETUP ". \"${EMSCRIPTEN_ROOT_PATH}/locate_cache.sh\"\n")
+    endif()
+    file(WRITE "${MEP_EMSCAN_DEPS_WRAPPER}"
+        "#!/bin/sh\n${MEP_EMSCAN_DEPS_SETUP}exec \"${CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS}.py\" \"$@\"\n")
+    file(CHMOD "${MEP_EMSCAN_DEPS_WRAPPER}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+    # Compiler/Clang-CXX.cmake already baked the old path into the scan
+    # rule during project(), so swap it there as well.
+    string(REPLACE "${CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS}" "${MEP_EMSCAN_DEPS_WRAPPER}"
+        CMAKE_CXX_SCANDEP_SOURCE "${CMAKE_CXX_SCANDEP_SOURCE}")
+    set(CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS "${MEP_EMSCAN_DEPS_WRAPPER}")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -76,7 +99,11 @@ endif()
 # with there (see the APPLE branch of the gfx backend selection below) --
 # injecting them would mix two libc++ header versions, and macOS Clang's
 # own clang-scan-deps finds its headers fine without any of this.
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT APPLE)
+# Never for Emscripten either: emcc reports itself as Clang and APPLE is
+# false there, but it compiles against its own sysroot's libc++ -- GCC's
+# (or, on a macOS host, the Apple SDK's) headers injected here break every
+# wasm compile ("Unsupported architecture").
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT APPLE AND NOT EMSCRIPTEN)
     execute_process(
         COMMAND gcc -E -v -xc++ /dev/null
         ERROR_VARIABLE MEP_GCC_VERBOSE_OUTPUT
@@ -262,9 +289,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MEP_LINKER STREQUAL "default")
     endif()
 endif()
 
-include(FetchContent)
-set(FETCHCONTENT_QUIET FALSE)
-
 # Strict warnings for mep's OWN targets only (mep_core, mep, mep-collabd,
 # the collab/agent-rpc test binaries, mep-amalgam) -- deliberately NOT
 # applied to vendored/fetched third-party targets (lua,
@@ -366,6 +390,12 @@ if(WIN32)
     #     portable code and there is nothing to fix in response to it.
     add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 endif()
+# Emscripten's Clang hits the same PCH-vs-module-BMI mismatch as macOS
+# above (identical "'std::basic_string_view' from module '' is not
+# present" errors), so the web build goes without PCH too.
+if(EMSCRIPTEN)
+    set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
+endif()
 # Default OFF under MSVC: this tree is developed against GCC/Clang with
 # the GNU warning set above, and /W4 flags a large, largely disjoint set
 # of its own (signed/unsigned mismatches in code that is clean under
@@ -373,7 +403,11 @@ endif()
 # inliner, ...). Erroring on all of those would mean the Windows build
 # only ever succeeding after a warning cleanup that has nothing to do
 # with the port. Still opt-in-able with -DMEP_WARNINGS_AS_ERRORS=ON.
-if(MSVC)
+# Also OFF for Emscripten: the wasm-only branches (stubbed-out native
+# features leaving unused parameters/variables, 32-bit size_t narrowing)
+# aren't kept warning-clean by the day-to-day native builds, so -Werror
+# there only ever means a web build that rots between releases.
+if(MSVC OR EMSCRIPTEN)
     option(MEP_WARNINGS_AS_ERRORS "Treat mep's own strict compiler warnings as errors" OFF)
 else()
     option(MEP_WARNINGS_AS_ERRORS "Treat mep's own strict compiler warnings as errors" ON)
@@ -400,19 +434,13 @@ if(CMAKE_BUILD_TYPE STREQUAL "Sanitize")
     set(MEP_SANITIZE_FLAGS -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
 endif()
 
-# Lua has no official CMake build, so it's fetched as a plain tarball and
-# built as a static library by hand: every src/*.c except the two files
-# that provide the standalone `lua`/`luac` executables' own main().
-FetchContent_Declare(
-    lua
-    URL https://www.lua.org/ftp/lua-5.4.7.tar.gz
-    URL_HASH SHA256=9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
-FetchContent_MakeAvailable(lua)
-
+# Lua 5.4.7, vendored under third_party/lua (plans/DEPENDENCY_REMOVAL_PLAN.md:
+# nothing is downloaded at configure time). Built as a static library by
+# hand -- Lua has no official CMake build -- from every src/*.c; the two
+# files with the standalone `lua`/`luac` executables' own main() were
+# never copied in.
+set(lua_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third_party/lua")
 file(GLOB LUA_SOURCES "${lua_SOURCE_DIR}/src/*.c")
-list(REMOVE_ITEM LUA_SOURCES "${lua_SOURCE_DIR}/src/lua.c" "${lua_SOURCE_DIR}/src/luac.c")
 add_library(lua STATIC ${LUA_SOURCES})
 # SYSTEM (not just PUBLIC): makes every consumer's compiler see this as
 # -isystem rather than -I, so mep's own MEP_STRICT_FLAGS/-Werror don't fire
@@ -608,15 +636,14 @@ endif()
 # here: native desktop links gfx/backend_native.cpp, a hand-written X11/
 # GLX implementation (mep owns this dependency directly -- no GLFW at
 # all, see GLFW_REMOVAL_PLAN.md); Emscripten links
-# gfx/backend_native_emscripten_glfw.cpp instead, which still goes
-# through a GLFW-shaped API because `-sUSE_GLFW=3 -sUSE_WEBGL2=1
-# -sFULL_ES3=1` are emcc's own link-time shims over the browser's canvas/
-# input/WebGL2 APIs -- GLFW_REMOVAL_PLAN.md's own Phase 5 explicitly
-# keeps that shim out of scope (there's no in-house version of a
-# browser's own event model worth writing). Neither needs
-# find_package/target_link_libraries for its windowing pieces specifically
-# (X11/OpenGL are found below for the native case; Emscripten's shim needs
-# neither). Declared before mep_core below since mep_core links these
+# gfx/backend_native_emscripten.cpp instead, written straight against
+# emscripten/html5.h (DOM input/resize events) and
+# emscripten_webgl_create_context (a WebGL 2 context) -- no
+# `-sUSE_GLFW=3` emulation layer (DEPENDENCY_REMOVAL_PLAN.md Phase 8).
+# Neither needs find_package/target_link_libraries for its windowing
+# pieces specifically (X11/OpenGL are found below for the native case;
+# the html5/WebGL glue is part of Emscripten's runtime). Declared before
+# mep_core below since mep_core links these
 # sources in directly.
 set(MEP_GFX_NATIVE_SOURCES
     src/gfx/gl_loader.cpp
@@ -635,7 +662,7 @@ set(MEP_GFX_NATIVE_SOURCES
     src/gfx/backend.cpp
 )
 if(EMSCRIPTEN)
-    list(APPEND MEP_GFX_NATIVE_SOURCES src/gfx/backend_native_emscripten_glfw.cpp)
+    list(APPEND MEP_GFX_NATIVE_SOURCES src/gfx/backend_native_emscripten.cpp)
 elseif(WIN32)
     # The Win32/WGL implementor -- the Windows counterpart of
     # backend_native.cpp's X11/GLX layer. OpenGL::GL is opengl32 here,
@@ -674,8 +701,26 @@ endif()
 # translation unit, built here as a static library so touching one module
 # only recompiles that module + relinks, instead of the whole application.
 # main.cpp itself stays a separate translation unit (the driver) linked
-# against this library. See tools/amalgamate.py / the `mep-amalgam` target
+# against this library. See tools/amalgamate.cpp / the `mep-amalgam` target
 # below for an optional single-translation-unit build of the same sources.
+# The in-house git (DEPENDENCY_REMOVAL_PLAN.md Phase 4): no Editor/Lua/
+# JobManager dependency, so mep-git-test links these alone (plus
+# deflate.cpp); git_job.cpp (the JobManager glue) is mep_core-only.
+set(MEP_GIT_SOURCES
+    src/git/sha1.cpp
+    src/git/util.cpp
+    src/git/object.cpp
+    src/git/config.cpp
+    src/git/odb.cpp
+    src/git/repo.cpp
+    src/git/index.cpp
+    src/git/status.cpp
+    src/git/diff.cpp
+    src/git/log.cpp
+    src/git/ops.cpp
+    src/git/cli.cpp
+    src/git/proc.cpp
+)
 add_library(mep_core STATIC
     src/vterm.cpp
     src/regex.cpp
@@ -684,6 +729,11 @@ add_library(mep_core STATIC
     src/image_procgen.cpp
     src/model3d_doc.cpp
     src/model3d_blend_import.cpp
+    # In-house .blend reader (model3d_blend_import.cpp's default importer)
+    # and the zstd decoder it needs for compressed .blend files.
+    src/blend_file.cpp
+    src/blend_scene.cpp
+    src/zstd_decode.cpp
     # CAD kernel + FEM foundations (plans/CAD_FEM_PLAN.md Part 0). Compiled
     # into mep_core so the editor links them directly; the mep-fem solver
     # binary below compiles the solver half again rather than linking
@@ -751,6 +801,10 @@ add_library(mep_core STATIC
     src/cad_fem_api.cpp
     src/cad_fem_methods.cpp
     src/wav_doc.cpp
+    # In-house microphone capture + 16 kHz WAV segments for speech-to-text
+    # (DEPENDENCY_REMOVAL_PLAN.md Phase 5); its macOS backend, the .mm,
+    # is added in the APPLE block below.
+    src/audio_capture.cpp
     # Music-player pane: the WAV path (via wav_doc.cpp above) + dispatch to the
     # vendored mp3/flac/ogg decoders in the mep_audiodec lib below. Strict-clean
     # (it only touches clean headers), so it stays in mep_core.
@@ -879,6 +933,8 @@ add_library(mep_core STATIC
     src/math_speech.cpp
     src/math_markup.cpp
     src/workspace_git.cpp
+    ${MEP_GIT_SOURCES}
+    src/git/git_job.cpp
     ${MEP_GFX_NATIVE_SOURCES}
 )
 # C++20 module (BUILD_PERFORMANCE_PLAN.md Round 2 Phase D): the interface
@@ -961,6 +1017,11 @@ if(NOT EMSCRIPTEN)
         # :Mail's Keychain items, made by mep itself so they trust mep alone.
         target_sources(mep_core PRIVATE src/mail_keychain_macos.cpp)
         target_link_libraries(mep_core PUBLIC "-framework Security" "-framework CoreFoundation")
+        # audio_capture_macos.mm: AudioQueue input; AVFoundation only for the
+        # microphone-permission check (AVCaptureDevice authorization).
+        target_sources(mep_core PRIVATE src/audio_capture_macos.mm)
+        set_source_files_properties(src/audio_capture_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_link_libraries(mep_core PUBLIC "-framework AVFoundation")
     elseif(WIN32)
         # gfx/backend_native_win32.cpp's window/input/WGL-context layer:
         # user32 for the window and message pump, gdi32 for the pixel
@@ -969,6 +1030,8 @@ if(NOT EMSCRIPTEN)
         # mail_net.cpp keeps mail passwords DPAPI-encrypted (CryptProtectData)
         # and listens on 127.0.0.1 for the browser sign-in's redirect.
         target_link_libraries(mep_core PUBLIC crypt32 ws2_32 bcrypt)
+        # audio_capture.cpp's WASAPI capture (CoCreateInstance & co).
+        target_link_libraries(mep_core PUBLIC ole32)
     else()
         # X11::X11: gfx/backend_native.cpp's own X11/GLX window/input/context
         # implementation (GLFW_REMOVAL_PLAN.md) -- GLX itself is part of
@@ -1051,8 +1114,8 @@ if(APPLE)
     # CGWindowList from ApplicationServices, pictures from ScreenCaptureKit
     # (weak: its screenshot API is macOS 14+, checked at run time). WebKit
     # is :Browser's web view in mep's own window (gui_embed_webkit_macos.mm).
-    target_sources(mep_core PRIVATE src/gui_embed_macos.mm src/gui_embed_webkit_macos.mm)
-    set_source_files_properties(src/gui_embed_macos.mm src/gui_embed_webkit_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_sources(mep_core PRIVATE src/gui_embed_macos.mm src/gui_embed_webkit_macos.mm src/file_dialog_macos.mm)
+    set_source_files_properties(src/gui_embed_macos.mm src/gui_embed_webkit_macos.mm src/file_dialog_macos.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     target_compile_definitions(mep_core PRIVATE MEP_GUI_EMBED_MACOS=1)
     target_link_libraries(mep_core PUBLIC "-framework ApplicationServices" "-weak_framework ScreenCaptureKit" "-framework WebKit")
     # X11 programs on a private Xvfb each (gui_embed_xvfb.cpp), layered
@@ -1066,6 +1129,13 @@ if(APPLE)
         target_compile_definitions(mep_core PRIVATE MEP_GUI_EMBED_XVFB=1)
     else()
         message(STATUS "Xlib headers not found (install XQuartz): X11 programs will not embed without Accessibility")
+    endif()
+endif()
+if(NOT APPLE)
+    # file_dialog.h's Windows common dialog (comdlg32), and its no-dialog stub elsewhere.
+    target_sources(mep_core PRIVATE src/file_dialog.cpp)
+    if(WIN32)
+        target_link_libraries(mep_core PUBLIC comdlg32)
     endif()
 endif()
 if(NOT EMSCRIPTEN AND NOT WIN32)
@@ -1133,7 +1203,7 @@ function(mep_add_gfx_native_smoke name main_src)
     target_include_directories(${name} PRIVATE src)
     target_compile_options(${name} PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     if(EMSCRIPTEN)
-        target_link_options(${name} PRIVATE "-sUSE_GLFW=3" "-sUSE_WEBGL2=1" "-sFULL_ES3=1" "-sALLOW_MEMORY_GROWTH=1")
+        target_link_options(${name} PRIVATE "-sMAX_WEBGL_VERSION=2" "-sMIN_WEBGL_VERSION=2" "-sFULL_ES3=1" "-sALLOW_MEMORY_GROWTH=1")
     else()
         target_link_options(${name} PRIVATE ${MEP_SANITIZE_FLAGS})
         if(APPLE)
@@ -1166,6 +1236,38 @@ mep_add_gfx_native_smoke(mep-gfx-native-integration-smoke src/gfx/native_gfx_smo
 # Audio lifecycle smoke test (device init, load, play/pause/resume,
 # IsSoundPlaying, volume, unload) -- see gfx/native_audio_smoke_main.cpp.
 mep_add_gfx_native_smoke(mep-gfx-native-audio-smoke src/gfx/native_audio_smoke_main.cpp)
+
+# Microphone capture: mep::audio (audio_capture.h) on its own, outside
+# mep_core. mep-audio-capture-test needs no microphone (resampler, WAV
+# writer, segment writer) and runs under ctest; mep-audio-capture-smoke
+# records from the real default input and prints peak/RMS per segment.
+set(MEP_AUDIO_CAPTURE_SOURCES src/audio_capture.cpp src/wav_doc.cpp)
+if(APPLE)
+    list(APPEND MEP_AUDIO_CAPTURE_SOURCES src/audio_capture_macos.mm)
+endif()
+foreach(t mep-audio-capture-test mep-audio-capture-smoke)
+    if(t STREQUAL "mep-audio-capture-test")
+        add_executable(${t} EXCLUDE_FROM_ALL src/audio_capture_test.cpp ${MEP_AUDIO_CAPTURE_SOURCES})
+    else()
+        add_executable(${t} EXCLUDE_FROM_ALL src/audio_capture_smoke_main.cpp ${MEP_AUDIO_CAPTURE_SOURCES})
+    endif()
+    target_include_directories(${t} PRIVATE src)
+    target_compile_options(${t} PRIVATE ${MEP_STRICT_FLAGS})
+    target_link_libraries(${t} PRIVATE Threads::Threads)
+    if(APPLE)
+        target_link_libraries(${t} PRIVATE "-framework AudioToolbox" "-framework AVFoundation" "-framework Foundation")
+    elseif(WIN32)
+        target_link_libraries(${t} PRIVATE ole32)
+    elseif(NOT EMSCRIPTEN)
+        target_link_libraries(${t} PRIVATE ALSA::ALSA)
+    endif()
+endforeach()
+if(APPLE)
+    # An embedded Info.plist with NSMicrophoneUsageDescription, so macOS can
+    # show its permission prompt for the bare smoke-test binary.
+    target_link_options(mep-audio-capture-smoke PRIVATE
+        "LINKER:-sectcreate,__TEXT,__info_plist,${CMAKE_SOURCE_DIR}/scripts/audio-capture-smoke-Info.plist")
+endif()
 
 # Music-player decoder smoke test: decodes wav/mp3/flac/ogg via DecodeAudioFile
 # (no audio device). Links the vendored-decoder lib + the WAV path directly.
@@ -1219,7 +1321,7 @@ target_sources(mep-gfx-native-brep-smoke PRIVATE src/cad_topology.cpp src/cad_pc
 add_custom_target(tests)
 add_dependencies(tests mep-gfx-native-integration-smoke mep-gfx-native-audio-smoke mep-gfx-native-model-smoke
     mep-gfx-native-index32-smoke mep-gfx-native-fem-smoke mep-gfx-native-brep-smoke
-    mep-music-decode-smoke mep-music-playback-smoke)
+    mep-music-decode-smoke mep-music-playback-smoke mep-audio-capture-test mep-audio-capture-smoke)
 
 add_executable(mep
     src/main.cpp
@@ -1262,12 +1364,24 @@ if(NOT EMSCRIPTEN AND NOT WIN32 AND NOT APPLE)
     target_link_libraries(mep PRIVATE X11::Xtst X11::X11)
 endif()
 
-# Dependency-free MCP bridge (mcp/server.ts's replacement -- see
-# src/mcp_bridge.cpp's own top comment): a plain external client of
-# mep's agent socket, same as mcp/mep_client.ts or `socat`, so it needs
-# none of mep_core -- just json.h/persist.h/rpc_framing.h and
-# POSIX sockets. Skipped on Emscripten/Windows for the same reason
-# agent_rpc.h's socket support itself is (see that header's own comment).
+# Build/dev host tools (DEPENDENCY_REMOVAL_PLAN.md Phase 9): small C++
+# replacements for the Python scripts the build, `just test` and the
+# routine `just` recipes used to need, so Python is not required to build
+# or test mep. All EXCLUDE_FROM_ALL -- the recipes build each on demand
+# (`cmake --build build/native --target <tool>`); mep-amalgamate is built
+# automatically when the mep-amalgam target needs it. MEP_SOURCE_DIR
+# is the default repository root the help tools read help/ and src/ from.
+#   mep-check-help              `just help-check` / `just test` (was scripts/check_help.py)
+#   mep-gen-reference-pages     `just help` (was scripts/gen_reference_pages.py)
+#   mep-amalgamate              the mep-amalgam target (was tools/amalgamate.py)
+#   mep-filter-compile-commands `just lint-cppcheck` (was scripts/filter_compile_commands.py)
+foreach(_mep_tool check_help gen_reference_pages amalgamate filter_compile_commands)
+    string(REPLACE "_" "-" _mep_tool_target "mep-${_mep_tool}")
+    add_executable(${_mep_tool_target} EXCLUDE_FROM_ALL tools/${_mep_tool}.cpp)
+    target_compile_options(${_mep_tool_target} PRIVATE ${MEP_STRICT_FLAGS})
+    target_compile_definitions(${_mep_tool_target} PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endforeach()
+
 # Part K.4: writes the generated halves of the CAD/FEM reference into
 # MEP_AGENT_API.md and help/cad-fem.org. Links the method table and
 # nothing else, so `just cad-fem-docs` cannot fail for an unrelated
@@ -1276,6 +1390,13 @@ add_executable(mep-cad-fem-docs EXCLUDE_FROM_ALL src/cad_fem_docs_main.cpp src/c
 target_include_directories(mep-cad-fem-docs PRIVATE src)
 target_compile_options(mep-cad-fem-docs PRIVATE ${MEP_STRICT_FLAGS})
 
+# Dependency-free MCP bridge (see src/mcp_bridge.cpp's own top comment):
+# a plain external client of mep's agent socket, same as `socat`, so it
+# needs none of mep_core -- just json.h/persist.h/rpc_framing.h and POSIX
+# sockets (plus the CAD/FEM method table its tool list is generated
+# from). Skipped on Emscripten/Windows for the same reason agent_rpc.h's
+# socket support itself is (see that header's own comment). Its live
+# end-to-end test is mep-mcp-live-test, further down.
 if(NOT EMSCRIPTEN AND NOT WIN32)
     add_executable(mep-mcp src/mcp_bridge.cpp src/cad_fem_methods.cpp)
     target_include_directories(mep-mcp PRIVATE src)
@@ -2728,6 +2849,17 @@ if(NOT EMSCRIPTEN)
     target_compile_options(mep-workspace-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-workspace-test PRIVATE ${MEP_SANITIZE_FLAGS})
     add_dependencies(tests mep-workspace-test)
+
+    # The in-house git (src/git/, DEPENDENCY_REMOVAL_PLAN.md Phase 4),
+    # cross-checked against the real git CLI -- a *test* dependency only:
+    # it builds the scratch repositories and is the oracle. Also runs
+    # status/log against this source tree (MEP_SOURCE_DIR) as a perf check.
+    add_executable(mep-git-test EXCLUDE_FROM_ALL src/git/git_test.cpp ${MEP_GIT_SOURCES} src/deflate.cpp)
+    target_include_directories(mep-git-test PRIVATE src)
+    target_compile_definitions(mep-git-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_compile_options(mep-git-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-git-test PRIVATE ${MEP_SANITIZE_FLAGS})
+    add_dependencies(tests mep-git-test)
 endif()
 
 # MODEL3D.md: covers Scene bookkeeping and the glTF exporter -- the half of
@@ -2744,12 +2876,14 @@ endif()
 # native-only regardless, see MODEL3D_PLAN.md).
 if(NOT EMSCRIPTEN)
     add_executable(mep-model3d-doc-test EXCLUDE_FROM_ALL src/model3d_doc_test.cpp src/model3d_doc.cpp src/wav_doc.cpp src/deflate.cpp
+        src/model3d_blend_import.cpp src/blend_file.cpp src/blend_scene.cpp src/zstd_decode.cpp
         src/png_codec.cpp src/jpeg_codec.cpp src/bmp_codec.cpp src/gif_codec.cpp src/image_codec.cpp
         ${MEP_GFX_NATIVE_SOURCES})
     # Own copy of mep.gfx.model_read_util's FILE_SET -- same reasoning as
     # mep_add_gfx_native_smoke's targets above.
     target_sources(mep-model3d-doc-test PUBLIC FILE_SET CXX_MODULES FILES src/gfx/model_read_util.cppm)
     target_include_directories(mep-model3d-doc-test PRIVATE src)
+    target_compile_definitions(mep-model3d-doc-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     if(APPLE)
         target_link_libraries(mep-model3d-doc-test PRIVATE OpenGL::GL "-framework Cocoa" "-framework AudioToolbox" Threads::Threads)
     elseif(WIN32)
@@ -2764,6 +2898,18 @@ if(NOT EMSCRIPTEN)
     target_link_options(mep-model3d-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
     add_dependencies(tests mep-model3d-doc-test)
 endif()
+
+# The in-house .blend reader (blend_file.cpp: header/blocks/SDNA,
+# blend_scene.cpp: meshes/materials/transforms) and the zstd decoder
+# compressed .blend files need. Pure CPU, links nothing but its own
+# sources; reads the committed fixtures under test/fixtures/.
+add_executable(mep-blend-import-test EXCLUDE_FROM_ALL src/blend_import_test.cpp src/blend_file.cpp src/blend_scene.cpp
+    src/zstd_decode.cpp src/deflate.cpp)
+target_include_directories(mep-blend-import-test PRIVATE src)
+target_compile_definitions(mep-blend-import-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mep-blend-import-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-blend-import-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-blend-import-test)
 
 # Collaboration's WebSocket handshake needs SHA-1.  OpenSSL is the one
 # deliberate native-only dependency permitted for secure transport support;
@@ -2909,6 +3055,18 @@ if(NOT EMSCRIPTEN AND OpenSSL_FOUND)
         target_link_libraries(mep-quit-live-test PRIVATE Threads::Threads)
         add_dependencies(tests mep-quit-live-test)
 
+        # The MCP bridge end to end: spawns a real mep and a real mep-mcp
+        # wrapping it, and drives the bridge over its stdio transport the
+        # way an MCP client does. `./mep-mcp-live-test ./mep` (finds
+        # ./mep-mcp beside it, so build that target too).
+        add_executable(mep-mcp-live-test EXCLUDE_FROM_ALL src/mcp_live_test.cpp)
+        target_include_directories(mep-mcp-live-test PRIVATE src)
+        target_compile_options(mep-mcp-live-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+        target_link_options(mep-mcp-live-test PRIVATE ${MEP_SANITIZE_FLAGS})
+        target_link_libraries(mep-mcp-live-test PRIVATE Threads::Threads)
+        add_dependencies(mep-mcp-live-test mep-mcp)
+        add_dependencies(tests mep-mcp-live-test)
+
 add_executable(mep-cad-live-test EXCLUDE_FROM_ALL src/cad_live_test.cpp)
         target_include_directories(mep-cad-live-test PRIVATE src)
         target_compile_options(mep-cad-live-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -2927,61 +3085,64 @@ add_executable(mep-cad-fem-api-live-test EXCLUDE_FROM_ALL src/cad_fem_api_live_t
 endif()
 
 # `mep-amalgam`: the exact same application as `mep`, but built from one
-# generated translation unit (tools/amalgamate.py concatenates every
+# generated translation unit (tools/amalgamate.cpp, built as the
+# mep-amalgamate host tool, concatenates every
 # module + the collaboration subsystem + the embedded font/query data,
 # in dependency order, with a handful of same-named-but-unrelated symbols
-# disambiguated -- see that script's own comment) instead of mep_core +
+# disambiguated -- see that tool's own comment) instead of mep_core +
 # main.cpp as separate translation units. Not part of the default `all`
 # target -- opt in with `cmake --build . --target mep-amalgam` when the
 # single-file build is actually wanted; every other target already gets
 # mep_core's fast incremental-compile benefit.
 if(NOT EMSCRIPTEN)
-    find_program(MEP_PYTHON3 NAMES python3 python)
-    if(NOT MEP_PYTHON3)
-        message(WARNING "python3 not found -- the mep-amalgam target will not be available")
+    set(MEP_AMALGAM_SRC "${CMAKE_BINARY_DIR}/generated/mep_amalgam.cpp")
+    file(GLOB MEP_AMALGAM_DEPS "${CMAKE_SOURCE_DIR}/src/*.h" "${CMAKE_SOURCE_DIR}/src/*.cpp")
+    add_custom_command(
+        OUTPUT "${MEP_AMALGAM_SRC}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/generated"
+        COMMAND mep-amalgamate "${CMAKE_SOURCE_DIR}/src" "${MEP_AMALGAM_SRC}"
+        DEPENDS mep-amalgamate ${MEP_AMALGAM_DEPS}
+        COMMENT "Generating single-file amalgamated build (tools/amalgamate.cpp)"
+        VERBATIM
+    )
+    # A plain source file (not mep_core, which would duplicate-define every
+    # symbol the generated file already embeds): the same external
+    # libraries mep_core links against, plus OpenSSL for the collaboration
+    # subsystem's SHA-1, since that's folded into the generated file too.
+    add_executable(mep-amalgam EXCLUDE_FROM_ALL "${MEP_AMALGAM_SRC}")
+    target_include_directories(mep-amalgam PRIVATE src)
+    if(APPLE)
+        # Note: the amalgamated source embeds the X11 backend_native.cpp
+        # (tools/amalgamate.cpp folds in src/*.cpp, not the .mm), so this
+        # target isn't actually buildable on macOS -- linked against the
+        # mac frameworks anyway so configuring doesn't trip over the
+        # Linux-only X11::X11 target. It's EXCLUDE_FROM_ALL either way.
+        target_link_libraries(mep-amalgam PRIVATE OpenGL::GL "-framework Cocoa" "-framework AudioToolbox" lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
     else()
-        set(MEP_AMALGAM_SRC "${CMAKE_BINARY_DIR}/generated/mep_amalgam.cpp")
-        file(GLOB MEP_AMALGAM_DEPS "${CMAKE_SOURCE_DIR}/src/*.h" "${CMAKE_SOURCE_DIR}/src/*.cpp")
-        add_custom_command(
-            OUTPUT "${MEP_AMALGAM_SRC}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/generated"
-            COMMAND "${MEP_PYTHON3}" "${CMAKE_SOURCE_DIR}/tools/amalgamate.py" "${CMAKE_SOURCE_DIR}/src" "${MEP_AMALGAM_SRC}"
-            DEPENDS "${CMAKE_SOURCE_DIR}/tools/amalgamate.py" ${MEP_AMALGAM_DEPS}
-            COMMENT "Generating single-file amalgamated build (tools/amalgamate.py)"
-            VERBATIM
-        )
-        # A plain source file (not mep_core, which would duplicate-define every
-        # symbol the generated file already embeds): the same external
-        # libraries mep_core links against, plus OpenSSL for the collaboration
-        # subsystem's SHA-1, since that's folded into the generated file too.
-        add_executable(mep-amalgam EXCLUDE_FROM_ALL "${MEP_AMALGAM_SRC}")
-        target_include_directories(mep-amalgam PRIVATE src)
-        if(APPLE)
-            # Note: the amalgamated source embeds the X11 backend_native.cpp
-            # (tools/amalgamate.py globs src/*.cpp, not the .mm), so this
-            # target isn't actually buildable on macOS -- linked against the
-            # mac frameworks anyway so configuring doesn't trip over the
-            # Linux-only X11::X11 target. It's EXCLUDE_FROM_ALL either way.
-            target_link_libraries(mep-amalgam PRIVATE OpenGL::GL "-framework Cocoa" "-framework AudioToolbox" lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
-        else()
-            target_link_libraries(mep-amalgam PRIVATE OpenGL::GL X11::X11 lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
-        endif()
-        if(NOT WIN32)
-            target_link_libraries(mep-amalgam PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
-        endif()
-        if(NOT WIN32 AND NOT APPLE)
-            target_link_libraries(mep-amalgam PRIVATE ALSA::ALSA)
-        endif()
-        if(WIN32)
-            target_link_libraries(mep-amalgam PRIVATE ws2_32)
-        endif()
+        target_link_libraries(mep-amalgam PRIVATE OpenGL::GL X11::X11 lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(NOT WIN32)
+        target_link_libraries(mep-amalgam PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    endif()
+    if(NOT WIN32 AND NOT APPLE)
+        target_link_libraries(mep-amalgam PRIVATE ALSA::ALSA)
+    endif()
+    if(WIN32)
+        target_link_libraries(mep-amalgam PRIVATE ws2_32)
     endif()
 endif()
 
 if(EMSCRIPTEN)
     set(CMAKE_EXECUTABLE_SUFFIX ".html")
     target_link_options(mep PRIVATE
-        "-sUSE_GLFW=3"
+        # WebGL 2 (GLES 3): gl_shader.cpp's shaders are "#version 300 es"
+        # and backend_native_emscripten.cpp asks for a version-2 context,
+        # which Emscripten's GL library only supports when linked for it.
+        # (Before these flags the GLFW-era build got a WebGL 1 context,
+        # every shader failed to compile and the page stayed blank.)
+        "-sMAX_WEBGL_VERSION=2"
+        "-sMIN_WEBGL_VERSION=2"
+        "-sFULL_ES3=1"
         # No -sASYNCIFY: src/editor.cpp's file-bridge calls use synchronous
         # XHR (blocking the JS main thread directly) rather than an
         # awaited fetch(), specifically to avoid linking Asyncify at all --
@@ -2996,6 +3157,14 @@ if(EMSCRIPTEN)
         "-sSINGLE_FILE=1"
         "--shell-file=${CMAKE_SOURCE_DIR}/web/shell.html"
     )
+    # Emscripten 4.0.18 switched SINGLE_FILE's wasm embedding from base64
+    # to raw bytes in a UTF-8 string literal. mep's data segments contain
+    # literal "</script>" text (HTML export templates), which ends the
+    # inline <script> element early, so the page dies with "'' literal not
+    # terminated". Keep the base64 encoding, which can't contain '<'.
+    if(EMSCRIPTEN_VERSION VERSION_GREATER_EQUAL 4.0.18)
+        target_link_options(mep PRIVATE "-sSINGLE_FILE_BINARY_ENCODE=0")
+    endif()
 endif()
 
 # --- ctest registration ----------------------------------------------------
@@ -3022,14 +3191,14 @@ if(NOT EMSCRIPTEN)
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
         mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test
-        mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-fold-test
-        mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-image-procgen-test
+        mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test
+        mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test
         mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test
         mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test
         mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test
         mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-mov-container-test
         mep-youtube-player-test mep-mp4-demux-test mep-aac-decoder-test mep-h264-decoder-test
-        mep-collab-crdt-test mep-mail-test)
+        mep-collab-crdt-test mep-mail-test mep-audio-capture-test)
     # Each test also carries the area it covers, as a second label: the
     # Tests panel groups ctest tests by label (one every test shares, like
     # `unit`, groups nothing), and `ctest -L cad` runs one area.
@@ -3046,7 +3215,7 @@ if(NOT EMSCRIPTEN)
             set(area lsp)
         elseif(name MATCHES "(-format-|^mep-indent-|^mep-treesitter-|-fold-|^mep-editor-|^mep-spell-|^mep-text-diff-)")
             set(area editing)
-        elseif(name MATCHES "^mep-(html-|svg-|web-|math-|org-|notebook-|office-|model3d-)")
+        elseif(name MATCHES "^mep-(html-|svg-|web-|math-|org-|notebook-|office-|model3d-|blend-)")
             set(area documents)
         elseif(name MATCHES "^mep-(image-|jpeg-|ccitt-|mov-|youtube-|mp4-|aac-|h264-)")
             set(area media)

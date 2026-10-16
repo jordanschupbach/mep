@@ -78,7 +78,7 @@ resolves. It also reports how much of mep's command and key surface the
 manual mentions. <code>just test</code> runs it too.</p>
 <p>If it says a page is stale, you edited the Org and forgot <code>just help</code>.</p>
 <h1>Generated pages</h1>
-<p>Four pages are not written by hand. <code>scripts/gen_reference_pages.py</code> builds
+<p>Four pages are not written by hand. <code>tools/gen_reference_pages.cpp</code> builds
 the six Lua API pages from <code>src/lua_env.cpp</code>'s binding table, and the
 command and key indexes from the command and <code>leader_map</code> registrations.</p>
 <p><code>just help</code> runs the generator before exporting, so editing those <code>.org</code>

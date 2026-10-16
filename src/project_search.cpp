@@ -549,8 +549,11 @@ private:
      * @param rules Ignore rules in effect; this level's are appended and removed again.
      * @param rel Path of `dir` relative to the search root ("" at the root).
      */
-    void Walk(const std::string &shown, const fs::path &dir, std::vector<Rule> &rules, const std::string &rel = "") {
+    void Walk(const std::string &shown, const fs::path &dir, std::vector<Rule> &rules, const std::string &rel = "",
+              int depth = 0) {
         if (cancelled_.load()) return;
+        // rg's --max-depth: the root is depth 0, its entries depth 1.
+        if (opts_.max_depth >= 0 && depth + 1 > opts_.max_depth) return;
         const size_t rules_before = rules.size();
         const std::string dir_str = dir.generic_string();
         if (!opts_.no_ignore) {
@@ -599,7 +602,7 @@ private:
             if (!opts_.no_ignore && IsIgnored(rules, abs, e.name, e.is_dir)) continue;
             std::string child_shown = shown.empty() ? e.name : (shown.back() == '/' ? shown + e.name : shown + "/" + e.name);
             if (e.is_dir) {
-                Walk(child_shown, fs::path(abs), rules, child_rel);
+                Walk(child_shown, fs::path(abs), rules, child_rel, depth + 1);
             } else {
                 HandleFile(child_shown, fs::path(abs));
             }
@@ -708,6 +711,11 @@ std::optional<Options> ParseRgArgs(const std::vector<std::string> &argv) {
             if (r < 0 || have_pattern) return std::nullopt;  // multiple -e: not supported
             o.pattern = v;
             have_pattern = true;
+            continue;
+        }
+        if ((r = value("--max-depth", v)) || (r = value("--maxdepth", v)) || (r = value("-d", v))) {
+            if (r < 0 || v.empty() || v.find_first_not_of("0123456789") != std::string::npos) return std::nullopt;
+            o.max_depth = std::stoi(v);
             continue;
         }
         if ((r = value("--color", v)) || (r = value("--colors", v))) {

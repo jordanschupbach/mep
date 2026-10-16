@@ -14,7 +14,7 @@ interface (=backend.h=). There is no raylib, GLFW or SDL in the build.
 
 | Area | Files |
 |------+-------|
-| Window, input, GL context | =backend_native.cpp= (X11 + GLX), =backend_native_emscripten_glfw.cpp= (WebGL2 via Emscripten) |
+| Window, input, GL context | =backend_native.cpp= (X11 + GLX), =backend_native_emscripten.cpp= (WebGL2 + DOM events via emscripten/html5.h) |
 | 2D and 3D renderers | =backend_native_renderer2d.cpp=, =backend_native_renderer3d.cpp=, =gl_shader.cpp=, =gl_loader.cpp= |
 | Text | =backend_native_text.cpp=, =truetype.cpp=, =cff.cpp=, =type1.cpp=, =rasterizer.cpp= |
 | Model loading | =backend_native_model_{gltf,obj,iqm,m3d,vox}.cpp= |

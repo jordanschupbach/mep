@@ -103,6 +103,11 @@ public:
      * @param task The work to run; its return value becomes ExitCode().
      */
     explicit Job(Task task);
+    // The same, for a task that also reports stderr lines (the in-house
+    // git, src/git/git_job.cpp, whose callers read failures from stderr
+    // exactly as they would from the git CLI).
+    using TaskEx = std::function<int(const EmitLine &out, const EmitLine &err, const std::atomic<bool> &cancelled)>;
+    explicit Job(TaskEx task);
     /**
      * @brief Kills the child if still running and joins the reader thread, blocking until it exits.
      */
@@ -264,13 +269,13 @@ private:
     static constexpr size_t kTaskStackBytes = 64 * 1024 * 1024;
     pthread_t task_thread_{};
     bool task_thread_started_ = false;
-    Task pending_task_;  // handed from the constructor to the new thread
+    TaskEx pending_task_;  // handed from the constructor to the new thread
 #endif
     /**
      * @brief Background-thread body for an in-process job: runs the task and records its exit code.
      * @param task The task to run.
      */
-    void RunTask(Task task);
+    void RunTask(TaskEx task);
     int stdout_fd_ = -1, stderr_fd_ = -1, stdin_fd_ = -1;
     bool raw_stdout_ = false;
     bool use_pty_ = false;
@@ -418,6 +423,8 @@ public:
      * @return The new job's id.
      */
     int SpawnTask(Job::Task task, Callbacks callbacks, const std::string &debug_name);
+    // SpawnTask for a Job::TaskEx (stdout and stderr lines).
+    int SpawnTaskEx(Job::TaskEx task, Callbacks callbacks, const std::string &debug_name);
 
     // Raw write/close access for interactive jobs (REPLs, `git apply`).
     /**

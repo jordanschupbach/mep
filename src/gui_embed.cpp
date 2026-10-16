@@ -627,6 +627,7 @@ void EmbeddedApp::Stop() {
         // Not mep's process (the user's own copy of the program): its window
         // is asked to close, and only let go of -- left as it is -- when it
         // will not, or on a second stop. Nothing is ever signalled.
+        if (stops_ == 0) TakeSnapshot();
         ++stops_;
         if (window_ && (stops_ > 1 || !window_->RequestClose())) {
             if (focused_) window_->Focus(false);

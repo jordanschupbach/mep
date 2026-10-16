@@ -137,6 +137,17 @@ something you asked for by name.
 
 Pushing a branch with no upstream offers to set one.
 
+* Where git runs
+
+Everything local -- status, log, graph, diffs, staging, commit and its
+hooks, branches, checkout, stash, clean, worktrees, fast-forward merges --
+is done by mep's own git implementation, on a background thread, with no
+=git= program needed. Push, pull and fetch still run the =git= command, as do
+a merge that is not a fast-forward, a rebase, and a stash that has to be
+merged into local edits. From Lua, =mep.git.run(argv, opts, cb)= runs a git
+command the same way, and =mep.git.use_cli(true)= sends everything to the
+=git= command instead.
+
 * See also
 
 - [[file:git-hunks.html][Working with hunks]] -- staging a change smaller than a file.

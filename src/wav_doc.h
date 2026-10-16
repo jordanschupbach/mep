@@ -22,4 +22,13 @@ private:
     std::string error_;
 };
 
+// Encodes interleaved PCM16 as a canonical 44-byte-header RIFF/WAVE file
+// (the layout ffmpeg's wav muxer writes). EncodeWavPcm16 returns the bytes;
+// WriteWavPcm16 writes them to `path` (via `path`.part and a rename, so a
+// reader polling for the file never sees it half written) and fills
+// *error on failure.
+std::vector<unsigned char> EncodeWavPcm16(const int16_t *samples, size_t count, int sample_rate, int channels);
+bool WriteWavPcm16(const std::string &path, const int16_t *samples, size_t count, int sample_rate, int channels,
+                   std::string *error);
+
 #endif

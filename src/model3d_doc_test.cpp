@@ -12,6 +12,7 @@
 // is unavoidable even though most of it goes unused here.
 
 #include "model3d_doc.h"
+#include "model3d_blend_import.h"
 
 #include "gfx/backend_native.h"
 #include "gfx/renderer2d.h"
@@ -26,6 +27,12 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <vector>
+
+#ifndef MEP_SOURCE_DIR
+#define MEP_SOURCE_DIR "."
+#endif
 
 namespace {
 void Check(bool condition, const char *expression, int line) {
@@ -845,6 +852,37 @@ int main() {
         CHECK(AddCustomMeshToScene(&cm_scene, verts, tris, "BadUV", bad_uvs) == -1);
 
         CHECK(cm_scene.objects.size() == 2);  // the tetrahedron plus the UV-textured one
+    }
+
+    // --- .blend import through the in-house reader (model3d_blend_import.h) ---
+    {
+        CHECK(IsBlendPath("scene.BLEND"));
+        CHECK(GetBlendImporter() == BlendImporter::Builtin);  // the default needs no Blender
+        BlendImporter mode = BlendImporter::Builtin;
+        CHECK(ParseBlendImporter("auto", &mode) && mode == BlendImporter::Auto);
+        CHECK(!ParseBlendImporter("bogus", &mode));
+        Scene bs;
+        std::string blend_error;
+        std::vector<std::string> warnings;
+        std::string fixture = std::string(MEP_SOURCE_DIR) + "/test/fixtures/blend/mesh_instances_v303_zstd.blend";
+        CHECK(LoadBlendFile(fixture, &bs, &blend_error, &warnings));
+        CHECK(bs.objects.size() == 8);
+        CHECK(bs.meshes.size() == 8);
+        CHECK(bs.TotalTriangleCount() == 8 * 12);
+        CHECK(bs.source_path == fixture);
+        CHECK(warnings.size() == 4);  // two Subdivision, two Armature modifiers left unapplied
+        bool found_green = false;
+        for (const Object3D &o : bs.objects) {
+            CHECK(o.kind == PrimitiveKind::Imported);
+            const MeshData &md = bs.meshes[static_cast<size_t>(o.mesh_index)];
+            CHECK(md.normals.size() == md.positions.size());
+            CHECK(static_cast<int>(md.texcoords.size()) == md.VertexCount() * 2);
+            if (o.name == "with_object_material") found_green = o.color.g > 0.7f && o.color.r < 0.1f;
+        }
+        CHECK(found_green);
+        Scene none;
+        CHECK(!LoadBlendFile(std::string(MEP_SOURCE_DIR) + "/test/fixtures/zstd/text_l1.zst", &none, &blend_error));
+        CHECK(!blend_error.empty());
     }
 
     std::printf("model3d_doc_test passed\n");

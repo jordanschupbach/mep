@@ -1,5 +1,9 @@
 #include "model3d_blend_import.h"
 
+#include "blend_scene.h"
+#include "image_codec.h"
+#include "model3d_doc.h"
+
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 #define MEP_BLEND_IMPORT_POSIX 1
 #include <sys/wait.h>
@@ -7,9 +11,12 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <vector>
 
@@ -19,7 +26,7 @@ namespace {
 // as glTF binary. Written to a temp file rather than passed via
 // `--python-expr`, since that flag only accepts a single expression and
 // this needs a real (multi-statement) script.
-constexpr const char *kBlenderExportScript = R"PY(
+[[maybe_unused]] constexpr const char *kBlenderExportScript = R"PY(
 import bpy
 import sys
 
@@ -50,6 +57,106 @@ bool IsBlendPath(const std::string &path) {
     std::string ext = path.substr(dot + 1);
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
     return ext == "blend";
+}
+
+namespace {
+
+std::atomic<BlendImporter> g_blend_importer{BlendImporter::Builtin};
+
+// Decodes one material's base-colour image (packed bytes first, then the
+// file on disk) into a new Scene texture; -1 when there is none or it
+// cannot be decoded (the object then just shows its flat colour).
+int ImportBlendImage(const blend::SceneMaterial &m, Scene *scene, std::vector<std::string> *warnings) {
+    if (m.image_packed.empty() && m.image_path.empty()) return -1;
+    int w = 0, h = 0;
+    std::string error;
+    unsigned char *pixels = nullptr;
+    if (!m.image_packed.empty()) {
+        pixels = image_codec::Decode(m.image_packed.data(), m.image_packed.size(), &w, &h, &error);
+    }
+    if (!pixels && !m.image_path.empty()) pixels = image_codec::DecodeFile(m.image_path.c_str(), &w, &h, &error);
+    if (!pixels) {
+        if (warnings) {
+            std::string what = m.image_path.empty() ? m.image_name : m.image_path;
+            warnings->push_back("material " + m.name + ": texture " + what + " not loaded (" + error + ")");
+        }
+        return -1;
+    }
+    TextureData td;
+    td.name = m.image_name.empty() ? m.name + "_tex" : m.image_name;
+    td.width = w;
+    td.height = h;
+    td.pixels.assign(pixels, pixels + static_cast<size_t>(w) * static_cast<size_t>(h) * 4);
+    std::free(pixels);
+    int index = static_cast<int>(scene->textures.size());
+    scene->textures.push_back(std::move(td));
+    return index;
+}
+
+}  // namespace
+
+void SetBlendImporter(BlendImporter mode) { g_blend_importer.store(mode); }
+BlendImporter GetBlendImporter() { return g_blend_importer.load(); }
+
+bool ParseBlendImporter(const std::string &name, BlendImporter *out) {
+    if (name == "builtin" || name.empty()) {
+        *out = BlendImporter::Builtin;
+    } else if (name == "auto") {
+        *out = BlendImporter::Auto;
+    } else if (name == "blender") {
+        *out = BlendImporter::Blender;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+const char *BlendImporterName(BlendImporter mode) {
+    switch (mode) {
+        case BlendImporter::Builtin:
+            return "builtin";
+        case BlendImporter::Auto:
+            return "auto";
+        case BlendImporter::Blender:
+            return "blender";
+    }
+    return "builtin";
+}
+
+bool LoadBlendFile(const std::string &blend_path, Scene *out, std::string *error, std::vector<std::string> *warnings) {
+    blend::Scene bs;
+    if (!blend::ReadScene(blend_path, &bs, error)) return false;
+    if (warnings) *warnings = bs.warnings;
+    std::map<int, int> material_texture;
+    for (blend::ScenePart &part : bs.parts) {
+        MeshData md;
+        md.name = part.name;
+        md.positions = std::move(part.positions);
+        md.normals = std::move(part.normals);
+        md.texcoords = std::move(part.texcoords);
+        md.indices = std::move(part.indices);
+        int mesh_index = static_cast<int>(out->meshes.size());
+        out->meshes.push_back(std::move(md));
+
+        Object3D obj;
+        obj.name = part.name;
+        obj.mesh_index = mesh_index;
+        obj.kind = PrimitiveKind::Imported;
+        if (part.material >= 0 && static_cast<size_t>(part.material) < bs.materials.size()) {
+            const blend::SceneMaterial &m = bs.materials[static_cast<size_t>(part.material)];
+            obj.color = RgbaColorF{m.color[0], m.color[1], m.color[2], m.color[3]};
+            obj.roughness = m.roughness;
+            obj.metallic = m.metallic;
+            auto it = material_texture.find(part.material);
+            if (it == material_texture.end()) {
+                it = material_texture.emplace(part.material, ImportBlendImage(m, out, warnings)).first;
+            }
+            obj.texture_index = it->second;
+        }
+        out->AddObject(std::move(obj));
+    }
+    out->source_path = blend_path;
+    return true;
 }
 
 bool BlenderAvailable() {

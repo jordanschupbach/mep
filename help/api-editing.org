@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (244)
+* The bindings (250)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -19,6 +19,8 @@ that it does nothing.
 | Function | Does |
 |----------+------|
 | =mep.a11y= | the accessibility view of a buffer's document |
+| =mep.audio_record_start= | starts in-house microphone recording into WAV segments |
+| =mep.audio_record_stop= | ends an mep.audio_record_start recording (its final segment and on_exit still follow) |
 | =mep.border_toggle= | hides the menu bar, tab bar and status line together if any is showing, otherwise shows all three |
 | =mep.browser= | acts on the current pane's web view -- |
 | =mep.browser_open= | a WebKit web view in the current pane |
@@ -86,6 +88,7 @@ that it does nothing.
 | =mep.current_pane_id= | returns the active pane's id |
 | =mep.current_tab_id= | returns the active tab's stable id |
 | =mep.cursor= | returns the current cursor position |
+| =mep.defer= | calls fn once, on the main thread, after `seconds` -- without blocking the editor (an in-process job that waits; mep.job_kill(id) cancels it before... |
 | =mep.doc_view= | -- |
 | =mep.doc_view_toggle= | -- |
 | =mep.filename= | -- |
@@ -143,7 +146,10 @@ that it does nothing.
 | =mep.mepml_video_toggle= | plays or pauses the video drawn at (or near) the cursor |
 | =mep.mepml_view= | whether the current buffer is in mepml view mode |
 | =mep.mepml_view_toggle= | flips the current mepml buffer's view mode |
+| =mep.mepml_web_start= | a web page in a block's results |
 | =mep.mod1_name= | returns the display name of whichever modifier is currently mod1 |
+| =mep.model3d_set_blend_importer= | -- |
+| =mep.native_file_dialog= | the platform's own modal "open file" dialog (file_dialog.h) |
 | =mep.panebar_set_visible= | shows or hides the header strip above every pane outright |
 | =mep.panebar_toggle= | shows/hides the header strip above every pane |
 | =mep.panebar_visible= | returns whether the per-pane header strips are shown |

@@ -21,10 +21,6 @@ that socket -- register it once with:
 claude mcp add mep-agent -- /path/to/mep/build/native/mep-mcp
 ```
 
-(`mcp/server.ts` + `mcp/mep_client.ts` are an older Deno/TypeScript
-implementation of the same bridge, kept as a reference/fallback; prefer
-`mep-mcp` since it needs no runtime beyond the compiled binary.)
-
 Every `mep_*` tool is a thin wrapper around one JSON-RPC method
 (`src/mcp_bridge.cpp`'s `kTools` table, buffer_ids visible in the payload
 below match that table's `rpc_method` field) -- this is a second way to

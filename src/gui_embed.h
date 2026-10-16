@@ -452,6 +452,8 @@ public:
     // Stops it: first politely (a close request, else SIGTERM), then for good.
     void Stop();
     int Stops() const { return stops_; }
+    // When it was started (the first Tick's `now`), -1 before that.
+    double StartedAt() const { return started_at_; }
 
     State GetState() const { return state_; }
     int ExitCode() const { return exit_code_; }

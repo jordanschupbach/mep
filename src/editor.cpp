@@ -53,6 +53,9 @@
 #include "gfx/audio.h"
 #include "gfx/input.h"
 #include "gfx/platform.h"
+#include "git/git.h"
+#include "git/git_job.h"
+#include "git/util.h"
 #include "gfx/renderer2d.h"
 #include "gfx/vecmath.h"
 #include "json.h"
@@ -7624,7 +7627,7 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     //
     // MEP_AGENT_SOCKET pins this window's own agent-control socket
     // (agent_rpc.cpp) for anything started from inside the terminal --
-    // mcp/mep_client.ts's discoverSocketPath() honors it ahead of its
+    // mep-mcp's DiscoverSocketPath() (mcp_bridge.cpp) honors it ahead of its
     // *.sock directory scan, which errors out as ambiguous the moment a
     // second mep window is open. An AI agent launched in a :terminal
     // (mep.ai_terminal_open, kBuiltinAiTerminal in main.cpp) therefore
@@ -7638,7 +7641,7 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     std::string agent_socket = mep::agent::SocketPath();
     if (!agent_socket.empty()) extra_env.emplace_back("MEP_AGENT_SOCKET", agent_socket);
     // MEP_TERMINAL_BUFFER: this terminal's own buffer id, so an agent
-    // started inside it can report which pane it lives in (mcp/server.ts
+    // started inside it can report which pane it lives in (mep-mcp
     // forwards it as session.identify's terminal_buffer_id) -- how the
     // AI-agents sidebar pairs a connected agent with a jump target.
     extra_env.emplace_back("MEP_TERMINAL_BUFFER", std::to_string(sess.buffer_id));
@@ -9102,7 +9105,39 @@ void Editor::OpenModel3DInPlace(const std::string &path) {
             break;
         }
     }
-    if (IsBlendPath(path)) {
+    bool blend = IsBlendPath(path);
+    if (blend && GetBlendImporter() != BlendImporter::Blender) {
+        // In-house .blend reader (blend_scene.h): synchronous like the other
+        // model formats -- it is a plain file parse, no subprocess. Only
+        // mep.opt.blend_importer = 'auto' falls through to the Blender CLI
+        // below when it fails; 'blender' skips it entirely.
+        Scene scene;
+        std::string error;
+        std::vector<std::string> warnings;
+        if (LoadBlendFile(path, &scene, &error, &warnings)) {
+            if (buffer_id < 0) {
+                buffer_id = CreateEmptyBuffer();
+                buffers_[static_cast<size_t>(buffer_id)].filename = path;
+            }
+            Model3DFinishOpen(buffer_id, std::move(scene));
+            CurPane().buffer_id = buffer_id;
+            CurPane().cursor = {0, 0};
+            CurPane().scroll_row = 0;
+            status_message_.clear();
+            if (!warnings.empty()) {
+                std::string msg = "\"" + path + "\": " + warnings.front();
+                if (warnings.size() > 1) msg += " (+" + std::to_string(warnings.size() - 1) + " more)";
+                Notify(msg, NotifyLevel::Warn);
+            }
+            return;
+        }
+        if (GetBlendImporter() == BlendImporter::Builtin || !BlenderAvailable()) {
+            status_message_ = "E-\"" + path + "\": " + error;
+            return;
+        }
+        // 'auto' with Blender on PATH: retry through the CLI below.
+    }
+    if (blend) {
         std::vector<std::string> argv;
         std::string script_path, glb_path, prepare_error;
         if (!PrepareBlendConversionJob(path, &argv, &script_path, &glb_path, &prepare_error)) {
@@ -20738,7 +20773,7 @@ void Editor::WorkspaceCreate(const std::string &name, bool attach_existing) {
         };
         // Always run from the primary checkout's toplevel, never the active
         // workspace's root, or nested worktree dirs appear ("Risks").
-        int job = JobManager::Instance().Spawn(argv, project.git_toplevel.empty() ? project.root : project.git_toplevel, cb);
+        int job = mep::git::SpawnGit(argv, project.git_toplevel.empty() ? project.root : project.git_toplevel, cb);
         if (job == 0) {
             Workspace *created = FindWorkspace(id);
             if (created) created->creating = false;
@@ -20819,7 +20854,7 @@ void Editor::WorkspaceRemove(const std::string &arg, bool force) {
             }
             Notify("Workspace '" + name + "': " + msg, NotifyLevel::Error);
         };
-        if (JobManager::Instance().Spawn(argv, project->git_toplevel.empty() ? project->root : project->git_toplevel, cb) == 0) {
+        if (mep::git::SpawnGit(argv, project->git_toplevel.empty() ? project->root : project->git_toplevel, cb) == 0) {
             Notify("Failed to run git", NotifyLevel::Error);
             return;
         }
@@ -20855,9 +20890,9 @@ void Editor::ProjectDetectGit(int project_id) {
         cb2.on_exit = [this, project_id, text](int code2) {
             if (code2 == 0) AdoptWorktrees(project_id, ParseWorktreeList(*text));
         };
-        JobManager::Instance().Spawn({"git", "worktree", "list", "--porcelain"}, p->git_toplevel, cb2);
+        mep::git::SpawnGit({"git", "worktree", "list", "--porcelain"}, p->git_toplevel, cb2);
     };
-    JobManager::Instance().Spawn({"git", "rev-parse", "--show-toplevel"}, project->root, cb);
+    mep::git::SpawnGit({"git", "rev-parse", "--show-toplevel"}, project->root, cb);
 #else
     (void)project_id;
 #endif
@@ -20954,7 +20989,7 @@ void Editor::WorkspaceAdopt(const std::string &path_or_branch) {
         }
         Notify("No worktree matches '" + path_or_branch + "'", NotifyLevel::Warn);
     };
-    JobManager::Instance().Spawn({"git", "worktree", "list", "--porcelain"},
+    mep::git::SpawnGit({"git", "worktree", "list", "--porcelain"},
                                  project.git_toplevel.empty() ? project.root : project.git_toplevel, cb);
 #else
     (void)path_or_branch;
@@ -20983,7 +21018,7 @@ void Editor::WorkspacePrune() {
     }
     JobManager::Callbacks cb;
     cb.on_exit = [drop_vanished](int) { drop_vanished(); };
-    JobManager::Instance().Spawn({"git", "worktree", "prune"},
+    mep::git::SpawnGit({"git", "worktree", "prune"},
                                  project.git_toplevel.empty() ? project.root : project.git_toplevel, cb);
 #endif
 }
@@ -37339,20 +37374,56 @@ bool GitHunkCoversRow(const DiffHunk &h, int row_1idx) {
     if (h.new_count == 0) return row_1idx == GitHunkAnchorRow(h);
     return row_1idx >= h.new_start && row_1idx <= h.new_start + h.new_count - 1;
 }
-// The path `git apply` wants in a patch header: relative to the repo
-// root it runs in. An absolute one is rejected outright ("<path>: does
-// not exist in index"), and most buffers are opened by absolute path.
+// Hunk staging, in-house (it used to be `git apply --cached
+// --unidiff-zero` fed a one-hunk patch): replaces `count` lines at 0-based
+// `start` of the index copy of `path` with `added` and stages the result.
+// Runs on a JobManager worker thread (mep::git::SpawnGitTask).
 /**
- * @brief Strips a repo root prefix off a path, for use in a patch header.
+ * @brief Splices lines into the index copy of a file and stages it.
  * @param path The buffer's filename.
- * @param root The repository root the patch will be applied in.
- * @return `path` relative to `root`, or `path` unchanged if it isn't under it.
+ * @param start First index line (0-based) to replace.
+ * @param count How many index lines to replace (0: pure insertion before `start`).
+ * @param added The replacement lines, without line terminators.
+ * @param err Receives the failure reason.
+ * @return True on success.
  */
-std::string GitPatchPath(const std::string &path, const std::string &root) {
-    if (!root.empty() && path.size() > root.size() && path.compare(0, root.size(), root) == 0 && path[root.size()] == '/') {
-        return path.substr(root.size() + 1);
+bool GitStageLines(const std::string &path, long start, long count, const std::vector<std::string> &added,
+                   std::string *err) {
+    std::error_code ec;
+    std::string abs = std::filesystem::weakly_canonical(std::filesystem::absolute(path, ec), ec).string();
+    std::unique_ptr<mep::git::Repo> repo = mep::git::Repo::Discover(mep::git::DirName(abs), err);
+    if (!repo || repo->IsBare()) return false;
+    const std::string &top = repo->WorkTree();
+    if (abs.size() <= top.size() || abs.compare(0, top.size(), top) != 0 || abs[top.size()] != '/') {
+        if (err) *err = abs + " is outside the repository";
+        return false;
     }
-    return path;
+    std::string rel = abs.substr(top.size() + 1);
+    mep::git::Index idx;
+    if (!idx.Load(repo->IndexFile(), err)) return false;
+    std::string content;
+    long at = idx.Find(rel);
+    if (at >= 0 && !repo->ReadBlob(idx.entries[static_cast<size_t>(at)].oid, content)) {
+        if (err) *err = "cannot read the index copy of " + rel;
+        return false;
+    }
+    std::vector<std::string_view> lines = mep::git::SplitLines(content);
+    const std::string eol = (!lines.empty() && lines[0].size() >= 2 && lines[0].substr(lines[0].size() - 2) == "\r\n") ? "\r\n" : "\n";
+    const long n = static_cast<long>(lines.size());
+    start = std::clamp(start, 0L, n);
+    count = std::clamp(count, 0L, n - start);
+    const bool last_unterminated = !content.empty() && content.back() != '\n';
+    const bool through_end = start + count == n;
+    std::string out;
+    for (long k = 0; k < start; k++) out.append(lines[static_cast<size_t>(k)]);
+    for (size_t j = 0; j < added.size(); j++) {
+        out += added[j];
+        // Replacing the file's unterminated last line keeps it unterminated.
+        bool keep_unterminated = through_end && last_unterminated && count > 0 && j + 1 == added.size();
+        if (!keep_unterminated) out += eol;
+    }
+    for (long k = start + count; k < n; k++) out.append(lines[static_cast<size_t>(k)]);
+    return mep::git::StageContent(*repo, rel, out, err);
 }
 // `git show` failing with one of these means "that revision simply has
 // no such path" -- a file newer than the base, or untracked. Every other
@@ -37401,14 +37472,16 @@ void Editor::GitGutterRefreshBuffer(int buffer_id, const std::string &base) {
     const std::string fname = buffers_[static_cast<size_t>(buffer_id)].filename;
     if (fname.empty()) return;
     int ns = CreateNamespace("git");
-    // `base:path` is a pathspec, resolved relative to its own cwd -- run
-    // with cwd set to the buffer's own directory and just its basename,
-    // matching kBuiltinGit's own comment on why (an absolute path here
-    // makes git refuse the pathspec outright).
+    // `base:./name` names the file relative to the cwd, which is the
+    // buffer's own directory (an absolute path makes git refuse the
+    // pathspec outright). The `./` matters: a bare `base:name` is taken
+    // relative to the repository *root*, so every file below the top
+    // level used to fail to resolve and got no gutter at all. Runs
+    // in-house (mep::git) on a worker thread.
     size_t slash = fname.find_last_of('/');
     std::string dir = slash == std::string::npos ? "." : fname.substr(0, slash);
     std::string base_name = slash == std::string::npos ? fname : fname.substr(slash + 1);
-    std::string spec = base + ":" + base_name;
+    std::string spec = base + ":./" + base_name;
 
     GitSignState &st = git_signs_[buffer_id];
     st.base = base;
@@ -37526,7 +37599,7 @@ void Editor::GitGutterRefreshBuffer(int buffer_id, const std::string &base) {
             }
         }
     };
-    JobManager::Instance().Spawn({"git", "show", spec}, dir, cb);
+    mep::git::SpawnGit({"git", "show", spec}, dir, cb);
 }
 
 void Editor::GitGutterTick(const std::string &base, bool line_hl) {
@@ -37704,7 +37777,6 @@ void Editor::GitStageHunk() {
     size_t slash = fname.find_last_of('/');
     std::string dir = slash == std::string::npos ? "." : fname.substr(0, slash);
     std::string base_name = slash == std::string::npos ? fname : fname.substr(slash + 1);
-    const std::string rel = GitPatchPath(fname, ActiveRoot());
 
     auto index_lines = std::make_shared<std::vector<std::string>>();
     auto err = std::make_shared<std::string>();
@@ -37725,7 +37797,7 @@ void Editor::GitStageHunk() {
      * @brief Diffs the buffer against its index copy, then applies the hunk under the cursor to the index.
      * @param code `git show`'s exit code; non-zero means the file isn't in the index (or isn't in a repo at all).
      */
-    cb.on_exit = [this, buffer_id, cursor_row, rel, index_lines, err](int code) {
+    cb.on_exit = [this, buffer_id, cursor_row, fname, index_lines, err](int code) {
         if (code != 0) {
             if (!GitShowSaysPathIsNew(*err)) {
                 Notify("Can't stage: no git index here", NotifyLevel::Error);
@@ -37747,39 +37819,23 @@ void Editor::GitStageHunk() {
             Notify("No unstaged hunk under cursor", NotifyLevel::Warn);
             return;
         }
-        // Both sides of the header are anchored on the *index's* line
-        // numbers, not on h->new_start. The patch carries this one hunk
-        // and is applied to a file that still has the index's content,
-        // so h->new_start -- a position in the working buffer, past
-        // however many earlier hunks this patch doesn't carry -- names
-        // the wrong line as soon as the buffer has more than one change.
-        // It matters because `--unidiff-zero` leaves git no context to
-        // search with: it applies each hunk at the line its *new* side
-        // names, verbatim.
-        // DiffHunk::old_start for a pure insertion is the index line the
-        // text goes *before*, one past unified-diff's own "insert after
-        // line N" convention, so that side gets the -1.
-        int old_at = h->old_count == 0 ? std::max(0, h->old_start - 1) : h->old_start;
-        std::string patch;
-        patch += "diff --git a/" + rel + " b/" + rel + "\n";
-        patch += "--- a/" + rel + "\n";
-        patch += "+++ b/" + rel + "\n";
-        patch += "@@ -" + std::to_string(old_at) + "," + std::to_string(h->old_count) + " +" +
-                 std::to_string(h->old_start) + "," + std::to_string(h->new_count) + " @@\n";
-        for (int i = h->old_start; i < h->old_start + h->old_count; i++) {
-            std::string old_line =
-                (i - 1 >= 0 && i - 1 < static_cast<int>(index_lines->size())) ? (*index_lines)[static_cast<size_t>(i - 1)] : "";
-            patch += "-" + old_line + "\n";
-        }
+        // The hunk is spliced straight into the index copy of the file by
+        // the in-house git (mep::git::StageContent) -- what `git apply
+        // --cached --unidiff-zero` used to do from a patch. Its position is
+        // the *index's* line number (h->old_start, 1-based; for a pure
+        // insertion that is the index line the text goes before), never
+        // h->new_start, which is a buffer position past however many
+        // earlier hunks are not being staged.
+        const long start = std::max(0, h->old_start - 1);
+        const long count = h->old_count;
+        std::vector<std::string> added;
         const int n = static_cast<int>(cur.size());
-        for (int i = h->new_start; i < h->new_start + h->new_count; i++) {
-            std::string cur_line = (i - 1 >= 0 && i - 1 < n) ? cur[static_cast<size_t>(i - 1)] : "";
-            patch += "+" + cur_line + "\n";
-        }
+        for (int i = h->new_start; i < h->new_start + h->new_count; i++)
+            added.push_back((i - 1 >= 0 && i - 1 < n) ? cur[static_cast<size_t>(i - 1)] : "");
         JobManager::Callbacks apply_cb;
         /**
-         * @brief Reports whether `git apply --cached` succeeded in staging the hunk.
-         * @param apply_code The process exit code; 0 means success.
+         * @brief Reports whether staging the hunk succeeded.
+         * @param apply_code The task's exit code; 0 means success.
          */
         apply_cb.on_exit = [this](int apply_code) {
             if (apply_code == 0) {
@@ -37791,18 +37847,16 @@ void Editor::GitStageHunk() {
                 // shifted.
                 GitGutterInvalidate();
             } else {
-                Notify("git apply failed", NotifyLevel::Error);
+                Notify("Staging the hunk failed", NotifyLevel::Error);
             }
         };
-        // Spawning from inside another job's on_exit is supported --
-        // JobManager::PollAll is written for exactly this (see its own
-        // comment on re-entrant Spawn).
-        int apply_id =
-            JobManager::Instance().Spawn({"git", "apply", "--cached", "--unidiff-zero", "-"}, ActiveRoot(), apply_cb);
-        JobManager::Instance().WriteStdin(apply_id, patch);
-        JobManager::Instance().CloseStdin(apply_id);
+        mep::git::SpawnGitTask(
+            [fname, start, count, added](std::string &, std::string &task_err, const std::atomic<bool> &) {
+                return GitStageLines(fname, start, count, added, &task_err) ? 0 : 1;
+            },
+            std::move(apply_cb), "git stage hunk (in-house)");
     };
-    JobManager::Instance().Spawn({"git", "show", ":" + base_name}, dir, cb);
+    mep::git::SpawnGit({"git", "show", ":./" + base_name}, dir, cb);
 }
 
 void Editor::ReplaceLinesForLua(int start_row, int end_row, const std::vector<std::string> &lines) {

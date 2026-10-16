@@ -1026,10 +1026,9 @@ showed, so scroll such a block fully into view once before exporting.
 Scrolling away afterwards cannot spoil it -- a cut-off photograph never
 replaces a whole one. The page is
 written beside the document, so the paths it names (a script, a picture)
-are the document's. The browser is the first of =chromium=,
-=chromium-browser=, =google-chrome= or =brave-browser= on =PATH= (or
-=$MEP_WEB_BROWSER=), and an app's language needs whatever it uses (Shiny
-for R). In a presentation (=<leader>kp=), a slide's web pages and apps start by
+are the document's. The page is shown by mep's own web view (the one
+=:Browser= uses: WebKit), so no browser needs to be installed; an app's
+language needs whatever it uses (Shiny for R). In a presentation (=<leader>kp=), a slide's web pages and apps start by
 themselves when the slide is shown and run live on it, code hidden or
 not; they keep running while other slides show, and stop (each leaving
 its picture as its results) when the presentation ends. =C-c C-c= on a

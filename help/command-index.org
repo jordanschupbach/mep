@@ -5,7 +5,7 @@
 
 * Every command
 
-All 428 ex commands mep defines: 147 built in and 281 registered from Lua.
+All 429 ex commands mep defines: 147 built in and 283 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -45,8 +45,8 @@ bindings instead. A dash means no page covers that command yet.
 | =:CollabJoin= | [[file:collab.html][Collaborative editing]] |
 | =:CollabLeave= | [[file:collab.html][Collaborative editing]] |
 | =:CollabStatus= | [[file:collab.html][Collaborative editing]] |
-| =:colo= | [[file:cad-fem.html][CAD and finite elements]] |
-| =:colorscheme= | [[file:settings.html][Settings]] |
+| =:colo= | [[file:browser.html][The browser pane]] |
+| =:colorscheme= | [[file:browser.html][The browser pane]] |
 | =:Copilot= | [[file:copilot.html][GitHub Copilot]] |
 | =:CopilotDisable= | -- |
 | =:CopilotEnable= | -- |
@@ -59,7 +59,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:e!= | [[file:files.html][Files and buffers]] |
 | =:edit= | [[file:ai-commands.html][Ask the model]] |
 | =:edit!= | -- |
-| =:exec= | [[file:exec.html][Programs in a pane]] |
+| =:exec= | [[file:browser.html][The browser pane]] |
 | =:Gantt= | -- |
 | =:help= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:HtmlViewToggle= | [[file:mepml.html][mepml]] |
@@ -168,7 +168,6 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepmlExecute= | [[file:mepml.html][mepml]] |
 | =:MepmlExecuteAll= | [[file:mepml.html][mepml]] |
 | =:MepmlExport= | [[file:mepml.html][mepml]] |
-| =:MepmlVideoToggle= | [[file:mepml.html][mepml]] |
 | =:MepmlExportHtml= | [[file:mepml.html][mepml]] |
 | =:MepmlExportOpen= | [[file:mepml.html][mepml]] |
 | =:MepmlFoldsRecompute= | [[file:mepml.html][mepml]] |
@@ -183,6 +182,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepmlTabNext= | [[file:mepml.html][mepml]] |
 | =:MepmlTabPrev= | [[file:mepml.html][mepml]] |
 | =:MepmlTerminal= | [[file:mepml.html][mepml]] |
+| =:MepmlVideoToggle= | [[file:mepml.html][mepml]] |
 | =:MepmlViewToggle= | [[file:mepml.html][mepml]] |
 | =:MepNewProject= | [[file:projects.html][Projects]] |
 | =:MepNextSheet= | [[file:sheets.html][Spreadsheets]] |

@@ -192,6 +192,16 @@ void TestSearch(const fs::path &root) {
     hits = RunRg({"rg", "-n", "helper", "src/util.h"}, root);
     Check(hits == std::vector<std::string>{"2:int helper();"}, "a lone file argument omits the file name");
 
+    files = RunRg({"rg", "--files", "--max-depth", "1"}, root);
+    Check(files == std::vector<std::string>{"bin.dat", "keep.log"}, "--max-depth 1 lists the root's own files: got " +
+                                                                          Join(files));
+    files = RunRg({"rg", "--files", "--no-ignore", "--hidden", "-d", "2", "--glob", "!.hidden", "--glob", "*.cpp", "--glob",
+                   "*.txt"},
+                  root);
+    Check(files == std::vector<std::string>{"a.worktrees/x.txt", "build/out.cpp", "src/main.cpp", "top_only.txt"},
+          "--max-depth 2 with whitelist globs (the runner's workspace scan): got " + Join(files));
+    Check(!mep_search::ParseRgArgs({"rg", "--files", "--max-depth", "x"}), "a non-numeric --max-depth is not parsed");
+
     RunRg({"rg", "no-such-text-anywhere", "."}, root, &code);
     Check(code == 1, "exit 1 with no match");
     RunRg({"rg", "(unclosed", "."}, root, &code);

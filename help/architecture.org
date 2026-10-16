@@ -55,7 +55,7 @@ Reach for C++ only when you need a primitive the Lua API does not expose.
 This manual lives in =help/=: Org sources, exported to the HTML that ships.
 =just help= rebuilds it, =just help-check= verifies it. The reference pages
 -- the Lua API, the command index, the key index -- are generated from the
-source by =scripts/gen_reference_pages.py=, so they cannot drift.
+source by =tools/gen_reference_pages.cpp=, so they cannot drift.
 
 See [[file:writing-help.html][Writing help pages]].
 

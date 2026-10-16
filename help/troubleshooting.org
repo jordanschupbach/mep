@@ -47,10 +47,13 @@ a cell is set to.
 
 * A =.blend= file opens empty
 
-It is still converting. mep runs Blender's own command line on a background
-job, so the pane switches immediately and fills in when the conversion
-finishes. If Blender is not on =$PATH=, it never will -- that is the one
-3D format that needs an external tool.
+mep reads =.blend= files itself, so check the notification first: an
+object built entirely by modifiers (a Subdivision or Geometry Nodes stack
+on an almost empty mesh) shows only its base mesh, because the reader does
+not evaluate modifiers. With =mep.opt.blend_importer= set to ='blender'=
+(or ='auto'= after the reader failed) mep instead runs Blender's own
+command line on a background job; the pane fills in when that conversion
+finishes, and never will if Blender is not on =$PATH=.
 
 * The wasm build cannot open files
 

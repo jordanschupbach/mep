@@ -4475,19 +4475,17 @@ const char *kBuiltinFileTree =
     "local function mep_tree_refresh_ignored()\n"
     "  if not mep_tree_root then return end\n"
     "  local found, ws = {}, mep_tree_ws\n"
-    "  mep.job_start({'git', '-C', mep_tree_root, 'status', '--ignored', '--porcelain'}, {\n"
-    "    on_stdout = function(line)\n"
+    "  mep.git.run({'git', '-C', mep_tree_root, 'status', '--ignored', '--porcelain'}, {cwd = mep_tree_root}, function(_, out)\n"
+    "    for _, line in ipairs(out) do\n"
     "      if line:sub(1,3) == '!! ' then found[(line:sub(4):gsub('/+$', ''))] = true end\n"
-    "    end,\n"
-    "    on_exit = function()\n"
-    "      if ws == mep_tree_ws then\n"
-    "        mep_tree_ignored = found\n"
-    "        mep.tree_refresh()\n"
-    "      elseif mep_tree_states[ws] then\n"
-    "        mep_tree_states[ws].ignored = found\n"
-    "      end\n"
-    "    end,\n"
-    "  })\n"
+    "    end\n"
+    "    if ws == mep_tree_ws then\n"
+    "      mep_tree_ignored = found\n"
+    "      mep.tree_refresh()\n"
+    "    elseif mep_tree_states[ws] then\n"
+    "      mep_tree_states[ws].ignored = found\n"
+    "    end\n"
+    "  end)\n"
     "end\n"
     // Flags each row git ignores (row.ignored = true) so the renderer can
     // dim it. git only names the top of an ignored subtree ("!! build/"),
@@ -5013,58 +5011,47 @@ const char *kBuiltinFileTree =
     "  mep_tree_after_fs_change()\n"
     "end)\n"
     "mep.leader_map('fr', 'Refresh file tree', function() mep_tree_after_fs_change() end)\n"
-    // Native "Open File" dialog (<leader>fo / :MepOpenFile): the desktop's
-    // own file picker, for browsing to a path visually instead of typing
-    // one into `:e` or fuzzy-matching it via find_files (<leader>pf). No
-    // dialog toolkit is linked into mep itself, so -- same trick as
-    // mep.open_url/mep.browse above -- this shells out via mep.job_start:
-    // osascript's Cocoa panel on macOS, a WinForms dialog via PowerShell
-    // on Windows, and on Linux the first of zenity/kdialog/yad found on
-    // PATH (no single standard CLI for a desktop picker exists, and mep
-    // has no primitive to probe PATH directly, so each is tried in turn --
-    // a missing binary's execvp failure surfaces as exit code 127, which
-    // is what actually drives the fallback, not a presence check). A
-    // chosen path opens the same way file tree/find_files do (mep.open,
-    // not the force-text `:e`); a cancelled dialog (nonzero, non-127 exit)
-    // is a silent no-op.\n"
-    "local function mep_open_file_dialog_linux(chain_index)\n"
-    "  local backends = {\n"
-    "    {'zenity', '--file-selection', '--title=Open File'},\n"
-    "    {'kdialog', '--getopenfilename', '.'},\n"
-    "    {'yad', '--file', '--title=Open File'},\n"
-    "  }\n"
-    "  local argv = backends[chain_index]\n"
-    "  if not argv then\n"
-    "    mep.notify('No file dialog found (install zenity, kdialog, or yad)', 'error')\n"
-    "    return\n"
+    // Native "Open File" dialog (<leader>fo / :MepOpenFile): for browsing
+    // to a path visually instead of typing one into `:e` or fuzzy-matching
+    // it via find_files (<leader>pf). A chosen path opens the same way file
+    // tree/find_files do (mep.open, not the force-text `:e`); cancelling is
+    // a silent no-op.
+    // The platform's own dialog where mep can call one directly
+    // (mep.native_file_dialog: NSOpenPanel, the Windows common dialog);
+    // elsewhere (Linux, the web build) mep's own directory picker, which
+    // walks one directory at a time from the workspace root -- no zenity/
+    // kdialog/osascript/PowerShell helpers (plans/DEPENDENCY_REMOVAL_PLAN.md).
+    "local function mep_open_file_picker(dir)\n"
+    "  local entries = mep.list_dir(dir) or {}\n"
+    "  table.sort(entries, function(a, b)\n"
+    "    if a.is_dir ~= b.is_dir then return a.is_dir end\n"
+    "    return a.name:lower() < b.name:lower()\n"
+    "  end)\n"
+    "  local items, by_label = {'../'}, {['../'] = {dir = true, path = (dir:match('^(.*)/[^/]+/?$') or '/')}}\n"
+    "  if by_label['../'].path == '' then by_label['../'].path = '/' end\n"
+    "  for _, e in ipairs(entries) do\n"
+    "    local label = e.is_dir and (e.name .. '/') or e.name\n"
+    "    local path = (dir == '/' and '' or dir) .. '/' .. e.name\n"
+    "    items[#items + 1] = label\n"
+    "    by_label[label] = {dir = e.is_dir, path = path}\n"
     "  end\n"
-    "  local path\n"
-    "  mep.job_start(argv, {\n"
-    "    on_stdout = function(line) path = line end,\n"
-    "    on_exit = function(code)\n"
-    "      if code == 127 then mep_open_file_dialog_linux(chain_index + 1)\n"
-    "      elseif code == 0 and path and path ~= '' then mep.open(path) end\n"
-    "    end,\n"
-    "  })\n"
+    "  mep.picker_open('Open File: ' .. dir, items, function(item)\n"
+    "    local e = item and by_label[item]\n"
+    "    if not e then return end\n"
+    "    if e.dir then mep_open_file_picker(e.path)\n"
+    "    else mep.open(e.path) end\n"
+    "  end)\n"
     "end\n"
     "function mep.open_file_dialog()\n"
-    "  local plat = mep.platform()\n"
-    "  local path\n"
-    "  if plat == 'macos' then\n"
-    "    mep.job_start({'osascript', '-e', 'POSIX path of (choose file)'}, {\n"
-    "      on_stdout = function(line) path = line end,\n"
-    "      on_exit = function(code) if code == 0 and path and path ~= '' then mep.open(path) end end,\n"
-    "    })\n"
-    "  elseif plat == 'windows' then\n"
-    "    mep.job_start({'powershell', '-NoProfile', '-Command',\n"
-    "      \"Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.OpenFileDialog; if ($f.ShowDialog() -eq 'OK') { Write-Output $f.FileName }\"\n"
-    "    }, {\n"
-    "      on_stdout = function(line) path = line end,\n"
-    "      on_exit = function(code) if code == 0 and path and path ~= '' then mep.open(path) end end,\n"
-    "    })\n"
-    "  else\n"
-    "    mep_open_file_dialog_linux(1)\n"
+    "  local start = mep.workspace_root and mep.workspace_root() or nil\n"
+    "  local path, native = mep.native_file_dialog(start)\n"
+    "  if native then\n"
+    "    if path and path ~= '' then mep.open(path) end\n"
+    "    return\n"
     "  end\n"
+    "  local dir = start or os.getenv('HOME') or '/'\n"
+    "  dir = dir:gsub('(.)/+$', '%1')\n"
+    "  mep_open_file_picker(dir)\n"
     "end\n"
     "mep.command('MepOpenFile', mep.open_file_dialog)\n"
     "mep.leader_map('fo', 'Open file (native dialog)', mep.open_file_dialog)\n"
@@ -6251,14 +6238,15 @@ const char *kBuiltinGit =
     "  return w\n"
     "end\n"
     "local function mep_git_root() return mep.workspace_root() end\n"
+    // mep.git.run (lua_env.cpp): the in-house git (src/git/) on a worker
+    // thread for every local command -- status, log/graph, diff, show,
+    // for-each-ref, stash, commit, checkout, ... -- with the git CLI only
+    // for what is not in-house (push/pull/fetch, non-fast-forward merge,
+    // rebase). Same (code, stdout lines, stderr lines) shape either way.
     "local function mep_git_run(argv, cb)\n"
-    "  local out, err = {}, {}\n"
-    "  mep.job_start(argv, {\n"
-    "    cwd = mep_git_root(),\n"
-    "    on_stdout = function(line) out[#out + 1] = line end,\n"
-    "    on_stderr = function(line) err[#err + 1] = line end,\n"
-    "    on_exit = function(code) if cb then cb(code, out, err) end end,\n"
-    "  })\n"
+    "  mep.git.run(argv, {cwd = mep_git_root()}, function(code, out, err)\n"
+    "    if cb then cb(code, out, err) end\n"
+    "  end)\n"
     "end\n"
     "local function mep_git_fail_text(code, out, err)\n"
     "  return err[#err] or out[#out] or ('exit ' .. tostring(code))\n"
@@ -7082,12 +7070,11 @@ const char *kBuiltinGit =
     "    last_poll = now\n"
     "    for _, ws in ipairs(mep.workspace_list()) do\n"
     "      if not ws.creating and ws.branch ~= '' then\n"
-    "        local dirty = false\n"
-    "        mep.job_start({'git', 'status', '--porcelain'}, {\n"
-    "          cwd = ws.root,\n"
-    "          on_stdout = function(line) if line ~= '' then dirty = true end end,\n"
-    "          on_exit = function(code) if code == 0 then mep.workspace_set_git_dirty(ws.id, dirty) end end,\n"
-    "        })\n"
+    "        mep.git.run({'git', 'status', '--porcelain'}, {cwd = ws.root}, function(code, out)\n"
+    "          local dirty = false\n"
+    "          for _, line in ipairs(out) do if line ~= '' then dirty = true end end\n"
+    "          if code == 0 then mep.workspace_set_git_dirty(ws.id, dirty) end\n"
+    "        end)\n"
     "      end\n"
     "    end\n"
     "  end)\n"
@@ -7128,14 +7115,14 @@ const char *kBuiltinGit =
     "  end\n"
     "  local cur = mep.workspace_current()\n"
     "  if cur.branch == '' then open_picker() return end\n"
-    "  mep.job_start({'git', 'for-each-ref', '--format=%(refname:short) %(upstream:track)', 'refs/heads'}, {\n"
-    "    cwd = mep.workspace_root(),\n"
-    "    on_stdout = function(line)\n"
+    "  mep.git.run({'git', 'for-each-ref', '--format=%(refname:short) %(upstream:track)', 'refs/heads'},\n"
+    "    {cwd = mep.workspace_root()}, function(_, out)\n"
+    "    for _, line in ipairs(out) do\n"
     "      local name, rest = line:match('^(%S+)%s*(.*)$')\n"
     "      if name then track[name] = rest end\n"
-    "    end,\n"
-    "    on_exit = function() open_picker() end,\n"
-    "  })\n"
+    "    end\n"
+    "    open_picker()\n"
+    "  end)\n"
     "end\n"
     "mep.command('MepGitWorkspaces', mep.workspace_git_picker)\n"
     "mep.leader_map('gw', 'Git workspaces', mep.workspace_git_picker)\n";
@@ -7483,18 +7470,8 @@ const char *kBuiltinTodo =
     "    cwd = mep.workspace_root(),\n"
     "    on_stdout = on_stdout,\n"
     "    on_exit = function(code)\n"
-    // 127 is job.cpp's own exec-failed convention (see job.cpp) -- means
-    // ripgrep isn't installed, not just "no matches" (a real 0-match run
-    // also exits with a nonzero, non-127 code). NVIM_PARITY_PLAN.md Phase
-    // 18 gap: previously just reported "no matches (or rg not installed)"
-    // and gave up -- GNU grep's -n output is the same 'file:line:text'
-    // shape rg's own --no-heading produces, so open_results()/the picker's
-    // item parsing doesn't need to know which one ran.
-    "      if code == 127 and #items == 0 then\n"
-    "        mep.job_start({'grep', '-rn', '-E', '--exclude-dir=.git', pattern, '.'},\n"
-    "          {on_stdout = on_stdout, on_exit = open_results})\n"
-    "        return\n"
-    "      end\n"
+    // The builtin searcher (project_search.h) answers rg argvs, so
+    // there is nothing to fall back to when ripgrep is not installed.
     "      open_results()\n"
     "    end,\n"
     "  })\n"
@@ -26411,52 +26388,13 @@ const char *kBuiltinMepml =
     "-- Runs the code block covering 1-based `row` and writes its output into\n"
     "-- the block's results region; `on_done` (optional) is called once that\n"
     "-- has happened or the block was skipped, so blocks can be chained.\n"
-    // results=web (Editor::MepmlGuiStart shows the window): a page in a
-    // browser's own window inside the block's results. MEP_WEB_RUN is the
-    // program that window belongs to: given a page's URL it opens it;
-    // given "" and a server's command line, it starts the server, waits
-    // for the first http(s) address the server prints (Shiny's "Listening
-    // on http://127.0.0.1:...") and opens that, and stops the server when
-    // the window closes (a stop asks it to close; a kill takes the whole
-    // process group). The browser is the first chromium-family one on
-    // PATH, or $MEP_WEB_BROWSER -- an --app window is a bare page -- on a
-    // throwaway profile of its own.
-    "local MEP_WEB_RUN = [==[\n"
-    "url=\"$1\"; shift\n"
-    // A profile of its own: a browser started on a profile already in use
-    // hands its page to that browser and exits, so two pages at once (or
-    // one beside the user's own browser) would never get a window here.
-    "profile=$(mktemp -d \"${TMPDIR:-/tmp}/mep-web.XXXXXX\")\n"
-    "srv=''; log=''; br=''\n"
-    "cleanup() { [ -n \"$br\" ] && kill $br 2>/dev/null; [ -n \"$srv\" ] && kill $srv 2>/dev/null; [ -n \"$log\" ] && rm -f \"$log\"; rm -rf \"$profile\"; }\n"
-    "trap cleanup EXIT\n"
-    "trap 'exit 143' INT TERM HUP\n"
-    "if [ -z \"$url\" ]; then\n"
-    "  log=$(mktemp)\n"
-    "  \"$@\" >\"$log\" 2>&1 &\n"
-    "  srv=$!\n"
-    "  i=0\n"
-    "  while [ $i -lt 1200 ]; do\n"
-    "    url=$(grep -o -m1 'https\\{0,1\\}://[^ \"'\"'\"'<>]*' \"$log\" | head -n1)\n"
-    "    [ -n \"$url\" ] && break\n"
-    "    if ! kill -0 $srv 2>/dev/null; then cat \"$log\"; echo '[the program ended without printing a web address]'; exit 1; fi\n"
-    "    sleep 0.1; i=$((i+1))\n"
-    "  done\n"
-    "  if [ -z \"$url\" ]; then cat \"$log\"; echo '[no web address after two minutes]'; exit 1; fi\n"
-    "fi\n"
-    "browser=''\n"
-    "for b in \"$MEP_WEB_BROWSER\" chromium chromium-browser google-chrome google-chrome-stable brave-browser; do\n"
-    "  if [ -n \"$b\" ] && command -v \"$b\" >/dev/null 2>&1; then browser=$b; break; fi\n"
-    "done\n"
-    "if [ -z \"$browser\" ]; then echo '[no chromium-family browser on PATH: set MEP_WEB_BROWSER]'; exit 1; fi\n"
-    // In the background, waited for: a signal (a stop, or mep exiting --
-    // its jobs get SIGTERM then) interrupts `wait`, so the trap closes the
-    // browser too instead of leaving it behind.
-    "\"$browser\" --app=\"$url\" --user-data-dir=\"$profile\" --no-first-run --no-default-browser-check \\\n"
-    "  --disable-gpu --disable-session-crashed-bubble >/dev/null 2>&1 &\n"
-    "br=$!\n"
-    "wait $br\n"
-    "]==]\n"
+    // results=web (Editor::MepmlWebStart): a page in mep's own web view
+    // -- the one :Browser uses -- inside the block's results. Given a
+    // page it loads it; given a web app's command line it starts the
+    // server, waits for the first http(s) address the server prints
+    // (Shiny's "Listening on http://127.0.0.1:...") and loads that, and
+    // stops the server when the run stops. No browser program is involved
+    // (plans/DEPENDENCY_REMOVAL_PLAN.md).
     "local function mep_mepml_web_hash(s)\n"
     "  local h = 2166136261\n"
     "  for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xffffffff end\n"
@@ -26475,7 +26413,7 @@ const char *kBuiltinMepml =
     "    f:write(blk.code)\n"
     "    f:close()\n"
     "    if path:sub(1, 1) ~= '/' then path = (os.getenv('PWD') or '.') .. '/' .. path end\n"
-    "    mep.mepml_gui_start(buf, blk.fence_row, {'/bin/sh', '-c', MEP_WEB_RUN, 'mep-web', 'file://' .. path}, {})\n"
+    "    mep.mepml_web_start(buf, blk.fence_row, 'file://' .. path)\n"
     "    on_done()\n"
     "    return\n"
     "  end\n"
@@ -26492,10 +26430,8 @@ const char *kBuiltinMepml =
     "      on_done()\n"
     "      return\n"
     "    end\n"
-    "    local cmd = {'/bin/sh', '-c', MEP_WEB_RUN, 'mep-web', ''}\n"
-    "    for _, a in ipairs(argv) do cmd[#cmd + 1] = a end\n"
     "    mep.notify('Starting the ' .. lang .. ' web app...')\n"
-    "    mep.mepml_gui_start(buf, blk.fence_row, cmd, extra)\n"
+    "    mep.mepml_web_start(buf, blk.fence_row, '', argv, extra)\n"
     "    on_done()\n"
     "  end)\n"
     "end\n"
@@ -31435,38 +31371,35 @@ const char *kBuiltinAi =
     // streaming would mean OpenAI's separate Realtime API (a WebSocket
     // session, PCM frames, server-side turn detection) instead, which is
     // a materially bigger integration. So the toggle here fakes "live"
-    // transcription by having ffmpeg itself cut the recording into short
-    // back-to-back segments (mep.stt_chunk_seconds each) via its `segment`
-    // muxer -- one continuous capture, no gap between chunks -- and
-    // transcribing each segment the moment ffmpeg finalizes it, so text
-    // lands progressively instead of only after the whole recording ends.
-    // Smaller chunks lower the latency before words appear at the cost of
-    // more API calls (and Whisper is more prone to hallucinating filler
-    // text like "Thank you." on a chunk that's mostly silence); larger
-    // chunks are the opposite trade.
+    // transcription by recording into short back-to-back segments
+    // (mep.stt_chunk_seconds each) -- one continuous capture, no gap
+    // between chunks -- and transcribing each segment the moment it is
+    // finalized, so text lands progressively instead of only after the
+    // whole recording ends. Smaller chunks lower the latency before words
+    // appear at the cost of more API calls (and Whisper is more prone to
+    // hallucinating filler text like "Thank you." on a chunk that's mostly
+    // silence); larger chunks are the opposite trade.
     //
-    // mep.stt_record_cmd is the recording command *up to* (not including)
-    // the segmenting/output flags, which get appended right before
-    // spawning -- overridable in user config for a different audio
-    // backend (e.g. 'alsa'/'avfoundation' instead of 'pulse') or a
-    // different recording tool entirely (arecord, sox), as long as it
-    // still understands the segment-muxer flags appended below.
-    // '-loglevel warning' (not 'error'): a real connection failure would
-    // already surface at 'error' either way, but ffmpeg's pulse input
-    // logs which source/format it actually opened at a level below
-    // 'error' -- worth having in mep_stt_ffmpeg.log (see on_stderr below)
-    // when diagnosing a recording that "succeeds" but is actually silent
-    // (wrong default source, muted input) rather than erroring outright.
-    "mep.stt_record_cmd = mep.stt_record_cmd or\n"
-    "  {'ffmpeg', '-y', '-loglevel', 'warning', '-f', 'pulse', '-i', 'default', '-ar', '16000', '-ac', '1'}\n"
+    // Recording is in-house by default: mep.audio_record_start
+    // (audio_capture.h -- CoreAudio on macOS, WASAPI on Windows, ALSA on
+    // Linux) captures the default microphone, resamples to 16 kHz mono and
+    // writes <base>_000.wav, _001.wav, ... itself. No external program.
+    //
+    // mep.stt_record_cmd (unset by default) is an explicit external
+    // override: the recording command *up to* (not including) ffmpeg's
+    // segmenting/output flags, which get appended right before spawning,
+    // e.g. {'ffmpeg', '-y', '-loglevel', 'warning', '-f', 'pulse', '-i',
+    // 'default', '-ar', '16000', '-ac', '1'} -- any tool that understands
+    // the segment-muxer flags appended below. Its stderr goes to
+    // ./mep_stt_ffmpeg.log (with mep.stt_debug_save on).
     "mep.stt_base_url = mep.stt_base_url or 'https://api.openai.com/v1'\n"
     "mep.stt_model = mep.stt_model or 'whisper-1'\n"
     "mep.stt_chunk_seconds = mep.stt_chunk_seconds or 4\n"
     "local mep_stt_job = nil\n"
     "local mep_stt_base = nil\n"
-    // Segments are numbered by ffmpeg itself (%03d, from 0), so a running
+    // Segments are numbered by the recorder itself (%03d, from 0), so a running
     // count of how many this recording has produced doubles as both the
-    // next segment's index and, since ffmpeg finalizes them strictly in
+    // next segment's index and, since the recorder finalizes them strictly in
     // order, the key each transcription result needs for in-order
     // insertion below.
     "local mep_stt_next_index = 0\n"
@@ -31474,6 +31407,8 @@ const char *kBuiltinAi =
     "local mep_stt_flush_index = 0\n"
     "local mep_stt_inflight = 0\n"
     "local mep_stt_stopping = false\n"
+    "local mep_stt_external = false\n"
+    "local mep_stt_capture_err = nil\n"
     // Whisper is OpenAI-only (no Anthropic equivalent), so this resolves
     // an OpenAI key independent of mep.ai_provider -- opportunistically
     // reusing mep.ai_api_key when the chat provider already IS OpenAI
@@ -31584,7 +31519,7 @@ const char *kBuiltinAi =
     // process is truly gone and every segment -- including the one that
     // was open at kill time -- is complete.
     "    mep_stt_stopping = true\n"
-    "    mep.job_kill(mep_stt_job)\n"
+    "    if mep_stt_external then mep.job_kill(mep_stt_job) else mep.audio_record_stop(mep_stt_job) end\n"
     "    mep.stt_set_recording(false)\n"
     "    mep.notify('Stopping recording...')\n"
     "    return\n"
@@ -31596,6 +31531,40 @@ const char *kBuiltinAi =
     "  mep_stt_inflight = 0\n"
     "  mep_stt_base = os.tmpname()\n"
     "  os.remove(mep_stt_base)\n"
+    // In-house recording (the default). The segment names reuse the
+    // os.tmpname() base above, split into the directory and file prefix
+    // mep.audio_record_start wants. Each finished segment arrives through
+    // on_chunk in order; after mep.audio_record_stop the final partial
+    // segment still does, then on_exit(0). A failure (no microphone,
+    // permission refused) comes through on_error, then on_exit(non-zero).
+    "  mep_stt_capture_err = nil\n"
+    "  mep_stt_external = mep.stt_record_cmd ~= nil\n"
+    "  if not mep_stt_external then\n"
+    "    local dir, prefix = mep_stt_base:match('^(.*)[/\\\\]([^/\\\\]+)$')\n"
+    "    if not dir or dir == '' then dir, prefix = '.', mep_stt_base end\n"
+    "    mep_stt_job = mep.audio_record_start({\n"
+    "      dir = dir, prefix = prefix, chunk_seconds = mep.stt_chunk_seconds, sample_rate = 16000,\n"
+    "      on_chunk = function(path)\n"
+    "        local index = mep_stt_next_index\n"
+    "        mep_stt_next_index = mep_stt_next_index + 1\n"
+    "        mep_stt_transcribe_chunk(index, path)\n"
+    "      end,\n"
+    "      on_warn = function(msg) mep.notify('Speech-to-text: ' .. msg, 'warn') end,\n"
+    "      on_error = function(msg) mep_stt_capture_err = msg end,\n"
+    "      on_exit = function(code)\n"
+    "        mep_stt_job = nil\n"
+    "        mep.stt_set_recording(false)\n"
+    "        if code ~= 0 then\n"
+    "          mep.notify('Recording failed: ' .. (mep_stt_capture_err or ('exit ' .. code)), 'error')\n"
+    "        elseif mep_stt_inflight == 0 then\n"
+    "          mep.notify('Transcription complete')\n"
+    "        end\n"
+    "      end,\n"
+    "    })\n"
+    "    mep.stt_set_recording(true)\n"
+    "    mep.notify('Recording -- transcribing as you talk. Press <leader>v again to stop.')\n"
+    "    return\n"
+    "  end\n"
     "  local argv = {}\n"
     "  for _, a in ipairs(mep.stt_record_cmd) do argv[#argv + 1] = a end\n"
     // `-segment_list pipe:1` with `flat`/`+live` turns ffmpeg's own stdout
@@ -33644,12 +33613,10 @@ const char *kBuiltinLeetcode =
     "    end,\n"
     "  })\n"
     "end\n"
-    // Async sleep for the submit poll loop below, via the job system
-    // rather than a real timer binding (mep exposes no defer/timer API to
-    // Lua) -- a tiny `sh -c 'sleep N'` subprocess whose on_exit is the
-    // resumption, so the wait doesn't block the editor's main loop.
+    // Async sleep for the submit poll loop below (mep.defer: the wait
+    // doesn't block the editor's main loop).
     "local function mep_leetcode_sleep(seconds, cb)\n"
-    "  mep.job_start({'sh', '-c', 'sleep ' .. tostring(seconds)}, {on_exit = function() cb() end})\n"
+    "  mep.defer(seconds, cb)\n"
     "end\n"
     "local LEETCODE_QUESTION_QUERY = 'query questionData($titleSlug: String!) { question(titleSlug: $titleSlug) ' ..\n"
     "  '{ questionId title titleSlug content difficulty codeSnippets { lang langSlug code } sampleTestCase } }'\n"
@@ -34601,18 +34568,20 @@ const char *kBuiltinRunners =
     "local rn_ws_markers = {justfile = 'just', Justfile = 'just', ['.justfile'] = 'just', Makefile = 'make',\n"
     "  makefile = 'make', GNUmakefile = 'make', ['build.ninja'] = 'ninja', ['CMakeLists.txt'] = 'cmake'}\n"
     "local function rn_find_workspaces(top, cb)\n"
-    "  local argv = {'find', top, '-maxdepth', tostring(mep.opt.runner_workspace_depth), '(', '-name', '.git', '-o', '-name', 'node_modules',\n"
-    "    '-o', '-name', '_deps', '-o', '-name', 'CMakeFiles', '-o', '-name', '.cache', '-o', '-name', '.direnv', '-o', '-name', '*.worktrees',\n"
-    "    '-o', '-name', 'target', '-o', '-name', '.venv', ')', '-prune', '-o', '-type', 'f', '('}\n"
-    "  local first = true\n"
+    // An rg listing (the builtin searcher unless mep.opt.search_system_rg):
+    // every file, ignored or hidden, down to the depth limit, minus the
+    // usual build/vendor directories, whose name is a runner marker.
+    "  local argv = {'rg', '--files', '--hidden', '--no-ignore', '--max-depth', tostring(mep.opt.runner_workspace_depth)}\n"
+    "  for _, d in ipairs({'node_modules', '_deps', 'CMakeFiles', '.cache', '.direnv', '*.worktrees', 'target', '.venv'}) do\n"
+    "    argv[#argv + 1] = '--glob'\n"
+    "    argv[#argv + 1] = '!' .. d\n"
+    "  end\n"
     "  for n in pairs(rn_ws_markers) do\n"
-    "    if not first then argv[#argv + 1] = '-o' end\n"
-    "    first = false\n"
-    "    argv[#argv + 1] = '-name'\n"
+    "    argv[#argv + 1] = '--glob'\n"
     "    argv[#argv + 1] = n\n"
     "  end\n"
-    "  argv[#argv + 1] = ')'\n"
-    "  argv[#argv + 1] = '-print'\n"
+    "  argv[#argv + 1] = '--'\n"
+    "  argv[#argv + 1] = top\n"
     "  rn_run(argv, top, function(out)\n"
     "    local by_dir, dirs = {}, {}\n"
     "    for _, path in ipairs(out) do\n"
@@ -35796,6 +35765,11 @@ const char *kBuiltinPickerSources =
     // picker's item list thousands of times for a big repo. Preview pane:
     // on_select_change (5th arg... 4th is nil for "no on_query_change")
     // shows the highlighted file's first lines via the helper above.\n"
+    // Project searches written as rg argvs run on mep's builtin searcher
+    // (project_search.h); true runs the system ripgrep instead when it is
+    // installed (lua_env.cpp's l_job_start).
+    "mep.opt = mep.opt or {}\n"
+    "if mep.opt.search_system_rg == nil then mep.opt.search_system_rg = false end\n"
     "function mep.find_files()\n"
     "  local lines = {}\n"
     "  local last_flush = mep.now()\n"
@@ -35859,17 +35833,9 @@ const char *kBuiltinPickerSources =
     "  mep.job_start({'rg', '--files', '--hidden', '--glob', '!.git', '--glob', '!*.worktrees'}, {\n"
     "    cwd = mep.workspace_root(),\n"
     "    on_stdout = on_line,\n"
-    "    on_exit = function(code)\n"
-    "      if #lines == 0 then\n"
-    "        mep.job_start({'find', '.', '-type', 'f', '-not', '-path', '*/.git/*', '-not', '-path', '*.worktrees/*'}, {\n"
-    "          cwd = mep.workspace_root(),\n"
-    "          on_stdout = on_line,\n"
-    "          on_exit = function() ensure_open() flush() end,\n"
-    "        })\n"
-    "      else\n"
-    "        ensure_open()\n"
-    "        flush()\n"
-    "      end\n"
+    "    on_exit = function()\n"
+    "      ensure_open()\n"
+    "      flush()\n"
     "    end,\n"
     "  })\n"
     "end\n"
@@ -36447,7 +36413,8 @@ const char *kBuiltinPickerSources =
     "  end)\n"
     "end\n"
     // mep.opt: the small options table WORKSPACES_PLAN.md introduces
-    // (worktree_dir, restore_workspaces, restore_layouts, workspace_git_dirty). Assignments
+    // (worktree_dir, restore_workspaces, restore_layouts, workspace_git_dirty; plus
+    // blend_importer, see model3d_blend_import.h). Assignments
     // are forwarded to the C++ side immediately so init.lua's
     // `mep.opt.worktree_dir = '...'` takes effect for the very next :wsnew.
     //
@@ -36474,6 +36441,7 @@ const char *kBuiltinPickerSources =
     "  if k == 'worktree_dir' then mep.workspace_set_worktree_dir(v or '')\n"
     "  elseif k == 'restore_workspaces' then mep.workspace_set_restore(v ~= false)\n"
     "  elseif k == 'restore_layouts' then mep.workspace_set_restore_layouts(v and true or false)\n"
+    "  elseif k == 'blend_importer' then mep.model3d_set_blend_importer(v or 'builtin')\n"
     "  end\n"
     "end\n"
     "setmetatable(mep.opt, {\n"
@@ -36490,7 +36458,7 @@ const char *kBuiltinPickerSources =
     "})\n"
     // Re-forward whatever the earlier chunks had already set, since those
     // writes happened before this metatable existed and so never reached C++.
-    "for _, k in ipairs({'worktree_dir', 'restore_workspaces', 'restore_layouts'}) do\n"
+    "for _, k in ipairs({'worktree_dir', 'restore_workspaces', 'restore_layouts', 'blend_importer'}) do\n"
     "  if mep_opt_store[k] ~= nil then mep_opt_forward(k, mep_opt_store[k]) end\n"
     "end\n"
     "mep.command('MepWorkspaces', mep.workspaces)\n"
@@ -36513,28 +36481,18 @@ const char *kBuiltinPickerSources =
     // Default winbar breadcrumb click handler (Phase 11 click-dispatch
     // gap): clicking a directory segment of the per-pane header's path
     // (main.cpp's DrawPane) navigates into it by opening a file picker
-    // scoped to that directory, same rg-with-find-fallback pattern as
-    // mep.find_files above, just rooted at `dir` instead of '.'.
+    // scoped to that directory, same rg listing as mep.find_files above
+    // (the builtin searcher when ripgrep is not installed), just rooted at
+    // `dir` instead of '.'.
     "function mep.winbar_navigate(dir)\n"
     "  if not dir or dir == '' then return end\n"
     "  local lines = {}\n"
     "  mep.job_start({'rg', '--files', '--hidden', '--glob', '!.git', '--glob', '!*.worktrees', dir}, {\n"
     "    on_stdout = function(line) lines[#lines + 1] = line end,\n"
-    "    on_exit = function(code)\n"
-    "      if #lines == 0 then\n"
-    "        mep.job_start({'find', dir, '-type', 'f', '-not', '-path', '*/.git/*'}, {\n"
-    "          on_stdout = function(line) lines[#lines + 1] = line end,\n"
-    "          on_exit = function()\n"
-    "            mep.picker_open('Files in ' .. dir, lines, function(item)\n"
-    "              if item then mep.open(item) end\n"
-    "            end)\n"
-    "          end,\n"
-    "        })\n"
-    "      else\n"
-    "        mep.picker_open('Files in ' .. dir, lines, function(item)\n"
-    "          if item then mep.open(item) end\n"
-    "        end)\n"
-    "      end\n"
+    "    on_exit = function()\n"
+    "      mep.picker_open('Files in ' .. dir, lines, function(item)\n"
+    "        if item then mep.open(item) end\n"
+    "      end)\n"
     "    end,\n"
     "  })\n"
     "end\n"
@@ -65028,7 +64986,7 @@ void SetUpTraceLogFile() {
 }
 
 // --- Agent UI automation ("ui.*" RPC methods, registered in main() below) --
-// Lets an external agent (mcp/server.ts's mep_screenshot/mep_mouse_*/
+// Lets an external agent (mep-mcp's mep_screenshot/mep_mouse_*/
 // mep_key_*/mep_type_text tools) drive this *real* window -- click
 // buttons, drag paint strokes, read back what's on screen -- the same
 // way Playwright drives a browser. Mouse/keyboard injection itself lives

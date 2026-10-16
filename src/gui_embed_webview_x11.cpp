@@ -162,8 +162,9 @@ public:
         return true;
     }
 
-    // (An :exec pane keeps no pictures.)
-    Snapshot Capture() override { return {}; }
+    // The adopted mep-webview window's picture, for a mepml results=web
+    // run (an :exec pane keeps none, so is never asked).
+    Snapshot Capture() override { return inner_ ? inner_->Capture() : Snapshot{}; }
 
     std::string Title() override { return title_; }
 

@@ -1,5 +1,9 @@
 #include "lua_env.h"
 #include "platform_compat.h"
+#include "file_dialog.h"
+
+#include "audio_capture.h"
+#include "frame_activity.h"
 
 #include "cad_fem_api.h"
 #include "http_client.h"
@@ -11,12 +15,15 @@
 #include "cpp_format.h"
 #include "python_format.h"
 #include "editor.h"
+#include "model3d_blend_import.h"
 #include "base64.h"
 #include "png_codec.h"
 #include "text_quality.h"
 #include "job.h"
 #include "org_doc.h"
 #include "project_search.h"
+#include "git/git.h"
+#include "git/git_job.h"
 #include "maxima_format.h"
 #include "r_format.h"
 #include "tcp_client.h"
@@ -1816,6 +1823,53 @@ int l_notebook_status(lua_State *L) {
 }
 
 /**
+ * @brief Whether `mep.opt.search_system_rg` asks for the system ripgrep over the builtin searcher.
+ * @param L Lua state (stack left unchanged).
+ */
+bool SearchPrefersSystemRg(lua_State *L) {
+    bool prefer = false;
+    lua_getglobal(L, "mep");
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "opt");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "search_system_rg");
+            prefer = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    return prefer;
+}
+
+/**
+ * @brief Implements mep.defer(seconds, fn): calls fn once, on the main thread, after `seconds` -- without blocking
+ *        the editor (an in-process job that waits; mep.job_kill(id) cancels it before fn runs).
+ * @param L Lua state; arg 1 is the delay in seconds, arg 2 the function.
+ * @return Number of values pushed (1: the job id).
+ */
+int l_defer(lua_State *L) {
+    const double seconds = std::max(0.0, luaL_checknumber(L, 1));
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    LuaEnv *env = GetLuaEnv(L);
+    lua_pushvalue(L, 2);
+    const int fn_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    Job::Task task = [seconds](const Job::EmitLine &, const std::atomic<bool> &cancelled) {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+        while (!cancelled.load() && std::chrono::steady_clock::now() < until)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        return cancelled.load() ? 1 : 0;
+    };
+    JobManager::Callbacks cb;
+    cb.on_exit = [env, fn_ref](int code) {
+        if (code == 0) env->CallRef(fn_ref);
+        env->UnrefFunction(fn_ref);
+    };
+    lua_pushinteger(L, JobManager::Instance().SpawnTask(std::move(task), std::move(cb), "defer"));
+    return 1;
+}
+
+/**
  * @brief Implements mep.notebook_cell_outputs(index): array of {kind=, name=, text=, has_image=, execution_count=} for a cell's
  * outputs (cell_type/execution_count/source on the table too), or nil -- what tests/agents use to read results back.
  * @param L Lua state; arg 1 is a 0-based cell index.
@@ -1932,11 +1986,26 @@ int l_job_start(lua_State *L) {
         if (on_exit_ref != LUA_NOREF) env->UnrefFunction(on_exit_ref);
     };
 
-    // No ripgrep installed: run the builtin one (project_search.h) for any
+    // git: the in-house implementation (src/git/, DEPENDENCY_REMOVAL_PLAN.md
+    // Phase 4) for every command it covers, as an in-process task with the
+    // same line/exit-code shape the CLI job had. Network commands (push,
+    // pull, fetch...) and anything outside the subset still run the CLI.
+    // (A caller passing its own env -- GIT_DIR, GIT_INDEX_FILE, ... -- gets
+    // the CLI, which is the one that honours it.)
+    if (!argv.empty() && argv[0] == "git" && extra_env.empty()) {
+        if (int id = mep::git::SpawnInHouse(argv, cwd, cb)) {
+            lua_pushinteger(L, id);
+            return 1;
+        }
+    }
+
+    // ripgrep argvs run on the builtin searcher (project_search.h) for any
     // rg argv it understands, so every project search written against rg
-    // -- mep's own live grep/find files/todo scan, and a user's -- still
-    // works. Real rg is always preferred when it is on PATH.
-    if (!argv.empty() && argv[0] == "rg" && !mep::compat::ProgramOnPath("rg")) {
+    // -- mep's own live grep/find files/todo scan, and a user's -- works
+    // with nothing installed (plans/DEPENDENCY_REMOVAL_PLAN.md). The real
+    // rg only runs when `mep.opt.search_system_rg` is set and it is on
+    // PATH, or for flags the builtin does not support.
+    if (!argv.empty() && argv[0] == "rg" && !(SearchPrefersSystemRg(L) && mep::compat::ProgramOnPath("rg"))) {
         if (std::optional<mep_search::Options> opts = mep_search::ParseRgArgs(argv)) {
             Job::Task task = [opts = std::move(*opts), cwd](const Job::EmitLine &emit,
                                                             const std::atomic<bool> &cancelled) {
@@ -1949,6 +2018,374 @@ int l_job_start(lua_State *L) {
 
     int id = JobManager::Instance().Spawn(argv, cwd, std::move(cb), /*use_pty=*/false, std::move(extra_env));
     lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.audio_record_start{dir=, prefix=, chunk_seconds=, sample_rate=,
+//                        on_chunk=fn(path), on_warn=fn(msg),
+//                        on_error=fn(msg), on_exit=fn(code)} -> id
+// In-house microphone recording (audio_capture.h): 16-bit mono WAV
+// segments of chunk_seconds each (default 4) at sample_rate (default
+// 16000), written as <dir>/<prefix>_000.wav, _001.wav, ... -- each handed
+// to on_chunk once complete. Runs as an in-process job, so `id` is a job
+// id: mep.audio_record_stop(id) (= mep.job_kill) ends it, after which the
+// final partial segment still arrives through on_chunk and on_exit(0)
+// follows. A failure (no device, microphone access refused, write error)
+// calls on_error(msg) and then on_exit with a non-zero code.
+/**
+ * @brief Implements mep.audio_record_start(opts): starts in-house microphone recording into WAV segments.
+ * @param L Lua state; arg 1 is the options table.
+ * @return Number of values pushed (1: the recording's job id).
+ */
+int l_audio_record_start(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    mep::audio::SegmentOptions opts;
+    lua_getfield(L, 1, "dir");
+    if (lua_isstring(L, -1)) opts.dir = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "prefix");
+    if (lua_isstring(L, -1)) opts.prefix = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "chunk_seconds");
+    if (lua_isnumber(L, -1)) opts.chunk_seconds = static_cast<double>(lua_tonumber(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "sample_rate");
+    if (lua_isnumber(L, -1)) opts.out_rate = static_cast<int>(lua_tointeger(L, -1));
+    lua_pop(L, 1);
+    if (opts.dir.empty()) return luaL_error(L, "mep.audio_record_start: `dir` is required");
+    if (opts.chunk_seconds < 0.5) opts.chunk_seconds = 0.5;
+    if (opts.out_rate < 8000 || opts.out_rate > 192000) opts.out_rate = 16000;
+    const int on_chunk_ref = RefField(L, 1, "on_chunk");
+    const int on_warn_ref = RefField(L, 1, "on_warn");
+    const int on_error_ref = RefField(L, 1, "on_error");
+    const int on_exit_ref = RefField(L, 1, "on_exit");
+
+    // The task speaks the job's line protocol: "chunk\t<path>",
+    // "warn\t<msg>", "error\t<msg>", one event per line.
+    Job::Task task = [opts](const Job::EmitLine &emit, const std::atomic<bool> &cancelled) {
+        /**
+         * @brief Emits one tagged event line and wakes the main loop so it is delivered promptly.
+         */
+        auto send = [&emit](const char *tag, std::string text) {
+            for (char &c : text)
+                if (c == '\n' || c == '\r') c = ' ';
+            emit(std::string(tag) + "\t" + text);
+            mep::WakeMainLoop();
+        };
+        mep::audio::RecordEvents events;
+        events.on_segment = [&send](const std::string &path) { send("chunk", path); };
+        events.on_warning = [&send](const std::string &msg) { send("warn", msg); };
+        std::string error;
+        const int rc = mep::audio::RecordSegments(opts, events, cancelled, &error);
+        if (rc != 0) send("error", error.empty() ? std::string("audio capture failed") : error);
+        return rc;
+    };
+    LuaEnv *env = GetLuaEnv(L);
+    JobManager::Callbacks cb;
+    /**
+     * @brief Dispatches one tagged event line to the matching Lua callback.
+     * @param line "<tag>\t<payload>".
+     */
+    // A stopped recording is a killed job (JobManager reports -1), so the
+    // exit code Lua sees comes from whether an "error" line arrived.
+    auto failed = std::make_shared<bool>(false);
+    cb.on_stdout = [env, on_chunk_ref, on_warn_ref, on_error_ref, failed](const std::string &line) {
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos) return;
+        const std::string tag = line.substr(0, tab), payload = line.substr(tab + 1);
+        if (tag == "error") *failed = true;
+        const int ref = tag == "chunk"   ? on_chunk_ref
+                        : tag == "warn"  ? on_warn_ref
+                        : tag == "error" ? on_error_ref
+                                         : LUA_NOREF;
+        if (ref != LUA_NOREF) env->CallRefWithString(ref, payload);
+    };
+    /**
+     * @brief Calls on_exit with the recording's exit code, then releases every callback ref.
+     * @param code The job's exit code (-1 once stopped); Lua gets 0 unless an error was reported.
+     */
+    cb.on_exit = [env, on_chunk_ref, on_warn_ref, on_error_ref, on_exit_ref, failed](int code) {
+        if (on_exit_ref != LUA_NOREF) env->CallRefWithInt(on_exit_ref, *failed ? (code > 0 ? code : 1) : 0);
+        for (int ref : {on_chunk_ref, on_warn_ref, on_error_ref, on_exit_ref})
+            if (ref != LUA_NOREF) env->UnrefFunction(ref);
+    };
+    lua_pushinteger(L, JobManager::Instance().SpawnTask(std::move(task), std::move(cb), "audio capture"));
+    return 1;
+}
+
+// --- mep.git: the in-house git (src/git/) ---------------------------------
+
+namespace {
+std::vector<std::string> GitArgvFromTable(lua_State *L, int idx) {
+    std::vector<std::string> argv;
+    lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, idx));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, idx, i);
+        argv.emplace_back(luaL_checkstring(L, -1));
+        lua_pop(L, 1);
+    }
+    if (argv.empty() || argv[0] != "git") argv.insert(argv.begin(), "git");
+    return argv;
+}
+void PushStringList(lua_State *L, const std::vector<std::string> &v) {
+    lua_createtable(L, static_cast<int>(v.size()), 0);
+    for (size_t i = 0; i < v.size(); i++) {
+        lua_pushlstring(L, v[i].data(), v[i].size());
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+}
+std::string GitDirArg(lua_State *L, int idx) {
+    if (lua_isstring(L, idx)) return lua_tostring(L, idx);
+    return GetEditor(L)->ActiveRoot();
+}
+}  // namespace
+
+/**
+ * @brief Implements mep.git.run(argv, opts, cb): runs a git command (argv with or without the leading 'git') on a
+ * worker thread -- in-house when supported, else the git CLI -- and calls cb(code, out_lines, err_lines).
+ * opts.cwd defaults to the active workspace root.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the job id).
+ */
+int l_git_run(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> argv = GitArgvFromTable(L, 1);
+    std::string cwd;
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "cwd");
+        if (lua_isstring(L, -1)) cwd = lua_tostring(L, -1);
+        lua_pop(L, 1);
+    }
+    if (cwd.empty()) cwd = GetEditor(L)->ActiveRoot();
+    int cb_ref = LUA_NOREF;
+    if (lua_isfunction(L, 3)) {
+        lua_pushvalue(L, 3);
+        cb_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+    LuaEnv *env = GetLuaEnv(L);
+    Editor *ed = GetEditor(L);
+    auto out = std::make_shared<std::vector<std::string>>();
+    auto err = std::make_shared<std::vector<std::string>>();
+    JobManager::Callbacks cb;
+    cb.on_stdout = [out](const std::string &line) { out->push_back(line); };
+    cb.on_stderr = [err](const std::string &line) { err->push_back(line); };
+    cb.on_exit = [env, ed, cb_ref, out, err](int code) {
+        if (cb_ref == LUA_NOREF) return;
+        lua_State *S = env->State();
+        lua_rawgeti(S, LUA_REGISTRYINDEX, cb_ref);
+        lua_pushinteger(S, code);
+        PushStringList(S, *out);
+        PushStringList(S, *err);
+        if (lua_pcall(S, 3, 0, 0) != LUA_OK) {
+            const char *msg = lua_tostring(S, -1);
+            if (ed) ed->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
+            lua_pop(S, 1);
+        }
+        luaL_unref(S, LUA_REGISTRYINDEX, cb_ref);
+    };
+    lua_pushinteger(L, mep::git::SpawnGit(argv, cwd, std::move(cb)));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.git.supported(argv): whether the in-house git handles this command (no CLI needed).
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_git_supported(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_pushboolean(L, mep::git::InHouseEnabled() && mep::git::IsSupported(GitArgvFromTable(L, 1)));
+    return 1;
+}
+
+/**
+ * @brief Implements mep.git.use_cli([bool]): with an argument, routes every git command to the CLI (true) or back to
+ * the in-house implementation (false); returns whether the CLI is in use.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_git_use_cli(lua_State *L) {
+    if (lua_isboolean(L, 1)) mep::git::SetUseCli(lua_toboolean(L, 1) != 0);
+    lua_pushboolean(L, !mep::git::InHouseEnabled());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.audio_record_stop(id): ends an mep.audio_record_start recording (its final segment and on_exit still follow).
+ * @param L Lua state; arg 1 is the recording's id.
+ * @return Number of values pushed (0).
+ */
+int l_audio_record_stop(lua_State *L) {
+    JobManager::Instance().Kill(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
+/**
+ * @brief Implements mep.git.toplevel([dir]): the worktree root containing dir, or nil.
+ * @param L Lua state.
+ * @return Number of values pushed (1).
+ */
+int l_git_toplevel(lua_State *L) {
+    std::unique_ptr<mep::git::Repo> repo = mep::git::Repo::Discover(GitDirArg(L, 1), nullptr);
+    if (!repo || repo->IsBare()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushstring(L, repo->WorkTree().c_str());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.git.status([dir], [opts]): a structured `git status` (synchronous -- use mep.git.run for
+ * big trees): {branch=, detached=, unborn=, head=, upstream=, ahead=, behind=, gone=, changes={{x=,y=,path=,orig=}},
+ * untracked={...}, ignored={...}}; nil, err when dir is not in a repository. opts.ignored / opts.untracked ('no',
+ * 'normal', 'all').
+ * @param L Lua state.
+ * @return Number of values pushed (1 or 2).
+ */
+int l_git_status(lua_State *L) {
+    std::string err;
+    std::unique_ptr<mep::git::Repo> repo = mep::git::Repo::Discover(GitDirArg(L, 1), &err);
+    if (!repo) {
+        lua_pushnil(L);
+        lua_pushstring(L, err.c_str());
+        return 2;
+    }
+    mep::git::StatusOptions so;
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "ignored");
+        so.ignored = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "untracked");
+        if (lua_isstring(L, -1)) {
+            std::string u = lua_tostring(L, -1);
+            so.untracked_set = true;
+            so.untracked = u == "no" ? mep::git::StatusOptions::Untracked::No
+                           : u == "all" ? mep::git::StatusOptions::Untracked::All
+                                        : mep::git::StatusOptions::Untracked::Normal;
+        }
+        lua_pop(L, 1);
+    }
+    mep::git::StatusResult st;
+    if (!mep::git::Status(*repo, so, st, &err)) {
+        lua_pushnil(L);
+        lua_pushstring(L, err.c_str());
+        return 2;
+    }
+    lua_newtable(L);
+    lua_pushstring(L, st.branch.branch.c_str());
+    lua_setfield(L, -2, "branch");
+    lua_pushboolean(L, st.branch.detached);
+    lua_setfield(L, -2, "detached");
+    lua_pushboolean(L, st.branch.unborn);
+    lua_setfield(L, -2, "unborn");
+    lua_pushstring(L, st.branch.head.IsNull() ? "" : st.branch.head.Hex().c_str());
+    lua_setfield(L, -2, "head");
+    if (st.branch.has_upstream) {
+        lua_pushstring(L, st.branch.upstream.c_str());
+        lua_setfield(L, -2, "upstream");
+        lua_pushinteger(L, st.branch.ahead);
+        lua_setfield(L, -2, "ahead");
+        lua_pushinteger(L, st.branch.behind);
+        lua_setfield(L, -2, "behind");
+        lua_pushboolean(L, st.branch.gone);
+        lua_setfield(L, -2, "gone");
+    }
+    lua_pushstring(L, repo->WorkTree().c_str());
+    lua_setfield(L, -2, "root");
+    lua_createtable(L, static_cast<int>(st.changes.size()), 0);
+    for (size_t i = 0; i < st.changes.size(); i++) {
+        const mep::git::StatusEntry &e = st.changes[i];
+        lua_newtable(L);
+        lua_pushlstring(L, &e.x, 1);
+        lua_setfield(L, -2, "x");
+        lua_pushlstring(L, &e.y, 1);
+        lua_setfield(L, -2, "y");
+        lua_pushstring(L, e.path.c_str());
+        lua_setfield(L, -2, "path");
+        if (!e.orig_path.empty()) {
+            lua_pushstring(L, e.orig_path.c_str());
+            lua_setfield(L, -2, "orig");
+        }
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    lua_setfield(L, -2, "changes");
+    PushStringList(L, st.untracked);
+    lua_setfield(L, -2, "untracked");
+    PushStringList(L, st.ignored);
+    lua_setfield(L, -2, "ignored");
+    return 1;
+}
+
+/**
+ * @brief Implements mep.git.log([dir], [opts]): recent commits, synchronously -- {{hash=, short=, author=, email=,
+ * time=, subject=, parents={...}}}; opts.n (default 100), opts.rev (default HEAD).
+ * @param L Lua state.
+ * @return Number of values pushed (1 or 2).
+ */
+int l_git_log(lua_State *L) {
+    std::string err;
+    std::unique_ptr<mep::git::Repo> repo = mep::git::Repo::Discover(GitDirArg(L, 1), &err);
+    if (!repo) {
+        lua_pushnil(L);
+        lua_pushstring(L, err.c_str());
+        return 2;
+    }
+    long n = 100;
+    std::string rev = "HEAD";
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "n");
+        if (lua_isnumber(L, -1)) n = static_cast<long>(lua_tointeger(L, -1));
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "rev");
+        if (lua_isstring(L, -1)) rev = lua_tostring(L, -1);
+        lua_pop(L, 1);
+    }
+    std::vector<std::string> argv = {"git", "log", "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%ct%x1f%P%x1f%s",
+                                     "-n", std::to_string(n), rev};
+    std::string out;
+    int code = mep::git::RunCommand(argv, repo->WorkTree().empty() ? repo->GitDir() : repo->WorkTree(), out, err);
+    if (code != 0) {
+        lua_pushnil(L);
+        lua_pushstring(L, err.c_str());
+        return 2;
+    }
+    lua_newtable(L);
+    size_t pos = 0;
+    lua_Integer k = 0;
+    while (pos < out.size()) {
+        size_t nl = out.find('\n', pos);
+        if (nl == std::string::npos) nl = out.size();
+        std::string line = out.substr(pos, nl - pos);
+        pos = nl + 1;
+        std::vector<std::string> f;
+        size_t s = 0;
+        for (;;) {
+            size_t e = line.find('\x1f', s);
+            f.push_back(line.substr(s, e == std::string::npos ? std::string::npos : e - s));
+            if (e == std::string::npos) break;
+            s = e + 1;
+        }
+        if (f.size() < 7) continue;
+        lua_newtable(L);
+        const char *keys[] = {"hash", "short", "author", "email", "time", "parents", "subject"};
+        for (size_t i = 0; i < 7; i++) {
+            if (i == 4) lua_pushinteger(L, std::strtoll(f[i].c_str(), nullptr, 10));
+            else if (i == 5) {
+                std::vector<std::string> ps;
+                size_t q = 0;
+                while (q < f[i].size()) {
+                    size_t sp = f[i].find(' ', q);
+                    if (sp == std::string::npos) sp = f[i].size();
+                    ps.push_back(f[i].substr(q, sp - q));
+                    q = sp + 1;
+                }
+                PushStringList(L, ps);
+            } else lua_pushstring(L, f[i].c_str());
+            lua_setfield(L, -2, keys[i]);
+        }
+        lua_rawseti(L, -2, ++k);
+    }
     return 1;
 }
 
@@ -3730,6 +4167,38 @@ int l_mepml_gui_start(lua_State *L) {
     const std::vector<std::string> temps = strings_at(4);
     const int id = GetEditor(L)->MepmlGuiStart(static_cast<int>(luaL_checkinteger(L, 1)),
                                                static_cast<int>(luaL_checkinteger(L, 2)) - 1, has_argv ? &argv : nullptr, temps);
+    if (id < 0) lua_pushnil(L);
+    else lua_pushinteger(L, id);
+    return 1;
+}
+
+// mep.mepml_web_start(buffer_id, fence_row, url [, server_argv [, temp_files]])
+// -> run id | nil: shows a results=web block's page in mep's own web view
+// inside its results (Editor::MepmlWebStart): `url` when it is not "",
+// else the first http(s) address `server_argv` -- the web app babel
+// prepared, stopped with the run -- prints.
+/**
+ * @brief Implements mep.mepml_web_start(buffer_id, fence_row, url [, server_argv [, temp_files]]): a web page in a block's results.
+ * @param L Lua state; the buffer id, the 1-based fence row, the URL ("" to wait for the server's), the server argv, the temp files.
+ * @return Number of values pushed (1: the run id, or nil).
+ */
+int l_mepml_web_start(lua_State *L) {
+    auto strings_at = [L](int idx) {
+        std::vector<std::string> out;
+        if (!lua_istable(L, idx)) return out;
+        const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, idx));
+        for (lua_Integer k = 1; k <= n; ++k) {
+            lua_rawgeti(L, idx, k);
+            if (lua_isstring(L, -1)) out.emplace_back(lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
+        return out;
+    };
+    const std::string url = luaL_optstring(L, 3, "");
+    const std::vector<std::string> server = strings_at(4);
+    const std::vector<std::string> temps = strings_at(5);
+    const int id = GetEditor(L)->MepmlWebStart(static_cast<int>(luaL_checkinteger(L, 1)),
+                                               static_cast<int>(luaL_checkinteger(L, 2)) - 1, url, server, temps);
     if (id < 0) lua_pushnil(L);
     else lua_pushinteger(L, id);
     return 1;
@@ -7963,6 +8432,20 @@ int l_workspace_set_restore(lua_State *L) {
 int l_workspace_set_restore_layouts(lua_State *L) {
     GetEditor(L)->SetRestoreLayouts(lua_toboolean(L, 1) != 0);
     return 0;
+}
+/** @brief Implements mep.model3d_set_blend_importer(name): backs mep.opt.blend_importer ('builtin', 'auto' or 'blender'). */
+int l_model3d_set_blend_importer(lua_State *L) {
+    // builtin: mep's own .blend reader (the default); auto: the reader, then
+    // the Blender CLI when it fails; blender: always the CLI. Returns the
+    // importer now in effect; an unknown name raises an error.
+    BlendImporter mode = BlendImporter::Builtin;
+    const char *name = lua_tostring(L, 1);
+    if (!ParseBlendImporter(name ? name : "", &mode)) {
+        return luaL_error(L, "blend_importer: expected 'builtin', 'auto' or 'blender', got '%s'", name ? name : "?");
+    }
+    SetBlendImporter(mode);
+    lua_pushstring(L, BlendImporterName(mode));
+    return 1;
 }
 /** @brief Implements mep.workspace_set_worktree_dir(dir): backs mep.opt.worktree_dir. */
 int l_workspace_set_worktree_dir(lua_State *L) {
@@ -12213,6 +12696,25 @@ int l_pdf_goto_page(lua_State *L) {
 // for a pane not drawn yet, once it knows its size. The Run button uses it
 // to show a freshly built slide deck a whole slide at a time.
 /**
+ * @brief Implements mep.native_file_dialog([dir]): the platform's own modal "open file" dialog (file_dialog.h).
+ * @param L Lua state; optional arg 1 is the directory it opens in.
+ * @return Number of values pushed (1: the chosen path, or nil when cancelled or when there is no native dialog;
+ *         2nd: false when this platform has none, so the caller can fall back to mep's own picker).
+ */
+int l_native_file_dialog(lua_State *L) {
+    if (!mep::file_dialog::Available()) {
+        lua_pushnil(L);
+        lua_pushboolean(L, 0);
+        return 2;
+    }
+    const std::string path = mep::file_dialog::Open(luaL_optstring(L, 1, ""));
+    if (path.empty()) lua_pushnil(L);
+    else lua_pushstring(L, path.c_str());
+    lua_pushboolean(L, 1);
+    return 2;
+}
+
+/**
  * @brief Implements mep.pdf_fit_page([buffer_id]): fits the page to its pane(s) (Editor::RequestPdfFitPage).
  * @param L Lua state; optional arg 1 is the buffer id.
  * @return 0.
@@ -15394,6 +15896,8 @@ const luaL_Reg kMepFuncs[] = {
     {"job_write", l_job_write},
     {"job_close_stdin", l_job_close_stdin},
     {"job_kill", l_job_kill},
+    {"audio_record_start", l_audio_record_start},
+    {"audio_record_stop", l_audio_record_stop},
     {"job_is_running", l_job_is_running},
     {"youtube_toggle", l_youtube_toggle},
     {"youtube_search", l_youtube_search},
@@ -15596,6 +16100,7 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_link_at", l_mepml_link_at},
     {"mepml_terminal_start", l_mepml_terminal_start},
     {"mepml_gui_start", l_mepml_gui_start},
+    {"mepml_web_start", l_mepml_web_start},
     {"mepml_video_toggle", l_mepml_video_toggle},
     {"mepml_terminal_stop", l_mepml_terminal_stop},
     {"mepml_terminal_focus", l_mepml_terminal_focus},
@@ -15829,6 +16334,7 @@ const luaL_Reg kMepFuncs[] = {
     {"workspace_set_worktree_dir", l_workspace_set_worktree_dir},
     {"workspace_set_restore", l_workspace_set_restore},
     {"workspace_set_restore_layouts", l_workspace_set_restore_layouts},
+    {"model3d_set_blend_importer", l_model3d_set_blend_importer},
     {"workspace_set_git_dirty", l_workspace_set_git_dirty},
     {"workspace_state_save", l_workspace_state_save},
     {"workspace_state_restore", l_workspace_state_restore},
@@ -15906,6 +16412,8 @@ const luaL_Reg kMepFuncs[] = {
     {"quick_jump_matches", l_quick_jump_matches},
     {"quick_jump_pick", l_quick_jump_pick},
     {"platform", l_platform},
+    {"defer", l_defer},
+    {"native_file_dialog", l_native_file_dialog},
     {"pane_open", l_pane_open},
     {"pane_next_buffer", l_pane_next_buffer},
     {"pane_prev_buffer", l_pane_prev_buffer},
@@ -16046,6 +16554,21 @@ LuaEnv::LuaEnv(Editor *editor) : editor_(editor) {
     // Lua table can't stand in for it -- see kJsonEmptyArraySentinel.
     lua_pushlightuserdata(L_, kJsonEmptyArraySentinel);
     lua_setfield(L_, -2, "json_empty_array");
+    // mep.git: the in-house git (src/git/, DEPENDENCY_REMOVAL_PLAN.md Phase 4).
+    lua_newtable(L_);
+    lua_pushcfunction(L_, l_git_run);
+    lua_setfield(L_, -2, "run");
+    lua_pushcfunction(L_, l_git_supported);
+    lua_setfield(L_, -2, "supported");
+    lua_pushcfunction(L_, l_git_use_cli);
+    lua_setfield(L_, -2, "use_cli");
+    lua_pushcfunction(L_, l_git_toplevel);
+    lua_setfield(L_, -2, "toplevel");
+    lua_pushcfunction(L_, l_git_status);
+    lua_setfield(L_, -2, "status");
+    lua_pushcfunction(L_, l_git_log);
+    lua_setfield(L_, -2, "log");
+    lua_setfield(L_, -2, "git");
     lua_setglobal(L_, "mep");
 
     lua_pushcfunction(L_, l_print);

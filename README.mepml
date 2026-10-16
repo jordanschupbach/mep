@@ -195,7 +195,7 @@ resizable, and each one pops out into a large preview float with
 | `.pdf` | a PDF viewer with real text extraction, outlines and links |
 | `.html` (or `:Browse <url>`) | a browser pane with mep's own HTML/CSS/JS engine; `:Serve` hosts a directory ([more|file:docs/web.org]) |
 | `.png`, `.jpg`, … | an image viewer, and `e` enters a layer-based editor with procedural fills ([more|file:IMAGE_EDITOR.md]) |
-| `.obj`, `.gltf`, `.glb`, `.iqm`, `.vox`, `.m3d` | a 3D modeler: mesh editing, materials, lights, animation, rendering (`.blend` too, via a local Blender) |
+| `.obj`, `.gltf`, `.glb`, `.iqm`, `.vox`, `.m3d` | a 3D modeler: mesh editing, materials, lights, animation, rendering (`.blend` too, with its own reader) |
 | `.ipynb` | a Jupyter notebook with per-cell kernels, run without `jupyter_client` ([more|file:docs/notebooks.org]) |
 | `.org` | agenda, babel, roam, capture, clock, drill, LaTeX and image preview, export, plus `:Gantt` and `:Kanban` views |
 | `.docx`, `.odt`, `.xlsx`, `.ods`, `.csv` | office documents and spreadsheets, with formulas |

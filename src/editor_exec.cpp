@@ -138,6 +138,10 @@ void Editor::SyncBrowserTheme(ExecAppSession &sess, mep::gui_embed::WebView &vie
     const int epoch = sess.web_theme ? theme_epoch_ : -2;
     if (sess.web_theme_epoch == epoch) return;
     sess.web_theme_epoch = epoch;
+    view.SetTheme(BrowserTheme(sess.web_theme));
+}
+
+mep::gui_embed::WebView::Theme Editor::BrowserTheme(bool recolor) {
     using Rgb = mep::gui_embed::WebView::Rgb;
     auto group = [this](const char *name, Rgb fallback) {
         ThemeColor c;
@@ -145,7 +149,7 @@ void Editor::SyncBrowserTheme(ExecAppSession &sess, mep::gui_embed::WebView &vie
         return Rgb{c.r, c.g, c.b};
     };
     mep::gui_embed::WebView::Theme t;
-    t.recolor = sess.web_theme;
+    t.recolor = recolor;
     t.bg = group("NormalBg", Rgb{255, 255, 255});
     t.fg = group("Normal", Rgb{0, 0, 0});
     t.dim = group("Comment", t.fg);
@@ -162,7 +166,7 @@ void Editor::SyncBrowserTheme(ExecAppSession &sess, mep::gui_embed::WebView &vie
     // A dark theme is one whose paper is darker than its ink.
     auto luma = [](Rgb c) { return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b; };
     t.dark = luma(t.bg) < luma(t.fg);
-    view.SetTheme(t);
+    return t;
 }
 
 mep::gui_embed::WebView *Editor::BrowserOf(int buffer_id) {

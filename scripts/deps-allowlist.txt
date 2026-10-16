@@ -1,0 +1,81 @@
+# What mep may link and run (plans/DEPENDENCY_REMOVAL_PLAN.md), checked by
+# scripts/deps-audit.sh (`just deps-audit`, part of `just test`).
+#
+#   lib  <shell glob on the library path>  <kind>  <note>
+#   prog <shell glob on the program name>  <kind>  <note>
+#
+# kind:
+#   os         part of the operating system: always fine
+#   kept       a deliberate exception (the :Browser web engine)
+#   user       the user's own toolchain, run for their code or by their choice
+#   optional   an alternative backend the user picks; mep has an in-house default
+#   temporary  a dependency still to be replaced -- the note names the phase
+#
+# Anything the audit finds that matches no line here fails it: add a line
+# only after deciding which kind it is.
+
+# --- libraries ---------------------------------------------------------------
+lib  /System/Library/Frameworks/*                 os         macOS frameworks
+lib  /usr/lib/libSystem.*                         os         macOS libc
+lib  /usr/lib/libc++.*                            os         macOS C++ runtime
+lib  /usr/lib/libobjc.*                           os         macOS Objective-C runtime
+lib  linux-vdso.so.*                              os         Linux kernel
+lib  /*/ld-linux*                                 os         Linux loader
+lib  libc.so.*                                    os         libc
+lib  libm.so.*                                    os         libm
+lib  libdl.so.*                                   os         libdl
+lib  libpthread.so.*                              os         pthreads
+lib  librt.so.*                                   os         librt
+lib  libstdc++.so.*                               os         C++ runtime
+lib  libgcc_s.so.*                                os         compiler runtime
+lib  libutil.so.*                                 os         openpty
+lib  *libssl*                                     temporary  OpenSSL -- Phase 2 (in-house TLS)
+lib  *libcrypto*                                  temporary  OpenSSL -- Phase 2 (in-house TLS)
+lib  libX11.so.*                                  temporary  Xlib -- Phase 7 (X11 wire protocol)
+lib  libXtst.so.*                                 temporary  XTEST -- Phase 7
+lib  libXi.so.*                                   temporary  XInput2 -- Phase 7
+lib  libxcb.so.*                                  temporary  pulled in by Xlib -- Phase 7
+lib  libXau.so.*                                  temporary  pulled in by Xlib -- Phase 7
+lib  libXdmcp.so.*                                temporary  pulled in by Xlib -- Phase 7
+lib  libXext.so.*                                 temporary  pulled in by Xlib -- Phase 7
+lib  libasound.so.*                               temporary  ALSA -- Phase 5 (Pulse protocol / kernel ALSA)
+lib  libGL.so.*                                   temporary  GL driver, to be dlopen'd -- Phase 7
+lib  libGLX.so.*                                  temporary  GL driver, to be dlopen'd -- Phase 7
+lib  libGLdispatch.so.*                           temporary  GL driver, to be dlopen'd -- Phase 7
+lib  libOpenGL.so.*                               temporary  GL driver, to be dlopen'd -- Phase 7
+
+# --- programs ----------------------------------------------------------------
+prog git                                          temporary  Phase 4 (in-house git); network ops later
+prog curl                                         temporary  Phase 3 (native HTTPS) -- needs Phase 2
+prog secret-tool                                  temporary  Phase 6 (Secret Service over D-Bus)
+prog blender                                      optional   .blend files the in-house reader cannot read (Phase 8)
+prog ffmpeg                                       optional   only when the user sets mep.stt_record_cmd (Phase 5)
+prog rg                                           optional   mep.opt.search_system_rg; builtin otherwise
+prog pdftoppm                                     optional   tex_rasterizer = system
+prog tectonic                                     optional   tex_engine = system
+prog latexmk                                      optional   tex_engine = system
+prog sh                                           user       code blocks, runners, user commands
+prog bash                                         user       user commands
+prog python3                                      user       notebooks, Python code blocks
+prog Rscript                                      user       R code blocks
+prog npx                                          user       JS test runners
+prog ninja                                        user       build runner
+prog make                                         user       build runner
+prog cmake                                        user       build runner
+prog ctest                                        user       test runner
+prog just                                         user       build runner
+prog run                                          user       an argv fragment (`run --reporter=...`), not a program
+prog direnv                                       user       the project's own environment
+prog clang-format                                 user       an optional formatter (in-house is the default)
+prog black                                        user       an optional formatter (in-house is the default)
+prog php                                          user       code blocks
+prog perl                                         user       code blocks
+prog julia                                        user       code blocks
+prog java                                         user       code blocks
+prog netcoredbg                                   user       a debug adapter
+prog claude                                       user       the agent panel's CLI
+prog copilot-language-server                      user       a language server
+prog intelephense                                 user       a language server
+prog svelteserver                                 user       a language server
+prog *-language-server*                           user       language servers
+prog *langserver*                                 user       language servers

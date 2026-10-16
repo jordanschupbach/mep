@@ -8,9 +8,15 @@
 =.obj=, =.gltf=, =.glb=, =.iqm=, =.vox= and =.m3d= open straight in the
 modeler. =:Model3DNew= starts an empty scene.
 
-=.blend= needs a real Blender on =$PATH=: mep converts it through Blender's
-own command line, on a background job, so opening one never blocks. The pane
-shows "Converting..." until it finishes.
+=.blend= files (Blender 2.48 through 5.x, plain, gzip- or zstd-compressed)
+open with mep's own reader: every mesh object with its world transform,
+split per material, with each material's base colour, roughness, metallic
+and base-colour image. Modifiers, shape keys, armatures and constraints are
+not evaluated -- a notification lists the modifiers that were skipped.
+Setting =mep.opt.blend_importer = 'auto'= retries files the reader cannot
+handle through a Blender on =$PATH=, and ='blender'= always uses Blender's
+own command line (on a background job; the pane shows "Converting..." until
+it finishes), which does apply modifiers.
 
 * Building a scene
 

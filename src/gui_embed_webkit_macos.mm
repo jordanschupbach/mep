@@ -38,6 +38,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <string>
 
 #include "gfx/native_window_handle.h"
@@ -301,8 +302,50 @@ public:
         return true;
     }
 
-    // (An :exec pane keeps no pictures.)
-    Snapshot Capture() override { return {}; }
+    // The page's picture, for a mepml results=web run (an :exec pane keeps
+    // none, so is never asked). WebKit draws one asynchronously: this hands
+    // back the last one finished and asks for the next. The page is drawn
+    // whole even where the pane's edge cuts the view off, at 1x, as mep
+    // lays everything out.
+    Snapshot Capture() override {
+        if (!alive_) return snap_->latest;
+        const CGSize size = web_.bounds.size;
+        // (WebKit may never answer for a view that has no page yet -- a web
+        // app's, until its server says where it listens -- so nothing is
+        // asked before there is one, and an answer that never came is
+        // given up on.)
+        const double now = [NSProcessInfo processInfo].systemUptime;
+        if (snap_->pending && now - snap_->asked_at > 3.0) snap_->pending = false;
+        if (!snap_->pending && !container_.hidden && web_.URL && !web_.loading && size.width >= 1 && size.height >= 1) {
+            snap_->pending = true;
+            snap_->asked_at = now;
+            WKSnapshotConfiguration *cfg = [[WKSnapshotConfiguration alloc] init];
+            cfg.afterScreenUpdates = NO;
+            std::shared_ptr<SnapState> st = snap_;
+            const size_t w = static_cast<size_t>(size.width), h = static_cast<size_t>(size.height);
+            [web_ takeSnapshotWithConfiguration:cfg
+                              completionHandler:^(NSImage *image, NSError *) {
+                                st->pending = false;
+                                CGImageRef cg = image ? [image CGImageForProposedRect:nullptr context:nil hints:nil] : nullptr;
+                                if (!cg) return;
+                                Snapshot out;
+                                out.width = static_cast<int>(w);
+                                out.height = static_cast<int>(h);
+                                out.rgba.assign(w * h * 4, 0);
+                                CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+                                CGContextRef ctx = CGBitmapContextCreate(
+                                    out.rgba.data(), w, h, 8, w * 4, cs,
+                                    static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedLast) | kCGBitmapByteOrder32Big);
+                                CGColorSpaceRelease(cs);
+                                if (!ctx) return;
+                                CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+                                CGContextDrawImage(ctx, CGRectMake(0, 0, static_cast<CGFloat>(w), static_cast<CGFloat>(h)), cg);
+                                CGContextRelease(ctx);
+                                st->latest = std::move(out);
+                              }];
+        }
+        return snap_->latest;
+    }
 
     std::string Title() override {
         if (!alive_) return "";
@@ -572,6 +615,14 @@ private:
     unsigned chord_mods_ = 0;
     Pending pending_ = Pending::None;
     Rect full_, box_;
+    // Capture's pictures: shared with WebKit's completion handler, which
+    // may run after this view is gone.
+    struct SnapState {
+        Snapshot latest;
+        bool pending = false;
+        double asked_at = 0;  // systemUptime of the outstanding request
+    };
+    std::shared_ptr<SnapState> snap_ = std::make_shared<SnapState>();
 };
 
 std::unique_ptr<WebView> CreateWebView(Backend &, void *native_window_handle, std::function<bool(const std::string &, unsigned)> reserved,

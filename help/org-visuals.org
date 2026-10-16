@@ -239,8 +239,9 @@ either =$=, no digit right after the closing one (so "$5 and $10" stays
 prose), no =$= within the fragment itself, and at most one line break. The
 other three delimiters are unambiguous and carry none of those conditions.
 
-This is *on by default* too. Rendering shells out to =tectonic= and
-=pdftoppm= (both in the flake's dev shell); without them on =PATH= the
+This is *on by default* too. Each fragment is compiled by the configured
+TeX engine and turned into an image by mep's own PDF renderer (see
+[[file:tex.html][TeX and maths rendering]]); when the engine cannot run the
 maths simply stays as source text, and mep says so once per session rather
 than once per fragment.
 

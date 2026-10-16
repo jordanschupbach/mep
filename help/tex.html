@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeX and maths rendering</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Org mode">
+<meta name="help-order" content="105">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>TeX and maths rendering</h1>
+<h1>Which TeX mep runs</h1>
+<p>Everything in mep that typesets TeX goes through one switch: the maths
+previews in org and mepml buffers, org-babel <code>latex</code> blocks, the org and
+mepml PDF exports (Beamer decks included), the <code>.tex</code> Run button and
+<code>.Rnw</code> documents. Change it once in <code>:MepSettings</code> (section <i>TeX</i>) and
+all of them follow.</p>
+<table>
+<tr><th>Setting</th><th>Choices</th><th>Default</th></tr>
+<tr><td>TeX engine</td><td><code>builtin</code> (mep's own) or <code>system</code></td><td><code>builtin</code></td></tr>
+<tr><td>System TeX command</td><td><code>tectonic</code>, <code>pdflatex</code>, <code>xelatex</code>, <code>lualatex</code>, <code>latexmk</code>, or a command line</td><td><code>tectonic</code></td></tr>
+<tr><td>TeX packages</td><td><code>bundle</code>, <code>bundle+system</code> or <code>system</code> (where <code>builtin</code> reads LaTeX from)</td><td><code>bundle</code></td></tr>
+<tr><td>PDF to image</td><td><code>builtin</code> (mep's own renderer) or <code>system</code> (<code>pdftoppm</code>)</td><td><code>builtin</code></td></tr>
+</table>
+<p><code>builtin</code> needs nothing installed: mep brings its own TeX (below).
+<code>system</code> is for documents that want what only a TeX installation has --
+XeTeX or LuaTeX, system OpenType fonts, packages mep's TeX does not carry
+(though <i>TeX packages</i> = <code>bundle+system</code> gives mep's TeX those too).
+A typed command line may use <code>%f</code> for the <code>.tex</code> file and <code>%o</code> for the
+output directory, for example <code>latexmk -xelatex -outdir=%o %f</code>; without
+<code>%f</code> the file is added at the end. <code>pdflatex</code>, <code>xelatex</code> and <code>lualatex</code>
+are rerun when the log asks for it (changed labels, a table of
+contents), as tectonic and latexmk do by themselves.</p>
+<p><code>:TexInfo</code> shows what each job would run right now, and why it cannot
+when it cannot. A backend that cannot run is reported once per session,
+and the maths stays as source text until it is fixed.</p>
+<h1>mep's own toolchain</h1>
+<p>The <code>builtin</code> backends are the <code>mep-tex</code> helper installed beside <code>mep</code>:</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>mep-tex pdf-to-png IN.pdf OUT.png --dpi N</code></td><td>one page as a PNG, by mep's own PDF renderer</td></tr>
+<tr><td><code>mep-tex compile FILE.tex --outdir DIR</code></td><td>FILE.tex typeset to DIR/FILE.pdf</td></tr>
+</table>
+<p>The renderer is the PDF pane's own, so a preview needs no poppler.</p>
+<p><code>mep-tex compile</code> typesets with mep's own engine: TeX with the e-TeX and
+pdfTeX extensions, writing the PDF itself. It does what <code>pdflatex</code> (with
+latexmk) does:</p>
+<ul>
+<li>The format comes from the document: <code>pdflatex</code> when it has <code>\documentclass</code>, <code>pdftex</code> (plain TeX) otherwise, or the one named on a first line <code>%&amp;pdflatex</code>. <code>--format</code> chooses it.</li>
+<li>The format is made the first time (a few seconds) and kept in <code>~/.cache/mep/tex/formats</code> (<code>$XDG_CACHE_HOME/mep/tex</code>). A new mep or a changed TeX installation makes a new one.</li>
+<li>The document runs again while its cross-references change (the <code>.aux</code>, <code>.toc</code> ... files), up to four times.</li>
+<li>The terminal shows TeX's own messages; an error is its <code>! ...</code> line, and the exit status is 1.</li>
+</ul>
+<p>LaTeX, its packages and fonts come from mep's own TeX bundle: a part of
+TeX Live installed with mep (<code>share/mep/tex/tex-bundle.mtb</code>, about 21
+MB) and unpacked into <code>~/.cache/mep/tex</code> the first time. It holds the
+LaTeX kernel, amsmath and amssymb, graphics, xcolor, hyperref, geometry,
+Beamer, TikZ and tcolorbox, standalone, the tools bundle, booktabs,
+caption, enumitem, mathtools, listings, siunitx, microtype and some
+more, with Latin Modern and the Computer Modern and AMS fonts. Its
+<code>LICENSES.txt</code> lists every package in it and its licence.</p>
+<p>The setting <i>TeX packages</i> (<code>--packages</code>) says where else to look:</p>
+<table>
+<tr><th>Choice</th><th>Reads</th></tr>
+<tr><td><code>bundle</code></td><td>the bundle only (a TeX installation's, if mep has no bundle)</td></tr>
+<tr><td><code>bundle+system</code></td><td>a TeX installation's packages first, then the bundle</td></tr>
+<tr><td><code>system</code></td><td>a TeX installation only</td></tr>
+</table>
+<p>A TeX installation is <code>MEP_TEX_TREES</code> (directories separated by <code>:</code>),
+else TeX Live's (<code>kpsewhich</code> is asked, or the usual places are looked
+in). <code>--tree DIR</code> options replace all of this.</p>
+<p>The bundle has no cm-super, the Type 1 fonts TeX Live draws <code>[T1]{fontenc}</code>
+text with: in their place it draws that text with Latin Modern, which
+looks the same (the spacing is still the EC fonts'). A TeX installation
+with cm-super is used for it under <code>bundle+system</code>.</p>
+<table>
+<tr><th>Option</th><th>Does</th></tr>
+<tr><td><code>--outdir DIR</code></td><td>where the PDF, log and aux files go (default: beside the file)</td></tr>
+<tr><td><code>--format F</code></td><td><code>pdflatex</code>, <code>pdftex</code> or <code>auto</code></td></tr>
+<tr><td><code>--packages P</code></td><td><code>bundle</code>, <code>bundle+system</code> or <code>system</code> (default: <code>MEP_TEX_PACKAGES</code>, else <code>bundle</code>)</td></tr>
+<tr><td><code>--tree DIR</code></td><td>read TeX files from DIR only (repeatable)</td></tr>
+<tr><td><code>--cache-dir DIR</code></td><td>keep formats and the unpacked bundle here</td></tr>
+<tr><td><code>--passes N</code></td><td>at most N runs (default 4)</td></tr>
+<tr><td><code>--rebuild-format</code></td><td>make the format again</td></tr>
+<tr><td><code>-v</code></td><td>say on stderr when the bundle is unpacked, a format made or a run repeated</td></tr>
+</table>
+<p>Not done yet: links broken across lines, virtual fonts (the Times and
+Helvetica packages), bitmap fonts, and micro-typography.</p>
+<h1>On the command line</h1>
+<p><code>mep-mepml convert</code> and <code>mep-mepml build</code> compile a PDF export with the
+same switch: <code>--tex-engine builtin|system</code> and <code>--tex-command CMD</code>, or the
+environment variables <code>MEP_TEX_ENGINE</code> and <code>MEP_TEX_COMMAND</code>. With the
+builtin engine, <code>MEP_TEX_PACKAGES</code> chooses the packages as <i>TeX packages</i>
+does.</p>
+<p>To build the bundle for a development build: <code>just tex-bundle</code> (it
+needs nix; the bundle is made from nixpkgs' TeX Live by
+<code>nix/tex-bundle.nix</code> and <code>tools/tex_bundle.py</code>).</p>
+<h1>See also</h1>
+<ul>
+<li><a href="org-visuals.html">Org visuals</a> -- the maths preview itself</li>
+<li><a href="org-export.html">Org export</a></li>
+<li><a href="mepml.html">mepml</a></li>
+</ul>
+</body>
+</html>

@@ -4,6 +4,8 @@
 #include "cad_fem_api.h"
 #include "http_client.h"
 #include "http_server.h"
+#include "pdf_raster.h"
+#include "tex/tex_backend.h"
 #include "url_util.h"
 #include "doc_export.h"
 #include "cpp_format.h"
@@ -3827,7 +3829,7 @@ int l_mepml_export_html(lua_State *L) {
 // extension names -- html, md, org, rtf, docx, odt, tex, txt, pptx or odp
 // (mepml_convert.h); a presentation's html and tex are its slideshow and
 // Beamer deck. Images resolve against the buffer's own directory. PDF is
-// the .tex compiled by the caller (kBuiltinMepml runs tectonic without
+// the .tex compiled by the caller (kBuiltinMepml runs mep.tex_compile without
 // blocking the editor). With 'beamer', `path` is a .tex and gets the
 // Beamer deck whatever the Type; a further 'pdf' says the .tex is on its
 // way to a PDF (so \when(pdf, ...) matches). The text exports start with a
@@ -4220,8 +4222,8 @@ int l_mepml_present_info(lua_State *L) {
 
 // mep.math_render_fast(body, px, path) -> bool: sets a LaTeX fragment
 // (`$..$`, `\[..\]` ...) with the editor's own typesetter at `px` and
-// writes it to `path` as a PNG shaped like the tectonic renders -- the
-// instant stand-in a presentation shows while tectonic works.
+// writes it to `path` as a PNG shaped like the TeX renders -- the
+// instant stand-in a presentation shows while TeX works.
 /**
  * @brief Implements mep.math_render_fast(body, px, path): renders a math fragment in-process to a PNG.
  * @param L Lua state.
@@ -4232,6 +4234,99 @@ int l_math_render_fast(lua_State *L) {
     const float px = static_cast<float>(luaL_checknumber(L, 2));
     const std::string path = luaL_checkstring(L, 3);
     lua_pushboolean(L, MathRenderFastPng(body, px, path) ? 1 : 0);
+    return 1;
+}
+
+// mep.pdf_rasterize(pdf, png, dpi[, page]) -> true | nil, err: one page
+// (1-based, default 1) of a PDF as a PNG, by mep's own renderer -- the
+// in-house `pdftoppm -png -r dpi -singlefile` (tex_rasterizer = builtin).
+/**
+ * @brief Implements mep.pdf_rasterize(pdf, png, dpi[, page]): rasterizes one PDF page to a PNG in-process.
+ * @param L Lua state.
+ * @return Number of values pushed (true, or nil and the reason).
+ */
+int l_pdf_rasterize(lua_State *L) {
+    const std::string pdf = luaL_checkstring(L, 1);
+    const std::string png = luaL_checkstring(L, 2);
+    const double dpi = luaL_checknumber(L, 3);
+    const int page = static_cast<int>(luaL_optinteger(L, 4, 1)) - 1;
+    std::string err;
+    if (PdfRasterizeToPng(pdf, png, dpi, page, &err)) {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, err.c_str());
+    return 2;
+}
+
+// mep.tex_command(engine, system_command, builtin_tool, tex, outdir[, keep_logs])
+// -> {argv=, exe=, reruns=, leaves_files=}: the TeX switch's command table
+// (tex/tex_backend.h), shared with mep-mepml so the two cannot spell an
+// engine differently. kBuiltinTex's mep.tex_compile runs what it returns.
+/**
+ * @brief Implements mep.tex_command(...): the argv and traits of one TeX compile.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the command table).
+ */
+int l_tex_command(lua_State *L) {
+    const TexCommand c = TexCompileCommand(luaL_checkstring(L, 1), luaL_optstring(L, 2, ""),
+                                           luaL_optstring(L, 3, "mep-tex"), luaL_checkstring(L, 4),
+                                           luaL_checkstring(L, 5), lua_toboolean(L, 6) != 0);
+    lua_createtable(L, 0, 4);
+    lua_createtable(L, static_cast<int>(c.argv.size()), 0);
+    for (size_t i = 0; i < c.argv.size(); i++) {
+        lua_pushstring(L, c.argv[i].c_str());
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    lua_setfield(L, -2, "argv");
+    lua_pushstring(L, c.exe.c_str());
+    lua_setfield(L, -2, "exe");
+    lua_pushboolean(L, c.reruns ? 1 : 0);
+    lua_setfield(L, -2, "reruns");
+    lua_pushboolean(L, c.leaves_files ? 1 : 0);
+    lua_setfield(L, -2, "leaves_files");
+    return 1;
+}
+
+// mep.tex_system_command_names() -> {...}: the system engines offered by name.
+/**
+ * @brief Implements mep.tex_system_command_names(): the TeX system engines known by name.
+ * @param L Lua state.
+ * @return Number of values pushed (1: an array of names).
+ */
+int l_tex_system_command_names(lua_State *L) {
+    const std::vector<std::string> &names = TexSystemCommandNames();
+    lua_createtable(L, static_cast<int>(names.size()), 0);
+    for (size_t i = 0; i < names.size(); i++) {
+        lua_pushstring(L, names[i].c_str());
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+
+// mep.tex_error_line(lines) -> string | nil: the line of a TeX compile's
+// output worth showing (tex/tex_backend.h, TexErrorLine).
+/**
+ * @brief Implements mep.tex_error_line(lines): picks the error line out of a TeX compile's output.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the line, or nil).
+ */
+int l_tex_error_line(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> lines;
+    const lua_Integer n = luaL_len(L, 1);
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        if (const char *l = lua_tostring(L, -1)) lines.emplace_back(l);
+        lua_pop(L, 1);
+    }
+    const std::string line = TexErrorLine(lines);
+    if (line.empty()) {
+        lua_pushnil(L);
+    } else {
+        lua_pushstring(L, line.c_str());
+    }
     return 1;
 }
 
@@ -12377,8 +12472,8 @@ int l_office_reload(lua_State *L) {
 // binding over doc_export.h's ExportHtmlToLatex -- see its own header for
 // the actual conversion. Pure string in, string out, no I/O of its own
 // (kBuiltinOrgExport, main.cpp, writes the returned LaTeX to a .tex file
-// itself, then spawns tectonic the same way mep_org_latex_render already
-// does for math-fragment previews). Native + wasm both fine here -- no
+// itself, then compiles it through mep.tex_compile, the TeX switch
+// mep_org_latex_render uses for math-fragment previews too). Native + wasm both fine here -- no
 // filesystem access except reading a local <img src>, guarded the same
 // way ExportHtmlToOdt below already is.
 int l_doc_export_html_to_latex(lua_State *L) {
@@ -13231,7 +13326,7 @@ int l_now(lua_State *L) {
 
 // mep.cpu_count(): the machine's hardware threads (at least 1), for sizing
 // how many background jobs a feature runs at once (kBuiltinOrgLatex's
-// tectonic cap).
+// TeX compile cap).
 /**
  * @brief Implements mep.cpu_count(): the number of hardware threads, at least 1.
  * @param L Lua state.
@@ -15525,6 +15620,10 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_present_info", l_mepml_present_info},
     {"mepml_present_warm", l_mepml_present_warm},
     {"math_render_fast", l_math_render_fast},
+    {"pdf_rasterize", l_pdf_rasterize},
+    {"tex_command", l_tex_command},
+    {"tex_system_command_names", l_tex_system_command_names},
+    {"tex_error_line", l_tex_error_line},
     {"mepml_import", l_mepml_import},
     {"mepml_convert_text", l_mepml_convert_text},
     {"mepml_diagnostics", l_mepml_diagnostics},

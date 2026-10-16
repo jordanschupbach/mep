@@ -106,9 +106,10 @@ JavaScript for maths at all -- see [[file:browser.html][the browser]].
 
 * PDF, LaTeX and ODT
 
-PDF goes org → HTML → LaTeX → =tectonic=, leaving the =.tex= on disk as a
+PDF goes org → HTML → LaTeX → the configured TeX engine (see
+[[file:tex.html][TeX and maths rendering]]), leaving the =.tex= on disk as a
 real artifact rather than scratch. Exporting to LaTeX stops one step
-earlier: the same =.tex=, with no =tectonic= run -- which is what a
+earlier: the same =.tex=, with no TeX run -- which is what a
 submission with its own LaTeX pipeline wants, and it needs no TeX toolchain
 installed. ODT is written directly, with no external tool needed.
 

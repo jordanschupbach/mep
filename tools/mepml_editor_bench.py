@@ -10,10 +10,11 @@ the results to bench_results/history.jsonl as binary
 p95/max).
 
 Two phases, each in its own mep:
-  1. cold maths: an empty LaTeX cache (a fresh $HOME -- tectonic's own
-     bundle cache stays the real one via XDG_CACHE_HOME), test.mepml and
+  1. cold maths: an empty LaTeX cache (a fresh $HOME -- the TeX's own
+     caches, mep-tex's format and tree or tectonic's bundle, stay the real
+     ones via XDG_CACHE_HOME), test.mepml and
      synth_1000 (~50 fragments) opened, and the time until every fragment's PNG exists plus
-     the most tectonic processes seen running at once;
+     the most TeX compiles seen running at once;
   2. the Lua scenarios (hooks, idle/scroll/typing frames) on a warm cache:
      every fixture's maths rendered first (kept in
      ~/.cache/mep-mepml-bench/latex between runs), so no compile runs
@@ -102,8 +103,9 @@ class Mep:
             self.proc.kill()
 
 
-def tectonic_count():
-    out = subprocess.run(["pgrep", "-fc", "tectonic -X compile"], capture_output=True, text=True).stdout.strip()
+def tex_count():
+    # whichever TeX the switch runs: mep-tex by default, tectonic as `system`
+    out = subprocess.run(["pgrep", "-fc", "tectonic -X compile|mep-tex compile"], capture_output=True, text=True).stdout.strip()
     return int(out or 0)
 
 
@@ -139,7 +141,7 @@ def main():
     log = open(os.path.join(work, "mep.log"), "w")
     try:
         # Phase 1: cold maths.
-        # Not patho_math_1000: every fragment starts its own tectonic at
+        # Not patho_math_1000: every fragment starts its own TeX compile at
         # once (see the plan), and a thousand of them would take the machine
         # down rather than measure it.
         for name in ("test_mepml", "synth_1000"):
@@ -153,24 +155,24 @@ def main():
             mep = Mep(args.build_dir, args.display, home, fx["path"], log)
             peak, last_count, stable_since = 0, -1, time.time()
             while time.time() - t0 < 600:
-                peak = max(peak, tectonic_count())
+                peak = max(peak, tex_count())
                 count = len(glob.glob(os.path.join(cache, "*.png")))
                 if count != last_count:
                     last_count, stable_since = count, time.time()
                 # Done when nothing is compiling and the count has held still.
-                if count > 0 and tectonic_count() == 0 and time.time() - stable_since > 3.0:
+                if count > 0 and tex_count() == 0 and time.time() - stable_since > 3.0:
                     break
                 time.sleep(0.1)
             elapsed = (stable_since - t0) * 1000
             mep.close()
             results.append({"fixture": name, "scenario": "math_cold_render_all", "n": last_count, "ms": elapsed,
-                            "peak_tectonic": peak})
-            print("%-22s math_cold_render_all      %4d fragments  %9.0f ms  peak %d tectonic at once"
+                            "peak_tex": peak})
+            print("%-22s math_cold_render_all      %4d fragments  %9.0f ms  peak %d TeX compiles at once"
                   % (name, last_count, elapsed, peak))
 
         # Phase 2: the Lua scenarios, on a warm cache. Every fixture's maths
         # is rendered *before* anything is timed -- otherwise the frames
-        # measure tectonic running in the background as much as the editor.
+        # measure TeX running in the background as much as the editor.
         # The cache persists between runs (only the first one pays), and the
         # fixtures are generated identically each time.
         home = os.path.join(work, "home")
@@ -187,7 +189,7 @@ def main():
             t0, quiet_since = time.time(), None
             while time.time() - t0 < 900:
                 time.sleep(0.25)
-                if tectonic_count() > 0:
+                if tex_count() > 0:
                     quiet_since = None
                 elif quiet_since is None:
                     quiet_since = time.time()
@@ -225,7 +227,7 @@ def main():
                 rec = {"timestamp": stamp, "commit": commit, "binary": "mepml_editor_bench",
                        "scenario": r["fixture"] + "/" + r["scenario"], "n": r["n"], "ms": r["ms"],
                        "ops_per_sec": (r["n"] / r["ms"] * 1000) if r["ms"] > 0 else 0}
-                for k in ("p95", "max", "peak_tectonic"):
+                for k in ("p95", "max", "peak_tex"):
                     if k in r:
                         rec[k] = r[k]
                 f.write(json.dumps(rec) + "\n")

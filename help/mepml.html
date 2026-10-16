@@ -229,7 +229,7 @@ from <code>Title</code>, <code>Subtitle</code>, <code>Author</code> and <code>Da
 <table>
 <tr><th>Export</th><th>A presentation becomes</th></tr>
 <tr><td><code>html</code></td><td>a slideshow in one page</td></tr>
-<tr><td><code>tex</code>, <code>pdf</code></td><td>a Beamer deck (16:9), compiled by <code>tectonic</code> for the PDF</td></tr>
+<tr><td><code>tex</code>, <code>pdf</code></td><td>a Beamer deck (16:9), compiled by the TeX engine for the PDF</td></tr>
 <tr><td><code>pptx</code></td><td>a PowerPoint deck</td></tr>
 <tr><td><code>odp</code></td><td>a LibreOffice Impress deck</td></tr>
 </table>
@@ -504,7 +504,7 @@ $$
 \alttext(The Gaussian integral)
 \[ \sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6} \]</pre>
 <p>Maths is typeset in the buffer with the same preview org uses
-(<code>&lt;leader&gt;otl</code> toggles it; it needs <code>tectonic</code> and <code>pdftoppm</code>). While
+(<code>&lt;leader&gt;otl</code> toggles it; it needs a TeX engine, see <a href="tex.html">TeX and maths rendering</a>). While
 the cursor is in a formula its source shows, and what it typesets to
 floats in a popup in the pane's top right corner, out of the way of the
 text (bottom right while the cursor's own row is under it); the same
@@ -1021,8 +1021,9 @@ with no header row as hints while you write, and from a shell
 <code>.pdf</code>, <code>.html</code>, <code>.docx</code> or <code>.odt</code> file -- so an export can be compared
 with its source (<code>check</code> exits 1 when a figure has no alt text or a PDF is
 not tagged).</p>
-<p>A PDF made by anything but tectonic (XeTeX) from the exported <code>.tex</code> is the
-same document without the tags.</p>
+<p>The PDF export is tagged when mep's own TeX (the default) or XeTeX (tectonic,
+<code>xelatex</code>) compiles it; from pdflatex or LuaLaTeX the exported <code>.tex</code> makes
+the same document without the tags.</p>
 <h1>Lists</h1>
 <pre>- a bullet (also * or +)
   - indented to nest
@@ -1264,7 +1265,7 @@ Word; <code>:MepmlExport docx</code> skips the picker. The picker's last entry,
 <code>All formats</code> (<code>:MepmlExport all</code>), writes every format one after another
 and reports once at the end: slide formats a document without <code>\slide</code>
 blocks cannot make (<code>pptx</code>, <code>odp</code>) are skipped, and anything that failed
-is named -- without <code>tectonic</code> on <code>PATH</code>, <code>pdf</code> fails and the rest still
+is named -- without a TeX engine that can run, <code>pdf</code> fails and the rest still
 land. <code>beamer</code> is left out of All, since its deck takes the same
 <code>build/notes.pdf</code> as the document's own PDF; export it on its own. Imports
 are expanded, commands are expanded for the format (see Commands of your
@@ -1319,7 +1320,7 @@ do the same for one export.</p>
 <table>
 <tr><th>Format</th><th>Written as</th></tr>
 <tr><td>HTML</td><td>a standalone page (<code>&lt;leader&gt;ko</code> opens it)</td></tr>
-<tr><td>PDF</td><td>the LaTeX export, compiled by <code>tectonic</code> in the background</td></tr>
+<tr><td>PDF</td><td>the LaTeX export, compiled by the TeX engine in the background</td></tr>
 <tr><td>Beamer (<code>beamer</code>)</td><td>the slides as a Beamer deck, compiled to PDF the same way</td></tr>
 <tr><td>Word (<code>.docx</code>)</td><td>named styles, real lists, footnotes, links, embedded images</td></tr>
 <tr><td>OpenDocument (<code>.odt</code>)</td><td>the same, for LibreOffice</td></tr>

@@ -397,6 +397,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:tabterminal= | [[file:terminals.html][Terminals]] |
 | =:term= | [[file:terminals.html][Terminals]] |
 | =:terminal= | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =:TexInfo= | [[file:tex.html][TeX and maths rendering]] |
 | =:Text= | [[file:org-basics.html][Org files in mep]] |
 | =:Viewer= | [[file:viewer.html][The viewer]] |
 | =:ViewerBind= | [[file:viewer.html][The viewer]] |

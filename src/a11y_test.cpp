@@ -4,9 +4,9 @@
 // (a11y_html.h), a tagged PDF (pdf_struct.h + a11y_pdf.h, over PDFs built
 // here by hand), the office formats by way of their import, and what the
 // exports write for such a reader: the tagging macros in the LaTeX, the
-// alt / description / language attributes everywhere else. With tectonic on
-// PATH, a document also goes through its PDF and back, and must read the
-// same on the other side.
+// alt / description / language attributes everywhere else. With mep-tex
+// built beside this test (or tectonic on PATH), a document also goes through
+// its PDF and back, and must read the same on the other side.
 
 #include "a11y_doc.h"
 #include "a11y_file.h"
@@ -530,10 +530,25 @@ void TestOffice() {
     CHECK(Has(org_back, "//? Lang: en-GB") && Has(org_back, "\\alttext(A blue rectangle)") && Has(org_back, "\\image(rule.png)\n\\alttext()"));
 }
 
-// The whole way: mepml -> tagged PDF (tectonic) -> the PDF's own reading.
+// The TeX that compiles the round trip's documents to tagged PDF: mep's own
+// (mep-tex, beside this test in the build directory) when it is there,
+// else tectonic. "" if neither.
+std::string TexCommand(const std::filesystem::path &tex) {
+    std::error_code ec;
+    const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    const std::filesystem::path mep_tex = ec ? std::filesystem::path() : exe.parent_path() / "mep-tex";
+    const std::string log = " >'" + (g_tmp / "tex.log").string() + "' 2>&1";
+    if (!mep_tex.empty() && std::filesystem::exists(mep_tex, ec))
+        return "'" + mep_tex.string() + "' compile '" + tex.string() + "' --outdir '" + g_tmp.string() + "'" + log;
+    if (std::system("command -v tectonic >/dev/null 2>&1") == 0)
+        return "tectonic -X compile '" + tex.string() + "' --outdir '" + g_tmp.string() + "'" + log;
+    return "";
+}
+
+// The whole way: mepml -> tagged PDF (mep-tex or tectonic) -> the PDF's own reading.
 void TestPdfRoundTrip() {
-    if (std::system("command -v tectonic >/dev/null 2>&1") != 0) {
-        std::printf("a11y_test: tectonic not on PATH, PDF round trip skipped\n");
+    if (TexCommand(g_tmp / "x.tex").empty()) {
+        std::printf("a11y_test: neither mep-tex nor tectonic found, PDF round trip skipped\n");
         return;
     }
     Lines lines = kSample;
@@ -552,10 +567,10 @@ void TestPdfRoundTrip() {
         std::ofstream f(tex);
         f << mepml::ToLatex(parsed, g_tmp.string());
     }
-    const std::string cmd = "tectonic -X compile '" + tex.string() + "' --outdir '" + g_tmp.string() + "' >'" + (g_tmp / "tectonic.log").string() + "' 2>&1";
+    const std::string cmd = TexCommand(tex);
     if (std::system(cmd.c_str()) != 0) {
-        // (No network for its bundle, say: nothing this test can judge.)
-        std::printf("a11y_test: tectonic could not compile, PDF round trip skipped (see %s)\n", (g_tmp / "tectonic.log").string().c_str());
+        // (tectonic with no network for its bundle, say: nothing this test can judge.)
+        std::printf("a11y_test: could not compile, PDF round trip skipped (see %s)\n", (g_tmp / "tex.log").string().c_str());
         return;
     }
     a11y::Document doc;
@@ -614,8 +629,7 @@ void TestPdfRoundTrip() {
         std::ofstream f(g_tmp / "deck.tex");
         f << mepml::ToLatex(deck, g_tmp.string());
     }
-    const std::string deck_cmd = "tectonic -X compile '" + (g_tmp / "deck.tex").string() + "' --outdir '" + g_tmp.string() + "' >'" +
-                                 (g_tmp / "tectonic.log").string() + "' 2>&1";
+    const std::string deck_cmd = TexCommand(g_tmp / "deck.tex");
     CHECK(std::system(deck_cmd.c_str()) == 0);
     a11y::Document deck_doc;
     CHECK(a11y::FromFile((g_tmp / "deck.pdf").string(), &deck_doc, &err));
@@ -634,8 +648,7 @@ void TestPdfRoundTrip() {
         std::ofstream f(g_tmp / "org.tex");
         f << ExportHtmlToLatex(org_html, "Aus Org", "", g_tmp.string());
     }
-    const std::string org_cmd = "tectonic -X compile '" + (g_tmp / "org.tex").string() + "' --outdir '" + g_tmp.string() + "' >'" +
-                                (g_tmp / "tectonic.log").string() + "' 2>&1";
+    const std::string org_cmd = TexCommand(g_tmp / "org.tex");
     CHECK(std::system(org_cmd.c_str()) == 0);
     a11y::Document org_doc;
     CHECK(a11y::FromFile((g_tmp / "org.pdf").string(), &org_doc, &err));

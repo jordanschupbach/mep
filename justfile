@@ -194,6 +194,15 @@ nafems:
 mepml-grammar:
     cd grammars/tree-sitter-mepml && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
 
+# mep-tex's TeX bundle (nix/tex-bundle.nix, tools/tex_bundle.py): the TeX
+# Live packages mep's own engine reads, so builtin TeX compiles need no TeX
+# installation. Built by nix and linked beside the dev build's mep-tex,
+# where it looks for it (an installed mep has it in share/mep/tex).
+tex-bundle:
+    nix build .#tex-bundle -o {{native_build_dir}}/tex-bundle-out
+    ln -sf tex-bundle-out/tex-bundle.mtb {{native_build_dir}}/tex-bundle.mtb
+    @echo "  {{native_build_dir}}/tex-bundle.mtb"
+
 # Re-render the built-in help workspace: every help/*.org through mep's own
 # Org exporter (`mep --export-org`, src/main.cpp's RunHeadlessOrgExport) to
 # the help/*.html the Help sidebar actually lists and ships. Needs no

@@ -259,6 +259,15 @@
           ]
         );
 
+        # mep-tex's TeX bundle: the TeX Live packages mep's own engine reads,
+        # so builtin compiles need no TeX installation (nix/tex-bundle.nix).
+        # Installed with mep as share/mep/tex/tex-bundle.mtb; `just
+        # tex-bundle` builds it for a dev build directory.
+        texBundle = import ./nix/tex-bundle.nix {
+          inherit pkgs;
+          bundleScript = ./tools/tex_bundle.py;
+        };
+
         mepPackage = mepStdenv.mkDerivation {
           pname = "mep";
           version = "0.1.0";
@@ -417,7 +426,7 @@
             # start (not on PATH?)" toast. Keep in sync with the
             # install(TARGETS ...) lines in CMakeLists.txt.
             for tool in mep-org-lsp mep-mepml-lsp mep-r-lsp mep-python-lsp \
-                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-mepml; do
+                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-mepml mep-tex; do
               install -Dm755 "$tool" "$out/bin/$tool"
             done
             # :Browser's web view on Linux (gui_embed_webview_x11.cpp finds
@@ -432,6 +441,8 @@
             install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/assets/mep-light.png "$out/share/mep/assets/mep-light.png"
             install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/assets/mep-dark.png "$out/share/mep/assets/mep-dark.png"
             install -Dm644 "$NIX_BUILD_TOP/$sourceRoot"/assets/spell/en_US.words "$out/share/mep/assets/spell/en_US.words"
+            # mep-tex finds its TeX bundle at ../share/mep/tex beside itself.
+            install -Dm644 ${texBundle}/tex-bundle.mtb "$out/share/mep/tex/tex-bundle.mtb"
             runHook postInstall
           '';
         };
@@ -471,6 +482,7 @@
         # dropped), which then breaks evaluating any other system's
         # outputs too.
         packages.default = mepPackage;
+        packages.tex-bundle = texBundle;
         apps.default = flake-utils.lib.mkApp { drv = mepPackage; };
 
         devShells.default = (pkgs.mkShell.override { stdenv = mepStdenv; }) {
@@ -498,14 +510,16 @@
             pkgs.pkg-config
             pkgs.openssl
 
-            # LaTeX/math-mode inline preview (<leader>otl, mep.org_latex_toggle_ui
-            # in src/main.cpp's kBuiltinOrgLatex): tectonic compiles a fragment's
-            # `\documentclass{standalone}` wrapper straight to a tightly-cropped
-            # PDF (self-contained, no separate TeX Live install -- it fetches
-            # packages into its own cache on first use), and pdftoppm (from
-            # poppler-utils) rasterizes that PDF to the PNG mep.org_latex_scan
-            # then displays via the same inline-image pipeline <leader>oti uses.
-            pkgs.tectonic
+            # No TeX toolchain: mep-tex is mep's own (plans/TEX_ENGINE_PLAN.md),
+            # with its TeX tree (packages.tex-bundle; `just tex-bundle` for this
+            # build directory). tex_engine = system wants a TeX installation
+            # of the user's own -- tectonic, TeX Live (`nix shell
+            # nixpkgs#tectonic` for one session).
+
+            # Not needed by mep itself any more (PDFs are rasterized by
+            # mep-tex's own renderer); kept for tex_rasterizer = system and for
+            # tools/pdf_accuracy.py / tools/pdf_make_fixtures.sh, which measure
+            # mep's PDF stack against poppler.
             pkgs.poppler-utils
 
             # Interpreters/compilers for org-babel (mep.org_babel_langs in
@@ -561,9 +575,8 @@
             # rmarkdown/knitr back the .Rmd/.Rnw Run button
             # (mep.run_button_run_rmd/run_button_run_rnw, kBuiltinRunButton
             # in src/main.cpp): rmarkdown::render() for .Rmd, knitr::knit()
-            # (then tectonic, already above -- not knitr::knit2pdf's own
-            # pdflatex/texi2pdf, to avoid a second LaTeX toolchain) for
-            # .Rnw.
+            # (then the TeX switch -- mep-tex by default -- not
+            # knitr::knit2pdf's own pdflatex/texi2pdf) for .Rnw.
             # shiny backs mepml's results=web R blocks (a Shiny app shown
             # live in the block's results, kBuiltinMepml's
             # mep_mepml_run_web) -- tmp/linear_regression.mepml's

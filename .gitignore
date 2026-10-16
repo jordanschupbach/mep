@@ -25,3 +25,4 @@ examples/nafems/film/
 examples/nafems/fv42.step
 tools/__pycache__/
 .metals/
+tools/web2cpp/__pycache__/

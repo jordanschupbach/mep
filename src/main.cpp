@@ -19778,13 +19778,16 @@ const char *kBuiltinOrgBabelSqlTex =
     "}\n"
     "-- --- LaTeX -------------------------------------------------------------\n"
     "-- A LaTeX block's result is a rendered image, not stdout, so it runs as a\n"
-    "-- two-step compiled language: tectonic turns the wrapped body into a PDF,\n"
-    "-- then pdftoppm rasterizes that straight onto the block's own `:file`\n"
-    "-- target. Both are the binaries mep's inline-LaTeX preview already\n"
-    "-- depends on (mep_org_latex_render, kBuiltinOrgLatex), so a machine that\n"
-    "-- can preview math can run these blocks.\n"
+    "-- two-step compiled language: the configured TeX engine turns the wrapped\n"
+    "-- body into a PDF, then the configured rasterizer writes it straight onto\n"
+    "-- the block's own `:file` target. Both come from the TeX switch\n"
+    "-- (mep.tex_compile_argv / mep.pdf_to_png_argv, kBuiltinTex) that mep's\n"
+    "-- inline-LaTeX preview uses, so a machine that can preview maths can run\n"
+    "-- these blocks.\n"
     "L.latex = {\n"
     "  executable = 'tectonic', extension = '.tex', compiled = true,\n"
+    "  -- What has to be on PATH is whatever the switch would run.\n"
+    "  exe_for = function() return select(2, mep.tex_compile_argv('x.tex', '.')) end,\n"
     "  var_stmt = function(n, l) return string.format('\\\\newcommand{\\\\%s}{%s}', n, l) end,\n"
     "  wrap_main = function(_, body, args_str)\n"
     "    local lines = { '\\\\documentclass[preview,border=' ..\n"
@@ -19800,20 +19803,21 @@ const char *kBuiltinOrgBabelSqlTex =
     "    lines[#lines + 1] = '\\\\end{document}'\n"
     "    return lines\n"
     "  end,\n"
-    "  compile_cmd = function(exe, source_path, _, _, _)\n"
+    "  compile_cmd = function(_, source_path, _, _, _)\n"
     "    local dir = source_path:match('^(.*)/[^/]*$') or '.'\n"
-    "    return { exe, '-X', 'compile', source_path, '--outfmt', 'pdf', '--outdir', dir }\n"
+    "    return (mep.tex_compile_argv(source_path, dir))\n"
     "  end,\n"
     "  run_compiled_cmd = function(_, _, args_str, source_path)\n"
     "    local pdf = (source_path:gsub('%.tex$', '.pdf'))\n"
-    "    -- pdftoppm appends its own `.png`, so the target is handed over\n"
-    "    -- without one -- and it writes exactly where the block's `:file`\n"
-    "    -- says, which is what turns the run into an `[[file:...]]` result\n"
-    "    -- through the ordinary :file machinery.\n"
-    "    local target = mep_org_babel_arg(args_str, 'file') or 'latex-block.png'\n"
-    "    local out_base = mep_org_resolve_path((target:gsub('%.[Pp][Nn][Gg]$', '')))\n"
+    "    -- Written exactly where the block's `:file` says, which is what turns\n"
+    "    -- the run into an `[[file:...]]` result through the ordinary :file\n"
+    "    -- machinery.\n"
+    "    local target = mep_org_resolve_path(mep_org_babel_arg(args_str, 'file') or 'latex-block.png')\n"
     "    local dpi = mep_org_babel_arg(args_str, 'res') or '300'\n"
-    "    return { 'pdftoppm', '-png', '-r', dpi, '-singlefile', pdf, out_base }\n"
+    "    -- A rasterizer that cannot run still gets an argv (the system one),\n"
+    "    -- whose failure to start is what the block's results then report.\n"
+    "    return mep.pdf_to_png_argv(pdf, target, dpi)\n"
+    "      or {'pdftoppm', '-png', '-r', dpi, '-singlefile', pdf, (target:gsub('%.[Pp][Nn][Gg]$', ''))}\n"
     "  end,\n"
     "}\n"
     "L.tex = L.latex\n"
@@ -20085,13 +20089,218 @@ const char *kBuiltinOrgBabelGap =
     "  reads_script_on_stdin = true,\n"
     "}\n";
 
+// The TeX switch (plans/TEX_ENGINE_PLAN.md): mep.tex_compile / mep.pdf_to_png
+// and the settings behind them -- whether a compile runs mep's own toolchain
+// (the mep-tex helper) or a system TeX, and the same for rasterizing a PDF.
+// Loaded ahead of the org chunks, whose previews, babel latex blocks and
+// exports all go through it.
+const char *kBuiltinTex =
+    "-- The TeX switch (plans/TEX_ENGINE_PLAN.md): every job that compiles TeX\n"
+    "-- or rasterizes a PDF asks here how to, so one setting decides it for the\n"
+    "-- maths previews, org-babel latex blocks, the org and mepml PDF exports,\n"
+    "-- the .tex Run button and Rnw. `builtin` is mep's own toolchain (the\n"
+    "-- mep-tex helper beside mep, with its own TeX tree); `system` is a TeX\n"
+    "-- installation's, for when a document wants what only it has.\n"
+    "mep.tex_engine = mep.tex_engine or 'builtin'\n"
+    "mep.tex_system_command = mep.tex_system_command or 'tectonic'\n"
+    "mep.tex_rasterizer = mep.tex_rasterizer or 'builtin'\n"
+    "-- Where the builtin engine reads LaTeX and its packages from: `bundle`\n"
+    "-- (mep's own TeX tree, installed with mep), `bundle+system` (a TeX\n"
+    "-- installation's packages first, then the bundle), or `system`.\n"
+    "mep.tex_packages = mep.tex_packages or 'bundle'\n"
+    "\n"
+    "local function mep_tex_dir_of(path) return path:match('^(.*)/[^/]*$') or '.' end\n"
+    "local function mep_tex_stem(path) return ((path:match('([^/]*)$') or path):gsub('%.[^.]*$', '')) end\n"
+    "local function mep_tex_exists(path)\n"
+    "  local f = io.open(path, 'r')\n"
+    "  if f then f:close() return true end\n"
+    "  return false\n"
+    "end\n"
+    "-- Memoized: each probe is a shell-out on the UI thread, and a preview\n"
+    "-- scan asks per fragment. Only a found executable is remembered, so\n"
+    "-- installing one mid-session still takes effect.\n"
+    "local mep_tex_exe_found = {}\n"
+    "local function mep_tex_has_exe(exe)\n"
+    "  if not mep_tex_exe_found[exe] then\n"
+    "    if exe:find('/', 1, true) then\n"
+    "      mep_tex_exe_found[exe] = mep_tex_exists(exe)\n"
+    "    else\n"
+    "      mep_tex_exe_found[exe] = os.execute('command -v ' .. exe .. ' >/dev/null 2>&1') == true\n"
+    "    end\n"
+    "  end\n"
+    "  return mep_tex_exe_found[exe]\n"
+    "end\n"
+    "\n"
+    "-- The configured engine's command for one compile -- {argv, exe, reruns,\n"
+    "-- leaves_files} -- from the table in tex/tex_backend.h (mep.tex_command),\n"
+    "-- which mep-mepml's PDF export spells its engines from too.\n"
+    "local function mep_tex_command(tex, outdir, keep_logs)\n"
+    "  local c = mep.tex_command(mep.tex_engine == 'builtin' and 'builtin' or 'system', mep.tex_system_command or '',\n"
+    "                            mep.bundled_tool('mep-tex'), tex, outdir, keep_logs)\n"
+    "  if mep.tex_engine == 'builtin' and mep.tex_packages and mep.tex_packages ~= '' then\n"
+    "    c.argv[#c.argv + 1] = '--packages'\n"
+    "    c.argv[#c.argv + 1] = mep.tex_packages\n"
+    "  end\n"
+    "  return c\n"
+    "end\n"
+    "mep.tex_system_commands = mep.tex_system_command_names()\n"
+    "\n"
+    "-- The argv that compiles `tex` into `outdir` with the configured engine,\n"
+    "-- and its executable: for a caller that runs the compile as a step of its\n"
+    "-- own (an org-babel latex block). One pass, no cleanup -- mep.tex_compile\n"
+    "-- below is the whole job.\n"
+    "function mep.tex_compile_argv(tex, outdir, keep_logs)\n"
+    "  local c = mep_tex_command(tex, outdir, keep_logs)\n"
+    "  return c.argv, c.exe\n"
+    "end\n"
+    "\n"
+    "local function mep_tex_needs_rerun(log)\n"
+    "  local f = io.open(log, 'r')\n"
+    "  if not f then return false end\n"
+    "  local text = f:read('a') or ''\n"
+    "  f:close()\n"
+    "  return text:find('Rerun to get', 1, true) ~= nil or text:find('Label(s) may have changed', 1, true) ~= nil\n"
+    "end\n"
+    "\n"
+    "-- Which backend a compile would use right now, and whether it can run:\n"
+    "-- (label, ok, why-not). Shared by mep.tex_compile and :TexInfo.\n"
+    "function mep.tex_compile_backend()\n"
+    "  if mep.tex_engine == 'builtin' then\n"
+    "    if not mep_tex_has_exe(mep.bundled_tool('mep-tex')) then\n"
+    "      return 'builtin (mep-tex)', false, 'mep-tex not found beside mep (rebuild it, or set tex_engine to system: :MepSettings)'\n"
+    "    end\n"
+    "    return 'builtin (mep-tex)', true\n"
+    "  end\n"
+    "  local exe = mep_tex_command('x.tex', '.').exe\n"
+    "  if not mep_tex_has_exe(exe) then\n"
+    "    return 'system (' .. exe .. ')', false, exe .. ' not found on PATH (tex_system_command, :MepSettings)'\n"
+    "  end\n"
+    "  return 'system (' .. exe .. ')', true\n"
+    "end\n"
+    "\n"
+    "-- mep.tex_compile(tex, opts, on_done): compiles `tex` (an absolute path)\n"
+    "-- to <outdir>/<stem>.pdf with the configured engine, off the UI thread.\n"
+    "-- opts.outdir defaults to tex's directory and opts.cwd to the same;\n"
+    "-- opts.keep_logs leaves <stem>.log beside the PDF (an inline preview reads\n"
+    "-- its box height from it); opts.clean removes the aux files a bare engine\n"
+    "-- leaves (a preview's cache directory should not collect them).\n"
+    "-- on_done(pdf) on success, on_done(nil, err_line, output_lines) on failure.\n"
+    "function mep.tex_compile(tex, opts, on_done)\n"
+    "  opts = opts or {}\n"
+    "  local outdir = opts.outdir or mep_tex_dir_of(tex)\n"
+    "  local cwd = opts.cwd or mep_tex_dir_of(tex)\n"
+    "  local base = outdir .. '/' .. mep_tex_stem(tex)\n"
+    "  local pdf, log = base .. '.pdf', base .. '.log'\n"
+    "  local label, ok, why = mep.tex_compile_backend()\n"
+    "  if not ok then return on_done(nil, why, {}) end\n"
+    "  local spec = mep_tex_command(tex, outdir, opts.keep_logs)\n"
+    "  os.remove(pdf)\n"
+    "  local passes = spec.reruns and 1 or 3\n"
+    "  local function finish(lines, code)\n"
+    "    if opts.clean and spec.leaves_files then\n"
+    "      for _, ext in ipairs({'.aux', '.out', '.toc', '.nav', '.snm', '.fls', '.fdb_latexmk', '.xdv'}) do\n"
+    "        os.remove(base .. ext)\n"
+    "      end\n"
+    "      if not opts.keep_logs then os.remove(log) end\n"
+    "    end\n"
+    "    if code == 0 and mep_tex_exists(pdf) then\n"
+    "      on_done(pdf, nil, lines)\n"
+    "    else\n"
+    "      on_done(nil, mep.tex_error_line(lines) or (label .. ' failed (exit ' .. tostring(code) .. ')'), lines)\n"
+    "    end\n"
+    "  end\n"
+    "  local function pass(n)\n"
+    "    local lines = {}\n"
+    "    mep.job_start(spec.argv, {\n"
+    "      cwd = cwd,\n"
+    "      on_stdout = function(l) lines[#lines + 1] = l end,\n"
+    "      on_stderr = function(l) lines[#lines + 1] = l end,\n"
+    "      on_exit = function(code)\n"
+    "        if code == 0 and n < passes and mep_tex_needs_rerun(log) then return pass(n + 1) end\n"
+    "        finish(lines, code)\n"
+    "      end,\n"
+    "    })\n"
+    "  end\n"
+    "  pass(1)\n"
+    "end\n"
+    "\n"
+    "-- The argv that rasterizes page 1 of `pdf` to exactly `png` at `dpi`, for\n"
+    "-- callers that run it as a step of their own (an org-babel latex block's\n"
+    "-- run_compiled_cmd); nil and the reason when the configured rasterizer\n"
+    "-- cannot run.\n"
+    "function mep.pdf_to_png_argv(pdf, png, dpi)\n"
+    "  dpi = tostring(dpi or 150)\n"
+    "  if mep.tex_rasterizer == 'system' then\n"
+    "    if not mep_tex_has_exe('pdftoppm') then\n"
+    "      return nil, 'pdftoppm not found on PATH (tex_rasterizer, :MepSettings)'\n"
+    "    end\n"
+    "    -- pdftoppm appends its own `.png`, so it is handed the name without one.\n"
+    "    return {'pdftoppm', '-png', '-r', dpi, '-singlefile', pdf, (png:gsub('%.[Pp][Nn][Gg]$', ''))}\n"
+    "  end\n"
+    "  local tool = mep.bundled_tool('mep-tex')\n"
+    "  if not mep_tex_has_exe(tool) then\n"
+    "    return nil, 'mep-tex not found beside mep (rebuild it, or set tex_rasterizer to system: :MepSettings)'\n"
+    "  end\n"
+    "  return {tool, 'pdf-to-png', pdf, png, '--dpi', dpi}\n"
+    "end\n"
+    "\n"
+    "-- mep.pdf_to_png(pdf, png, dpi, on_done): runs that argv off the UI\n"
+    "-- thread; on_done(true) or on_done(false, err_line).\n"
+    "function mep.pdf_to_png(pdf, png, dpi, on_done)\n"
+    "  local argv, why = mep.pdf_to_png_argv(pdf, png, dpi)\n"
+    "  if not argv then return on_done(false, why) end\n"
+    "  local lines = {}\n"
+    "  mep.job_start(argv, {\n"
+    "    on_stderr = function(l) lines[#lines + 1] = l end,\n"
+    "    on_exit = function(code)\n"
+    "      if code == 0 and mep_tex_exists(png) then\n"
+    "        on_done(true)\n"
+    "      else\n"
+    "        on_done(false, mep.tex_error_line(lines) or (argv[1] .. ' failed (exit ' .. tostring(code) .. ')'))\n"
+    "      end\n"
+    "    end,\n"
+    "  })\n"
+    "end\n"
+    "\n"
+    "-- Whether an error is about the setup (a backend that cannot run) rather\n"
+    "-- than about the document: every such message above names :MepSettings,\n"
+    "-- where it is fixed. A preview reports one once per session and never\n"
+    "-- caches it against a fragment.\n"
+    "function mep.tex_is_setup_error(err)\n"
+    "  return err ~= nil and err:find(':MepSettings', 1, true) ~= nil\n"
+    "end\n"
+    "\n"
+    "-- A short name for the configured backends, for cache keys: a render made\n"
+    "-- by one engine is not served after switching to another.\n"
+    "function mep.tex_backend_key()\n"
+    "  local engine = mep.tex_engine == 'builtin' and ('builtin:' .. tostring(mep.tex_packages))\n"
+    "    or ('system:' .. tostring(mep.tex_system_command))\n"
+    "  return engine .. '/' .. tostring(mep.tex_rasterizer)\n"
+    "end\n"
+    "\n"
+    "-- :TexInfo -- which backend each job uses right now, and whether it can run.\n"
+    "function mep.tex_info()\n"
+    "  local label, ok, why = mep.tex_compile_backend()\n"
+    "  local _, rwhy = mep.pdf_to_png_argv('x.pdf', 'x.png', 150)\n"
+    "  local lines = {\n"
+    "    'TeX compile:   ' .. label .. (ok and '' or ('  -- ' .. why)),\n"
+    "    'TeX packages:  ' .. (mep.tex_engine == 'builtin' and tostring(mep.tex_packages) or 'as the system command has them'),\n"
+    "    'PDF -> PNG:    ' .. (mep.tex_rasterizer == 'system' and 'system (pdftoppm)' or 'builtin (mep-tex)')\n"
+    "      .. (rwhy and ('  -- ' .. rwhy) or ''),\n"
+    "    'Change them with :MepSettings (section TeX).',\n"
+    "  }\n"
+    "  mep.picker_open('TeX backends', lines, function() end)\n"
+    "end\n"
+    "mep.command('TexInfo', mep.tex_info)\n";
+
 const char *kBuiltinOrgLatex =
     // mep_org_latex_trim/mep_org_latex_wrapped/mep_org_latex_scan_inline,
     // and the whole-line/whole-block matching in mep.org_latex_scan's own
     // loop below, all ported to Editor::OrgLatexScanFragments (editor.cpp)
     // -- LUA_TO_CPP_PLAN.md Phase 5, bound as mep.org_latex_scan_fragments.
-    // Deliberately NOT ported: mep_org_latex_render's tectonic-compile ->
-    // pdftoppm-rasterize -> cache -> callback chain below -- a
+    // Deliberately NOT ported: mep_org_latex_render's compile ->
+    // rasterize -> cache -> callback chain below (mep.tex_compile ->
+    // mep.pdf_to_png, kBuiltinTex) -- a
     // substantial async job-orchestration-and-caching subsystem in its
     // own right, out of proportion to fold into this same pass.
     // varwidth=\maxdimen, not bare varwidth: the bare option caps the page
@@ -20113,11 +20322,11 @@ const char *kBuiltinOrgLatex =
     "  return string.format('%08x', h)\n"
     "end\n"
     "\n"
-    // Both memoized: each was a blocking shell-out on the UI thread, and
-    // the cache dir was asked for once per fragment per scan -- a rescan
-    // every 0.3 s while typing, so a formula-heavy document stalled the
-    // typing with a fork per fragment. Only a found executable is
-    // remembered, so installing one mid-session still takes effect.
+    // Memoized: it was a blocking shell-out on the UI thread, and the
+    // cache dir was asked for once per fragment per scan -- a rescan every
+    // 0.3 s while typing, so a formula-heavy document stalled the typing
+    // with a fork per fragment. (The backends' executables are probed, and
+    // memoized the same way, by kBuiltinTex.)
     "local mep_org_latex_dir = nil\n"
     "local function mep_org_latex_cache_dir()\n"
     "  if not mep_org_latex_dir then\n"
@@ -20126,40 +20335,15 @@ const char *kBuiltinOrgLatex =
     "  end\n"
     "  return mep_org_latex_dir\n"
     "end\n"
-    "local mep_org_latex_exe_found = {}\n"
-    "local function mep_org_latex_has_exe(exe)\n"
-    "  if not mep_org_latex_exe_found[exe] then mep_org_latex_exe_found[exe] = mep_org_babel_has_exe(exe) end\n"
-    "  return mep_org_latex_exe_found[exe]\n"
-    "end\n"
     "local mep_org_latex_inflight = {}\n"
     // Fragments that failed to compile, by cache key -> the error. Without
     // it every rescan (one per debounced edit, anywhere in the buffer)
     // re-ran tectonic on every broken fragment and warned again. The error
     // is handed back with `cached` set so the caller can stay quiet about
-    // one it has already reported. A missing executable is never cached,
-    // so installing it mid-session still takes effect.
+    // one it has already reported. A setup error (a backend that cannot
+    // run, mep.tex_is_setup_error) is never cached, so fixing it
+    // mid-session still takes effect.
     "local mep_org_latex_failed = {}\n"
-    "\n"
-    // The line of tectonic's stderr worth showing: its first `error:` that
-    // is not one of the generic "XeTeX failed" wrappers, else TeX's own
-    // `! ...` line. Never a `warning:`/`note:` -- tectonic's first line on
-    // every failure is "warning: accessing absolute path `/dev/null`",
-    // which was what the notification used to say.
-    "local function mep_org_latex_error_line(lines)\n"
-    "  for _, l in ipairs(lines) do\n"
-    "    local m = l:match('^error: (.*)')\n"
-    "    if m and not m:match('^something bad happened') and not m:match('^the XeTeX engine') then\n"
-    "      return (m:gsub('^!%s*', ''))\n"
-    "    end\n"
-    "  end\n"
-    "  for _, l in ipairs(lines) do\n"
-    "    if l:match('^! ') then return l:sub(3) end\n"
-    "  end\n"
-    "  for _, l in ipairs(lines) do\n"
-    "    if l:match('%S') and not l:match('^warning:') and not l:match('^note:') then return l end\n"
-    "  end\n"
-    "  return nil\n"
-    "end\n"
     "\n"
     // At most MEP_ORG_LATEX_MAX_JOBS compiles run at once; the rest wait
     // in mep_org_latex_queue. A scan asks for every fragment in the
@@ -20212,6 +20396,40 @@ const char *kBuiltinOrgLatex =
     "  end\n"
     "  return false\n"
     "end\n"
+    // A display environment as a preview can crop it: varwidth (the preview
+    // class's width) measures a \[ ... \] display, but an amsmath environment
+    // lays its lines out across the whole line -- \maxdimen wide here -- and
+    // puts its numbers at the far end of it (or overflows: "Dimension too
+    // large"). So the environment becomes the \[ ... \] of its inner form
+    // (aligned, alignedat, gathered); what only numbering means goes (\label,
+    // \nonumber, \notag), and a \tag, which would go to that far end too, is
+    // shown after its line instead.
+    "local MEP_ORG_LATEX_INNER = {\n"
+    "  align = 'aligned', ['align*'] = 'aligned', flalign = 'aligned', ['flalign*'] = 'aligned',\n"
+    "  alignat = 'alignedat', ['alignat*'] = 'alignedat',\n"
+    "  gather = 'gathered', ['gather*'] = 'gathered', multline = 'gathered', ['multline*'] = 'gathered',\n"
+    "  equation = '', ['equation*'] = '', displaymath = '',\n"
+    "}\n"
+    "local function mep_org_latex_untag(body)\n"
+    "  body = body:gsub('\\\\label%s*%b{}', ''):gsub('\\\\nonumber', ''):gsub('\\\\notag', '')\n"
+    "  body = body:gsub('\\\\tag%*%s*(%b{})', function(t) return '\\\\qquad\\\\text' .. t end)\n"
+    "  body = body:gsub('\\\\tag%s*(%b{})', function(t) return '\\\\qquad\\\\text{(' .. t:sub(2, -2) .. ')}' end)\n"
+    "  return body\n"
+    "end\n"
+    "local function mep_org_latex_display_body(tex)\n"
+    "  local env, rest = tex:match('^%s*\\\\begin{([%a]+%*?)}(.*)$')\n"
+    "  local inner = env and MEP_ORG_LATEX_INNER[env]\n"
+    "  if not inner then return tex end\n"
+    "  local body = rest:match('^(.*)\\\\end{' .. env:gsub('%*', '%%*') .. '}%s*$')\n"
+    "  if not body then return tex end\n"
+    "  if inner == '' then return '\\\\[' .. mep_org_latex_untag(body) .. '\\\\]' end\n"
+    "  local arg = ''\n"
+    "  if inner == 'alignedat' then\n"
+    "    arg, body = body:match('^%s*(%b{})(.*)$')\n"
+    "    if not arg then return tex end\n"
+    "  end\n"
+    "  return '\\\\[\\\\begin{' .. inner .. '}' .. arg .. mep_org_latex_untag(body) .. '\\\\end{' .. inner .. '}\\\\]'\n"
+    "end\n"
     "function mep_org_latex_render(tex_body, on_done, row, alive, font_px, no_stand_in)\n"
     "  local dpi = math.floor(72 * (font_px or mep.font_size()) / 11 + 0.5)\n"
     // One inline formula ($..$, \(..\)) is drawn on the prose's baseline
@@ -20220,13 +20438,14 @@ const char *kBuiltinOrgLatex =
     // `<key>.base` beside the PNG records the baseline's pixel row.
     "  local inline = (tex_body:match('^%$[^$]') and tex_body:match('[^$]%$$'))\n"
     "    or (tex_body:match('^\\\\%(') and tex_body:match('\\\\%)$'))\n"
-    "  local doc_body = tex_body\n"
+    "  local doc_body = inline and tex_body or mep_org_latex_display_body(tex_body)\n"
     "  if inline then\n"
     "    doc_body = '\\\\sbox0{' .. tex_body .. '}\\\\typeout{MEPBOX:\\\\the\\\\ht0:\\\\the\\\\dp0:}\\\\usebox0'\n"
     "  end\n"
     // The preamble is part of the key: a render cached under an older
-    // preamble (one that cropped wide displays) must not be served.
-    "  local key = mep_org_latex_hash(MEP_ORG_LATEX_PREAMBLE .. '|' .. doc_body .. '|' .. dpi)\n"
+    // preamble (one that cropped wide displays) must not be served. So are
+    // the TeX backends (mep.tex_backend_key): switching engine re-renders.
+    "  local key = mep_org_latex_hash(MEP_ORG_LATEX_PREAMBLE .. '|' .. doc_body .. '|' .. dpi .. '|' .. mep.tex_backend_key())\n"
     "  local dir = mep_org_latex_cache_dir()\n"
     "  local png_path = dir .. '/' .. key .. '.png'\n"
     "  if mep_org_latex_failed[key] then\n"
@@ -20237,7 +20456,7 @@ const char *kBuiltinOrgLatex =
     "    on_done(png_path)\n"
     "    return\n"
     "  end\n"
-    // A presentation never shows TeX source: until tectonic's render is
+    // A presentation never shows TeX source: until the TeX render is
     // in, the editor's own typesetter stands in (instantly, in-process),
     // and on_done is called again with the real one when it arrives.
     "  if not no_stand_in and mep.mepml_present_info and mep.mepml_present_info() then\n"
@@ -20265,21 +20484,24 @@ const char *kBuiltinOrgLatex =
     "    end\n"
     "    local waiters = mep_org_latex_inflight[key] or {}\n"
     "    mep_org_latex_inflight[key] = nil\n"
-    "    if not result and err and not err:find('not found on PATH', 1, true) then\n"
+    "    if not result and err and not mep.tex_is_setup_error(err) then\n"
     "      mep_org_latex_failed[key] = err\n"
     "    end\n"
     "    for _, w in ipairs(waiters) do\n"
     "      if not w.alive or w.alive() then w.cb(result, err) end\n"
     "    end\n"
     "  end\n"
-    "  if not mep_org_latex_has_exe('tectonic') then\n"
-    "    finish(nil, \"tectonic not found on PATH (see flake.nix's devShell)\")\n"
+    // Neither backend able to run is a setup problem, reported once and
+    // never cached against this fragment (mep.tex_is_setup_error).
+    "  local _, can_compile, compile_why = mep.tex_compile_backend()\n"
+    "  local can_raster, raster_why = mep.pdf_to_png_argv('', '', dpi)\n"
+    "  if not can_compile or not can_raster then\n"
+    "    finish(nil, compile_why or raster_why)\n"
     "    return\n"
     "  end\n"
     "  local function start()\n"
     "  started = true\n"
     "  local tex_path = dir .. '/' .. key .. '.tex'\n"
-    "  local pdf_path = dir .. '/' .. key .. '.pdf'\n"
     "  local f = io.open(tex_path, 'w')\n"
     "  if not f then\n"
     "    finish(nil, 'could not write ' .. tex_path)\n"
@@ -20287,55 +20509,40 @@ const char *kBuiltinOrgLatex =
     "  end\n"
     "  f:write(MEP_ORG_LATEX_PREAMBLE .. '\\n' .. doc_body .. '\\n\\\\end{document}\\n')\n"
     "  f:close()\n"
-    "  local compile_err = {}\n"
-    "  local cmd = {'tectonic', '-X', 'compile', tex_path, '--outfmt', 'pdf'}\n"
-    "  if inline then cmd[#cmd + 1] = '--keep-logs' end\n"
-    "  mep.job_start(cmd, {\n"
-    "    on_stderr = function(line) compile_err[#compile_err + 1] = line end,\n"
-    "    on_exit = function(code)\n"
-    "      os.remove(tex_path)\n"
+    "  mep.tex_compile(tex_path, {outdir = dir, cwd = dir, keep_logs = inline, clean = true}, function(pdf_path, err)\n"
+    "    os.remove(tex_path)\n"
     // The box's height in pt: with the standalone border's 1pt above it,
-    // where the baseline falls (pdftoppm renders from the page's top).
-    "      local box_ht\n"
-    "      if inline then\n"
-    "        local log_path = dir .. '/' .. key .. '.log'\n"
-    "        local lf = io.open(log_path, 'r')\n"
-    "        if lf then\n"
-    "          box_ht = tonumber((lf:read('a') or ''):match('MEPBOX:([%d.]+)pt:'))\n"
-    "          lf:close()\n"
+    // where the baseline falls (the PNG is rendered from the page's top).
+    "    local box_ht\n"
+    "    if inline then\n"
+    "      local log_path = dir .. '/' .. key .. '.log'\n"
+    "      local lf = io.open(log_path, 'r')\n"
+    "      if lf then\n"
+    "        box_ht = tonumber((lf:read('a') or ''):match('MEPBOX:([%d.]+)pt:'))\n"
+    "        lf:close()\n"
+    "      end\n"
+    "      os.remove(log_path)\n"
+    "    end\n"
+    "    if not pdf_path then\n"
+    "      finish(nil, err or 'TeX compile failed')\n"
+    "      return\n"
+    "    end\n"
+    "    mep.pdf_to_png(pdf_path, png_path, dpi, function(ok, raster_err)\n"
+    "      os.remove(pdf_path)\n"
+    "      if not ok then\n"
+    "        finish(nil, raster_err or 'rasterizing the PDF failed')\n"
+    "        return\n"
+    "      end\n"
+    "      if box_ht then\n"
+    "        local bf = io.open(dir .. '/' .. key .. '.base', 'w')\n"
+    "        if bf then\n"
+    "          bf:write(string.format('%.2f\\n', (box_ht + 1) * dpi / 72.27))\n"
+    "          bf:close()\n"
     "        end\n"
-    "        os.remove(log_path)\n"
     "      end\n"
-    "      if code ~= 0 or not mep_org_babel_file_exists(pdf_path) then\n"
-    "        finish(nil, mep_org_latex_error_line(compile_err) or 'tectonic compile failed')\n"
-    "        return\n"
-    "      end\n"
-    "      if not mep_org_latex_has_exe('pdftoppm') then\n"
-    "        os.remove(pdf_path)\n"
-    "        finish(nil, \"pdftoppm not found on PATH (see flake.nix's devShell)\")\n"
-    "        return\n"
-    "      end\n"
-    "      local raster_err = {}\n"
-    "      mep.job_start({'pdftoppm', '-png', '-r', tostring(dpi), '-singlefile', pdf_path, dir .. '/' .. key}, {\n"
-    "        on_stderr = function(line) raster_err[#raster_err + 1] = line end,\n"
-    "        on_exit = function(code2)\n"
-    "          os.remove(pdf_path)\n"
-    "          if code2 == 0 and mep_org_babel_file_exists(png_path) then\n"
-    "            if box_ht then\n"
-    "              local bf = io.open(dir .. '/' .. key .. '.base', 'w')\n"
-    "              if bf then\n"
-    "                bf:write(string.format('%.2f\\n', (box_ht + 1) * dpi / 72.27))\n"
-    "                bf:close()\n"
-    "              end\n"
-    "            end\n"
-    "            finish(png_path)\n"
-    "          else\n"
-    "            finish(nil, mep_org_babel_first_error_line(raster_err) or 'pdftoppm failed')\n"
-    "          end\n"
-    "        end,\n"
-    "      })\n"
-    "    end,\n"
-    "  })\n"
+    "      finish(png_path)\n"
+    "    end)\n"
+    "  end)\n"
     "  end\n"
     "  table.insert(mep_org_latex_queue, {\n"
     "    row = row or math.huge,\n"
@@ -20350,10 +20557,10 @@ const char *kBuiltinOrgLatex =
     // mep.notify per fragment. With the preview on by default
     // (Editor::org_latex_visible_, editor.h) every org/tex buffer scans on
     // open and on every debounced edit, so a failure that is identical for
-    // every fragment -- above all "tectonic/pdftoppm not found on PATH" on
-    // a machine without them -- would otherwise be one notification per
+    // every fragment -- above all a TeX backend that cannot run
+    // (mep.tex_is_setup_error) -- would otherwise be one notification per
     // fragment per keystroke burst, which is what an opt-in toggle could
-    // afford and an always-on preview cannot. A missing-executable message
+    // afford and an always-on preview cannot. A setup message
     // is environmental and won't change within a session, so it shows once
     // per session; anything else (a real error in one fragment's own maths)
     // shows once per scan, so fixing it and breaking it again still warns.
@@ -20361,7 +20568,7 @@ const char *kBuiltinOrgLatex =
     "local mep_org_latex_err_seen_session = {}\n"
     "local function mep_org_latex_notify_err(err, cached)\n"
     "  if not err or cached then return end\n"
-    "  if err:find('not found on PATH', 1, true) then\n"
+    "  if mep.tex_is_setup_error(err) then\n"
     "    if mep_org_latex_err_seen_session[err] then return end\n"
     "    mep_org_latex_err_seen_session[err] = true\n"
     "  elseif mep_org_latex_err_seen_scan[err] then\n"
@@ -21674,21 +21881,21 @@ const char *kBuiltinOrgExport =
     "end\n"
     // PDF: org -> HTML (in-process) -> LaTeX (doc_export.h's
     // ExportHtmlToLatex, C++) -> a real .tex file next to the org file
-    // -> tectonic (same devShell dependency + invocation shape
-    // kBuiltinOrgLatex's own mep_org_latex_render already uses for
-    // math-fragment previews, just compiling the *whole* document here
+    // -> the configured TeX engine (mep.tex_compile, the same switch
+    // kBuiltinOrgLatex's mep_org_latex_render uses for math-fragment
+    // previews, just compiling the *whole* document here
     // instead of one \documentclass{standalone} snippet, and keeping the
     // resulting PDF itself rather than rasterizing+discarding it). The
     // .tex file is deliberately left on disk afterward -- a legitimate
     // export artifact of its own, not just scratch.
     // `on_fail(tex_err_lines)` is optional and additive (pre-existing
     // callers pass only on_done): mep.org_export_pdf_view below hands the
-    // captured tectonic stderr to a picker on a manual export, since mep
+    // captured TeX output to a picker on a manual export, since mep
     // has no quickfix list to dump it into.
     // Shared by the PDF backend below and mep.org_export_latex beside it:
     // org -> HTML -> LaTeX (doc_export.h's ExportHtmlToLatex, C++) written
     // to a real .tex file next to the org source. Returns that path plus
-    // the document's directory (what tectonic must be run in, for relative
+    // the document's directory (what TeX must be run in, for relative
     // \\includegraphics paths to resolve) and the extension-less base path
     // the PDF lands on. Factored out when LaTeX became an export target of
     // its own -- the two backends must write byte-identical .tex output,
@@ -21698,7 +21905,7 @@ const char *kBuiltinOrgExport =
     "  local html = mep.org_export('html', lines)\n"
     "  local base_dir = mep_org_doc_dir()\n"
     "  local latex = mep.doc_export_html_to_latex(html, meta.title or '', meta.author or '', base_dir)\n"
-    // Absolute, so the path handed to tectonic below means the same thing
+    // Absolute, so the path handed to the TeX engine means the same thing
     // in the job's own cwd (`base_dir`) as it did to io.open here -- a
     // relative one resolved against mep's cwd on write and against the
     // document's directory on compile, which only ever agreed by accident.
@@ -21719,30 +21926,23 @@ const char *kBuiltinOrgExport =
     "  if type(on_fail) ~= 'function' then on_fail = nil end\n"
     "  mep_org_export_prepare(function(lines)\n"
     "    local tex_path, base_dir, base = mep_org_export_write_tex(lines)\n"
-    "    mep.notify('Org export: compiling PDF (tectonic)...')\n"
-    "    local tex_err = {}\n"
-    "    mep.job_start({'tectonic', '-X', 'compile', tex_path, '--outfmt', 'pdf'}, {\n"
-    "      cwd = base_dir,\n"
-    "      on_stderr = function(line) tex_err[#tex_err + 1] = line end,\n"
-    "      on_exit = function(code)\n"
-    "        if code == 0 then\n"
-    "          mep.notify('Exported to ' .. base .. '.pdf')\n"
-    "          if on_done then on_done(base .. '.pdf') end\n"
-    "        else\n"
-    "          mep.notify('PDF export failed (tectonic exit ' .. code .. '): '\n"
-    "            .. (tex_err[#tex_err] or 'see ' .. tex_path), 'error')\n"
-    "          if on_fail then on_fail(tex_err) end\n"
-    "        end\n"
-    "      end,\n"
-    "    })\n"
+    "    mep.notify('Org export: compiling PDF (' .. mep.tex_compile_backend() .. ')...')\n"
+    "    mep.tex_compile(tex_path, {cwd = base_dir}, function(pdf, err, lines)\n"
+    "      if pdf then\n"
+    "        mep.notify('Exported to ' .. pdf)\n"
+    "        if on_done then on_done(pdf) end\n"
+    "      else\n"
+    "        mep.notify('PDF export failed: ' .. (err or 'see ' .. tex_path), 'error')\n"
+    "        if on_fail then on_fail(lines or {}) end\n"
+    "      end\n"
+    "    end)\n"
     "  end)\n"
     "end\n"
     // LaTeX: the same .tex the PDF backend compiles, kept as the export
-    // itself with no tectonic step. A real target of its own rather than
+    // itself with no TeX step. A real target of its own rather than
     // PDF's leftover artifact -- it is what a paper being submitted
     // somewhere with its own LaTeX pipeline actually wants, and it needs
-    // none of tectonic's download-a-toolchain-on-first-run cost just to
-    // get the source out.\n"
+    // no TeX run just to get the source out.\n"
     "function mep.org_export_latex(on_done)\n"
     // Same reason as mep.org_export_pdf's own normalization just above:
     // reached from the command dispatch, `on_done` is the (possibly
@@ -21765,7 +21965,7 @@ const char *kBuiltinOrgExport =
     // PDF nobody is looking at, and closing the preview pane stops the
     // re-exports on its own. Per-source-file in-flight guard, same
     // rationale as kBuiltinRunButton's own (two rapid saves must not race
-    // two tectonic compiles for the same output).
+    // two TeX compiles for the same output).
     "local mep_org_pdf_inflight = {}\n"
     "local function mep_org_pdf_pane(path)\n"
     "  for _, id in ipairs(mep.pane_buffers()) do\n"
@@ -21800,7 +22000,7 @@ const char *kBuiltinOrgExport =
     "  end, function(tex_err)\n"
     "    mep_org_pdf_inflight[src] = nil\n"
     "    if not silent and #tex_err > 0 then\n"
-    "      mep.picker_open('tectonic errors', tex_err, function() end)\n"
+    "      mep.picker_open('TeX errors', tex_err, function() end)\n"
     "    end\n"
     "  end)\n"
     "end\n"
@@ -26610,11 +26810,11 @@ const char *kBuiltinMepml =
     "mep.command('MepmlExportOpen', mep.mepml_export_open)\n"
     "\n"
     "-- Every format mepml_convert.h writes; PDF is the LaTeX export compiled by\n"
-    "-- tectonic in the background. In a presentation (//? Type: presentation)\n"
+    "-- the configured TeX engine (mep.tex_compile) in the background. In a presentation (//? Type: presentation)\n"
     "-- html, tex and pdf are the slideshow and the Beamer deck; beamer is that\n"
     "-- deck's PDF whatever the Type.\n"
     "local mep_mepml_formats = {\n"
-    "  {'html', 'HTML'}, {'pdf', 'PDF (LaTeX via tectonic)'}, {'beamer', 'Beamer slides (PDF)'}, {'docx', 'Word (.docx)'},\n"
+    "  {'html', 'HTML'}, {'pdf', 'PDF (via LaTeX)'}, {'beamer', 'Beamer slides (PDF)'}, {'docx', 'Word (.docx)'},\n"
     "  {'odt', 'OpenDocument text (.odt)'}, {'rtf', 'Rich Text (.rtf)'}, {'md', 'Markdown'},\n"
     "  {'org', 'Org'}, {'tex', 'LaTeX'}, {'txt', 'Plain text'},\n"
     "  {'pptx', 'PowerPoint slides (.pptx)'}, {'odp', 'Impress slides (.odp)'},\n"
@@ -26646,9 +26846,10 @@ const char *kBuiltinMepml =
     "    if not ok and on_fail then on_fail(err) end\n"
     "  end\n"
     "  if fmt ~= 'pdf' and not beamer then return done(mep.mepml_export(out)) end\n"
-    "  if not mep_org_babel_has_exe('tectonic') then return done(nil, \"tectonic not found on PATH (see flake.nix's devShell)\") end\n"
+    "  local _, can_compile, compile_why = mep.tex_compile_backend()\n"
+    "  if not can_compile then return done(nil, compile_why) end\n"
     "  -- The .tex goes beside the document (its pictures resolve from there)\n"
-    "  -- under a name of its own; tectonic writes into the build directory,\n"
+    "  -- under a name of its own; TeX writes into the build directory,\n"
     "  -- where the PDF then takes the document's name.\n"
     "  local dir = mep_mepml_dir(mep.filename())\n"
     "  local outdir, stem = out:match('^(.*)/([^/]+)%.pdf$')\n"
@@ -26657,17 +26858,12 @@ const char *kBuiltinMepml =
     "  local ok, err = mep.mepml_export(tex, beamer and 'beamer' or '', 'pdf')\n"
     "  if not ok then return done(nil, err) end\n"
     "  mep.notify('Compiling ' .. out .. ' ...')\n"
-    "  local errs = {}\n"
-    "  mep.job_start({'tectonic', '-X', 'compile', tex, '--outdir', outdir}, {\n"
-    "    cwd = dir,\n"
-    "    on_stderr = function(line) errs[#errs + 1] = line end,\n"
-    "    on_exit = function(code)\n"
-    "      os.remove(tex)\n"
-    "      local built = outdir .. '/.' .. stem .. '.mepml-export.pdf'\n"
-    "      if code == 0 and os.rename(built, out) then done(true)\n"
-    "      else os.remove(built) done(nil, mep_org_babel_first_error_line(errs) or 'tectonic failed') end\n"
-    "    end,\n"
-    "  })\n"
+    "  mep.tex_compile(tex, {outdir = outdir, cwd = dir, clean = true}, function(built, compile_err)\n"
+    "    os.remove(tex)\n"
+    "    if built and os.rename(built, out) then return done(true) end\n"
+    "    if built then os.remove(built) end\n"
+    "    done(nil, compile_err or ('could not move the PDF to ' .. out))\n"
+    "  end)\n"
     "end\n"
     "-- mep.mepml_export_all([on_done [, on_fail]]): every format in\n"
     "-- mep_mepml_formats but beamer, one after another -- not all at once,\n"
@@ -26676,8 +26872,8 @@ const char *kBuiltinMepml =
     "-- takes the same build/name.pdf the document's own PDF does, and the two\n"
     "-- would overwrite each other. A slide format the document has no \\slide\n"
     "-- for (pptx, odp) is skipped, not failed. One toast at the end: the\n"
-    "-- count and what was skipped, or an error naming what failed (without\n"
-    "-- tectonic, pdf fails and the rest still land). on_done(paths) when\n"
+    "-- count and what was skipped, or an error naming what failed (without a\n"
+    "-- TeX engine that can run, pdf fails and the rest still land). on_done(paths) when\n"
     "-- nothing failed, on_fail(summary) otherwise.\n"
     "function mep.mepml_export_all(on_done, on_fail)\n"
     "  local formats = {}\n"
@@ -26816,7 +27012,7 @@ const char *kBuiltinMepml =
     "end\n"
     // Every slide's maths is rendered ahead, in the background, the slide
     // shown first: turning to a slide then finds its formulas in the
-    // cache instead of starting tectonic. Queued behind whatever is on
+    // cache instead of starting a TeX compile. Queued behind whatever is on
     // screen (rows past any real one), dropped once nobody presents.
     "mep.on_frame(function()\n"
     "  local list = mep.mepml_present_warm()\n"
@@ -32217,16 +32413,16 @@ const char *kBuiltinRunButton =
     // (`:MepOrgExportOpen pdf`).\n"
     "mep.command('MepOrgExportOpen', mep.org_export_open)\n"
     "mep.leader_map('oee', 'Org: export and open (pick format)', mep.org_export_open_pick)\n"
-    // tex Run button: compiles the current .tex file with tectonic (same
-    // devShell dependency + invocation shape as mep.org_export_pdf and
-    // kBuiltinOrgLatex's own mep_org_latex_render) and shows the result
+    // tex Run button: compiles the current .tex file with the configured
+    // TeX engine (mep.tex_compile, the switch mep.org_export_pdf and
+    // kBuiltinOrgLatex's mep_org_latex_render use too) and shows the result
     // via mep_run_button_show_org_output above (reuse an already-open
     // split next to this buffer, or vsplit_right a new one).
     //
     // Not every .tex file is a standalone compilable document -- a
     // \\include'd chapter, a style/class file, a bibliography -- so
     // mep_run_button_tex_has_document below scans for a literal
-    // \\begin{document} first and refuses to even invoke tectonic without
+    // \\begin{document} first and refuses to even invoke TeX without
     // one, rather than letting it fail with a confusing "missing
     // \\documentclass" error. Deliberately NOT done as a Run-button
     // *visibility* gate (RunButtonSupportsExtension/DrawPane's
@@ -32243,7 +32439,7 @@ const char *kBuiltinRunButton =
     // \\begin{document} is inside a comment (e.g. a tutorial/template's own
     // "% add \\begin{document} here" header, or commented-out boilerplate)
     // false-positives the check and lets a real non-document reach
-    // tectonic anyway, producing exactly the confusing failure this check
+    // TeX anyway, producing exactly the confusing failure this check
     // exists to avoid. Doesn't handle every LaTeX edge case (a verbatim
     // environment containing a literal '%', for instance) -- a best-
     // effort heuristic gate, not a real parser. Deliberately a plain
@@ -32290,9 +32486,9 @@ const char *kBuiltinRunButton =
     // launched from (LspAbspath/mep_lsp_abspath just prepends the
     // process's real cwd to a relative path, editor.cpp's LspAbspath),
     // which is NOT necessarily the file's own directory. Passing that
-    // same possibly-relative fname straight to tectonic while ALSO
+    // same possibly-relative fname straight to TeX while ALSO
     // setting the job's own cwd to the file's directory (below) only
-    // happens to work when those two coincide -- otherwise tectonic
+    // happens to work when those two coincide -- otherwise TeX
     // looks for the file relative to its OWN (different) cwd and fails
     // with a confusing "failed to open input file <fname>". Resolving to
     // an absolute path here once, and compiling *that*, is correct
@@ -32300,22 +32496,16 @@ const char *kBuiltinRunButton =
     "    local abs = mep_lsp_abspath(fname)\n"
     "    local base_dir = abs:match('^(.*)/[^/]*$') or '.'\n"
     "    local pdf_path = (fname:gsub('%.tex$', '')) .. '.pdf'\n"
-    "    mep.notify('Compiling ' .. fname .. ' (tectonic)...')\n"
-    "    local tex_err = {}\n"
-    "    mep.job_start({'tectonic', '-X', 'compile', abs, '--outfmt', 'pdf'}, {\n"
-    "      cwd = base_dir,\n"
-    "      on_stderr = function(line) tex_err[#tex_err + 1] = line end,\n"
-    "      on_exit = function(code)\n"
-    "        done()\n"
-    "        if code == 0 then\n"
-    "          mep.notify('Compiled ' .. pdf_path)\n"
-    "          mep_run_button_show_org_output(pdf_path)\n"
-    "        else\n"
-    "          mep.notify('LaTeX compile failed (tectonic exit ' .. code .. '): '\n"
-    "            .. (tex_err[#tex_err] or 'see terminal'), 'error')\n"
-    "        end\n"
-    "      end,\n"
-    "    })\n"
+    "    mep.notify('Compiling ' .. fname .. ' (' .. mep.tex_compile_backend() .. ')...')\n"
+    "    mep.tex_compile(abs, {cwd = base_dir}, function(pdf, compile_err)\n"
+    "      done()\n"
+    "      if pdf then\n"
+    "        mep.notify('Compiled ' .. pdf_path)\n"
+    "        mep_run_button_show_org_output(pdf_path)\n"
+    "      else\n"
+    "        mep.notify('LaTeX compile failed: ' .. (compile_err or 'see terminal'), 'error')\n"
+    "      end\n"
+    "    end)\n"
     "  end)\n"
     "  if not ok then\n"
     "    done()\n"
@@ -32413,13 +32603,13 @@ const char *kBuiltinRunButton =
     "end\n"
     // Rnw Run button: two stages chained through nested on_exit callbacks --
     // knitr::knit() first (weaves the R chunks into a plain .tex sibling
-    // file, same directory), then the SAME tectonic invocation
-    // mep.run_button_run_tex() already uses on that .tex, once knitting
-    // actually succeeded. Deliberately NOT knitr::knit2pdf (which shells
-    // out to pdflatex/texi2pdf) -- tectonic is this repo's one LaTeX
+    // file, same directory), then the SAME mep.tex_compile the tex Run
+    // button above uses on that .tex, once knitting actually succeeded.
+    // Deliberately NOT knitr::knit2pdf (which shells out to
+    // pdflatex/texi2pdf) -- the TeX switch (kBuiltinTex) decides the LaTeX
     // engine everywhere else (mep.org_export_pdf, kBuiltinOrgLatex, the
-    // tex Run button above), and staying on it here too means .Rnw support
-    // doesn't need a second LaTeX toolchain installed alongside it.\n"
+    // tex Run button above), and going through it here too means .Rnw
+    // follows the same setting.\n"
     "local mep_run_button_rnw_running = {}\n"
     "function mep.run_button_run_rnw()\n"
     "  local fname = mep.filename()\n"
@@ -32448,22 +32638,16 @@ const char *kBuiltinRunButton =
     "          return\n"
     "        end\n"
     "        local tex_abs = mep_lsp_abspath(tex_path)\n"
-    "        mep.notify('Compiling ' .. tex_path .. ' (tectonic)...')\n"
-    "        local tex_err = {}\n"
-    "        mep.job_start({'tectonic', '-X', 'compile', tex_abs, '--outfmt', 'pdf'}, {\n"
-    "          cwd = base_dir,\n"
-    "          on_stderr = function(line) tex_err[#tex_err + 1] = line end,\n"
-    "          on_exit = function(code2)\n"
-    "            done()\n"
-    "            if code2 == 0 then\n"
-    "              mep.notify('Compiled ' .. pdf_path)\n"
-    "              mep_run_button_show_org_output(pdf_path)\n"
-    "            else\n"
-    "              mep.notify('LaTeX compile failed (tectonic exit ' .. code2 .. '): '\n"
-    "                .. (tex_err[#tex_err] or 'see terminal'), 'error')\n"
-    "            end\n"
-    "          end,\n"
-    "        })\n"
+    "        mep.notify('Compiling ' .. tex_path .. ' (' .. mep.tex_compile_backend() .. ')...')\n"
+    "        mep.tex_compile(tex_abs, {cwd = base_dir}, function(pdf, compile_err)\n"
+    "          done()\n"
+    "          if pdf then\n"
+    "            mep.notify('Compiled ' .. pdf_path)\n"
+    "            mep_run_button_show_org_output(pdf_path)\n"
+    "          else\n"
+    "            mep.notify('LaTeX compile failed: ' .. (compile_err or 'see terminal'), 'error')\n"
+    "          end\n"
+    "        end)\n"
     "      end,\n"
     "    })\n"
     "  end)\n"
@@ -36658,6 +36842,32 @@ const char *kBuiltinSettings =
     "   hint = 'Needs :CopilotLogin once. Off by default.',\n"
     "   get = function() return mep_settings_bool_get(mep.copilot_enabled) end,\n"
     "   set = function(v) if v ~= '' then mep.cmd(v == 'on' and 'Copilot on' or 'Copilot off') end end},\n"
+    "\n"
+    "  -- --- TeX --------------------------------------------------------------\n"
+    "  -- The TeX switch (kBuiltinTex): maths previews, org-babel latex blocks,\n"
+    "  -- the PDF exports and the .tex Run button all follow these. :TexInfo\n"
+    "  -- says what each would run right now.\n"
+    "  {section = 'TeX', key = 'tex_engine', label = 'TeX engine', kind = 'choice',\n"
+    "   choices = {'builtin', 'system'}, labels = {\"mep's own\", 'A system TeX installation'},\n"
+    "   hint = 'system runs the command below instead -- for what only a TeX installation has (XeTeX, LuaTeX, OpenType fonts).',\n"
+    "   get = function() return mep.tex_engine or '' end,\n"
+    "   set = function(v) mep.tex_engine = (v ~= '' and v) or 'builtin' end},\n"
+    "  {section = '', key = 'tex_system_command', label = 'System TeX command', kind = 'choice',\n"
+    "   choices = mep.tex_system_commands, allow_custom = true, wide = true,\n"
+    "   hint = 'tectonic, pdflatex, xelatex, lualatex, latexmk, or an argv: %f is the .tex, %o the output dir.',\n"
+    "   get = function() return mep.tex_system_command or '' end,\n"
+    "   set = function(v) mep.tex_system_command = (v ~= '' and v) or 'tectonic' end},\n"
+    "  {section = '', key = 'tex_packages', label = 'TeX packages', kind = 'choice',\n"
+    "   choices = {'bundle', 'bundle+system', 'system'},\n"
+    "   labels = {\"mep's own (installed with mep)\", 'The system TeX first, then mep\\'s own', 'The system TeX installation'},\n"
+    "   hint = 'Where mep\\'s own engine reads LaTeX and its packages from.',\n"
+    "   get = function() return mep.tex_packages or '' end,\n"
+    "   set = function(v) mep.tex_packages = (v ~= '' and v) or 'bundle' end},\n"
+    "  {section = '', key = 'tex_rasterizer', label = 'PDF to image', kind = 'choice',\n"
+    "   choices = {'builtin', 'system'}, labels = {\"mep's own renderer\", 'pdftoppm (poppler)'},\n"
+    "   hint = 'What turns a compiled formula or latex block into the image shown.',\n"
+    "   get = function() return mep.tex_rasterizer or '' end,\n"
+    "   set = function(v) mep.tex_rasterizer = (v ~= '' and v) or 'builtin' end},\n"
     "}\n"
     "\n"
     "-- The window's own title bar, only where it can be hidden (macOS, where\n"
@@ -65606,6 +65816,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinFormat);
     lua->DoString(kBuiltinTermSend);
     lua->DoString(kBuiltinMarkdown);
+    lua->DoString(kBuiltinTex);
     lua->DoString(kBuiltinOrg);
     lua->DoString(kBuiltinOrgLinks);
     lua->DoString(kBuiltinOrgImages);

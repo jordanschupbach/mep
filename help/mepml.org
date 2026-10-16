@@ -277,7 +277,7 @@ from =Title=, =Subtitle=, =Author= and =Date=, followed by one slide per
 | Export            | A presentation becomes                                                  |
 |-------------------+-------------------------------------------------------------------------|
 | =html=            | a slideshow in one page                                                 |
-| =tex=, =pdf=      | a Beamer deck (16:9), compiled by =tectonic= for the PDF                |
+| =tex=, =pdf=      | a Beamer deck (16:9), compiled by the TeX engine for the PDF            |
 | =pptx=            | a PowerPoint deck                                                       |
 | =odp=             | a LibreOffice Impress deck                                              |
 
@@ -599,7 +599,7 @@ $$
 #+end_example
 
 Maths is typeset in the buffer with the same preview org uses
-(=<leader>otl= toggles it; it needs =tectonic= and =pdftoppm=). While
+(=<leader>otl= toggles it; it needs a TeX engine, see [[file:tex.html][TeX and maths rendering]]). While
 the cursor is in a formula its source shows, and what it typesets to
 floats in a popup in the pane's top right corner, out of the way of the
 text (bottom right while the cursor's own row is under it); the same
@@ -1251,8 +1251,9 @@ with no header row as hints while you write, and from a shell
 with its source (=check= exits 1 when a figure has no alt text or a PDF is
 not tagged).
 
-A PDF made by anything but tectonic (XeTeX) from the exported =.tex= is the
-same document without the tags.
+The PDF export is tagged when mep's own TeX (the default) or XeTeX (tectonic,
+=xelatex=) compiles it; from pdflatex or LuaLaTeX the exported =.tex= makes
+the same document without the tags.
 
 * Lists
 
@@ -1608,7 +1609,7 @@ Word; =:MepmlExport docx= skips the picker. The picker's last entry,
 =All formats= (=:MepmlExport all=), writes every format one after another
 and reports once at the end: slide formats a document without =\slide=
 blocks cannot make (=pptx=, =odp=) are skipped, and anything that failed
-is named -- without =tectonic= on =PATH=, =pdf= fails and the rest still
+is named -- without a TeX engine that can run, =pdf= fails and the rest still
 land. =beamer= is left out of All, since its deck takes the same
 =build/notes.pdf= as the document's own PDF; export it on its own. Imports
 are expanded, commands are expanded for the format (see Commands of your
@@ -1682,7 +1683,7 @@ The formats:
 | Format                | Written as                                                  |
 |-----------------------+-------------------------------------------------------------|
 | HTML                  | a standalone page (=<leader>ko= opens it)                    |
-| PDF                   | the LaTeX export, compiled by =tectonic= in the background  |
+| PDF                   | the LaTeX export, compiled by the TeX engine in the background |
 | Beamer (=beamer=)     | the slides as a Beamer deck, compiled to PDF the same way   |
 | Word (=.docx=)        | named styles, real lists, footnotes, links, embedded images |
 | OpenDocument (=.odt=) | the same, for LibreOffice                                   |

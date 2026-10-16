@@ -199,8 +199,9 @@ conservatively: no whitespace or sentence punctuation immediately inside
 either <code>$</code>, no digit right after the closing one (so "$5 and $10" stays
 prose), no <code>$</code> within the fragment itself, and at most one line break. The
 other three delimiters are unambiguous and carry none of those conditions.</p>
-<p>This is <b>on by default</b> too. Rendering shells out to <code>tectonic</code> and
-<code>pdftoppm</code> (both in the flake's dev shell); without them on <code>PATH</code> the
+<p>This is <b>on by default</b> too. Each fragment is compiled by the configured
+TeX engine and turned into an image by mep's own PDF renderer (see
+<a href="tex.html">TeX and maths rendering</a>); when the engine cannot run the
 maths simply stays as source text, and mep says so once per session rather
 than once per fragment.</p>
 <h1>Plain text: turning the rendering off</h1>

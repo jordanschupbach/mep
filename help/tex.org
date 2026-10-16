@@ -1,0 +1,117 @@
+#+TITLE: TeX and maths rendering
+#+HTML_HEAD: <meta name="help-section" content="Org mode">
+#+HTML_HEAD: <meta name="help-order" content="105">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Which TeX mep runs
+
+Everything in mep that typesets TeX goes through one switch: the maths
+previews in org and mepml buffers, org-babel =latex= blocks, the org and
+mepml PDF exports (Beamer decks included), the =.tex= Run button and
+=.Rnw= documents. Change it once in =:MepSettings= (section /TeX/) and
+all of them follow.
+
+| Setting              | Choices                                       | Default    |
+|----------------------+-----------------------------------------------+------------|
+| TeX engine           | =builtin= (mep's own) or =system=              | =builtin=  |
+| System TeX command   | =tectonic=, =pdflatex=, =xelatex=, =lualatex=, =latexmk=, or a command line | =tectonic= |
+| TeX packages         | =bundle=, =bundle+system= or =system= (where =builtin= reads LaTeX from) | =bundle= |
+| PDF to image         | =builtin= (mep's own renderer) or =system= (=pdftoppm=) | =builtin=  |
+
+=builtin= needs nothing installed: mep brings its own TeX (below).
+=system= is for documents that want what only a TeX installation has --
+XeTeX or LuaTeX, system OpenType fonts, packages mep's TeX does not carry
+(though /TeX packages/ = =bundle+system= gives mep's TeX those too).
+A typed command line may use =%f= for the =.tex= file and =%o= for the
+output directory, for example =latexmk -xelatex -outdir=%o %f=; without
+=%f= the file is added at the end. =pdflatex=, =xelatex= and =lualatex=
+are rerun when the log asks for it (changed labels, a table of
+contents), as tectonic and latexmk do by themselves.
+
+=:TexInfo= shows what each job would run right now, and why it cannot
+when it cannot. A backend that cannot run is reported once per session,
+and the maths stays as source text until it is fixed.
+
+* mep's own toolchain
+
+The =builtin= backends are the =mep-tex= helper installed beside =mep=:
+
+| Command                                          | Does                                            |
+|--------------------------------------------------+-------------------------------------------------|
+| =mep-tex pdf-to-png IN.pdf OUT.png --dpi N=       | one page as a PNG, by mep's own PDF renderer     |
+| =mep-tex compile FILE.tex --outdir DIR=          | FILE.tex typeset to DIR/FILE.pdf                 |
+
+The renderer is the PDF pane's own, so a preview needs no poppler.
+
+=mep-tex compile= typesets with mep's own engine: TeX with the e-TeX and
+pdfTeX extensions, writing the PDF itself. It does what =pdflatex= (with
+latexmk) does:
+
+- The format comes from the document: =pdflatex= when it has
+  =\documentclass=, =pdftex= (plain TeX) otherwise, or the one named on a
+  first line =%&pdflatex=. =--format= chooses it.
+- The format is made the first time (a few seconds) and kept in
+  =~/.cache/mep/tex/formats= (=$XDG_CACHE_HOME/mep/tex=). A new mep or
+  a changed TeX installation makes a new one.
+- The document runs again while its cross-references change (the =.aux=,
+  =.toc= ... files), up to four times.
+- The terminal shows TeX's own messages; an error is its =! ...= line, and
+  the exit status is 1.
+
+LaTeX, its packages and fonts come from mep's own TeX bundle: a part of
+TeX Live installed with mep (=share/mep/tex/tex-bundle.mtb=, about 21
+MB) and unpacked into =~/.cache/mep/tex= the first time. It holds the
+LaTeX kernel, amsmath and amssymb, graphics, xcolor, hyperref, geometry,
+Beamer, TikZ and tcolorbox, standalone, the tools bundle, booktabs,
+caption, enumitem, mathtools, listings, siunitx, microtype and some
+more, with Latin Modern and the Computer Modern and AMS fonts. Its
+=LICENSES.txt= lists every package in it and its licence.
+
+The setting /TeX packages/ (=--packages=) says where else to look:
+
+| Choice          | Reads                                                              |
+|-----------------+--------------------------------------------------------------------|
+| =bundle=          | the bundle only (a TeX installation's, if mep has no bundle)       |
+| =bundle+system=   | a TeX installation's packages first, then the bundle               |
+| =system=          | a TeX installation only                                            |
+
+A TeX installation is =MEP_TEX_TREES= (directories separated by =:=),
+else TeX Live's (=kpsewhich= is asked, or the usual places are looked
+in). =--tree DIR= options replace all of this.
+
+The bundle has no cm-super, the Type 1 fonts TeX Live draws =[T1]{fontenc}=
+text with: in their place it draws that text with Latin Modern, which
+looks the same (the spacing is still the EC fonts'). A TeX installation
+with cm-super is used for it under =bundle+system=.
+
+| Option                | Does                                                  |
+|-----------------------+-------------------------------------------------------|
+| =--outdir DIR=          | where the PDF, log and aux files go (default: beside the file) |
+| =--format F=            | =pdflatex=, =pdftex= or =auto=                            |
+| =--packages P=          | =bundle=, =bundle+system= or =system= (default: =MEP_TEX_PACKAGES=, else =bundle=) |
+| =--tree DIR=            | read TeX files from DIR only (repeatable)              |
+| =--cache-dir DIR=       | keep formats and the unpacked bundle here              |
+| =--passes N=            | at most N runs (default 4)                             |
+| =--rebuild-format=      | make the format again                                  |
+| =-v=                    | say on stderr when the bundle is unpacked, a format made or a run repeated |
+
+Not done yet: links broken across lines, virtual fonts (the Times and
+Helvetica packages), bitmap fonts, and micro-typography.
+
+* On the command line
+
+=mep-mepml convert= and =mep-mepml build= compile a PDF export with the
+same switch: =--tex-engine builtin|system= and =--tex-command CMD=, or the
+environment variables =MEP_TEX_ENGINE= and =MEP_TEX_COMMAND=. With the
+builtin engine, =MEP_TEX_PACKAGES= chooses the packages as /TeX packages/
+does.
+
+To build the bundle for a development build: =just tex-bundle= (it
+needs nix; the bundle is made from nixpkgs' TeX Live by
+=nix/tex-bundle.nix= and =tools/tex_bundle.py=).
+
+* See also
+
+- [[file:org-visuals.html][Org visuals]] -- the maths preview itself
+- [[file:org-export.html][Org export]]
+- [[file:mepml.html][mepml]]

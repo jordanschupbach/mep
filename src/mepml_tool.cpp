@@ -1,13 +1,17 @@
 // mep-mepml: mepml's converter as a command-line tool.
 //
-//   mep-mepml convert [--beamer] [--no-notice] IN OUT
-//   mep-mepml build [--beamer] [--no-notice] IN.mepml [FORMAT...]
+//   mep-mepml convert [--beamer] [--no-notice] [TEX OPTIONS] IN OUT
+//   mep-mepml build [--beamer] [--no-notice] [TEX OPTIONS] IN.mepml [FORMAT...]
 //
 // Formats come from the file extensions. From .mepml to anything mep can
 // export (html md org rtf docx odt tex pdf txt); from anything it can
 // import (html md org rtf docx odt txt) to .mepml; and between any two of
-// those by way of mepml. PDF is the LaTeX export compiled by tectonic,
-// which must be on PATH. An export of a .mepml starts with a comment
+// those by way of mepml. PDF is the LaTeX export compiled by the TeX
+// switch's engine (tex/tex_backend.h): `--tex-engine builtin|system`
+// (default $MEP_TEX_ENGINE, else builtin) and `--tex-command CMD` (the
+// system engine: tectonic, pdflatex, xelatex, lualatex, latexmk or an
+// argv; default $MEP_TEX_COMMAND, else tectonic) -- the editor's
+// tex_engine / tex_system_command settings, for the command line. An export of a .mepml starts with a comment
 // saying it was generated from that file and is not the one to edit
 // (mepml_convert.h, ExportOptions); --no-notice leaves it out, as does
 // `//? Notice: no` in the document.
@@ -30,8 +34,17 @@
 #include "a11y_file.h"
 #include "mepml_convert.h"
 #include "mepml_style.h"
+#include "tex/tex_backend.h"
 
 namespace {
+
+// The TeX switch for a PDF export (see the file's head).
+struct TexChoice {
+    std::string engine = "builtin";
+    std::string command = "tectonic";
+    std::string builtin_tool = "mep-tex";  // beside this binary, when it is there
+};
+TexChoice g_tex;
 
 bool ReadLines(const std::string &path, std::vector<std::string> *lines) {
     std::ifstream f(path);
@@ -50,12 +63,6 @@ std::vector<std::string> SplitText(const std::string &s) {
     std::string l;
     while (std::getline(ss, l)) out.push_back(l);
     return out;
-}
-
-std::string ShellQuote(const std::string &s) {
-    std::string o = "'";
-    for (char c : s) o += c == '\'' ? std::string("'\\''") : std::string(1, c);
-    return o + "'";
 }
 
 std::string ReadText(const std::string &path) {
@@ -185,8 +192,8 @@ int Inspect(int argc, char **argv) {
 
 int Usage() {
     std::fprintf(stderr,
-                 "usage: mep-mepml convert [--beamer] [--no-notice] IN OUT\n"
-                 "       mep-mepml build [--beamer] [--no-notice] IN.mepml [FORMAT...]\n"
+                 "usage: mep-mepml convert [--beamer] [--no-notice] [TEX OPTIONS] IN OUT\n"
+                 "       mep-mepml build [--beamer] [--no-notice] [TEX OPTIONS] IN.mepml [FORMAT...]\n"
                  "                                                export into the document's build directory\n"
                  "                                                (//? Build:, `build` by default) in each FORMAT\n"
                  "                                                (//? Export:, else html), then run its //? Post:\n"
@@ -200,6 +207,9 @@ int Usage() {
                  "  (with //? Type: presentation, html/tex/pdf are a slideshow and a Beamer deck;\n"
                  "  --beamer makes tex/pdf the Beamer deck of the \\slide blocks whatever the Type;\n"
                  "  --no-notice leaves out the comment at the top saying the file is generated)\n"
+                 "  TEX OPTIONS, for pdf: --tex-engine builtin|system ($MEP_TEX_ENGINE, else builtin)\n"
+                 "  and --tex-command tectonic|pdflatex|xelatex|lualatex|latexmk|'ARGV'\n"
+                 "  ($MEP_TEX_COMMAND, else tectonic; in an ARGV %f is the .tex and %o the output dir)\n"
                  "  import to .mepml from: html md org rtf docx odt txt\n");
     return 2;
 }
@@ -271,12 +281,12 @@ int Convert(const std::string &in, const std::string &out, bool beamer, mepml::E
             std::ofstream o(tex);
             o << latex;
         }
-        const std::string cmd = "tectonic -X compile " + ShellQuote(tex.string()) + " --outdir " +
-                                ShellQuote(pdf.parent_path().string()) + " >/dev/null 2>&1";
-        const int rc = std::system(cmd.c_str());
+        std::string tex_err;
+        const bool ok = TexCompile(g_tex.engine, g_tex.command, g_tex.builtin_tool, tex.string(),
+                                   pdf.parent_path().string(), pdf.parent_path().string(), &tex_err);
         std::filesystem::remove(tex, ec);
-        if (rc != 0) {
-            std::fprintf(stderr, "mep-mepml: tectonic failed (is it on PATH?)\n");
+        if (!ok) {
+            std::fprintf(stderr, "mep-mepml: PDF compile failed: %s\n", tex_err.c_str());
             return 1;
         }
         return 0;
@@ -368,12 +378,25 @@ int main(int argc, char **argv) {
     }
     bool beamer = false;
     mepml::ExportOptions opts;
+    if (const char *e = std::getenv("MEP_TEX_ENGINE"); e && *e) g_tex.engine = e;
+    if (const char *c = std::getenv("MEP_TEX_COMMAND"); c && *c) g_tex.command = c;
+    {
+        std::error_code ec;
+        std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
+        if (ec) self = std::filesystem::absolute(argv[0], ec);
+        const std::filesystem::path tool = self.parent_path() / "mep-tex";
+        if (std::filesystem::exists(tool, ec)) g_tex.builtin_tool = tool.string();
+    }
     int i = 2;
     for (; i < argc && argv[i][0] == '-'; ++i) {
-        if (std::string(argv[i]) == "--beamer") beamer = true;
-        else if (std::string(argv[i]) == "--no-notice") opts.notice = false;
+        const std::string a = argv[i];
+        if (a == "--beamer") beamer = true;
+        else if (a == "--no-notice") opts.notice = false;
+        else if (a == "--tex-engine" && i + 1 < argc) g_tex.engine = argv[++i];
+        else if (a == "--tex-command" && i + 1 < argc) g_tex.command = argv[++i];
         else return Usage();
     }
+    if (g_tex.engine != "builtin" && g_tex.engine != "system") return Usage();
     if (argc < 2) return Usage();
     if (std::string(argv[1]) == "build") {
         if (i >= argc) return Usage();

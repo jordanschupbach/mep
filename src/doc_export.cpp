@@ -275,7 +275,7 @@ std::string PdfHexText(const std::string &text) {
 //
 // The ids are this walker's own, counted from 1 (0 is the Document), so
 // the macros need no state of their own about what is open. Compiled by
-// anything but XeTeX (tectonic's engine) they do nothing.
+// anything but mep-tex or XeTeX (tectonic's engine) they do nothing.
 struct LatexTagger {
     bool on = false;
     int next_id = 1;
@@ -1037,7 +1037,8 @@ void WalkLatexNode(const DomNode *node, LatexCtx &ctx, std::string &out) {
 }  // namespace
 
 namespace {
-// The tagging macros (see LatexTagger), over xdvipdfmx's pdf: specials.
+// The tagging macros (see LatexTagger), over xdvipdfmx's pdf: specials --
+// which mep's own engine (mep-tex) reads too, so they are on under either.
 //
 // A structure element is two objects, itself and the array of its kids
 // (@mepseN, @mepkN). \mepS only queues things, so no special ever lands
@@ -1070,6 +1071,7 @@ namespace {
 const char *kLatexTagging = R"tex(\makeatletter
 \newif\ifmep@tag \mep@tagfalse
 \ifdefined\XeTeXversion \mep@tagtrue \fi
+\ifdefined\meptexversion \mep@tagtrue \fi
 \newcount\mep@mc
 \newcount\mep@p
 \def\mep@pend{}
@@ -1148,6 +1150,7 @@ const char *kLatexTagging = R"tex(\makeatletter
 \else
 \def\mepS#1#2#3#4{}\def\mepM#1#2{}\def\mepMb#1#2{}\def\mepE{}\def\mepEb{}\def\mepA#1{#1}
 \def\mepH#1#2{}\def\mepHs{}\def\mepV#1{}\def\mepLbl#1{}\def\mepLfix{}\def\mepDoc#1#2{}
+\ifdefined\tcbset\tcbset{meptagged/.style={}}\fi
 \fi
 \makeatother
 )tex";
@@ -1203,6 +1206,69 @@ std::string LatexTaggingDocument(const std::string &lang, const std::string &tit
             "\\special{pdf:put @catalog << /Metadata @mepxmp >>}";
     return "\\mepDoc{" + catalog + "}{" + info + "}\n";
 }
+
+// Characters pdfLaTeX has no glyph for. XeTeX (tectonic) sets any
+// character its font has; pdfLaTeX, mep's own TeX among them, stops with
+// "Unicode character ... not set up for use with LaTeX" on one its 8-bit
+// fonts lack -- a check mark or a bullet in a note fails the export. Under
+// pdfTeX, then: common symbols, Greek and sub/superscript digits get the
+// nearest LaTeX glyph (where LaTeX defines nothing for them already), and
+// any other character a visible stand-in and a warning instead of an
+// error.
+const char *kLatexUnicodeFallback = R"tex(\makeatletter
+\ifdefined\pdftexversion\ifdefined\DeclareUnicodeCharacter
+\def\mep@uc#1#2#3{\ifcsname u8:\detokenize{#1}\endcsname\else\DeclareUnicodeCharacter{#2}{#3}\fi}
+\mep@uc{✓}{2713}{\ensuremath{\checkmark}}\mep@uc{✔}{2714}{\ensuremath{\checkmark}}
+\mep@uc{✗}{2717}{\ensuremath{\times}}\mep@uc{✘}{2718}{\ensuremath{\times}}
+\mep@uc{●}{25CF}{\ensuremath{\bullet}}\mep@uc{○}{25CB}{\ensuremath{\circ}}
+\mep@uc{■}{25A0}{\ensuremath{\blacksquare}}\mep@uc{□}{25A1}{\ensuremath{\square}}
+\mep@uc{∎}{220E}{\ensuremath{\blacksquare}}\mep@uc{★}{2605}{\ensuremath{\bigstar}}
+\mep@uc{→}{2192}{\ensuremath{\rightarrow}}\mep@uc{←}{2190}{\ensuremath{\leftarrow}}
+\mep@uc{↑}{2191}{\ensuremath{\uparrow}}\mep@uc{↓}{2193}{\ensuremath{\downarrow}}
+\mep@uc{↔}{2194}{\ensuremath{\leftrightarrow}}\mep@uc{⇒}{21D2}{\ensuremath{\Rightarrow}}
+\mep@uc{⇐}{21D0}{\ensuremath{\Leftarrow}}\mep@uc{⇔}{21D4}{\ensuremath{\Leftrightarrow}}
+\mep@uc{≤}{2264}{\ensuremath{\le}}\mep@uc{≥}{2265}{\ensuremath{\ge}}
+\mep@uc{≠}{2260}{\ensuremath{\ne}}\mep@uc{≈}{2248}{\ensuremath{\approx}}
+\mep@uc{≡}{2261}{\ensuremath{\equiv}}\mep@uc{∞}{221E}{\ensuremath{\infty}}
+\mep@uc{∑}{2211}{\ensuremath{\sum}}\mep@uc{∏}{220F}{\ensuremath{\prod}}
+\mep@uc{√}{221A}{\ensuremath{\surd}}\mep@uc{∫}{222B}{\ensuremath{\int}}
+\mep@uc{∂}{2202}{\ensuremath{\partial}}\mep@uc{∇}{2207}{\ensuremath{\nabla}}
+\mep@uc{∈}{2208}{\ensuremath{\in}}\mep@uc{∉}{2209}{\ensuremath{\notin}}
+\mep@uc{⊂}{2282}{\ensuremath{\subset}}\mep@uc{⊆}{2286}{\ensuremath{\subseteq}}
+\mep@uc{∪}{222A}{\ensuremath{\cup}}\mep@uc{∩}{2229}{\ensuremath{\cap}}
+\mep@uc{∀}{2200}{\ensuremath{\forall}}\mep@uc{∃}{2203}{\ensuremath{\exists}}
+\mep@uc{∧}{2227}{\ensuremath{\wedge}}\mep@uc{∨}{2228}{\ensuremath{\vee}}
+\mep@uc{⊕}{2295}{\ensuremath{\oplus}}\mep@uc{⊗}{2297}{\ensuremath{\otimes}}
+\mep@uc{−}{2212}{\ensuremath{-}}\mep@uc{⋅}{22C5}{\ensuremath{\cdot}}
+\mep@uc{∘}{2218}{\ensuremath{\circ}}\mep@uc{∅}{2205}{\ensuremath{\emptyset}}
+\mep@uc{α}{03B1}{\ensuremath{\alpha}}\mep@uc{β}{03B2}{\ensuremath{\beta}}
+\mep@uc{γ}{03B3}{\ensuremath{\gamma}}\mep@uc{δ}{03B4}{\ensuremath{\delta}}
+\mep@uc{ε}{03B5}{\ensuremath{\varepsilon}}\mep@uc{ζ}{03B6}{\ensuremath{\zeta}}
+\mep@uc{η}{03B7}{\ensuremath{\eta}}\mep@uc{θ}{03B8}{\ensuremath{\theta}}
+\mep@uc{ι}{03B9}{\ensuremath{\iota}}\mep@uc{κ}{03BA}{\ensuremath{\kappa}}
+\mep@uc{λ}{03BB}{\ensuremath{\lambda}}\mep@uc{μ}{03BC}{\ensuremath{\mu}}
+\mep@uc{ν}{03BD}{\ensuremath{\nu}}\mep@uc{ξ}{03BE}{\ensuremath{\xi}}
+\mep@uc{π}{03C0}{\ensuremath{\pi}}\mep@uc{ρ}{03C1}{\ensuremath{\rho}}
+\mep@uc{σ}{03C3}{\ensuremath{\sigma}}\mep@uc{τ}{03C4}{\ensuremath{\tau}}
+\mep@uc{υ}{03C5}{\ensuremath{\upsilon}}\mep@uc{φ}{03C6}{\ensuremath{\varphi}}
+\mep@uc{χ}{03C7}{\ensuremath{\chi}}\mep@uc{ψ}{03C8}{\ensuremath{\psi}}
+\mep@uc{ω}{03C9}{\ensuremath{\omega}}\mep@uc{Γ}{0393}{\ensuremath{\Gamma}}
+\mep@uc{Δ}{0394}{\ensuremath{\Delta}}\mep@uc{Θ}{0398}{\ensuremath{\Theta}}
+\mep@uc{Λ}{039B}{\ensuremath{\Lambda}}\mep@uc{Ξ}{039E}{\ensuremath{\Xi}}
+\mep@uc{Π}{03A0}{\ensuremath{\Pi}}\mep@uc{Σ}{03A3}{\ensuremath{\Sigma}}
+\mep@uc{Φ}{03A6}{\ensuremath{\Phi}}\mep@uc{Ψ}{03A8}{\ensuremath{\Psi}}
+\mep@uc{Ω}{03A9}{\ensuremath{\Omega}}
+\mep@uc{₀}{2080}{\textsubscript{0}}\mep@uc{₁}{2081}{\textsubscript{1}}\mep@uc{₂}{2082}{\textsubscript{2}}
+\mep@uc{₃}{2083}{\textsubscript{3}}\mep@uc{₄}{2084}{\textsubscript{4}}\mep@uc{₅}{2085}{\textsubscript{5}}
+\mep@uc{₆}{2086}{\textsubscript{6}}\mep@uc{₇}{2087}{\textsubscript{7}}\mep@uc{₈}{2088}{\textsubscript{8}}
+\mep@uc{₉}{2089}{\textsubscript{9}}\mep@uc{⁰}{2070}{\textsuperscript{0}}\mep@uc{⁴}{2074}{\textsuperscript{4}}
+\mep@uc{⁵}{2075}{\textsuperscript{5}}\mep@uc{⁶}{2076}{\textsuperscript{6}}\mep@uc{⁷}{2077}{\textsuperscript{7}}
+\mep@uc{⁸}{2078}{\textsuperscript{8}}\mep@uc{⁹}{2079}{\textsuperscript{9}}\mep@uc{ⁿ}{207F}{\textsuperscript{n}}
+\def\UTFviii@undefined@err#1{\@latex@warning{Unicode character \expandafter\UTFviii@splitcsname\string#1\relax
+  \MessageBreak has no glyph in pdfLaTeX: shown as a box}\fbox{\tiny?}}
+\fi\fi
+\makeatother
+)tex";
 
 // The packages and definitions WalkLatexNode's output needs. Beamer
 // brings hyperref itself and sizes its own pages; longtable is article-only.
@@ -1300,6 +1366,7 @@ void LatexPreamble(std::ostringstream &out, bool beamer) {
             << "\\definecolor{mepbox" << k.name << "tint}{HTML}{" << hex(k.tint) << "}\n";
     // (On a slide, room is short: smaller text and tighter spacing.)
     out << kLatexTagging;
+    out << kLatexUnicodeFallback;
     out << "\\newtcolorbox{mepbox}[1]{enhanced, breakable, meptagged, frame hidden, boxrule=0pt, arc=2pt, colback=#1tint, "
            "borderline west={3pt}{0pt}{#1}, "
         << (beamer ? "fontupper=\\small, left=6pt, right=6pt, top=2pt, bottom=3pt, before skip=4pt, after skip=4pt}\n"

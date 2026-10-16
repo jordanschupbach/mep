@@ -1299,7 +1299,7 @@ file(GLOB MEP_TEX_GEN_SOURCES CONFIGURE_DEPENDS src/tex/gen/*.cpp)
 add_library(mep_tex_gen STATIC ${MEP_TEX_GEN_SOURCES})
 target_include_directories(mep_tex_gen PUBLIC src PRIVATE src/tex/gen)
 add_library(mep_tex_engine STATIC src/tex/tex_runtime.cpp src/tex/tex_system.cpp src/tex/tex_resolver.cpp
-    src/tex/tex_etex.cpp src/tex/tex_pdf.cpp src/tex/tex_pdf_out.cpp)
+    src/tex/tex_etex.cpp src/tex/tex_microtype.cpp src/tex/tex_pdf.cpp src/tex/tex_pdf_out.cpp)
 target_include_directories(mep_tex_engine PUBLIC src)
 target_compile_options(mep_tex_engine PRIVATE ${MEP_STRICT_FLAGS})
 target_link_libraries(mep_tex_engine PUBLIC mep_tex_gen)

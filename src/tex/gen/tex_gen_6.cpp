@@ -13,6 +13,36 @@
 
 namespace meptex {
 
+// §1201
+void Engine::resume_after_display() {
+    if (cur_group != (15)) {
+        confusion(1303 /*display*/);
+    }
+    unsave();
+    cur_list.pg_field = (cur_list.pg_field + 3);
+    push_nest();
+    cur_list.mode_field = ((((1) + (100)) + 1));
+    cur_list.aux_field.hh.lh = 1000;
+    if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (50))].int_ <= 0) {
+        cur_lang = 0;
+    } else {
+        if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (50))].int_ > 255) {
+            cur_lang = 0;
+        } else {
+            cur_lang = eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (50))].int_;
+        }
+    }
+    cur_list.aux_field.hh.rh = cur_lang;
+    cur_list.pg_field = (((((norm_min(eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (51))].int_) * 64) + norm_min(eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (52))].int_))) * 65536) + cur_lang);
+    get_x_token();
+    if (cur_cmd != (10)) {
+        back_input();
+    }
+    if (nest_ptr == 1) {
+        build_page();
+    }
+}
+
 // §1216
 void Engine::get_r_token() {
 L20:;
@@ -23,13 +53,13 @@ L20:;
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1300 /*Missing control sequence inserted*/);
+        print(1304 /*Missing control sequence inserted*/);
         help_ptr = 5;
-        help_line[4] = 1301 /*Please don't say `\def cs{...}', say `\def\cs{...}'.*/;
-        help_line[3] = 1302 /*I've inserted an inaccessible control sequence so that your*/;
-        help_line[2] = 1303 /*definition will be completed without mixing me up too badly.*/;
-        help_line[1] = 1304 /*You can recover graciously from this error, if you're*/;
-        help_line[0] = 1305 /*careful; see exercise 27.2 in The TeXbook.*/;
+        help_line[4] = 1305 /*Please don't say `\def cs{...}', say `\def\cs{...}'.*/;
+        help_line[3] = 1306 /*I've inserted an inaccessible control sequence so that your*/;
+        help_line[2] = 1307 /*definition will be completed without mixing me up too badly.*/;
+        help_line[1] = 1308 /*You can recover graciously from this error, if you're*/;
+        help_line[0] = 1309 /*careful; see exercise 27.2 in The TeXbook.*/;
         if (cur_cs == 0) {
             back_input();
         }
@@ -67,12 +97,12 @@ void Engine::do_register_command(int32_t a) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(920 /*You can't use `*/);
+            print(924 /*You can't use `*/);
             print_cmd_chr(cur_cmd, cur_chr);
-            print(970 /*' after */);
+            print(974 /*' after */);
             print_cmd_chr(q, 0);
             help_ptr = 1;
-            help_line[0] = 1306 /*I'm forgetting what you said and not changing anything.*/;
+            help_line[0] = 1310 /*I'm forgetting what you said and not changing anything.*/;
             error_();
             goto L10;
         }
@@ -99,7 +129,7 @@ L40:;
     if (q == (89)) {
         scan_optional_equals();
     } else {
-        if (scan_keyword(1307 /*by*/)) {
+        if (scan_keyword(1311 /*by*/)) {
         }
     }
     arith_error = false;
@@ -176,10 +206,10 @@ L40:;
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1308 /*Arithmetic overflow*/);
+        print(1312 /*Arithmetic overflow*/);
         help_ptr = 2;
-        help_line[1] = 1309 /*I can't carry out that multiplication or division,*/;
-        help_line[0] = 1310 /*since the result is out of range.*/;
+        help_line[1] = 1313 /*I can't carry out that multiplication or division,*/;
+        help_line[0] = 1314 /*since the result is out of range.*/;
         if (p >= (2)) {
             delete_glue_ref(cur_val);
         }
@@ -220,9 +250,9 @@ void Engine::alter_aux() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(1311 /*Bad space factor*/);
+                print(1315 /*Bad space factor*/);
                 help_ptr = 1;
-                help_line[0] = 1312 /*I allow only values in the range 1..32767 here.*/;
+                help_line[0] = 1316 /*I allow only values in the range 1..32767 here.*/;
                 int_error(cur_val);
             } else {
                 cur_list.aux_field.hh.lh = cur_val;
@@ -245,10 +275,10 @@ void Engine::alter_prev_graf() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1145 /*Bad */);
-        print_esc(647 /*prevgraf*/);
+        print(1149 /*Bad */);
+        print_esc(651 /*prevgraf*/);
         help_ptr = 1;
-        help_line[0] = 1313 /*I allow only nonnegative values here.*/;
+        help_line[0] = 1317 /*I allow only nonnegative values here.*/;
         int_error(cur_val);
     } else {
         nest[p].pg_field = cur_val;
@@ -279,12 +309,12 @@ void Engine::alter_integer() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(1314 /*Bad interaction mode (*/);
+                print(1318 /*Bad interaction mode (*/);
                 print_int(cur_val);
                 print_char(41);
                 help_ptr = 2;
-                help_line[1] = 1315 /*Modes are 0=batch, 1=nonstop, 2=scroll, and*/;
-                help_line[0] = 1316 /*3=errorstop. Proceed, and I'll ignore this case.*/;
+                help_line[1] = 1319 /*Modes are 0=batch, 1=nonstop, 2=scroll, and*/;
+                help_line[0] = 1320 /*3=errorstop. Proceed, and I'll ignore this case.*/;
                 error_();
             } else {
                 cur_chr = cur_val;
@@ -328,18 +358,18 @@ void Engine::new_font(int32_t a) {
     } else {
         if (u >= (((1) + 256))) {
             if (u == (((((1) + 256)) + 256))) {
-                t = 1317 /*FONT*/;
+                t = 1321 /*FONT*/;
             } else {
                 t = (u - (((1) + 256)));
             }
         } else {
             old_setting = selector;
             selector = (21);
-            print(1317 /*FONT*/);
+            print(1321 /*FONT*/);
             print((u - (1)));
             selector = old_setting;
             if ((pool_ptr + 1) > pool_size) {
-                overflow(837 /*pool size*/, (pool_size - init_pool_ptr));
+                overflow(841 /*pool size*/, (pool_size - init_pool_ptr));
             }
             t = make_string();
         }
@@ -352,33 +382,33 @@ void Engine::new_font(int32_t a) {
     scan_optional_equals();
     scan_file_name();
     name_in_progress = true;
-    if (scan_keyword(1318 /*at*/)) {
+    if (scan_keyword(1322 /*at*/)) {
         scan_dimen(false, false, false);
         s = cur_val;
         if (((s <= 0)) || ((s >= 134217728))) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1319 /*Improper `at' size (*/);
+            print(1323 /*Improper `at' size (*/);
             print_scaled(s);
-            print(1320 /*pt), replaced by 10pt*/);
+            print(1324 /*pt), replaced by 10pt*/);
             help_ptr = 2;
-            help_line[1] = 1321 /*I can only handle fonts at positive sizes that are*/;
-            help_line[0] = 1322 /*less than 2048pt, so I've changed what you said to 10pt.*/;
+            help_line[1] = 1325 /*I can only handle fonts at positive sizes that are*/;
+            help_line[0] = 1326 /*less than 2048pt, so I've changed what you said to 10pt.*/;
             error_();
             s = (10 * 65536);
         }
     } else {
-        if (scan_keyword(1323 /*scaled*/)) {
+        if (scan_keyword(1327 /*scaled*/)) {
             scan_int();
             s = (-cur_val);
             if (((cur_val <= 0)) || ((cur_val > 32768))) {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(852 /*Illegal magnification has been changed to 1000*/);
+                print(856 /*Illegal magnification has been changed to 1000*/);
                 help_ptr = 1;
-                help_line[0] = 853 /*The magnification ratio must be between 1 and 32768.*/;
+                help_line[0] = 857 /*The magnification ratio must be between 1 and 32768.*/;
                 int_error(cur_val);
                 s = (-1000);
             }
@@ -452,11 +482,11 @@ void Engine::prefixed_command() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1324 /*You can't use a prefix with `*/);
+            print(1328 /*You can't use a prefix with `*/);
             print_cmd_chr(cur_cmd, cur_chr);
             print_char(39);
             help_ptr = 1;
-            help_line[0] = 1325 /*I'll pretend you didn't say \long or \outer or \global.*/;
+            help_line[0] = 1329 /*I'll pretend you didn't say \long or \outer or \global.*/;
             back_error();
             goto L10;
         }
@@ -474,17 +504,17 @@ void Engine::prefixed_command() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(920 /*You can't use `*/);
-        print_esc(776 /*long*/);
-        print(1326 /*' or `*/);
-        print_esc(777 /*outer*/);
-        print(1326 /*' or `*/);
-        print_esc(778 /*protected*/);
-        print(1327 /*' with `*/);
+        print(924 /*You can't use `*/);
+        print_esc(780 /*long*/);
+        print(1330 /*' or `*/);
+        print_esc(781 /*outer*/);
+        print(1330 /*' or `*/);
+        print_esc(782 /*protected*/);
+        print(1331 /*' with `*/);
         print_cmd_chr(cur_cmd, cur_chr);
         print_char(39);
         help_ptr = 1;
-        help_line[0] = 1328 /*I'll pretend you didn't say \long or \outer or \protected here.*/;
+        help_line[0] = 1332 /*I'll pretend you didn't say \long or \outer or \protected here.*/;
         error_();
     }
     if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (43))].int_ != 0) {
@@ -632,14 +662,14 @@ void Engine::prefixed_command() {
         j = cur_chr;
         scan_int();
         n = cur_val;
-        if (!scan_keyword(1073 /*to*/)) {
+        if (!scan_keyword(1077 /*to*/)) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1223 /*Missing `to' inserted*/);
+            print(1227 /*Missing `to' inserted*/);
             help_ptr = 2;
-            help_line[1] = 1329 /*You should have said `\read<number> to \cs'.*/;
-            help_line[0] = 1330 /*I'm going to look for the \cs now.*/;
+            help_line[1] = 1333 /*You should have said `\read<number> to \cs'.*/;
+            help_line[0] = 1334 /*I'm going to look for the \cs now.*/;
             error_();
         }
         get_r_token();
@@ -780,16 +810,16 @@ void Engine::prefixed_command() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1331 /*Invalid code (*/);
+            print(1335 /*Invalid code (*/);
             print_int(cur_val);
             if (p < ((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768)))) {
-                print(1332 /*), should be in the range 0..*/);
+                print(1336 /*), should be in the range 0..*/);
             } else {
-                print(1333 /*), should be at most */);
+                print(1337 /*), should be at most */);
             }
             print_int(n);
             help_ptr = 1;
-            help_line[0] = 1334 /*I'm going to use 0 instead of that illegal code value.*/;
+            help_line[0] = 1338 /*I'm going to use 0 instead of that illegal code value.*/;
             error_();
             cur_val = 0;
         }
@@ -844,11 +874,11 @@ void Engine::prefixed_command() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(965 /*Improper */);
-            print_esc(646 /*setbox*/);
+            print(969 /*Improper */);
+            print_esc(650 /*setbox*/);
             help_ptr = 2;
-            help_line[1] = 1335 /*Sorry, \setbox is not allowed after \halign in a display,*/;
-            help_line[0] = 1336 /*or between \accent and an accented character.*/;
+            help_line[1] = 1339 /*Sorry, \setbox is not allowed after \halign in a display,*/;
+            help_line[0] = 1340 /*or between \accent and an accented character.*/;
             error_();
         }
     } break;
@@ -922,7 +952,7 @@ void Engine::prefixed_command() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1337 /*Patterns can be loaded only by INITEX*/);
+            print(1341 /*Patterns can be loaded only by INITEX*/);
             help_ptr = 0;
             error_();
             do {
@@ -962,13 +992,17 @@ void Engine::prefixed_command() {
         }
     } break;
     case 88: {
-        new_font(a);
+        if (cur_chr == 0) {
+            new_font(a);
+        } else {
+            new_font_copy((cur_chr == 1), ((a >= 4)));
+        }
     } break;
     case 100: {
         new_interaction();
     } break;
     default: {
-        confusion(1338 /*prefix*/);
+        confusion(1342 /*prefix*/);
     } break;
     }
 L30:;
@@ -1030,7 +1064,7 @@ void Engine::issue_message() {
     selector = old_setting;
     flush_list(def_ref);
     if ((pool_ptr + 1) > pool_size) {
-        overflow(837 /*pool size*/, (pool_size - init_pool_ptr));
+        overflow(841 /*pool size*/, (pool_size - init_pool_ptr));
     }
     s = make_string();
     if (c == 0) {
@@ -1054,16 +1088,16 @@ void Engine::issue_message() {
         } else {
             if (long_help_seen) {
                 help_ptr = 1;
-                help_line[0] = 1339 /*(That was another \errmessage.)*/;
+                help_line[0] = 1343 /*(That was another \errmessage.)*/;
             } else {
                 if (interaction < (3)) {
                     long_help_seen = true;
                 }
                 help_ptr = 4;
-                help_line[3] = 1340 /*This error message was generated by an \errmessage*/;
-                help_line[2] = 1341 /*command, so I can't give any explicit help.*/;
-                help_line[1] = 1342 /*Pretend that you're Hercule Poirot: Examine all clues,*/;
-                help_line[0] = 1343 /*and deduce the truth by order and method.*/;
+                help_line[3] = 1344 /*This error message was generated by an \errmessage*/;
+                help_line[2] = 1345 /*command, so I can't give any explicit help.*/;
+                help_line[1] = 1346 /*Pretend that you're Hercule Poirot: Examine all clues,*/;
+                help_line[0] = 1347 /*and deduce the truth by order and method.*/;
             }
         }
         error_();
@@ -1120,7 +1154,7 @@ void Engine::show_whatever() {
         scan_general_text();
         if (interaction == (3)) {
         }
-        print_nl(1344 /*> */);
+        print_nl(1348 /*> */);
         token_show((mem_top - 3));
         flush_list(mem[(mem_top - 3)].hh.rh);
         goto L50;
@@ -1128,11 +1162,11 @@ void Engine::show_whatever() {
     case 1: {
         scan_eight_bit_int();
         begin_diagnostic();
-        print_nl(1345 /*> \box*/);
+        print_nl(1349 /*> \box*/);
         print_int(cur_val);
         print_char(61);
         if (eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + cur_val)].hh.rh == 0) {
-            print(834 /*void*/);
+            print(838 /*void*/);
         } else {
             show_box(eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + cur_val)].hh.rh);
         }
@@ -1141,7 +1175,7 @@ void Engine::show_whatever() {
         get_token();
         if (interaction == (3)) {
         }
-        print_nl(1344 /*> */);
+        print_nl(1348 /*> */);
         if (cur_cs != 0) {
             sprint_cs(cur_cs);
             print_char(61);
@@ -1153,7 +1187,7 @@ void Engine::show_whatever() {
         p = the_toks();
         if (interaction == (3)) {
         }
-        print_nl(1344 /*> */);
+        print_nl(1348 /*> */);
         token_show((mem_top - 3));
         flush_list(mem[(mem_top - 3)].hh.rh);
         goto L50;
@@ -1163,11 +1197,11 @@ void Engine::show_whatever() {
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(1346 /*OK*/);
+    print(1350 /*OK*/);
     if (selector == (19)) {
         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (29))].int_ <= 0) {
             selector = (17);
-            print(1347 /* (see the transcript file)*/);
+            print(1351 /* (see the transcript file)*/);
             selector = (19);
         }
     }
@@ -1178,16 +1212,16 @@ L50:;
     } else {
         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (29))].int_ > 0) {
             help_ptr = 3;
-            help_line[2] = 1348 /*This isn't an error message; I'm just \showing something.*/;
-            help_line[1] = 1349 /*Type `I\show...' to show more (e.g., \show\cs,*/;
-            help_line[0] = 1350 /*\showthe\count10, \showbox255, \showlists).*/;
+            help_line[2] = 1352 /*This isn't an error message; I'm just \showing something.*/;
+            help_line[1] = 1353 /*Type `I\show...' to show more (e.g., \show\cs,*/;
+            help_line[0] = 1354 /*\showthe\count10, \showbox255, \showlists).*/;
         } else {
             help_ptr = 5;
-            help_line[4] = 1348 /*This isn't an error message; I'm just \showing something.*/;
-            help_line[3] = 1349 /*Type `I\show...' to show more (e.g., \show\cs,*/;
-            help_line[2] = 1350 /*\showthe\count10, \showbox255, \showlists).*/;
-            help_line[1] = 1351 /*And type `I\tracingonline=1\show...' to show boxes and*/;
-            help_line[0] = 1352 /*lists on your terminal as well as in the transcript file.*/;
+            help_line[4] = 1352 /*This isn't an error message; I'm just \showing something.*/;
+            help_line[3] = 1353 /*Type `I\show...' to show more (e.g., \show\cs,*/;
+            help_line[2] = 1354 /*\showthe\count10, \showbox255, \showlists).*/;
+            help_line[1] = 1355 /*And type `I\tracingonline=1\show...' to show boxes and*/;
+            help_line[0] = 1356 /*lists on your terminal as well as in the transcript file.*/;
         }
     }
     error_();
@@ -1206,9 +1240,9 @@ void Engine::store_fmt_file() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1353 /*You can't dump inside a group*/);
+        print(1357 /*You can't dump inside a group*/);
         help_ptr = 1;
-        help_line[0] = 1354 /*`{...\dump}' is a no-no.*/;
+        help_line[0] = 1358 /*`{...\dump}' is a no-no.*/;
         if (interaction == (3)) {
             interaction = (2);
         }
@@ -1219,7 +1253,7 @@ void Engine::store_fmt_file() {
         jump_out();
     }
     selector = (21);
-    print(1355 /* (preloaded format=*/);
+    print(1359 /* (preloaded format=*/);
     print(job_name);
     print_char(32);
     print_int(eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (23))].int_);
@@ -1234,14 +1268,14 @@ void Engine::store_fmt_file() {
         selector = (19);
     }
     if ((pool_ptr + 1) > pool_size) {
-        overflow(837 /*pool size*/, (pool_size - init_pool_ptr));
+        overflow(841 /*pool size*/, (pool_size - init_pool_ptr));
     }
     format_ident = make_string();
-    pack_job_name((1356 /*.fmt*/));
+    pack_job_name((1360 /*.fmt*/));
     while (!w_open_out(fmt_file)) {
-        prompt_file_name(1357 /*format file name*/, (1356 /*.fmt*/));
+        prompt_file_name(1361 /*format file name*/, (1360 /*.fmt*/));
     }
-    print_nl(1358 /*Beginning to dump on file */);
+    print_nl(1362 /*Beginning to dump on file */);
     slow_print(w_make_name_string(fmt_file));
     str_ptr = (str_ptr - 1);
     pool_ptr = str_start[str_ptr];
@@ -1289,7 +1323,7 @@ void Engine::store_fmt_file() {
     fmt_file.put();
     print_ln();
     print_int(str_ptr);
-    print(1359 /* strings of total length */);
+    print(1363 /* strings of total length */);
     print_int(pool_ptr);
     sort_avail();
     var_used = 0;
@@ -1346,7 +1380,7 @@ void Engine::store_fmt_file() {
     fmt_file.put();
     print_ln();
     print_int(x);
-    print(1360 /* memory locations dumped; current usage is */);
+    print(1364 /* memory locations dumped; current usage is */);
     print_int(var_used);
     print_char(38);
     print_int(dyn_used);
@@ -1443,7 +1477,7 @@ void Engine::store_fmt_file() {
     fmt_file.put();
     print_ln();
     print_int(cs_count);
-    print(1361 /* multiletter control sequences*/);
+    print(1365 /* multiletter control sequences*/);
     fmt_file.buf().int_ = fmem_ptr;
     fmt_file.put();
     {
@@ -1504,22 +1538,22 @@ void Engine::store_fmt_file() {
             fmt_file.put();
             fmt_file.buf().int_ = font_false_bchar[k];
             fmt_file.put();
-            print_nl(1362 /*\font*/);
+            print_nl(1366 /*\font*/);
             print_esc(hash[((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) - (0))) + k)].rh);
             print_char(61);
             print_file_name(font_name[k], font_area[k], 258 /**/);
             if (font_size[k] != font_dsize[k]) {
-                print(813 /* at */);
+                print(817 /* at */);
                 print_scaled(font_size[k]);
-                print(814 /*pt*/);
+                print(818 /*pt*/);
             }
         }
     }
     print_ln();
     print_int((fmem_ptr - 7));
-    print(1363 /* words of font info for */);
+    print(1367 /* words of font info for */);
     print_int((font_ptr - (0)));
-    print(1364 /* preloaded font*/);
+    print(1368 /* preloaded font*/);
     if (font_ptr != ((0) + 1)) {
         print_char(115);
     }
@@ -1540,7 +1574,7 @@ void Engine::store_fmt_file() {
     }
     print_ln();
     print_int(hyph_count);
-    print(1365 /* hyphenation exception*/);
+    print(1369 /* hyphenation exception*/);
     if (hyph_count != 1) {
         print_char(115);
     }
@@ -1569,23 +1603,23 @@ void Engine::store_fmt_file() {
             fmt_file.put();
         }
     }
-    print_nl(1366 /*Hyphenation trie of length */);
+    print_nl(1370 /*Hyphenation trie of length */);
     print_int(trie_max);
-    print(1367 /* has */);
+    print(1371 /* has */);
     print_int(trie_op_ptr);
-    print(1368 /* op*/);
+    print(1372 /* op*/);
     if (trie_op_ptr != 1) {
         print_char(115);
     }
-    print(1369 /* out of */);
+    print(1373 /* out of */);
     print_int(trie_op_size);
     {
         const int32_t for_end_12 = 0;
         for (k = 255; k >= for_end_12; --k) {
             if (trie_used[k] > (0)) {
-                print_nl(1039 /*  */);
+                print_nl(1043 /*  */);
                 print_int((trie_used[k] - (0)));
-                print(1370 /* for language */);
+                print(1374 /* for language */);
                 print_int(k);
                 fmt_file.buf().int_ = k;
                 fmt_file.put();
@@ -1803,10 +1837,10 @@ void Engine::handle_right_brace() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1371 /*Too many }'s*/);
+        print(1375 /*Too many }'s*/);
         help_ptr = 2;
-        help_line[1] = 1372 /*You've closed more groups than you opened.*/;
-        help_line[0] = 1373 /*Such booboos are generally harmless, so keep going.*/;
+        help_line[1] = 1376 /*You've closed more groups than you opened.*/;
+        help_line[0] = 1377 /*Such booboos are generally harmless, so keep going.*/;
         error_();
     } break;
     case 14: case 15: case 16: {
@@ -1865,10 +1899,10 @@ void Engine::handle_right_brace() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1374 /*Unbalanced output routine*/);
+            print(1378 /*Unbalanced output routine*/);
             help_ptr = 2;
-            help_line[1] = 1375 /*Your sneaky output routine has problematic {'s and/or }'s.*/;
-            help_line[0] = 1059 /*I can't handle that very well; good luck.*/;
+            help_line[1] = 1379 /*Your sneaky output routine has problematic {'s and/or }'s.*/;
+            help_line[0] = 1063 /*I can't handle that very well; good luck.*/;
             error_();
             do {
                 get_token();
@@ -1885,13 +1919,13 @@ void Engine::handle_right_brace() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1376 /*Output routine didn't use all of */);
-            print_esc(745 /*box*/);
+            print(1380 /*Output routine didn't use all of */);
+            print_esc(749 /*box*/);
             print_int(255);
             help_ptr = 3;
-            help_line[2] = 1377 /*Your \output commands should empty \box255,*/;
-            help_line[1] = 1378 /*e.g., by saying `\shipout\box255'.*/;
-            help_line[0] = 1379 /*Proceed; I'll discard its present contents.*/;
+            help_line[2] = 1381 /*Your \output commands should empty \box255,*/;
+            help_line[1] = 1382 /*e.g., by saying `\shipout\box255'.*/;
+            help_line[0] = 1383 /*Proceed; I'll discard its present contents.*/;
             box_error(255);
         }
         if (cur_list.tail_field != cur_list.head_field) {
@@ -1919,11 +1953,11 @@ void Engine::handle_right_brace() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(922 /*Missing */);
-        print_esc(720 /*cr*/);
-        print(923 /* inserted*/);
+        print(926 /*Missing */);
+        print_esc(724 /*cr*/);
+        print(927 /* inserted*/);
         help_ptr = 1;
-        help_line[0] = 1380 /*I'm guessing that you meant to end an alignment here.*/;
+        help_line[0] = 1384 /*I'm guessing that you meant to end an alignment here.*/;
         ins_error();
     } break;
     case 7: {
@@ -1980,7 +2014,7 @@ void Engine::handle_right_brace() {
         }
     } break;
     default: {
-        confusion(1381 /*rightbrace*/);
+        confusion(1385 /*rightbrace*/);
     } break;
     }
 }
@@ -2176,10 +2210,10 @@ L21:;
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(965 /*Improper */);
+                print(969 /*Improper */);
                 print_cmd_chr(cur_cmd, cur_chr);
                 help_ptr = 1;
-                help_line[0] = 1382 /*Sorry, this optional e-TeX feature has been disabled.*/;
+                help_line[0] = 1386 /*Sorry, this optional e-TeX feature has been disabled.*/;
                 error_();
             }
         } else {
@@ -3303,7 +3337,7 @@ void Engine::close_files_and_terminate() {
             cur_s = (cur_s - 1);
         }
         if (total_pages == 0) {
-            print_nl(1383 /*No pages of output.*/);
+            print_nl(1387 /*No pages of output.*/);
         } else {
             dvi_buf[dvi_ptr] = (248);
             dvi_ptr = (dvi_ptr + 1);
@@ -3370,17 +3404,17 @@ void Engine::close_files_and_terminate() {
             if (dvi_ptr > 0) {
                 write_dvi(0, (dvi_ptr - 1));
             }
-            print_nl(1384 /*Output written on */);
+            print_nl(1388 /*Output written on */);
             slow_print(output_file_name);
             print(307 /* (*/);
             print_int(total_pages);
-            print(1385 /* page*/);
+            print(1389 /* page*/);
             if (total_pages != 1) {
                 print_char(115);
             }
-            print(1386 /*, */);
+            print(1390 /*, */);
             print_int((dvi_offset + dvi_ptr));
-            print(1387 /* bytes).*/);
+            print(1391 /* bytes).*/);
             b_close(dvi_file);
         }
     }
@@ -3389,7 +3423,7 @@ void Engine::close_files_and_terminate() {
         a_close(log_file);
         selector = (selector - 2);
         if (selector == (17)) {
-            print_nl(1388 /*Transcript written on */);
+            print_nl(1392 /*Transcript written on */);
             slow_print(log_name);
             print_char(46);
         }

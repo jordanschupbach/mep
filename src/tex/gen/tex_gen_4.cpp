@@ -52,13 +52,13 @@ int32_t Engine::finite_shrink(int32_t p) {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1122 /*Infinite glue shrinkage found in a paragraph*/);
+        print(1126 /*Infinite glue shrinkage found in a paragraph*/);
         help_ptr = 5;
-        help_line[4] = 1123 /*The paragraph just ended includes some glue that has*/;
-        help_line[3] = 1124 /*infinite shrinkability, e.g., `\hskip 0pt minus 1fil'.*/;
-        help_line[2] = 1125 /*Such glue doesn't belong there---it allows a paragraph*/;
-        help_line[1] = 1126 /*of any length to fit on one line. But it's safe to proceed,*/;
-        help_line[0] = 1127 /*since the offensive shrinkability has been made finite.*/;
+        help_line[4] = 1127 /*The paragraph just ended includes some glue that has*/;
+        help_line[3] = 1128 /*infinite shrinkability, e.g., `\hskip 0pt minus 1fil'.*/;
+        help_line[2] = 1129 /*Such glue doesn't belong there---it allows a paragraph*/;
+        help_line[1] = 1130 /*of any length to fit on one line. But it's safe to proceed,*/;
+        help_line[0] = 1131 /*since the offensive shrinkability has been made finite.*/;
         error_();
         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (32))].int_ > 0) {
             begin_diagnostic();
@@ -108,6 +108,8 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
     cur_active_width[4] = active_width[4];
     cur_active_width[5] = active_width[5];
     cur_active_width[6] = active_width[6];
+    cur_active_width[7] = active_width[7];
+    cur_active_width[8] = active_width[8];
     while (true) {
     L22:;
         r = mem[prev_r].hh.rh;
@@ -118,6 +120,8 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
             cur_active_width[4] = (cur_active_width[4] + mem[(r + 4)].int_);
             cur_active_width[5] = (cur_active_width[5] + mem[(r + 5)].int_);
             cur_active_width[6] = (cur_active_width[6] + mem[(r + 6)].int_);
+            cur_active_width[7] = (cur_active_width[7] + mem[(r + 7)].int_);
+            cur_active_width[8] = (cur_active_width[8] + mem[(r + 8)].int_);
             prev_prev_r = prev_r;
             prev_r = r;
             goto L22;
@@ -133,6 +137,8 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                     break_width[4] = background[4];
                     break_width[5] = background[5];
                     break_width[6] = background[6];
+                    break_width[7] = background[7];
+                    break_width[8] = background[8];
                     s = cur_p;
                     if (break_type > (0)) {
                         if (cur_p != 0) {
@@ -145,17 +151,25 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                                 if ((v >= hi_mem_min)) {
                                     f = mem[v].hh.b0;
                                     break_width[1] = (break_width[1] - font_info[(width_base[f] + font_info[(char_base[f] + mem[v].hh.b1)].qqqq.b0)].int_);
+                                    if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                                        break_width[7] = (break_width[7] - char_stretch(f, mem[v].hh.b1));
+                                        break_width[8] = (break_width[8] - char_shrink(f, mem[v].hh.b1));
+                                    }
                                 } else {
                                     switch (mem[v].hh.b0) {
                                     case 6: {
                                         f = mem[(v + 1)].hh.b0;
                                         break_width[1] = (break_width[1] - font_info[(width_base[f] + font_info[(char_base[f] + mem[(v + 1)].hh.b1)].qqqq.b0)].int_);
+                                        if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                                            break_width[7] = (break_width[7] - char_stretch(f, mem[(v + 1)].hh.b1));
+                                            break_width[8] = (break_width[8] - char_shrink(f, mem[(v + 1)].hh.b1));
+                                        }
                                     } break;
                                     case 0: case 1: case 2: case 11: {
                                         break_width[1] = (break_width[1] - mem[(v + (1))].int_);
                                     } break;
                                     default: {
-                                        confusion(1128 /*disc1*/);
+                                        confusion(1132 /*disc1*/);
                                     } break;
                                     }
                                 }
@@ -164,23 +178,33 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                                 if ((s >= hi_mem_min)) {
                                     f = mem[s].hh.b0;
                                     break_width[1] = (break_width[1] + font_info[(width_base[f] + font_info[(char_base[f] + mem[s].hh.b1)].qqqq.b0)].int_);
+                                    if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                                        break_width[7] = (break_width[7] + char_stretch(f, mem[s].hh.b1));
+                                        break_width[8] = (break_width[8] + char_shrink(f, mem[s].hh.b1));
+                                    }
                                 } else {
                                     switch (mem[s].hh.b0) {
                                     case 6: {
                                         f = mem[(s + 1)].hh.b0;
                                         break_width[1] = (break_width[1] + font_info[(width_base[f] + font_info[(char_base[f] + mem[(s + 1)].hh.b1)].qqqq.b0)].int_);
+                                        if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                                            break_width[7] = (break_width[7] + char_stretch(f, mem[(s + 1)].hh.b1));
+                                            break_width[8] = (break_width[8] + char_shrink(f, mem[(s + 1)].hh.b1));
+                                        }
                                     } break;
                                     case 0: case 1: case 2: case 11: {
                                         break_width[1] = (break_width[1] + mem[(s + (1))].int_);
                                     } break;
                                     default: {
-                                        confusion(1129 /*disc2*/);
+                                        confusion(1133 /*disc2*/);
                                     } break;
                                     }
                                 }
                                 s = mem[s].hh.rh;
                             }
                             break_width[1] = (break_width[1] + disc_width);
+                            break_width[7] = (break_width[7] + disc_stretch);
+                            break_width[8] = (break_width[8] + disc_shrink);
                             if (mem[(cur_p + 1)].hh.rh == 0) {
                                 s = mem[v].hh.rh;
                             }
@@ -224,6 +248,8 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                     mem[(prev_r + 4)].int_ = ((mem[(prev_r + 4)].int_ - cur_active_width[4]) + break_width[4]);
                     mem[(prev_r + 5)].int_ = ((mem[(prev_r + 5)].int_ - cur_active_width[5]) + break_width[5]);
                     mem[(prev_r + 6)].int_ = ((mem[(prev_r + 6)].int_ - cur_active_width[6]) + break_width[6]);
+                    mem[(prev_r + 7)].int_ = ((mem[(prev_r + 7)].int_ - cur_active_width[7]) + break_width[7]);
+                    mem[(prev_r + 8)].int_ = ((mem[(prev_r + 8)].int_ - cur_active_width[8]) + break_width[8]);
                 } else {
                     if (prev_r == (mem_top - 7)) {
                         active_width[1] = break_width[1];
@@ -232,8 +258,10 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                         active_width[4] = break_width[4];
                         active_width[5] = break_width[5];
                         active_width[6] = break_width[6];
+                        active_width[7] = break_width[7];
+                        active_width[8] = break_width[8];
                     } else {
-                        q = get_node((7));
+                        q = get_node((9));
                         mem[q].hh.rh = r;
                         mem[q].hh.b0 = (2);
                         mem[q].hh.b1 = 0;
@@ -243,6 +271,8 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                         mem[(q + 4)].int_ = (break_width[4] - cur_active_width[4]);
                         mem[(q + 5)].int_ = (break_width[5] - cur_active_width[5]);
                         mem[(q + 6)].int_ = (break_width[6] - cur_active_width[6]);
+                        mem[(q + 7)].int_ = (break_width[7] - cur_active_width[7]);
+                        mem[(q + 8)].int_ = (break_width[8] - cur_active_width[8]);
                         mem[prev_r].hh.rh = q;
                         prev_prev_r = prev_r;
                         prev_r = q;
@@ -274,18 +304,18 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                             mem[prev_r].hh.rh = q;
                             prev_r = q;
                             if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (32))].int_ > 0) {
-                                print_nl(1130 /*@@*/);
+                                print_nl(1134 /*@@*/);
                                 print_int(mem[passive].hh.lh);
-                                print(1131 /*: line */);
+                                print(1135 /*: line */);
                                 print_int((mem[(q + 1)].hh.lh - 1));
                                 print_char(46);
                                 print_int(fit_class);
                                 if (break_type == (1)) {
                                     print_char(45);
                                 }
-                                print(1132 /* t=*/);
+                                print(1136 /* t=*/);
                                 print_int(mem[(q + 2)].int_);
-                                print(1133 /* -> @@*/);
+                                print(1137 /* -> @@*/);
                                 if (mem[(passive + 1)].hh.lh == 0) {
                                     print_char(48);
                                 } else {
@@ -298,7 +328,7 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                 }
                 minimum_demerits = 1073741823;
                 if (r != (mem_top - 7)) {
-                    q = get_node((7));
+                    q = get_node((9));
                     mem[q].hh.rh = r;
                     mem[q].hh.b0 = (2);
                     mem[q].hh.b1 = 0;
@@ -308,6 +338,8 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                     mem[(q + 4)].int_ = (cur_active_width[4] - break_width[4]);
                     mem[(q + 5)].int_ = (cur_active_width[5] - break_width[5]);
                     mem[(q + 6)].int_ = (cur_active_width[6] - break_width[6]);
+                    mem[(q + 7)].int_ = (cur_active_width[7] - break_width[7]);
+                    mem[(q + 8)].int_ = (cur_active_width[8] - break_width[8]);
                     mem[prev_r].hh.rh = q;
                     prev_prev_r = prev_r;
                     prev_r = q;
@@ -334,6 +366,12 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
         }
         artificial_demerits = false;
         shortfall = (line_width - cur_active_width[1]);
+        if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (82))].int_ > 1) {
+            shortfall = (shortfall + line_protrusion(mem[(r + 1)].hh.rh, cur_p));
+        }
+        if (((eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1)) && ((shortfall != 0))) {
+            shortfall = expansion_shortfall(shortfall, cur_active_width[7], cur_active_width[8]);
+        }
         if (shortfall > 0) {
             if ((((cur_active_width[3] != 0)) || ((cur_active_width[4] != 0))) || ((cur_active_width[5] != 0))) {
                 b = 0;
@@ -431,39 +469,39 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
             }
             print_nl(64);
             if (cur_p == 0) {
-                print_esc(662 /*par*/);
+                print_esc(666 /*par*/);
             } else {
                 if (mem[cur_p].hh.b0 != (10)) {
                     if (mem[cur_p].hh.b0 == (12)) {
-                        print_esc(624 /*penalty*/);
+                        print_esc(626 /*penalty*/);
                     } else {
                         if (mem[cur_p].hh.b0 == (7)) {
-                            print_esc(394 /*discretionary*/);
+                            print_esc(396 /*discretionary*/);
                         } else {
                             if (mem[cur_p].hh.b0 == (11)) {
                                 print_esc(383 /*kern*/);
                             } else {
-                                print_esc(388 /*math*/);
+                                print_esc(390 /*math*/);
                             }
                         }
                     }
                 }
             }
-            print(1134 /* via @@*/);
+            print(1138 /* via @@*/);
             if (mem[(r + 1)].hh.rh == 0) {
                 print_char(48);
             } else {
                 print_int(mem[mem[(r + 1)].hh.rh].hh.lh);
             }
-            print(1135 /* b=*/);
+            print(1139 /* b=*/);
             if (b > (10000)) {
                 print_char(42);
             } else {
                 print_int(b);
             }
-            print(1136 /* p=*/);
+            print(1140 /* p=*/);
             print_int(pi);
-            print(1137 /* d=*/);
+            print(1141 /* d=*/);
             if (artificial_demerits) {
                 print_char(42);
             } else {
@@ -494,14 +532,18 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                 active_width[4] = (active_width[4] + mem[(r + 4)].int_);
                 active_width[5] = (active_width[5] + mem[(r + 5)].int_);
                 active_width[6] = (active_width[6] + mem[(r + 6)].int_);
+                active_width[7] = (active_width[7] + mem[(r + 7)].int_);
+                active_width[8] = (active_width[8] + mem[(r + 8)].int_);
                 cur_active_width[1] = active_width[1];
                 cur_active_width[2] = active_width[2];
                 cur_active_width[3] = active_width[3];
                 cur_active_width[4] = active_width[4];
                 cur_active_width[5] = active_width[5];
                 cur_active_width[6] = active_width[6];
+                cur_active_width[7] = active_width[7];
+                cur_active_width[8] = active_width[8];
                 mem[(mem_top - 7)].hh.rh = mem[r].hh.rh;
-                free_node(r, (7));
+                free_node(r, (9));
             }
         } else {
             if (mem[prev_r].hh.b0 == (2)) {
@@ -513,8 +555,10 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                     cur_active_width[4] = (cur_active_width[4] - mem[(prev_r + 4)].int_);
                     cur_active_width[5] = (cur_active_width[5] - mem[(prev_r + 5)].int_);
                     cur_active_width[6] = (cur_active_width[6] - mem[(prev_r + 6)].int_);
+                    cur_active_width[7] = (cur_active_width[7] - mem[(prev_r + 7)].int_);
+                    cur_active_width[8] = (cur_active_width[8] - mem[(prev_r + 8)].int_);
                     mem[prev_prev_r].hh.rh = (mem_top - 7);
-                    free_node(prev_r, (7));
+                    free_node(prev_r, (9));
                     prev_r = prev_prev_r;
                 } else {
                     if (mem[r].hh.b0 == (2)) {
@@ -531,7 +575,7 @@ void Engine::try_break(int32_t pi, int32_t break_type) {
                         mem[(prev_r + 5)].int_ = (mem[(prev_r + 5)].int_ + mem[(r + 5)].int_);
                         mem[(prev_r + 6)].int_ = (mem[(prev_r + 6)].int_ + mem[(r + 6)].int_);
                         mem[prev_r].hh.rh = mem[r].hh.rh;
-                        free_node(r, (7));
+                        free_node(r, (9));
                     }
                 }
             }
@@ -578,6 +622,9 @@ void Engine::post_line_break(bool d) {
         post_disc_break = false;
         if (q != 0) {
             if (mem[q].hh.b0 == (10)) {
+                if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (82))].int_ > 0) {
+                    protrude_right(q, false);
+                }
                 delete_glue_ref(mem[(q + 1)].hh.lh);
                 mem[(q + 1)].hh.lh = eqtb[(((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (8))].hh.rh;
                 mem[q].hh.b1 = ((8) + 1);
@@ -633,6 +680,13 @@ void Engine::post_line_break(bool d) {
                 q = mem[q].hh.rh;
             }
         }
+        if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (82))].int_ > 0) {
+            if (disc_break && ((((q >= hi_mem_min)) || ((mem[q].hh.b0 != (7)))))) {
+                q = protrude_right(q, true);
+            } else {
+                q = protrude_right(q, false);
+            }
+        }
         r = new_param_glue((8));
         mem[r].hh.rh = mem[q].hh.rh;
         mem[q].hh.rh = r;
@@ -642,6 +696,9 @@ void Engine::post_line_break(bool d) {
         mem[q].hh.rh = 0;
         q = mem[(mem_top - 3)].hh.rh;
         mem[(mem_top - 3)].hh.rh = r;
+        if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (82))].int_ > 0) {
+            q = protrude_left(q);
+        }
         if (eqtb[(((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (7))].hh.rh != (0)) {
             r = new_param_glue((7));
             mem[r].hh.rh = q;
@@ -660,6 +717,9 @@ void Engine::post_line_break(bool d) {
             }
         }
         adjust_tail = (mem_top - 5);
+        if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 0) {
+            expand_line(q, cur_width);
+        }
         just_box = hpack(q, cur_width, (0));
         mem[(just_box + 4)].int_ = cur_indent;
         append_to_vlist(just_box);
@@ -753,7 +813,7 @@ void Engine::post_line_break(bool d) {
         }
     } while (!(cur_p == 0));
     if (((cur_line != best_line)) || ((mem[(mem_top - 3)].hh.rh != 0))) {
-        confusion(1138 /*line breaking*/);
+        confusion(1142 /*line breaking*/);
     }
     cur_list.pg_field = (best_line - 1);
 }
@@ -1338,11 +1398,11 @@ int32_t Engine::new_trie_op(int32_t d, int32_t n, int32_t v) {
         l = trie_op_hash[h];
         if (l == 0) {
             if (trie_op_ptr == trie_op_size) {
-                overflow(1139 /*pattern memory ops*/, trie_op_size);
+                overflow(1143 /*pattern memory ops*/, trie_op_size);
             }
             u = trie_used[cur_lang];
             if (u == (65535)) {
-                overflow(1140 /*pattern memory ops per language*/, ((65535) - (0)));
+                overflow(1144 /*pattern memory ops per language*/, ((65535) - (0)));
             }
             trie_op_ptr = (trie_op_ptr + 1);
             u = (u + 1);
@@ -1425,7 +1485,7 @@ void Engine::first_fit(int32_t p) {
         h = (z - c);
         if (trie_max < (h + 256)) {
             if (trie_size <= (h + 256)) {
-                overflow(1141 /*pattern memory*/, trie_size);
+                overflow(1145 /*pattern memory*/, trie_size);
             }
             do {
                 trie_max = (trie_max + 1);
@@ -1543,9 +1603,9 @@ void Engine::new_patterns() {
                             if (interaction == (3)) {
                             }
                             print_nl(293 /*! */);
-                            print(1142 /*Nonletter*/);
+                            print(1146 /*Nonletter*/);
                             help_ptr = 1;
-                            help_line[0] = 1143 /*(See Appendix H.)*/;
+                            help_line[0] = 1147 /*(See Appendix H.)*/;
                             error_();
                         }
                     }
@@ -1597,7 +1657,7 @@ void Engine::new_patterns() {
                         }
                         if (((p == 0)) || ((c < trie_c[p]))) {
                             if (trie_ptr == trie_size) {
-                                overflow(1141 /*pattern memory*/, trie_size);
+                                overflow(1145 /*pattern memory*/, trie_size);
                             }
                             trie_ptr = (trie_ptr + 1);
                             trie_r[trie_ptr] = p;
@@ -1617,9 +1677,9 @@ void Engine::new_patterns() {
                         if (interaction == (3)) {
                         }
                         print_nl(293 /*! */);
-                        print(1144 /*Duplicate pattern*/);
+                        print(1148 /*Duplicate pattern*/);
                         help_ptr = 1;
-                        help_line[0] = 1143 /*(See Appendix H.)*/;
+                        help_line[0] = 1147 /*(See Appendix H.)*/;
                         error_();
                     }
                     trie_o[q] = v;
@@ -1635,10 +1695,10 @@ void Engine::new_patterns() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(1145 /*Bad */);
-                print_esc(799 /*patterns*/);
+                print(1149 /*Bad */);
+                print_esc(803 /*patterns*/);
                 help_ptr = 1;
-                help_line[0] = 1143 /*(See Appendix H.)*/;
+                help_line[0] = 1147 /*(See Appendix H.)*/;
                 error_();
             } break;
             }
@@ -1648,10 +1708,10 @@ void Engine::new_patterns() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1146 /*Too late for */);
-        print_esc(799 /*patterns*/);
+        print(1150 /*Too late for */);
+        print_esc(803 /*patterns*/);
         help_ptr = 1;
-        help_line[0] = 1147 /*All patterns must be given before typesetting begins.*/;
+        help_line[0] = 1151 /*All patterns must be given before typesetting begins.*/;
         error_();
         mem[(mem_top - 12)].hh.rh = scan_toks(false, false);
         flush_list(def_ref);
@@ -1797,6 +1857,8 @@ void Engine::line_break(bool d) {
     background[(2 + mem[q].hh.b0)] = mem[(q + 2)].int_;
     background[(2 + mem[r].hh.b0)] = (background[(2 + mem[r].hh.b0)] + mem[(r + 2)].int_);
     background[6] = (mem[(q + 3)].int_ + mem[(r + 3)].int_);
+    background[7] = 0;
+    background[8] = 0;
     minimum_demerits = 1073741823;
     minimal_demerits[(3)] = 1073741823;
     minimal_demerits[(2)] = 1073741823;
@@ -1843,7 +1905,7 @@ void Engine::line_break(bool d) {
     if (threshold >= 0) {
         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (32))].int_ > 0) {
             begin_diagnostic();
-            print_nl(1148 /*@firstpass*/);
+            print_nl(1152 /*@firstpass*/);
         }
         second_pass = false;
         final_pass = false;
@@ -1881,6 +1943,8 @@ void Engine::line_break(bool d) {
         active_width[4] = background[4];
         active_width[5] = background[5];
         active_width[6] = background[6];
+        active_width[7] = background[7];
+        active_width[8] = background[8];
         passive = 0;
         printed_node = (mem_top - 3);
         pass_number = 0;
@@ -1894,6 +1958,10 @@ void Engine::line_break(bool d) {
                 do {
                     f = mem[cur_p].hh.b0;
                     active_width[1] = (active_width[1] + font_info[(width_base[f] + font_info[(char_base[f] + mem[cur_p].hh.b1)].qqqq.b0)].int_);
+                    if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                        active_width[7] = (active_width[7] + char_stretch(f, mem[cur_p].hh.b1));
+                        active_width[8] = (active_width[8] + char_shrink(f, mem[cur_p].hh.b1));
+                    }
                     cur_p = mem[cur_p].hh.rh;
                 } while (!(!((cur_p >= hi_mem_min))));
             }
@@ -2079,6 +2147,9 @@ void Engine::line_break(bool d) {
                 L31:;
                 }
             } break;
+            case 40: {
+                active_width[1] = (active_width[1] + mem[(cur_p + (1))].int_);
+            } break;
             case 11: {
                 if (mem[cur_p].hh.b1 == (1)) {
                     if ((!((mem[cur_p].hh.rh >= hi_mem_min))) && auto_breaking) {
@@ -2094,10 +2165,16 @@ void Engine::line_break(bool d) {
             case 6: {
                 f = mem[(cur_p + 1)].hh.b0;
                 active_width[1] = (active_width[1] + font_info[(width_base[f] + font_info[(char_base[f] + mem[(cur_p + 1)].hh.b1)].qqqq.b0)].int_);
+                if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                    active_width[7] = (active_width[7] + char_stretch(f, mem[(cur_p + 1)].hh.b1));
+                    active_width[8] = (active_width[8] + char_shrink(f, mem[(cur_p + 1)].hh.b1));
+                }
             } break;
             case 7: {
                 s = mem[(cur_p + 1)].hh.lh;
                 disc_width = 0;
+                disc_stretch = 0;
+                disc_shrink = 0;
                 if (s == 0) {
                     try_break(eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (4))].int_, (1));
                 } else {
@@ -2105,25 +2182,37 @@ void Engine::line_break(bool d) {
                         if ((s >= hi_mem_min)) {
                             f = mem[s].hh.b0;
                             disc_width = (disc_width + font_info[(width_base[f] + font_info[(char_base[f] + mem[s].hh.b1)].qqqq.b0)].int_);
+                            if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                                disc_stretch = (disc_stretch + char_stretch(f, mem[s].hh.b1));
+                                disc_shrink = (disc_shrink + char_shrink(f, mem[s].hh.b1));
+                            }
                         } else {
                             switch (mem[s].hh.b0) {
                             case 6: {
                                 f = mem[(s + 1)].hh.b0;
                                 disc_width = (disc_width + font_info[(width_base[f] + font_info[(char_base[f] + mem[(s + 1)].hh.b1)].qqqq.b0)].int_);
+                                if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                                    disc_stretch = (disc_stretch + char_stretch(f, mem[(s + 1)].hh.b1));
+                                    disc_shrink = (disc_shrink + char_shrink(f, mem[(s + 1)].hh.b1));
+                                }
                             } break;
                             case 0: case 1: case 2: case 11: {
                                 disc_width = (disc_width + mem[(s + (1))].int_);
                             } break;
                             default: {
-                                confusion(1149 /*disc3*/);
+                                confusion(1153 /*disc3*/);
                             } break;
                             }
                         }
                         s = mem[s].hh.rh;
                     } while (!(s == 0));
                     active_width[1] = (active_width[1] + disc_width);
+                    active_width[7] = (active_width[7] + disc_stretch);
+                    active_width[8] = (active_width[8] + disc_shrink);
                     try_break(eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (3))].int_, (1));
                     active_width[1] = (active_width[1] - disc_width);
+                    active_width[7] = (active_width[7] - disc_stretch);
+                    active_width[8] = (active_width[8] - disc_shrink);
                 }
                 r = mem[cur_p].hh.b1;
                 s = mem[cur_p].hh.rh;
@@ -2131,17 +2220,25 @@ void Engine::line_break(bool d) {
                     if ((s >= hi_mem_min)) {
                         f = mem[s].hh.b0;
                         active_width[1] = (active_width[1] + font_info[(width_base[f] + font_info[(char_base[f] + mem[s].hh.b1)].qqqq.b0)].int_);
+                        if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                            active_width[7] = (active_width[7] + char_stretch(f, mem[s].hh.b1));
+                            active_width[8] = (active_width[8] + char_shrink(f, mem[s].hh.b1));
+                        }
                     } else {
                         switch (mem[s].hh.b0) {
                         case 6: {
                             f = mem[(s + 1)].hh.b0;
                             active_width[1] = (active_width[1] + font_info[(width_base[f] + font_info[(char_base[f] + mem[(s + 1)].hh.b1)].qqqq.b0)].int_);
+                            if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (81))].int_ > 1) {
+                                active_width[7] = (active_width[7] + char_stretch(f, mem[(s + 1)].hh.b1));
+                                active_width[8] = (active_width[8] + char_shrink(f, mem[(s + 1)].hh.b1));
+                            }
                         } break;
                         case 0: case 1: case 2: case 11: {
                             active_width[1] = (active_width[1] + mem[(s + (1))].int_);
                         } break;
                         default: {
-                            confusion(1150 /*disc4*/);
+                            confusion(1154 /*disc4*/);
                         } break;
                         }
                     }
@@ -2169,7 +2266,7 @@ void Engine::line_break(bool d) {
             case 4: case 3: case 5: {
             } break;
             default: {
-                confusion(1151 /*paragraph*/);
+                confusion(1155 /*paragraph*/);
             } break;
             }
             prev_p = cur_p;
@@ -2222,7 +2319,7 @@ void Engine::line_break(bool d) {
         while (q != (mem_top - 7)) {
             cur_p = mem[q].hh.rh;
             if (mem[q].hh.b0 == (2)) {
-                free_node(q, (7));
+                free_node(q, (9));
             } else {
                 free_node(q, (3));
             }
@@ -2236,14 +2333,14 @@ void Engine::line_break(bool d) {
         }
         if (!second_pass) {
             if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (32))].int_ > 0) {
-                print_nl(1152 /*@secondpass*/);
+                print_nl(1156 /*@secondpass*/);
             }
             threshold = eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (1))].int_;
             second_pass = true;
             final_pass = ((eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (20))].int_ <= 0));
         } else {
             if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (32))].int_ > 0) {
-                print_nl(1153 /*@emergencypass*/);
+                print_nl(1157 /*@emergencypass*/);
             }
             background[2] = (background[2] + eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (20))].int_);
             final_pass = true;
@@ -2259,7 +2356,7 @@ L30:;
     while (q != (mem_top - 7)) {
         cur_p = mem[q].hh.rh;
         if (mem[q].hh.b0 == (2)) {
-            free_node(q, (7));
+            free_node(q, (9));
         } else {
             free_node(q, (3));
         }
@@ -2315,10 +2412,10 @@ void Engine::new_hyph_exceptions() {
                     if (interaction == (3)) {
                     }
                     print_nl(293 /*! */);
-                    print(1154 /*Not a letter*/);
+                    print(1158 /*Not a letter*/);
                     help_ptr = 2;
-                    help_line[1] = 1155 /*Letters in \hyphenation words must have \lccode>0.*/;
-                    help_line[0] = 1156 /*Proceed; I'll ignore the character I just read.*/;
+                    help_line[1] = 1159 /*Letters in \hyphenation words must have \lccode>0.*/;
+                    help_line[0] = 1160 /*Proceed; I'll ignore the character I just read.*/;
                     error_();
                 } else {
                     if (n < 63) {
@@ -2339,7 +2436,7 @@ void Engine::new_hyph_exceptions() {
                 n = (n + 1);
                 hc[n] = cur_lang;
                 if ((pool_ptr + n) > pool_size) {
-                    overflow(837 /*pool size*/, (pool_size - init_pool_ptr));
+                    overflow(841 /*pool size*/, (pool_size - init_pool_ptr));
                 }
                 h = 0;
                 {
@@ -2352,7 +2449,7 @@ void Engine::new_hyph_exceptions() {
                 }
                 s = make_string();
                 if (hyph_count == (8191)) {
-                    overflow(1157 /*exception dictionary*/, (8191));
+                    overflow(1161 /*exception dictionary*/, (8191));
                 }
                 hyph_count = (hyph_count + 1);
                 while (hyph_word[h] != 0) {
@@ -2402,12 +2499,12 @@ void Engine::new_hyph_exceptions() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(965 /*Improper */);
-            print_esc(800 /*hyphenation*/);
-            print(1158 /* will be flushed*/);
+            print(969 /*Improper */);
+            print_esc(804 /*hyphenation*/);
+            print(1162 /* will be flushed*/);
             help_ptr = 2;
-            help_line[1] = 1159 /*Hyphenation exceptions must contain only letters*/;
-            help_line[0] = 1160 /*and hyphens. But continue; I'll forgive and forget.*/;
+            help_line[1] = 1163 /*Hyphenation exceptions must contain only letters*/;
+            help_line[0] = 1164 /*and hyphens. But continue; I'll forgive and forget.*/;
             error_();
         } break;
         }
@@ -2456,7 +2553,7 @@ int32_t Engine::prune_page_top(int32_t p) {
             }
         } break;
         default: {
-            confusion(1161 /*pruning*/);
+            confusion(1165 /*pruning*/);
         } break;
         }
     }
@@ -2528,7 +2625,7 @@ int32_t Engine::vert_break(int32_t p, int32_t h, int32_t d) {
                 goto L45;
             } break;
             default: {
-                confusion(1162 /*vertbreak*/);
+                confusion(1166 /*vertbreak*/);
             } break;
             }
         }
@@ -2580,12 +2677,12 @@ int32_t Engine::vert_break(int32_t p, int32_t h, int32_t d) {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(1163 /*Infinite glue shrinkage found in box being split*/);
+                print(1167 /*Infinite glue shrinkage found in box being split*/);
                 help_ptr = 4;
-                help_line[3] = 1164 /*The box you are \vsplitting contains some infinitely*/;
-                help_line[2] = 1165 /*shrinkable glue, e.g., `\vss' or `\vskip 0pt minus 1fil'.*/;
-                help_line[1] = 1166 /*Such glue doesn't belong there; but you can safely proceed,*/;
-                help_line[0] = 1127 /*since the offensive shrinkability has been made finite.*/;
+                help_line[3] = 1168 /*The box you are \vsplitting contains some infinitely*/;
+                help_line[2] = 1169 /*shrinkable glue, e.g., `\vss' or `\vskip 0pt minus 1fil'.*/;
+                help_line[1] = 1170 /*Such glue doesn't belong there; but you can safely proceed,*/;
+                help_line[0] = 1131 /*since the offensive shrinkability has been made finite.*/;
                 error_();
                 r = new_spec(q);
                 mem[r].hh.b1 = (0);
@@ -2607,137 +2704,6 @@ int32_t Engine::vert_break(int32_t p, int32_t h, int32_t d) {
 L30:;
     Result = best_place;
     return Result;
-}
-
-// §978
-int32_t Engine::vsplit(int32_t n, int32_t h) {
-    int32_t v{};
-    int32_t p{};
-    int32_t q{};
-    int32_t Result{};
-    v = eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + n)].hh.rh;
-    if (cur_mark[(3)] != 0) {
-        delete_token_ref(cur_mark[(3)]);
-        cur_mark[(3)] = 0;
-        delete_token_ref(cur_mark[(4)]);
-        cur_mark[(4)] = 0;
-    }
-    vsplit_marks_init();
-    if (v == 0) {
-        Result = 0;
-        goto L10;
-    }
-    if (mem[v].hh.b0 != (1)) {
-        if (interaction == (3)) {
-        }
-        print_nl(293 /*! */);
-        print(258 /**/);
-        print_esc(748 /*vsplit*/);
-        print(1167 /* needs a */);
-        print_esc(750 /*vbox*/);
-        help_ptr = 2;
-        help_line[1] = 1168 /*The box you are trying to split is an \hbox.*/;
-        help_line[0] = 1169 /*I can't split such a box, so I'll leave it alone.*/;
-        error_();
-        Result = 0;
-        goto L10;
-    }
-    q = vert_break(mem[(v + (5))].hh.rh, h, eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (6))].int_);
-    p = mem[(v + (5))].hh.rh;
-    if (p == q) {
-        mem[(v + (5))].hh.rh = 0;
-    } else {
-        while (true) {
-            if (mem[p].hh.b0 == (4)) {
-                if (mem[(p + 1)].hh.lh != 0) {
-                    vsplit_class_mark(p);
-                } else {
-                    if (cur_mark[(3)] == 0) {
-                        cur_mark[(3)] = mem[(p + 1)].hh.rh;
-                        cur_mark[(4)] = cur_mark[(3)];
-                        mem[cur_mark[(3)]].hh.lh = (mem[cur_mark[(3)]].hh.lh + 2);
-                    } else {
-                        delete_token_ref(cur_mark[(4)]);
-                        cur_mark[(4)] = mem[(p + 1)].hh.rh;
-                        mem[cur_mark[(4)]].hh.lh = (mem[cur_mark[(4)]].hh.lh + 1);
-                    }
-                }
-            }
-            if (mem[p].hh.rh == q) {
-                mem[p].hh.rh = 0;
-                goto L30;
-            }
-            p = mem[p].hh.rh;
-        }
-    }
-L30:;
-    flush_node_list(split_disc);
-    split_disc = 0;
-    prune_saving = ((eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (62))].int_ > 0));
-    q = prune_page_top(q);
-    prune_saving = false;
-    p = mem[(v + (5))].hh.rh;
-    free_node(v, (7));
-    if (q == 0) {
-        eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + n)].hh.rh = 0;
-    } else {
-        eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + n)].hh.rh = vpackage(q, 0, (1), 1073741823);
-    }
-    Result = vpackage(p, h, (0), eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (6))].int_);
-L10:;
-    return Result;
-}
-
-// §986
-void Engine::print_totals() {
-    print_scaled(page_so_far[1]);
-    if (page_so_far[2] != 0) {
-        print(325 /* plus */);
-        print_scaled(page_so_far[2]);
-        print(258 /**/);
-    }
-    if (page_so_far[3] != 0) {
-        print(325 /* plus */);
-        print_scaled(page_so_far[3]);
-        print(324 /*fil*/);
-    }
-    if (page_so_far[4] != 0) {
-        print(325 /* plus */);
-        print_scaled(page_so_far[4]);
-        print(1170 /*fill*/);
-    }
-    if (page_so_far[5] != 0) {
-        print(325 /* plus */);
-        print_scaled(page_so_far[5]);
-        print(1171 /*filll*/);
-    }
-    if (page_so_far[6] != 0) {
-        print(326 /* minus */);
-        print_scaled(page_so_far[6]);
-    }
-}
-
-// §988
-void Engine::freeze_page_specs(int32_t s) {
-    page_contents = s;
-    page_so_far[0] = eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (4))].int_;
-    page_max_depth = eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (5))].int_;
-    page_so_far[7] = 0;
-    page_so_far[1] = 0;
-    page_so_far[2] = 0;
-    page_so_far[3] = 0;
-    page_so_far[4] = 0;
-    page_so_far[5] = 0;
-    page_so_far[6] = 0;
-    least_page_cost = 1073741823;
-    if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (33))].int_ > 0) {
-        begin_diagnostic();
-        print_nl(1172 /*%% goal height=*/);
-        print_scaled(page_so_far[0]);
-        print(1173 /*, max depth=*/);
-        print_scaled(page_max_depth);
-        end_diagnostic(false);
-    }
 }
 
 }  // namespace meptex

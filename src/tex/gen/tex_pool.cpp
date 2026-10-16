@@ -3,7 +3,7 @@
 
 namespace meptex {
 
-const int kPoolStringCount = 1266;
+const int kPoolStringCount = 1268;
 const char *const kPoolStrings[] = {
     "notexpanded:",
     "nullfont",
@@ -135,6 +135,8 @@ const char *const kPoolStrings[] = {
     "kern",
     " (for accent)",
     "mkern",
+    " (left margin)",
+    " (right margin)",
     "end",
     "begin",
     "math",
@@ -375,6 +377,8 @@ const char *const kPoolStrings[] = {
     "begingroup",
     "penalty",
     "char",
+    "letterspacefont",
+    "pdfcopyfont",
     "font",
     "delimiter",
     "divide",
@@ -1268,8 +1272,6 @@ const char *const kPoolStrings[] = {
     "pdfsetrandomseed",
     "quitvmode",
     "partokenname",
-    "letterspacefont",
-    "pdfcopyfont",
     "0234000122*4000133**3**344*0400400*000000234000111*1111112341011",
 };
 

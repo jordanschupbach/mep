@@ -12,6 +12,44 @@
 % Written for mep (MIT licence). pdfTeX is the work of Han The Thanh and
 % its maintainers; TeX is copyright D. E. Knuth.
 
+@x [10.155] - pdfTeX's margin kerns
+@d explicit=1 {|subtype| of kern nodes from \.{\\kern} and \.{\\/}}
+@y
+@d explicit=1 {|subtype| of kern nodes from \.{\\kern} and \.{\\/}}
+@d margin_kern_node=40 {|type| of the kern character protrusion puts at a margin}
+@d left_side=0 {|subtype| of a margin kern at the start of a line}
+@d right_side=1 {|subtype| of a margin kern at the end of a line}
+@z
+
+@x [12.174] - expanded fonts
+  print_char(" "); print_ASCII(qo(character(p)));
+@y
+  print_font_expansion(font(p));
+  print_char(" "); print_ASCII(qo(character(p)));
+@z
+
+@x [12.183] - pdfTeX's margin kerns
+  kern_node: @<Display kern |p|@>;
+@y
+  kern_node: @<Display kern |p|@>;
+  margin_kern_node: begin print_esc("kern"); print_scaled(width(p));
+    if subtype(p)=left_side then print(" (left margin)")
+    else print(" (right margin)");
+    end;
+@z
+
+@x [14.202] - pdfTeX's margin kerns
+    kern_node,math_node,penalty_node: do_nothing;
+@y
+    kern_node,math_node,penalty_node,margin_kern_node: do_nothing;
+@z
+
+@x [14.206] - pdfTeX's margin kerns
+kern_node,math_node,penalty_node: begin r:=get_node(small_node_size);
+@y
+kern_node,math_node,penalty_node,margin_kern_node: begin r:=get_node(small_node_size);
+@z
+
 @x [17.230] - pdfTeX's token parameters
 @d toks_base=local_base+15 {table of |number_regs| token list registers}
 @y
@@ -84,6 +122,8 @@
 @d pdf_compress_level==int_par(pdf_compress_level_code)
 @d pdf_decimal_digits==int_par(pdf_decimal_digits_code)
 @d pdf_draftmode==int_par(pdf_draftmode_code)
+@d pdf_protrude_chars==int_par(pdf_protrude_chars_code)
+@d pdf_adjust_spacing==int_par(pdf_adjust_spacing_code)
 @z
 
 @x [17.237] - pdfTeX's integer parameters
@@ -200,6 +240,14 @@ end;
 eq_level(cur_val):=level_one; eq_type(cur_val):=c; equiv(cur_val):=o;
 store_primitive(cur_val);
 end;
+@z
+
+@x [18.266] - \letterspacefont and \pdfcopyfont, made as \font is
+def_font: print_esc("font");
+@y
+def_font: if chr_code=1 then print_esc("letterspacefont")
+  else if chr_code=2 then print_esc("pdfcopyfont")
+  else print_esc("font");
 @z
 
 @x [18.266] - \pdfprimitive
@@ -346,11 +394,344 @@ loop@+begin if (cur_cmd>other_char)or(cur_chr>255) then {not a character}
     end;
 @z
 
+@x [32.622] - pdfTeX's margin kerns
+kern_node,math_node:cur_h:=cur_h+width(p);
+@y
+kern_node,math_node,margin_kern_node:cur_h:=cur_h+width(p);
+@z
+
 @x [32.638] - PDF output
 @<Ship box |p| out@>;
 @y
 if pdf_output>0 then pdf_ship_out(p)
 else begin @<Ship box |p| out@>; end;
+@z
+
+@x [33.651] - pdfTeX's margin kerns
+  kern_node,math_node: x:=x+width(p);
+@y
+  kern_node,math_node,margin_kern_node: x:=x+width(p);
+@z
+
+@x [38.833] - font expansion: the stretch and shrink of fonts in the widths
+@d delta_node_size=7 {number of words in a delta node}
+@y
+@d delta_node_size=9 {number of words in a delta node}
+@z
+
+@x [38.833] - font expansion: the stretch and shrink of fonts in the widths
+@d do_all_six(#)==#(1);#(2);#(3);#(4);#(5);#(6)
+@y
+@d do_all_six(#)==#(1);#(2);#(3);#(4);#(5);#(6)
+@d do_all_eight(#)==do_all_six(#);#(7);#(8)
+  {the line breaker's six, and the stretch and shrink fonts may add}
+@z
+
+@x [38.833] - font expansion: the stretch and shrink of fonts in the widths
+@!active_width:array[1..6] of scaled;
+  {distance from first active node to~|cur_p|}
+@!cur_active_width:array[1..6] of scaled; {distance from current active node}
+@!background:array[1..6] of scaled; {length of an ``empty'' line}
+@!break_width:array[1..6] of scaled; {length being computed after current break}
+@y
+@!active_width:array[1..8] of scaled;
+  {distance from first active node to~|cur_p|}
+@!cur_active_width:array[1..8] of scaled; {distance from current active node}
+@!background:array[1..8] of scaled; {length of an ``empty'' line}
+@!break_width:array[1..8] of scaled; {length being computed after current break}
+@z
+
+@x [38.827] - font expansion: the stretch and shrink of fonts in the widths
+background[6]:=shrink(q)+shrink(r);
+@y
+background[6]:=shrink(q)+shrink(r);
+background[7]:=0; background[8]:=0;
+@z
+
+@x [38.829] - font expansion: the stretch and shrink of fonts in the widths
+no_break_yet:=true; prev_r:=active; old_l:=0;
+do_all_six(copy_to_cur_active);
+@y
+no_break_yet:=true; prev_r:=active; old_l:=0;
+do_all_eight(copy_to_cur_active);
+@z
+
+@x [38.832] - font expansion: the stretch and shrink of fonts in the widths
+  begin do_all_six(update_width);
+@y
+  begin do_all_eight(update_width);
+@z
+
+@x [38.837] - font expansion: the stretch and shrink of fonts in the widths
+begin no_break_yet:=false; do_all_six(set_break_width_to_background);
+@y
+begin no_break_yet:=false; do_all_eight(set_break_width_to_background);
+@z
+
+@x [38.839] - font expansion: the stretch and shrink of fonts in the widths
+@!disc_width:scaled; {the length of discretionary material preceding a break}
+@y
+@!disc_width:scaled; {the length of discretionary material preceding a break}
+@!disc_stretch,@!disc_shrink:scaled; {the stretch and shrink its fonts allow}
+@z
+
+@x [38.840] - font expansion: the stretch and shrink of fonts in the widths
+break_width[1]:=break_width[1]+disc_width;
+@y
+break_width[1]:=break_width[1]+disc_width;
+break_width[7]:=break_width[7]+disc_stretch;
+break_width[8]:=break_width[8]+disc_shrink;
+@z
+
+@x [38.841] - font expansion: the stretch and shrink of fonts in the widths
+  break_width[1]:=break_width[1]-char_width(f)(char_info(f)(character(v)));
+  end
+else  case type(v) of
+  ligature_node: begin f:=font(lig_char(v));@/
+    break_width[1]:=@|break_width[1]-
+      char_width(f)(char_info(f)(character(lig_char(v))));
+    end;
+@y
+  break_width[1]:=break_width[1]-char_width(f)(char_info(f)(character(v)));
+  if pdf_adjust_spacing>1 then
+    begin break_width[7]:=break_width[7]-char_stretch(f,character(v));
+    break_width[8]:=break_width[8]-char_shrink(f,character(v));
+    end;
+  end
+else  case type(v) of
+  ligature_node: begin f:=font(lig_char(v));@/
+    break_width[1]:=@|break_width[1]-
+      char_width(f)(char_info(f)(character(lig_char(v))));
+    if pdf_adjust_spacing>1 then
+      begin break_width[7]:=break_width[7]-char_stretch(f,character(lig_char(v)));
+      break_width[8]:=break_width[8]-char_shrink(f,character(lig_char(v)));
+      end;
+    end;
+@z
+
+@x [38.842] - font expansion: the stretch and shrink of fonts in the widths
+  break_width[1]:=@|break_width[1]+char_width(f)(char_info(f)(character(s)));
+  end
+else  case type(s) of
+  ligature_node: begin f:=font(lig_char(s));
+    break_width[1]:=break_width[1]+
+      char_width(f)(char_info(f)(character(lig_char(s))));
+    end;
+@y
+  break_width[1]:=@|break_width[1]+char_width(f)(char_info(f)(character(s)));
+  if pdf_adjust_spacing>1 then
+    begin break_width[7]:=break_width[7]+char_stretch(f,character(s));
+    break_width[8]:=break_width[8]+char_shrink(f,character(s));
+    end;
+  end
+else  case type(s) of
+  ligature_node: begin f:=font(lig_char(s));
+    break_width[1]:=break_width[1]+
+      char_width(f)(char_info(f)(character(lig_char(s))));
+    if pdf_adjust_spacing>1 then
+      begin break_width[7]:=break_width[7]+char_stretch(f,character(lig_char(s)));
+      break_width[8]:=break_width[8]+char_shrink(f,character(lig_char(s)));
+      end;
+    end;
+@z
+
+@x [38.844] - font expansion: the stretch and shrink of fonts in the widths
+  begin do_all_six(convert_to_break_width);
+  end
+else if prev_r=active then {no delta node needed at the beginning}
+  begin do_all_six(store_break_width);
+  end
+else  begin q:=get_node(delta_node_size); link(q):=r; type(q):=delta_node;@/
+  subtype(q):=0; {the |subtype| is not used}
+  do_all_six(new_delta_to_break_width);
+@y
+  begin do_all_eight(convert_to_break_width);
+  end
+else if prev_r=active then {no delta node needed at the beginning}
+  begin do_all_eight(store_break_width);
+  end
+else  begin q:=get_node(delta_node_size); link(q):=r; type(q):=delta_node;@/
+  subtype(q):=0; {the |subtype| is not used}
+  do_all_eight(new_delta_to_break_width);
+@z
+
+@x [38.845] - font expansion: the stretch and shrink of fonts in the widths
+  do_all_six(new_delta_from_break_width);
+@y
+  do_all_eight(new_delta_from_break_width);
+@z
+
+@x [38.851] - character protrusion and font expansion in the line-breaking decisions
+shortfall:=line_width-cur_active_width[1]; {we're this much too short}
+@y
+shortfall:=line_width-cur_active_width[1]; {we're this much too short}
+if pdf_protrude_chars>1 then
+  shortfall:=shortfall+line_protrusion(break_node(r),cur_p);
+if (pdf_adjust_spacing>1)and(shortfall<>0) then
+  shortfall:=expansion_shortfall(shortfall,cur_active_width[7],cur_active_width[8]);
+@z
+
+@x [38.860] - font expansion: the stretch and shrink of fonts in the widths
+    begin do_all_six(downdate_width);
+@y
+    begin do_all_eight(downdate_width);
+@z
+
+@x [38.861] - font expansion: the stretch and shrink of fonts in the widths
+  begin do_all_six(update_active);
+  do_all_six(copy_to_cur_active);
+@y
+  begin do_all_eight(update_active);
+  do_all_eight(copy_to_cur_active);
+@z
+
+@x [39.864] - font expansion: the stretch and shrink of fonts in the widths
+do_all_six(store_background);@/
+@y
+do_all_eight(store_background);@/
+@z
+
+@x [39.866] - margin kerns of an unpacked line
+kern_node: if subtype(cur_p)=explicit then kern_break
+@y
+margin_kern_node: act_width:=act_width+width(cur_p);
+kern_node: if subtype(cur_p)=explicit then kern_break
+@z
+
+@x [39.866] - font expansion: the stretch and shrink of fonts in the widths
+ligature_node: begin f:=font(lig_char(cur_p));
+  act_width:=act_width+char_width(f)(char_info(f)(character(lig_char(cur_p))));
+  end;
+@y
+ligature_node: begin f:=font(lig_char(cur_p));
+  act_width:=act_width+char_width(f)(char_info(f)(character(lig_char(cur_p))));
+  if pdf_adjust_spacing>1 then
+    begin active_width[7]:=active_width[7]+char_stretch(f,character(lig_char(cur_p)));
+    active_width[8]:=active_width[8]+char_shrink(f,character(lig_char(cur_p)));
+    end;
+  end;
+@z
+
+@x [39.867] - font expansion: the stretch and shrink of fonts in the widths
+act_width:=act_width+char_width(f)(char_info(f)(character(cur_p)));
+@y
+act_width:=act_width+char_width(f)(char_info(f)(character(cur_p)));
+if pdf_adjust_spacing>1 then
+  begin active_width[7]:=active_width[7]+char_stretch(f,character(cur_p));
+  active_width[8]:=active_width[8]+char_shrink(f,character(cur_p));
+  end;
+@z
+
+@x [39.869] - font expansion: the stretch and shrink of fonts in the widths
+begin s:=pre_break(cur_p); disc_width:=0;
+@y
+begin s:=pre_break(cur_p); disc_width:=0; disc_stretch:=0; disc_shrink:=0;
+@z
+
+@x [39.869] - font expansion: the stretch and shrink of fonts in the widths
+  act_width:=act_width+disc_width;
+  try_break(hyphen_penalty,hyphenated);
+  act_width:=act_width-disc_width;
+@y
+  act_width:=act_width+disc_width;
+  active_width[7]:=active_width[7]+disc_stretch;
+  active_width[8]:=active_width[8]+disc_shrink;
+  try_break(hyphen_penalty,hyphenated);
+  act_width:=act_width-disc_width;
+  active_width[7]:=active_width[7]-disc_stretch;
+  active_width[8]:=active_width[8]-disc_shrink;
+@z
+
+@x [39.870] - font expansion: the stretch and shrink of fonts in the widths
+  disc_width:=disc_width+char_width(f)(char_info(f)(character(s)));
+  end
+else  case type(s) of
+  ligature_node: begin f:=font(lig_char(s));
+    disc_width:=disc_width+
+      char_width(f)(char_info(f)(character(lig_char(s))));
+    end;
+@y
+  disc_width:=disc_width+char_width(f)(char_info(f)(character(s)));
+  if pdf_adjust_spacing>1 then
+    begin disc_stretch:=disc_stretch+char_stretch(f,character(s));
+    disc_shrink:=disc_shrink+char_shrink(f,character(s));
+    end;
+  end
+else  case type(s) of
+  ligature_node: begin f:=font(lig_char(s));
+    disc_width:=disc_width+
+      char_width(f)(char_info(f)(character(lig_char(s))));
+    if pdf_adjust_spacing>1 then
+      begin disc_stretch:=disc_stretch+char_stretch(f,character(lig_char(s)));
+      disc_shrink:=disc_shrink+char_shrink(f,character(lig_char(s)));
+      end;
+    end;
+@z
+
+@x [39.871] - font expansion: the stretch and shrink of fonts in the widths
+  act_width:=act_width+char_width(f)(char_info(f)(character(s)));
+  end
+else  case type(s) of
+  ligature_node: begin f:=font(lig_char(s));
+    act_width:=act_width+
+      char_width(f)(char_info(f)(character(lig_char(s))));
+    end;
+@y
+  act_width:=act_width+char_width(f)(char_info(f)(character(s)));
+  if pdf_adjust_spacing>1 then
+    begin active_width[7]:=active_width[7]+char_stretch(f,character(s));
+    active_width[8]:=active_width[8]+char_shrink(f,character(s));
+    end;
+  end
+else  case type(s) of
+  ligature_node: begin f:=font(lig_char(s));
+    act_width:=act_width+
+      char_width(f)(char_info(f)(character(lig_char(s))));
+    if pdf_adjust_spacing>1 then
+      begin active_width[7]:=active_width[7]+char_stretch(f,character(lig_char(s)));
+      active_width[8]:=active_width[8]+char_shrink(f,character(lig_char(s)));
+      end;
+    end;
+@z
+
+@x [39.881] - the margin kern at the end of a line
+  if type(q)=glue_node then
+    begin delete_glue_ref(glue_ptr(q));
+@y
+  if type(q)=glue_node then
+    begin if pdf_protrude_chars>0 then protrude_right(q,false);
+    delete_glue_ref(glue_ptr(q));
+@z
+
+@x [39.881] - the margin kern at the end of a line
+else  begin q:=temp_head;
+  while link(q)<>null do q:=link(q);
+  end;
+@<Put the \(r)\.{\\rightskip} glue after node |q|@>;
+@y
+else  begin q:=temp_head;
+  while link(q)<>null do q:=link(q);
+  end;
+if pdf_protrude_chars>0 then
+  if disc_break and(is_char_node(q) or(type(q)<>disc_node)) then
+    q:=protrude_right(q,true) {after the pre-break text}
+  else q:=protrude_right(q,false);
+@<Put the \(r)\.{\\rightskip} glue after node |q|@>;
+@z
+
+@x [39.887] - the margin kern at the start of a line
+r:=link(q); link(q):=null; q:=link(temp_head); link(temp_head):=r;
+@y
+r:=link(q); link(q):=null; q:=link(temp_head); link(temp_head):=r;
+if pdf_protrude_chars>0 then q:=protrude_left(q);
+@z
+
+@x [39.889] - font expansion of a line
+adjust_tail:=adjust_head; just_box:=hpack(q,cur_width,exactly);
+@y
+adjust_tail:=adjust_head;
+if pdf_adjust_spacing>0 then expand_line(q,cur_width);
+just_box:=hpack(q,cur_width,exactly);
 @z
 
 @x [49.1253] - pdfTeX's font character codes
@@ -387,6 +768,12 @@ assign_font_int: case chr_code of
   kn_bc_code_base: print_esc("knbccode");
   othercases print_esc("knaccode")
   endcases;
+@z
+
+@x [49.1210] - \letterspacefont and \pdfcopyfont, made as \font is
+def_font: new_font(a);
+@y
+def_font: if cur_chr=0 then new_font(a) else new_font_copy(cur_chr=1,global);
 @z
 
 @x [50.1327] - pdfTeX's own state (\pdfglyphtounicode, \pdfmapline ...) is in the format
@@ -810,8 +1197,8 @@ primitive("pdfresettimer",extension,pdf_reset_timer_code);@/
 primitive("pdfsetrandomseed",extension,pdf_set_random_seed_code);@/
 primitive("quitvmode",extension,quitvmode_code);@/
 primitive("partokenname",extension,partokenname_code);@/
-primitive("letterspacefont",extension,letterspace_font_code);@/
-primitive("pdfcopyfont",extension,pdf_copy_font_code);@/
+primitive("letterspacefont",def_font,1); {like \.{\\font}, these take \.{\\global}}
+primitive("pdfcopyfont",def_font,2);@/
 primitive("lpcode",assign_font_int,lp_code_base);@/
 primitive("rpcode",assign_font_int,rp_code_base);@/
 primitive("efcode",assign_font_int,ef_code_base);@/

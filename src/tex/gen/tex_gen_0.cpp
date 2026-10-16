@@ -67,10 +67,10 @@ void Engine::alloc_arrays() {
     dvi_buf.alloc(0, dvi_buf_size);
     total_stretch.alloc((0), (3));
     total_shrink.alloc((0), (3));
-    active_width.alloc(1, 6);
-    cur_active_width.alloc(1, 6);
-    background.alloc(1, 6);
-    break_width.alloc(1, 6);
+    active_width.alloc(1, 8);
+    cur_active_width.alloc(1, 8);
+    background.alloc(1, 8);
+    break_width.alloc(1, 8);
     minimal_demerits.alloc((0), (3));
     best_place.alloc((0), (3));
     best_pl_line.alloc((0), (3));
@@ -2197,6 +2197,7 @@ void Engine::print_font_and_char(int32_t p) {
         } else {
             print_esc(hash[((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) - (0))) + mem[p].hh.b0)].rh);
         }
+        print_font_expansion(mem[p].hh.b0);
         print_char(32);
         print((mem[p].hh.b1 - (0)));
     }
@@ -2602,12 +2603,21 @@ void Engine::show_node_list(int32_t p) {
                     print(382 /*mu*/);
                 }
             } break;
+            case 40: {
+                print_esc(383 /*kern*/);
+                print_scaled(mem[(p + (1))].int_);
+                if (mem[p].hh.b1 == (0)) {
+                    print(386 /* (left margin)*/);
+                } else {
+                    print(387 /* (right margin)*/);
+                }
+            } break;
             case 9: {
                 if (mem[p].hh.b1 > (1)) {
                     if (podd(mem[p].hh.b1)) {
-                        print_esc(386 /*end*/);
+                        print_esc(388 /*end*/);
                     } else {
-                        print_esc(387 /*begin*/);
+                        print_esc(389 /*begin*/);
                     }
                     if (mem[p].hh.b1 > (((4) + (4)))) {
                         print_char(82);
@@ -2619,21 +2629,21 @@ void Engine::show_node_list(int32_t p) {
                         }
                     }
                 } else {
-                    print_esc(388 /*math*/);
+                    print_esc(390 /*math*/);
                     if (mem[p].hh.b1 == (0)) {
-                        print(389 /*on*/);
+                        print(391 /*on*/);
                     } else {
-                        print(390 /*off*/);
+                        print(392 /*off*/);
                     }
                 }
                 if (mem[(p + (1))].int_ != 0) {
-                    print(391 /*, surrounded */);
+                    print(393 /*, surrounded */);
                     print_scaled(mem[(p + (1))].int_);
                 }
             } break;
             case 6: {
                 print_font_and_char((p + 1));
-                print(392 /* (ligature */);
+                print(394 /* (ligature */);
                 if (mem[p].hh.b1 > 1) {
                     print_char(124);
                 }
@@ -2645,13 +2655,13 @@ void Engine::show_node_list(int32_t p) {
                 print_char(41);
             } break;
             case 12: {
-                print_esc(393 /*penalty */);
+                print_esc(395 /*penalty */);
                 print_int(mem[(p + 1)].int_);
             } break;
             case 7: {
-                print_esc(394 /*discretionary*/);
+                print_esc(396 /*discretionary*/);
                 if (mem[p].hh.b1 > 0) {
-                    print(395 /* replacing */);
+                    print(397 /* replacing */);
                     print_int(mem[p].hh.b1);
                 }
                 str_pool[pool_ptr] = 46;
@@ -2664,7 +2674,7 @@ void Engine::show_node_list(int32_t p) {
                 pool_ptr = (pool_ptr - 1);
             } break;
             case 4: {
-                print_esc(396 /*mark*/);
+                print_esc(398 /*mark*/);
                 if (mem[(p + 1)].hh.lh != 0) {
                     print_char(115);
                     print_int(mem[(p + 1)].hh.lh);
@@ -2672,7 +2682,7 @@ void Engine::show_node_list(int32_t p) {
                 print_mark(mem[(p + 1)].hh.rh);
             } break;
             case 5: {
-                print_esc(397 /*vadjust*/);
+                print_esc(399 /*vadjust*/);
                 str_pool[pool_ptr] = 46;
                 pool_ptr = (pool_ptr + 1);
                 show_node_list(mem[(p + 1)].hh.rh);
@@ -2682,7 +2692,7 @@ void Engine::show_node_list(int32_t p) {
                 print_style(mem[p].hh.b1);
             } break;
             case 15: {
-                print_esc(398 /*mathchoice*/);
+                print_esc(400 /*mathchoice*/);
                 str_pool[pool_ptr] = 68;
                 pool_ptr = (pool_ptr + 1);
                 show_node_list(mem[(p + 1)].hh.lh);
@@ -2703,55 +2713,55 @@ void Engine::show_node_list(int32_t p) {
             case 16: case 17: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 27: case 26: case 29: case 28: case 30: case 31: {
                 switch (mem[p].hh.b0) {
                 case 16: {
-                    print_esc(399 /*mathord*/);
+                    print_esc(401 /*mathord*/);
                 } break;
                 case 17: {
-                    print_esc(400 /*mathop*/);
+                    print_esc(402 /*mathop*/);
                 } break;
                 case 18: {
-                    print_esc(401 /*mathbin*/);
+                    print_esc(403 /*mathbin*/);
                 } break;
                 case 19: {
-                    print_esc(402 /*mathrel*/);
+                    print_esc(404 /*mathrel*/);
                 } break;
                 case 20: {
-                    print_esc(403 /*mathopen*/);
+                    print_esc(405 /*mathopen*/);
                 } break;
                 case 21: {
-                    print_esc(404 /*mathclose*/);
+                    print_esc(406 /*mathclose*/);
                 } break;
                 case 22: {
-                    print_esc(405 /*mathpunct*/);
+                    print_esc(407 /*mathpunct*/);
                 } break;
                 case 23: {
-                    print_esc(406 /*mathinner*/);
+                    print_esc(408 /*mathinner*/);
                 } break;
                 case 27: {
-                    print_esc(407 /*overline*/);
+                    print_esc(409 /*overline*/);
                 } break;
                 case 26: {
-                    print_esc(408 /*underline*/);
+                    print_esc(410 /*underline*/);
                 } break;
                 case 29: {
-                    print_esc(409 /*vcenter*/);
+                    print_esc(411 /*vcenter*/);
                 } break;
                 case 24: {
-                    print_esc(410 /*radical*/);
+                    print_esc(412 /*radical*/);
                     print_delimiter((p + 4));
                 } break;
                 case 28: {
-                    print_esc(411 /*accent*/);
+                    print_esc(413 /*accent*/);
                     print_fam_and_char((p + 4));
                 } break;
                 case 30: {
-                    print_esc(412 /*left*/);
+                    print_esc(414 /*left*/);
                     print_delimiter((p + 1));
                 } break;
                 case 31: {
                     if (mem[p].hh.b1 == (0)) {
-                        print_esc(413 /*right*/);
+                        print_esc(415 /*right*/);
                     } else {
-                        print_esc(414 /*middle*/);
+                        print_esc(416 /*middle*/);
                     }
                     print_delimiter((p + 1));
                 } break;
@@ -2760,9 +2770,9 @@ void Engine::show_node_list(int32_t p) {
                 }
                 if (mem[p].hh.b1 != (0)) {
                     if (mem[p].hh.b1 == (1)) {
-                        print_esc(415 /*limits*/);
+                        print_esc(417 /*limits*/);
                     } else {
-                        print_esc(416 /*nolimits*/);
+                        print_esc(418 /*nolimits*/);
                     }
                 }
                 if (mem[p].hh.b0 < (((((((((((((((((((13) + 3)) + 7)) + 1)) + 1)) + 1)) + 1)) + 1)) + 1)) + 1))) {
@@ -2772,25 +2782,25 @@ void Engine::show_node_list(int32_t p) {
                 print_subsidiary_data((p + 3), 95);
             } break;
             case 25: {
-                print_esc(417 /*fraction, thickness */);
+                print_esc(419 /*fraction, thickness */);
                 if (mem[(p + (1))].int_ == 1073741824) {
-                    print(418 /*= default*/);
+                    print(420 /*= default*/);
                 } else {
                     print_scaled(mem[(p + (1))].int_);
                 }
                 if (((((mem[(p + 4)].qqqq.b0 != 0)) || ((mem[(p + 4)].qqqq.b1 != (0)))) || ((mem[(p + 4)].qqqq.b2 != 0))) || ((mem[(p + 4)].qqqq.b3 != (0)))) {
-                    print(419 /*, left-delimiter */);
+                    print(421 /*, left-delimiter */);
                     print_delimiter((p + 4));
                 }
                 if (((((mem[(p + 5)].qqqq.b0 != 0)) || ((mem[(p + 5)].qqqq.b1 != (0)))) || ((mem[(p + 5)].qqqq.b2 != 0))) || ((mem[(p + 5)].qqqq.b3 != (0)))) {
-                    print(420 /*, right-delimiter */);
+                    print(422 /*, right-delimiter */);
                     print_delimiter((p + 5));
                 }
                 print_subsidiary_data((p + 2), 92);
                 print_subsidiary_data((p + 3), 47);
             } break;
             default: {
-                print(421 /*Unknown node type!*/);
+                print(423 /*Unknown node type!*/);
             } break;
             }
         }
@@ -2886,7 +2896,7 @@ void Engine::flush_node_list(int32_t p) {
                     flush_node_list(mem[(p + 1)].hh.rh);
                 }
             } break;
-            case 11: case 9: case 12: {
+            case 11: case 9: case 12: case 40: {
             } break;
             case 6: {
                 flush_node_list(mem[(p + 1)].hh.rh);
@@ -2945,7 +2955,7 @@ void Engine::flush_node_list(int32_t p) {
                 goto L30;
             } break;
             default: {
-                confusion(422 /*flushing*/);
+                confusion(424 /*flushing*/);
             } break;
             }
             free_node(p, (2));
@@ -3014,7 +3024,7 @@ int32_t Engine::copy_node_list(int32_t p) {
                 mem[(r + 1)].hh.lh = mem[(p + 1)].hh.lh;
                 mem[(r + 1)].hh.rh = copy_node_list(mem[(p + 1)].hh.rh);
             } break;
-            case 11: case 9: case 12: {
+            case 11: case 9: case 12: case 40: {
                 r = get_node((2));
                 words = (2);
             } break;
@@ -3038,7 +3048,7 @@ int32_t Engine::copy_node_list(int32_t p) {
                 mem[(r + 1)].hh.rh = copy_node_list(mem[(p + 1)].hh.rh);
             } break;
             default: {
-                confusion(423 /*copying*/);
+                confusion(425 /*copying*/);
             } break;
             }
         }
@@ -3064,37 +3074,37 @@ void Engine::print_mode(int32_t m) {
     if (m > 0) {
         switch ((m / (((100) + 1)))) {
         case 0: {
-            print(424 /*vertical*/);
+            print(426 /*vertical*/);
         } break;
         case 1: {
-            print(425 /*horizontal*/);
+            print(427 /*horizontal*/);
         } break;
         case 2: {
-            print(426 /*display math*/);
+            print(428 /*display math*/);
         } break;
         default: {
         } break;
         }
     } else {
         if (m == 0) {
-            print(427 /*no*/);
+            print(429 /*no*/);
         } else {
             switch ((((-m)) / (((100) + 1)))) {
             case 0: {
-                print(428 /*internal vertical*/);
+                print(430 /*internal vertical*/);
             } break;
             case 1: {
-                print(429 /*restricted horizontal*/);
+                print(431 /*restricted horizontal*/);
             } break;
             case 2: {
-                print(388 /*math*/);
+                print(390 /*math*/);
             } break;
             default: {
             } break;
             }
         }
     }
-    print(430 /* mode*/);
+    print(432 /* mode*/);
 }
 
 // §217
@@ -3102,7 +3112,7 @@ void Engine::push_nest() {
     if (nest_ptr > max_nest_stack) {
         max_nest_stack = nest_ptr;
         if (nest_ptr == nest_size) {
-            overflow(431 /*semantic nest size*/, nest_size);
+            overflow(433 /*semantic nest size*/, nest_size);
         }
     }
     nest[nest_ptr] = cur_list;
@@ -3138,15 +3148,15 @@ void Engine::show_activities() {
         for (p = nest_ptr; p >= for_end_1; --p) {
             m = nest[p].mode_field;
             a = nest[p].aux_field;
-            print_nl(432 /*### */);
+            print_nl(434 /*### */);
             print_mode(m);
-            print(433 /* entered at line */);
+            print(435 /* entered at line */);
             print_int(pabs(nest[p].ml_field));
             if (m == ((((1) + (100)) + 1))) {
                 if (nest[p].pg_field != 8585216) {
-                    print(434 /* (language*/);
+                    print(436 /* (language*/);
                     print_int((nest[p].pg_field % 65536));
-                    print(435 /*:hyphenmin*/);
+                    print(437 /*:hyphenmin*/);
                     print_int((nest[p].pg_field / 4194304));
                     print_char(44);
                     print_int((((nest[p].pg_field / 65536)) % 64));
@@ -3154,19 +3164,19 @@ void Engine::show_activities() {
                 }
             }
             if (nest[p].ml_field < 0) {
-                print(436 /* (\output routine)*/);
+                print(438 /* (\output routine)*/);
             }
             if (p == 0) {
                 if ((mem_top - 2) != page_tail) {
-                    print_nl(437 /*### current page:*/);
+                    print_nl(439 /*### current page:*/);
                     if (output_active) {
-                        print(438 /* (held over for next output)*/);
+                        print(440 /* (held over for next output)*/);
                     }
                     show_box(mem[(mem_top - 2)].hh.rh);
                     if (page_contents > (0)) {
-                        print_nl(439 /*total height */);
+                        print_nl(441 /*total height */);
                         print_totals();
-                        print_nl(440 /* goal height */);
+                        print_nl(442 /* goal height */);
                         print_scaled(page_so_far[0]);
                         r = mem[mem_top].hh.rh;
                         while (r != mem_top) {
@@ -3174,7 +3184,7 @@ void Engine::show_activities() {
                             print_esc(368 /*insert*/);
                             t = (mem[r].hh.b1 - (0));
                             print_int(t);
-                            print(441 /* adds */);
+                            print(443 /* adds */);
                             if (eqtb[(((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + t)].int_ == 1000) {
                                 t = mem[(r + (3))].int_;
                             } else {
@@ -3190,49 +3200,49 @@ void Engine::show_activities() {
                                         t = (t + 1);
                                     }
                                 } while (!(q == mem[(r + 1)].hh.lh));
-                                print(442 /*, #*/);
+                                print(444 /*, #*/);
                                 print_int(t);
-                                print(443 /* might split*/);
+                                print(445 /* might split*/);
                             }
                             r = mem[r].hh.rh;
                         }
                     }
                 }
                 if (mem[(mem_top - 1)].hh.rh != 0) {
-                    print_nl(444 /*### recent contributions:*/);
+                    print_nl(446 /*### recent contributions:*/);
                 }
             }
             show_box(mem[nest[p].head_field].hh.rh);
             switch ((pabs(m) / (((100) + 1)))) {
             case 0: {
-                print_nl(445 /*prevdepth */);
+                print_nl(447 /*prevdepth */);
                 if (a.int_ <= (-65536000)) {
-                    print(446 /*ignored*/);
+                    print(448 /*ignored*/);
                 } else {
                     print_scaled(a.int_);
                 }
                 if (nest[p].pg_field != 0) {
-                    print(447 /*, prevgraf */);
+                    print(449 /*, prevgraf */);
                     print_int(nest[p].pg_field);
-                    print(448 /* line*/);
+                    print(450 /* line*/);
                     if (nest[p].pg_field != 1) {
                         print_char(115);
                     }
                 }
             } break;
             case 1: {
-                print_nl(449 /*spacefactor */);
+                print_nl(451 /*spacefactor */);
                 print_int(a.hh.lh);
                 if (m > 0) {
                     if (a.hh.rh > 0) {
-                        print(450 /*, current language */);
+                        print(452 /*, current language */);
                         print_int(a.hh.rh);
                     }
                 }
             } break;
             case 2: {
                 if (a.int_ != 0) {
-                    print(451 /*this will begin denominator of:*/);
+                    print(453 /*this will begin denominator of:*/);
                     show_box(a.int_);
                 }
             } break;
@@ -3247,316 +3257,316 @@ void Engine::show_activities() {
 void Engine::print_param(int32_t n) {
     switch (n) {
     case 0: {
-        print_esc(452 /*pretolerance*/);
+        print_esc(454 /*pretolerance*/);
     } break;
     case 1: {
-        print_esc(453 /*tolerance*/);
+        print_esc(455 /*tolerance*/);
     } break;
     case 2: {
-        print_esc(454 /*linepenalty*/);
+        print_esc(456 /*linepenalty*/);
     } break;
     case 3: {
-        print_esc(455 /*hyphenpenalty*/);
+        print_esc(457 /*hyphenpenalty*/);
     } break;
     case 4: {
-        print_esc(456 /*exhyphenpenalty*/);
+        print_esc(458 /*exhyphenpenalty*/);
     } break;
     case 5: {
-        print_esc(457 /*clubpenalty*/);
+        print_esc(459 /*clubpenalty*/);
     } break;
     case 6: {
-        print_esc(458 /*widowpenalty*/);
+        print_esc(460 /*widowpenalty*/);
     } break;
     case 7: {
-        print_esc(459 /*displaywidowpenalty*/);
+        print_esc(461 /*displaywidowpenalty*/);
     } break;
     case 8: {
-        print_esc(460 /*brokenpenalty*/);
+        print_esc(462 /*brokenpenalty*/);
     } break;
     case 9: {
-        print_esc(461 /*binoppenalty*/);
+        print_esc(463 /*binoppenalty*/);
     } break;
     case 10: {
-        print_esc(462 /*relpenalty*/);
+        print_esc(464 /*relpenalty*/);
     } break;
     case 11: {
-        print_esc(463 /*predisplaypenalty*/);
+        print_esc(465 /*predisplaypenalty*/);
     } break;
     case 12: {
-        print_esc(464 /*postdisplaypenalty*/);
+        print_esc(466 /*postdisplaypenalty*/);
     } break;
     case 13: {
-        print_esc(465 /*interlinepenalty*/);
+        print_esc(467 /*interlinepenalty*/);
     } break;
     case 14: {
-        print_esc(466 /*doublehyphendemerits*/);
+        print_esc(468 /*doublehyphendemerits*/);
     } break;
     case 15: {
-        print_esc(467 /*finalhyphendemerits*/);
+        print_esc(469 /*finalhyphendemerits*/);
     } break;
     case 16: {
-        print_esc(468 /*adjdemerits*/);
+        print_esc(470 /*adjdemerits*/);
     } break;
     case 17: {
-        print_esc(469 /*mag*/);
+        print_esc(471 /*mag*/);
     } break;
     case 18: {
-        print_esc(470 /*delimiterfactor*/);
+        print_esc(472 /*delimiterfactor*/);
     } break;
     case 19: {
-        print_esc(471 /*looseness*/);
+        print_esc(473 /*looseness*/);
     } break;
     case 20: {
-        print_esc(472 /*time*/);
+        print_esc(474 /*time*/);
     } break;
     case 21: {
-        print_esc(473 /*day*/);
+        print_esc(475 /*day*/);
     } break;
     case 22: {
-        print_esc(474 /*month*/);
+        print_esc(476 /*month*/);
     } break;
     case 23: {
-        print_esc(475 /*year*/);
+        print_esc(477 /*year*/);
     } break;
     case 24: {
-        print_esc(476 /*showboxbreadth*/);
+        print_esc(478 /*showboxbreadth*/);
     } break;
     case 25: {
-        print_esc(477 /*showboxdepth*/);
+        print_esc(479 /*showboxdepth*/);
     } break;
     case 26: {
-        print_esc(478 /*hbadness*/);
+        print_esc(480 /*hbadness*/);
     } break;
     case 27: {
-        print_esc(479 /*vbadness*/);
+        print_esc(481 /*vbadness*/);
     } break;
     case 28: {
-        print_esc(480 /*pausing*/);
+        print_esc(482 /*pausing*/);
     } break;
     case 29: {
-        print_esc(481 /*tracingonline*/);
+        print_esc(483 /*tracingonline*/);
     } break;
     case 30: {
-        print_esc(482 /*tracingmacros*/);
+        print_esc(484 /*tracingmacros*/);
     } break;
     case 31: {
-        print_esc(483 /*tracingstats*/);
+        print_esc(485 /*tracingstats*/);
     } break;
     case 32: {
-        print_esc(484 /*tracingparagraphs*/);
+        print_esc(486 /*tracingparagraphs*/);
     } break;
     case 33: {
-        print_esc(485 /*tracingpages*/);
+        print_esc(487 /*tracingpages*/);
     } break;
     case 34: {
-        print_esc(486 /*tracingoutput*/);
+        print_esc(488 /*tracingoutput*/);
     } break;
     case 35: {
-        print_esc(487 /*tracinglostchars*/);
+        print_esc(489 /*tracinglostchars*/);
     } break;
     case 36: {
-        print_esc(488 /*tracingcommands*/);
+        print_esc(490 /*tracingcommands*/);
     } break;
     case 37: {
-        print_esc(489 /*tracingrestores*/);
+        print_esc(491 /*tracingrestores*/);
     } break;
     case 38: {
-        print_esc(490 /*uchyph*/);
+        print_esc(492 /*uchyph*/);
     } break;
     case 39: {
-        print_esc(491 /*outputpenalty*/);
+        print_esc(493 /*outputpenalty*/);
     } break;
     case 40: {
-        print_esc(492 /*maxdeadcycles*/);
+        print_esc(494 /*maxdeadcycles*/);
     } break;
     case 41: {
-        print_esc(493 /*hangafter*/);
+        print_esc(495 /*hangafter*/);
     } break;
     case 42: {
-        print_esc(494 /*floatingpenalty*/);
+        print_esc(496 /*floatingpenalty*/);
     } break;
     case 43: {
-        print_esc(495 /*globaldefs*/);
+        print_esc(497 /*globaldefs*/);
     } break;
     case 44: {
         print_esc(327 /*fam*/);
     } break;
     case 45: {
-        print_esc(496 /*escapechar*/);
+        print_esc(498 /*escapechar*/);
     } break;
     case 46: {
-        print_esc(497 /*defaulthyphenchar*/);
+        print_esc(499 /*defaulthyphenchar*/);
     } break;
     case 47: {
-        print_esc(498 /*defaultskewchar*/);
+        print_esc(500 /*defaultskewchar*/);
     } break;
     case 48: {
-        print_esc(499 /*endlinechar*/);
+        print_esc(501 /*endlinechar*/);
     } break;
     case 49: {
-        print_esc(500 /*newlinechar*/);
+        print_esc(502 /*newlinechar*/);
     } break;
     case 50: {
-        print_esc(501 /*language*/);
+        print_esc(503 /*language*/);
     } break;
     case 51: {
-        print_esc(502 /*lefthyphenmin*/);
+        print_esc(504 /*lefthyphenmin*/);
     } break;
     case 52: {
-        print_esc(503 /*righthyphenmin*/);
+        print_esc(505 /*righthyphenmin*/);
     } break;
     case 53: {
-        print_esc(504 /*holdinginserts*/);
+        print_esc(506 /*holdinginserts*/);
     } break;
     case 54: {
-        print_esc(505 /*errorcontextlines*/);
+        print_esc(507 /*errorcontextlines*/);
     } break;
     case 55: {
-        print_esc(506 /*tracingassigns*/);
+        print_esc(508 /*tracingassigns*/);
     } break;
     case 56: {
-        print_esc(507 /*tracinggroups*/);
+        print_esc(509 /*tracinggroups*/);
     } break;
     case 57: {
-        print_esc(508 /*tracingifs*/);
+        print_esc(510 /*tracingifs*/);
     } break;
     case 58: {
-        print_esc(509 /*tracingscantokens*/);
+        print_esc(511 /*tracingscantokens*/);
     } break;
     case 59: {
-        print_esc(510 /*tracingnesting*/);
+        print_esc(512 /*tracingnesting*/);
     } break;
     case 60: {
-        print_esc(511 /*predisplaydirection*/);
+        print_esc(513 /*predisplaydirection*/);
     } break;
     case 61: {
-        print_esc(512 /*lastlinefit*/);
+        print_esc(514 /*lastlinefit*/);
     } break;
     case 62: {
-        print_esc(513 /*savingvdiscards*/);
+        print_esc(515 /*savingvdiscards*/);
     } break;
     case 63: {
-        print_esc(514 /*savinghyphcodes*/);
+        print_esc(516 /*savinghyphcodes*/);
     } break;
     case 64: {
-        print_esc(515 /*TeXXeTstate*/);
+        print_esc(517 /*TeXXeTstate*/);
     } break;
     case 65: {
-        print_esc(516 /*pdfoutput*/);
+        print_esc(518 /*pdfoutput*/);
     } break;
     case 66: {
-        print_esc(517 /*pdfcompresslevel*/);
+        print_esc(519 /*pdfcompresslevel*/);
     } break;
     case 67: {
-        print_esc(518 /*pdfdecimaldigits*/);
+        print_esc(520 /*pdfdecimaldigits*/);
     } break;
     case 68: {
-        print_esc(519 /*pdfmovechars*/);
+        print_esc(521 /*pdfmovechars*/);
     } break;
     case 69: {
-        print_esc(520 /*pdfimageresolution*/);
+        print_esc(522 /*pdfimageresolution*/);
     } break;
     case 70: {
-        print_esc(521 /*pdfpkresolution*/);
+        print_esc(523 /*pdfpkresolution*/);
     } break;
     case 71: {
-        print_esc(522 /*pdfuniqueresname*/);
+        print_esc(524 /*pdfuniqueresname*/);
     } break;
     case 72: {
-        print_esc(523 /*pdfforcepagebox*/);
+        print_esc(525 /*pdfforcepagebox*/);
     } break;
     case 73: {
-        print_esc(524 /*pdfinclusionerrorlevel*/);
+        print_esc(526 /*pdfinclusionerrorlevel*/);
     } break;
     case 74: {
-        print_esc(525 /*pdfmajorversion*/);
+        print_esc(527 /*pdfmajorversion*/);
     } break;
     case 75: {
-        print_esc(526 /*pdfminorversion*/);
+        print_esc(528 /*pdfminorversion*/);
     } break;
     case 76: {
-        print_esc(527 /*pdfpagebox*/);
+        print_esc(529 /*pdfpagebox*/);
     } break;
     case 77: {
-        print_esc(528 /*pdfgamma*/);
+        print_esc(530 /*pdfgamma*/);
     } break;
     case 78: {
-        print_esc(529 /*pdfimagegamma*/);
+        print_esc(531 /*pdfimagegamma*/);
     } break;
     case 79: {
-        print_esc(530 /*pdfimagehicolor*/);
+        print_esc(532 /*pdfimagehicolor*/);
     } break;
     case 80: {
-        print_esc(531 /*pdfimageapplygamma*/);
+        print_esc(533 /*pdfimageapplygamma*/);
     } break;
     case 81: {
-        print_esc(532 /*pdfadjustspacing*/);
+        print_esc(534 /*pdfadjustspacing*/);
     } break;
     case 82: {
-        print_esc(533 /*pdfprotrudechars*/);
+        print_esc(535 /*pdfprotrudechars*/);
     } break;
     case 83: {
-        print_esc(534 /*pdftracingfonts*/);
+        print_esc(536 /*pdftracingfonts*/);
     } break;
     case 84: {
-        print_esc(535 /*pdfobjcompresslevel*/);
+        print_esc(537 /*pdfobjcompresslevel*/);
     } break;
     case 85: {
-        print_esc(536 /*pdfadjustinterwordglue*/);
+        print_esc(538 /*pdfadjustinterwordglue*/);
     } break;
     case 86: {
-        print_esc(537 /*pdfprependkern*/);
+        print_esc(539 /*pdfprependkern*/);
     } break;
     case 87: {
-        print_esc(538 /*pdfappendkern*/);
+        print_esc(540 /*pdfappendkern*/);
     } break;
     case 88: {
-        print_esc(539 /*pdfgentounicode*/);
+        print_esc(541 /*pdfgentounicode*/);
     } break;
     case 89: {
-        print_esc(540 /*pdfdraftmode*/);
+        print_esc(542 /*pdfdraftmode*/);
     } break;
     case 90: {
-        print_esc(541 /*pdfinclusioncopyfonts*/);
+        print_esc(543 /*pdfinclusioncopyfonts*/);
     } break;
     case 91: {
-        print_esc(542 /*pdfsuppresswarningdupdest*/);
+        print_esc(544 /*pdfsuppresswarningdupdest*/);
     } break;
     case 92: {
-        print_esc(543 /*pdfsuppresswarningdupmap*/);
+        print_esc(545 /*pdfsuppresswarningdupmap*/);
     } break;
     case 93: {
-        print_esc(544 /*pdfsuppresswarningpagegroup*/);
+        print_esc(546 /*pdfsuppresswarningpagegroup*/);
     } break;
     case 94: {
-        print_esc(545 /*pdfinfoomitdate*/);
+        print_esc(547 /*pdfinfoomitdate*/);
     } break;
     case 95: {
-        print_esc(546 /*pdfsuppressptexinfo*/);
+        print_esc(548 /*pdfsuppressptexinfo*/);
     } break;
     case 96: {
-        print_esc(547 /*pdfomitcharset*/);
+        print_esc(549 /*pdfomitcharset*/);
     } break;
     case 97: {
-        print_esc(548 /*pdfomitinfodict*/);
+        print_esc(550 /*pdfomitinfodict*/);
     } break;
     case 98: {
-        print_esc(549 /*pdfomitprocset*/);
+        print_esc(551 /*pdfomitprocset*/);
     } break;
     case 99: {
-        print_esc(550 /*showstream*/);
+        print_esc(552 /*showstream*/);
     } break;
     case 100: {
-        print_esc(551 /*tracingstacklevels*/);
+        print_esc(553 /*tracingstacklevels*/);
     } break;
     case 101: {
-        print_esc(552 /*partokencontext*/);
+        print_esc(554 /*partokencontext*/);
     } break;
     case 102: {
-        print_esc(553 /*ignoreprimitiveerror*/);
+        print_esc(555 /*ignoreprimitiveerror*/);
     } break;
     default: {
-        print(554 /*[unknown integer parameter!]*/);
+        print(556 /*[unknown integer parameter!]*/);
     } break;
     }
 }

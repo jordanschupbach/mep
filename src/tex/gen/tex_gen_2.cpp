@@ -96,13 +96,13 @@ void Engine::expand() {
                         if (interaction == (3)) {
                         }
                         print_nl(293 /*! */);
-                        print(920 /*You can't use `*/);
-                        print_esc(631 /*unless*/);
-                        print(921 /*' before `*/);
+                        print(924 /*You can't use `*/);
+                        print_esc(635 /*unless*/);
+                        print(925 /*' before `*/);
                         print_cmd_chr(cur_cmd, cur_chr);
                         print_char(39);
                         help_ptr = 1;
-                        help_line[0] = 895 /*Continue, and I'll forget that it ever happened.*/;
+                        help_line[0] = 899 /*Continue, and I'll forget that it ever happened.*/;
                         back_error();
                     }
                 } else {
@@ -143,12 +143,12 @@ void Engine::expand() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(922 /*Missing */);
+                print(926 /*Missing */);
                 print_esc(264 /*endcsname*/);
-                print(923 /* inserted*/);
+                print(927 /* inserted*/);
                 help_ptr = 2;
-                help_line[1] = 924 /*The control sequence marked <to be read again> should*/;
-                help_line[0] = 925 /*not appear between \csname and \endcsname.*/;
+                help_line[1] = 928 /*The control sequence marked <to be read again> should*/;
+                help_line[0] = 929 /*not appear between \csname and \endcsname.*/;
                 back_error();
             }
             j = first;
@@ -199,10 +199,10 @@ void Engine::expand() {
                     if (interaction == (3)) {
                     }
                     print_nl(293 /*! */);
-                    print(926 /*Extra */);
+                    print(930 /*Extra */);
                     print_cmd_chr((((100) + 6)), cur_chr);
                     help_ptr = 1;
-                    help_line[0] = 927 /*I'm ignoring this; it doesn't match any \if.*/;
+                    help_line[0] = 931 /*I'm ignoring this; it doesn't match any \if.*/;
                     error_();
                 }
             } else {
@@ -236,13 +236,13 @@ void Engine::expand() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(928 /*Undefined control sequence*/);
+            print(932 /*Undefined control sequence*/);
             help_ptr = 5;
-            help_line[4] = 929 /*The control sequence at the end of the top line*/;
-            help_line[3] = 930 /*of your error message was never \def'ed. If you have*/;
-            help_line[2] = 931 /*misspelled it (e.g., `\hobx'), type `I' and the correct*/;
-            help_line[1] = 932 /*spelling (e.g., `I\hbox'). Otherwise just continue,*/;
-            help_line[0] = 933 /*and I'll forget about whatever was undefined.*/;
+            help_line[4] = 933 /*The control sequence at the end of the top line*/;
+            help_line[3] = 934 /*of your error message was never \def'ed. If you have*/;
+            help_line[2] = 935 /*misspelled it (e.g., `\hobx'), type `I' and the correct*/;
+            help_line[1] = 936 /*spelling (e.g., `I\hbox'). Otherwise just continue,*/;
+            help_line[0] = 937 /*and I'll forget about whatever was undefined.*/;
             error_();
         } break;
         }
@@ -310,12 +310,12 @@ void Engine::scan_left_brace() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(934 /*Missing { inserted*/);
+        print(938 /*Missing { inserted*/);
         help_ptr = 4;
-        help_line[3] = 935 /*A left brace was mandatory here, so I've put one in.*/;
-        help_line[2] = 936 /*You might want to delete and/or insert some corrections*/;
-        help_line[1] = 937 /*so that I will find a matching right brace soon.*/;
-        help_line[0] = 938 /*(If you're confused by all this, try typing `I}' now.)*/;
+        help_line[3] = 939 /*A left brace was mandatory here, so I've put one in.*/;
+        help_line[2] = 940 /*You might want to delete and/or insert some corrections*/;
+        help_line[1] = 941 /*so that I will find a matching right brace soon.*/;
+        help_line[0] = 942 /*(If you're confused by all this, try typing `I}' now.)*/;
         back_error();
         cur_tok = ((256) + 123);
         cur_cmd = (1);
@@ -373,9 +373,9 @@ void Engine::mu_error() {
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(939 /*Incompatible glue units*/);
+    print(943 /*Incompatible glue units*/);
     help_ptr = 1;
-    help_line[0] = 940 /*I'm going to assume that 1mu=1pt when they're mixed.*/;
+    help_line[0] = 944 /*I'm going to assume that 1mu=1pt when they're mixed.*/;
     error_();
 }
 
@@ -386,10 +386,10 @@ void Engine::scan_eight_bit_int() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(941 /*Bad register code*/);
+        print(945 /*Bad register code*/);
         help_ptr = 2;
-        help_line[1] = 942 /*A register number must be between 0 and 32767.*/;
-        help_line[0] = 943 /*I changed this one to zero.*/;
+        help_line[1] = 946 /*A register number must be between 0 and 32767.*/;
+        help_line[0] = 947 /*I changed this one to zero.*/;
         int_error(cur_val);
         cur_val = 0;
     }
@@ -402,10 +402,10 @@ void Engine::scan_char_num() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(944 /*Bad character code*/);
+        print(948 /*Bad character code*/);
         help_ptr = 2;
-        help_line[1] = 945 /*A character number must be between 0 and 255.*/;
-        help_line[0] = 943 /*I changed this one to zero.*/;
+        help_line[1] = 949 /*A character number must be between 0 and 255.*/;
+        help_line[0] = 947 /*I changed this one to zero.*/;
         int_error(cur_val);
         cur_val = 0;
     }
@@ -418,10 +418,10 @@ void Engine::scan_four_bit_int() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(946 /*Bad number*/);
+        print(950 /*Bad number*/);
         help_ptr = 2;
-        help_line[1] = 947 /*Since I expected to read a number between 0 and 15,*/;
-        help_line[0] = 943 /*I changed this one to zero.*/;
+        help_line[1] = 951 /*Since I expected to read a number between 0 and 15,*/;
+        help_line[0] = 947 /*I changed this one to zero.*/;
         int_error(cur_val);
         cur_val = 0;
     }
@@ -434,10 +434,10 @@ void Engine::scan_fifteen_bit_int() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(948 /*Bad mathchar*/);
+        print(952 /*Bad mathchar*/);
         help_ptr = 2;
-        help_line[1] = 949 /*A mathchar number must be between 0 and 32767.*/;
-        help_line[0] = 943 /*I changed this one to zero.*/;
+        help_line[1] = 953 /*A mathchar number must be between 0 and 32767.*/;
+        help_line[0] = 947 /*I changed this one to zero.*/;
         int_error(cur_val);
         cur_val = 0;
     }
@@ -450,10 +450,10 @@ void Engine::scan_twenty_seven_bit_int() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(950 /*Bad delimiter code*/);
+        print(954 /*Bad delimiter code*/);
         help_ptr = 2;
-        help_line[1] = 951 /*A numeric delimiter code must be between 0 and 2^{27}-1.*/;
-        help_line[0] = 943 /*I changed this one to zero.*/;
+        help_line[1] = 955 /*A numeric delimiter code must be between 0 and 2^{27}-1.*/;
+        help_line[0] = 947 /*I changed this one to zero.*/;
         int_error(cur_val);
         cur_val = 0;
     }
@@ -480,10 +480,10 @@ void Engine::scan_font_ident() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(952 /*Missing font identifier*/);
+                print(956 /*Missing font identifier*/);
                 help_ptr = 2;
-                help_line[1] = 953 /*I was looking for a control sequence whose*/;
-                help_line[0] = 954 /*current meaning has been defined by \font.*/;
+                help_line[1] = 957 /*I was looking for a control sequence whose*/;
+                help_line[0] = 958 /*current meaning has been defined by \font.*/;
                 back_error();
                 f = (0);
             }
@@ -513,7 +513,7 @@ void Engine::find_font_dimen(bool writing) {
             } else {
                 do {
                     if (fmem_ptr == font_mem_size) {
-                        overflow(955 /*font memory*/, font_mem_size);
+                        overflow(959 /*font memory*/, font_mem_size);
                     }
                     font_info[fmem_ptr].int_ = 0;
                     fmem_ptr = (fmem_ptr + 1);
@@ -529,14 +529,14 @@ void Engine::find_font_dimen(bool writing) {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(956 /*Font */);
+        print(960 /*Font */);
         print_esc(hash[((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) - (0))) + f)].rh);
-        print(957 /* has only */);
+        print(961 /* has only */);
         print_int(font_params[f]);
-        print(958 /* fontdimen parameters*/);
+        print(962 /* fontdimen parameters*/);
         help_ptr = 2;
-        help_line[1] = 959 /*To increase the number of font parameters, you must*/;
-        help_line[0] = 960 /*use \fontdimen immediately after the \font is loaded.*/;
+        help_line[1] = 963 /*To increase the number of font parameters, you must*/;
+        help_line[0] = 964 /*use \fontdimen immediately after the \font is loaded.*/;
         error_();
     }
 }
@@ -567,11 +567,11 @@ void Engine::scan_something_internal(int32_t level, bool negative) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(961 /*Missing number, treated as zero*/);
+            print(965 /*Missing number, treated as zero*/);
             help_ptr = 3;
-            help_line[2] = 962 /*A number should have been here; I inserted `0'.*/;
-            help_line[1] = 963 /*(If you can't figure out why I needed to see a number,*/;
-            help_line[0] = 964 /*look up `weird error' in the index to The TeXbook.)*/;
+            help_line[2] = 966 /*A number should have been here; I inserted `0'.*/;
+            help_line[1] = 967 /*(If you can't figure out why I needed to see a number,*/;
+            help_line[0] = 968 /*look up `weird error' in the index to The TeXbook.)*/;
             back_error();
             cur_val = 0;
             cur_val_level = (1);
@@ -612,13 +612,13 @@ void Engine::scan_something_internal(int32_t level, bool negative) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(965 /*Improper */);
+            print(969 /*Improper */);
             print_cmd_chr((79), m);
             help_ptr = 4;
-            help_line[3] = 966 /*You can refer to \spacefactor only in horizontal mode;*/;
-            help_line[2] = 967 /*you can refer to \prevdepth only in vertical mode; and*/;
-            help_line[1] = 968 /*neither of these is meaningful inside \write. So*/;
-            help_line[0] = 969 /*I'm forgetting what you said and using zero instead.*/;
+            help_line[3] = 970 /*You can refer to \spacefactor only in horizontal mode;*/;
+            help_line[2] = 971 /*you can refer to \prevdepth only in vertical mode; and*/;
+            help_line[1] = 972 /*neither of these is meaningful inside \write. So*/;
+            help_line[0] = 973 /*I'm forgetting what you said and using zero instead.*/;
             error_();
             if (level != (5)) {
                 cur_val = 0;
@@ -810,12 +810,12 @@ void Engine::scan_something_internal(int32_t level, bool negative) {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(920 /*You can't use `*/);
+        print(924 /*You can't use `*/);
         print_cmd_chr(cur_cmd, cur_chr);
-        print(970 /*' after */);
-        print_esc(653 /*the*/);
+        print(974 /*' after */);
+        print_esc(657 /*the*/);
         help_ptr = 1;
-        help_line[0] = 969 /*I'm forgetting what you said and using zero instead.*/;
+        help_line[0] = 973 /*I'm forgetting what you said and using zero instead.*/;
         error_();
         if (level != (5)) {
             cur_val = 0;
@@ -893,10 +893,10 @@ void Engine::scan_int() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(971 /*Improper alphabetic constant*/);
+            print(975 /*Improper alphabetic constant*/);
             help_ptr = 2;
-            help_line[1] = 972 /*A one-character control sequence belongs after a ` mark.*/;
-            help_line[0] = 973 /*So I'm essentially inserting \0 here.*/;
+            help_line[1] = 976 /*A one-character control sequence belongs after a ` mark.*/;
+            help_line[0] = 977 /*So I'm essentially inserting \0 here.*/;
             cur_val = 48;
             back_error();
         } else {
@@ -948,10 +948,10 @@ void Engine::scan_int() {
                         if (interaction == (3)) {
                         }
                         print_nl(293 /*! */);
-                        print(974 /*Number too big*/);
+                        print(978 /*Number too big*/);
                         help_ptr = 2;
-                        help_line[1] = 975 /*I can only go up to 2147483647='17777777777="7FFFFFFF,*/;
-                        help_line[0] = 976 /*so I'm using that number instead of yours.*/;
+                        help_line[1] = 979 /*I can only go up to 2147483647='17777777777="7FFFFFFF,*/;
+                        help_line[0] = 980 /*so I'm using that number instead of yours.*/;
                         error_();
                         cur_val = 2147483647;
                         ok_so_far = false;
@@ -966,11 +966,11 @@ void Engine::scan_int() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(961 /*Missing number, treated as zero*/);
+                print(965 /*Missing number, treated as zero*/);
                 help_ptr = 3;
-                help_line[2] = 962 /*A number should have been here; I inserted `0'.*/;
-                help_line[1] = 963 /*(If you can't figure out why I needed to see a number,*/;
-                help_line[0] = 964 /*look up `weird error' in the index to The TeXbook.)*/;
+                help_line[2] = 966 /*A number should have been here; I inserted `0'.*/;
+                help_line[1] = 967 /*(If you can't figure out why I needed to see a number,*/;
+                help_line[0] = 968 /*look up `weird error' in the index to The TeXbook.)*/;
                 back_error();
             } else {
                 if (cur_cmd != (10)) {
@@ -1093,10 +1093,10 @@ void Engine::scan_dimen(bool mu, bool inf, bool shortcut) {
                     if (interaction == (3)) {
                     }
                     print_nl(293 /*! */);
-                    print(977 /*Illegal unit of measure (*/);
-                    print(978 /*replaced by filll)*/);
+                    print(981 /*Illegal unit of measure (*/);
+                    print(982 /*replaced by filll)*/);
                     help_ptr = 1;
-                    help_line[0] = 979 /*I dddon't go any higher than filll.*/;
+                    help_line[0] = 983 /*I dddon't go any higher than filll.*/;
                     error_();
                 } else {
                     cur_order = (cur_order + 1);
@@ -1131,10 +1131,10 @@ void Engine::scan_dimen(bool mu, bool inf, bool shortcut) {
     if (mu) {
         goto L45;
     }
-    if (scan_keyword(980 /*em*/)) {
+    if (scan_keyword(984 /*em*/)) {
         v = (font_info[((6) + param_base[eqtb[((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768)))].hh.rh])].int_);
     } else {
-        if (scan_keyword(981 /*ex*/)) {
+        if (scan_keyword(985 /*ex*/)) {
             v = (font_info[((5) + param_base[eqtb[((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768)))].hh.rh])].int_);
         } else {
             goto L45;
@@ -1155,18 +1155,18 @@ L45:;
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(977 /*Illegal unit of measure (*/);
-            print(982 /*mu inserted)*/);
+            print(981 /*Illegal unit of measure (*/);
+            print(986 /*mu inserted)*/);
             help_ptr = 4;
-            help_line[3] = 983 /*The unit of measurement in math glue must be mu.*/;
-            help_line[2] = 984 /*To recover gracefully from this error, it's best to*/;
-            help_line[1] = 985 /*delete the erroneous units; e.g., type `2' to delete*/;
-            help_line[0] = 986 /*two letters. (See Chapter 27 of The TeXbook.)*/;
+            help_line[3] = 987 /*The unit of measurement in math glue must be mu.*/;
+            help_line[2] = 988 /*To recover gracefully from this error, it's best to*/;
+            help_line[1] = 989 /*delete the erroneous units; e.g., type `2' to delete*/;
+            help_line[0] = 990 /*two letters. (See Chapter 27 of The TeXbook.)*/;
             error_();
             goto L88;
         }
     }
-    if (scan_keyword(987 /*true*/)) {
+    if (scan_keyword(991 /*true*/)) {
         prepare_mag();
         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (17))].int_ != 1000) {
             cur_val = xn_over_d(cur_val, 1000, eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (17))].int_);
@@ -1175,52 +1175,52 @@ L45:;
             f = (f % 65536);
         }
     }
-    if (scan_keyword(814 /*pt*/)) {
+    if (scan_keyword(818 /*pt*/)) {
         goto L88;
     }
-    if (scan_keyword(988 /*in*/)) {
+    if (scan_keyword(992 /*in*/)) {
         num = 7227;
         denom = 100;
     } else {
-        if (scan_keyword(989 /*pc*/)) {
+        if (scan_keyword(993 /*pc*/)) {
             num = 12;
             denom = 1;
         } else {
-            if (scan_keyword(990 /*cm*/)) {
+            if (scan_keyword(994 /*cm*/)) {
                 num = 7227;
                 denom = 254;
             } else {
-                if (scan_keyword(991 /*mm*/)) {
+                if (scan_keyword(995 /*mm*/)) {
                     num = 7227;
                     denom = 2540;
                 } else {
-                    if (scan_keyword(992 /*bp*/)) {
+                    if (scan_keyword(996 /*bp*/)) {
                         num = 7227;
                         denom = 7200;
                     } else {
-                        if (scan_keyword(993 /*dd*/)) {
+                        if (scan_keyword(997 /*dd*/)) {
                             num = 1238;
                             denom = 1157;
                         } else {
-                            if (scan_keyword(994 /*cc*/)) {
+                            if (scan_keyword(998 /*cc*/)) {
                                 num = 14856;
                                 denom = 1157;
                             } else {
-                                if (scan_keyword(995 /*sp*/)) {
+                                if (scan_keyword(999 /*sp*/)) {
                                     goto L30;
                                 } else {
                                     if (interaction == (3)) {
                                     }
                                     print_nl(293 /*! */);
-                                    print(977 /*Illegal unit of measure (*/);
-                                    print(996 /*pt inserted)*/);
+                                    print(981 /*Illegal unit of measure (*/);
+                                    print(1000 /*pt inserted)*/);
                                     help_ptr = 6;
-                                    help_line[5] = 997 /*Dimensions can be in units of em, ex, in, pt, pc,*/;
-                                    help_line[4] = 998 /*cm, mm, dd, cc, bp, or sp; but yours is a new one!*/;
-                                    help_line[3] = 999 /*I'll assume that you meant to say pt, for printer's points.*/;
-                                    help_line[2] = 984 /*To recover gracefully from this error, it's best to*/;
-                                    help_line[1] = 985 /*delete the erroneous units; e.g., type `2' to delete*/;
-                                    help_line[0] = 986 /*two letters. (See Chapter 27 of The TeXbook.)*/;
+                                    help_line[5] = 1001 /*Dimensions can be in units of em, ex, in, pt, pc,*/;
+                                    help_line[4] = 1002 /*cm, mm, dd, cc, bp, or sp; but yours is a new one!*/;
+                                    help_line[3] = 1003 /*I'll assume that you meant to say pt, for printer's points.*/;
+                                    help_line[2] = 988 /*To recover gracefully from this error, it's best to*/;
+                                    help_line[1] = 989 /*delete the erroneous units; e.g., type `2' to delete*/;
+                                    help_line[0] = 990 /*two letters. (See Chapter 27 of The TeXbook.)*/;
                                     error_();
                                     goto L32;
                                 }
@@ -1252,10 +1252,10 @@ L89:;
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1000 /*Dimension too large*/);
+        print(1004 /*Dimension too large*/);
         help_ptr = 2;
-        help_line[1] = 1001 /*I can't work with sizes bigger than about 19 feet.*/;
-        help_line[0] = 1002 /*Continue and I'll use the largest value I can.*/;
+        help_line[1] = 1005 /*I can't work with sizes bigger than about 19 feet.*/;
+        help_line[0] = 1006 /*Continue and I'll use the largest value I can.*/;
         error_();
         cur_val = 1073741823;
         arith_error = false;
@@ -1305,12 +1305,12 @@ void Engine::scan_glue(int32_t level) {
     }
     q = new_spec((0));
     mem[(q + (1))].int_ = cur_val;
-    if (scan_keyword(1003 /*plus*/)) {
+    if (scan_keyword(1007 /*plus*/)) {
         scan_dimen(mu, true, false);
         mem[(q + 2)].int_ = cur_val;
         mem[q].hh.b0 = cur_order;
     }
-    if (scan_keyword(1004 /*minus*/)) {
+    if (scan_keyword(1008 /*minus*/)) {
         scan_dimen(mu, true, false);
         mem[(q + 3)].int_ = cur_val;
         mem[q].hh.b1 = cur_order;
@@ -1331,17 +1331,17 @@ int32_t Engine::scan_rule_spec() {
         mem[(q + (2))].int_ = 0;
     }
 L21:;
-    if (scan_keyword(1005 /*width*/)) {
+    if (scan_keyword(1009 /*width*/)) {
         scan_dimen(false, false, false);
         mem[(q + (1))].int_ = cur_val;
         goto L21;
     }
-    if (scan_keyword(1006 /*height*/)) {
+    if (scan_keyword(1010 /*height*/)) {
         scan_dimen(false, false, false);
         mem[(q + (3))].int_ = cur_val;
         goto L21;
     }
-    if (scan_keyword(1007 /*depth*/)) {
+    if (scan_keyword(1011 /*depth*/)) {
         scan_dimen(false, false, false);
         mem[(q + (2))].int_ = cur_val;
         goto L21;
@@ -1358,7 +1358,7 @@ int32_t Engine::str_toks(int32_t b) {
     int32_t k{};
     int32_t Result{};
     if ((pool_ptr + 1) > pool_size) {
-        overflow(837 /*pool size*/, (pool_size - init_pool_ptr));
+        overflow(841 /*pool size*/, (pool_size - init_pool_ptr));
     }
     p = (mem_top - 3);
     mem[p].hh.rh = 0;
@@ -1455,10 +1455,10 @@ int32_t Engine::the_toks() {
         } break;
         case 1: {
             print_scaled(cur_val);
-            print(814 /*pt*/);
+            print(818 /*pt*/);
         } break;
         case 2: {
-            print_spec(cur_val, 814 /*pt*/);
+            print_spec(cur_val, 818 /*pt*/);
             delete_glue_ref(cur_val);
         } break;
         case 3: {
@@ -1538,16 +1538,16 @@ void Engine::conv_toks() {
     case 4: {
         print(font_name[cur_val]);
         if (font_size[cur_val] != font_dsize[cur_val]) {
-            print(813 /* at */);
+            print(817 /* at */);
             print_scaled(font_size[cur_val]);
-            print(814 /*pt*/);
+            print(818 /*pt*/);
         }
     } break;
     case 5: {
         print_quoted_job_name();
     } break;
     case 6: {
-        print(1008 /*.6*/);
+        print(1012 /*.6*/);
     } break;
     default: {
     } break;
@@ -1604,10 +1604,10 @@ int32_t Engine::scan_toks(bool macro_def, bool xpand) {
                     if (interaction == (3)) {
                     }
                     print_nl(293 /*! */);
-                    print(1009 /*You already have nine parameters*/);
+                    print(1013 /*You already have nine parameters*/);
                     help_ptr = 2;
-                    help_line[1] = 1010 /*I'm going to ignore the # sign you just used,*/;
-                    help_line[0] = 1011 /*as well as the token that followed it.*/;
+                    help_line[1] = 1014 /*I'm going to ignore the # sign you just used,*/;
+                    help_line[0] = 1015 /*as well as the token that followed it.*/;
                     error_();
                     goto L22;
                 } else {
@@ -1616,10 +1616,10 @@ int32_t Engine::scan_toks(bool macro_def, bool xpand) {
                         if (interaction == (3)) {
                         }
                         print_nl(293 /*! */);
-                        print(1012 /*Parameters must be numbered consecutively*/);
+                        print(1016 /*Parameters must be numbered consecutively*/);
                         help_ptr = 2;
-                        help_line[1] = 1013 /*I've inserted the digit you should have used after the #.*/;
-                        help_line[0] = 1014 /*Type `1' to delete what you did use.*/;
+                        help_line[1] = 1017 /*I've inserted the digit you should have used after the #.*/;
+                        help_line[0] = 1018 /*Type `1' to delete what you did use.*/;
                         back_error();
                     }
                     cur_tok = s;
@@ -1639,11 +1639,11 @@ int32_t Engine::scan_toks(bool macro_def, bool xpand) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(934 /*Missing { inserted*/);
+            print(938 /*Missing { inserted*/);
             align_state = (align_state + 1);
             help_ptr = 2;
-            help_line[1] = 1015 /*Where was the left brace? You said something like `\def\a}',*/;
-            help_line[0] = 1016 /*which I'm going to interpret as `\def\a{}'.*/;
+            help_line[1] = 1019 /*Where was the left brace? You said something like `\def\a}',*/;
+            help_line[0] = 1020 /*which I'm going to interpret as `\def\a{}'.*/;
             error_();
             goto L40;
         }
@@ -1703,12 +1703,12 @@ int32_t Engine::scan_toks(bool macro_def, bool xpand) {
                             if (interaction == (3)) {
                             }
                             print_nl(293 /*! */);
-                            print(1017 /*Illegal parameter number in definition of */);
+                            print(1021 /*Illegal parameter number in definition of */);
                             sprint_cs(warning_index);
                             help_ptr = 3;
-                            help_line[2] = 1018 /*You meant to type ## instead of #, right?*/;
-                            help_line[1] = 1019 /*Or maybe a } was forgotten somewhere earlier, and things*/;
-                            help_line[0] = 1020 /*are all screwed up? I'm going to assume that you meant ##.*/;
+                            help_line[2] = 1022 /*You meant to type ## instead of #, right?*/;
+                            help_line[1] = 1023 /*Or maybe a } was forgotten somewhere earlier, and things*/;
+                            help_line[0] = 1024 /*are all screwed up? I'm going to assume that you meant ##.*/;
                             back_error();
                             cur_tok = s;
                         } else {
@@ -1773,7 +1773,7 @@ void Engine::read_toks(int32_t n, int32_t r, int32_t j) {
                     n = (-1);
                 }
             } else {
-                fatal_error(1021 /**** (cannot \read from terminal in nonstop modes)*/);
+                fatal_error(1025 /**** (cannot \read from terminal in nonstop modes)*/);
             }
         } else {
             if (read_open[m] == (1)) {
@@ -1792,10 +1792,10 @@ void Engine::read_toks(int32_t n, int32_t r, int32_t j) {
                         if (interaction == (3)) {
                         }
                         print_nl(293 /*! */);
-                        print(1022 /*File ended within */);
-                        print_esc(643 /*read*/);
+                        print(1026 /*File ended within */);
+                        print_esc(647 /*read*/);
                         help_ptr = 1;
-                        help_line[0] = 1023 /*This \read has unbalanced braces.*/;
+                        help_line[0] = 1027 /*This \read has unbalanced braces.*/;
                         align_state = 1000000;
                         cur_input.limit_field = 0;
                         error_();
@@ -1892,7 +1892,7 @@ void Engine::change_if_limit(int32_t l, int32_t p) {
         q = cond_ptr;
         while (true) {
             if (q == 0) {
-                confusion(714 /*if*/);
+                confusion(718 /*if*/);
             }
             if (mem[q].hh.rh == p) {
                 mem[q].hh.b0 = l;
@@ -1980,10 +1980,10 @@ void Engine::conditional() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1024 /*Missing = inserted for */);
+            print(1028 /*Missing = inserted for */);
             print_cmd_chr((((100) + 5)), this_if);
             help_ptr = 1;
-            help_line[0] = 1025 /*I was expecting to see `<', `=', or `>'. Didn't.*/;
+            help_line[0] = 1029 /*I was expecting to see `<', `=', or `>'. Didn't.*/;
             back_error();
             r = 61;
         }
@@ -2096,7 +2096,7 @@ void Engine::conditional() {
         n = cur_val;
         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (36))].int_ > 1) {
             begin_diagnostic();
-            print(1026 /*{case */);
+            print(1030 /*{case */);
             print_int(n);
             print_char(125);
             end_diagnostic(false);
@@ -2146,12 +2146,12 @@ void Engine::conditional() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(922 /*Missing */);
+            print(926 /*Missing */);
             print_esc(264 /*endcsname*/);
-            print(923 /* inserted*/);
+            print(927 /* inserted*/);
             help_ptr = 2;
-            help_line[1] = 924 /*The control sequence marked <to be read again> should*/;
-            help_line[0] = 925 /*not appear between \csname and \endcsname.*/;
+            help_line[1] = 928 /*The control sequence marked <to be read again> should*/;
+            help_line[0] = 929 /*not appear between \csname and \endcsname.*/;
             back_error();
         }
         m = first;
@@ -2198,9 +2198,9 @@ void Engine::conditional() {
     if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (36))].int_ > 1) {
         begin_diagnostic();
         if (b) {
-            print(1027 /*{true}*/);
+            print(1031 /*{true}*/);
         } else {
-            print(1028 /*{false}*/);
+            print(1032 /*{false}*/);
         }
         end_diagnostic(false);
     }
@@ -2217,10 +2217,10 @@ void Engine::conditional() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(926 /*Extra */);
-            print_esc(716 /*or*/);
+            print(930 /*Extra */);
+            print_esc(720 /*or*/);
             help_ptr = 1;
-            help_line[0] = 927 /*I'm ignoring this; it doesn't match any \if.*/;
+            help_line[0] = 931 /*I'm ignoring this; it doesn't match any \if.*/;
             error_();
         } else {
             if (cur_chr == (2)) {
@@ -2265,7 +2265,7 @@ bool Engine::more_name(int32_t c) {
             Result = true;
         } else {
             if ((pool_ptr + 1) > pool_size) {
-                overflow(837 /*pool size*/, (pool_size - init_pool_ptr));
+                overflow(841 /*pool size*/, (pool_size - init_pool_ptr));
             }
             str_pool[pool_ptr] = c;
             pool_ptr = (pool_ptr + 1);
@@ -2486,28 +2486,28 @@ void Engine::prompt_file_name(int32_t s, int32_t e) {
     int32_t k{};
     if (interaction == (2)) {
     }
-    if (s == 1029 /*input file name*/) {
+    if (s == 1033 /*input file name*/) {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1030 /*I can't find file `*/);
+        print(1034 /*I can't find file `*/);
     } else {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1031 /*I can't write on file `*/);
+        print(1035 /*I can't write on file `*/);
     }
     print_file_name(cur_name, cur_area, cur_ext);
-    print(1032 /*'.*/);
-    if (e == 1033 /*.tex*/) {
+    print(1036 /*'.*/);
+    if (e == 1037 /*.tex*/) {
         show_context();
     }
-    print_nl(1034 /*Please type another */);
+    print_nl(1038 /*Please type another */);
     print(s);
     if (interaction < (2)) {
-        fatal_error(1035 /**** (job aborted, file error in nonstop mode)*/);
+        fatal_error(1039 /**** (job aborted, file error in nonstop mode)*/);
     }
-    print(854 /*: */);
+    print(858 /*: */);
     term_input();
     begin_name();
     k = first;
@@ -2540,19 +2540,19 @@ void Engine::open_log_file() {
     months.alloc(1, 36);
     old_setting = selector;
     if (job_name == 0) {
-        job_name = 1036 /*texput*/;
+        job_name = 1040 /*texput*/;
     }
-    pack_job_name(1037 /*.log*/);
+    pack_job_name(1041 /*.log*/);
     while (!a_open_out(log_file)) {
         selector = (17);
-        prompt_file_name(1038 /*transcript file name*/, 1037 /*.log*/);
+        prompt_file_name(1042 /*transcript file name*/, 1041 /*.log*/);
     }
     log_name = a_make_name_string(log_file);
     selector = (18);
     log_opened = true;
     rt_write(log_file, "This is mep-tex, Version 3.141592653");
     slow_print(format_ident);
-    print(1039 /*  */);
+    print(1043 /*  */);
     print_int(sys_day);
     print_char(32);
     pset(months, "JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC");
@@ -2571,7 +2571,7 @@ void Engine::open_log_file() {
     rt_write_ln(log_file);
     rt_write(log_file, "entering extended mode");
     input_stack[input_ptr] = cur_input;
-    print_nl(1040 /****/);
+    print_nl(1044 /****/);
     l = input_stack[0].limit_field;
     if (buffer[l] == eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (48))].int_) {
         l = (l - 1);
@@ -2596,7 +2596,7 @@ void Engine::start_input() {
             goto L30;
         }
         end_file_reading();
-        prompt_file_name(1029 /*input file name*/, 1033 /*.tex*/);
+        prompt_file_name(1033 /*input file name*/, 1037 /*.tex*/);
     }
 L30:;
     cur_input.name_field = a_make_name_string(input_file[cur_input.index_field]);
@@ -2666,7 +2666,7 @@ int32_t Engine::read_font_info(int32_t u, int32_t nom, int32_t aire, int32_t s) 
     int32_t Result{};
     g = (0);
     file_opened = false;
-    pack_file_name(nom, aire, 1041 /*.tfm*/);
+    pack_file_name(nom, aire, 1045 /*.tfm*/);
     if (!b_open_in(tfm_file, (2))) {
         goto L11;
     }
@@ -2775,26 +2775,26 @@ int32_t Engine::read_font_info(int32_t u, int32_t nom, int32_t aire, int32_t s) 
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(956 /*Font */);
+        print(960 /*Font */);
         sprint_cs(u);
         print_char(61);
         print_file_name(nom, aire, 258 /**/);
         if (s >= 0) {
-            print(813 /* at */);
+            print(817 /* at */);
             print_scaled(s);
-            print(814 /*pt*/);
+            print(818 /*pt*/);
         } else {
             if (s != (-1000)) {
-                print(1042 /* scaled */);
+                print(1046 /* scaled */);
                 print_int((-s));
             }
         }
-        print(1043 /* not loaded: Not enough room left*/);
+        print(1047 /* not loaded: Not enough room left*/);
         help_ptr = 4;
-        help_line[3] = 1044 /*I'm afraid I won't be able to make use of this font,*/;
-        help_line[2] = 1045 /*because my memory for character-size data is too small.*/;
-        help_line[1] = 1046 /*If you're really stuck, ask a wizard to enlarge me.*/;
-        help_line[0] = 1047 /*Or maybe try `I\font<same font id>=<name of loaded font>'.*/;
+        help_line[3] = 1048 /*I'm afraid I won't be able to make use of this font,*/;
+        help_line[2] = 1049 /*because my memory for character-size data is too small.*/;
+        help_line[1] = 1050 /*If you're really stuck, ask a wizard to enlarge me.*/;
+        help_line[0] = 1051 /*Or maybe try `I\font<same font id>=<name of loaded font>'.*/;
         error_();
         goto L30;
     }
@@ -3172,31 +3172,31 @@ L11:;
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(956 /*Font */);
+    print(960 /*Font */);
     sprint_cs(u);
     print_char(61);
     print_file_name(nom, aire, 258 /**/);
     if (s >= 0) {
-        print(813 /* at */);
+        print(817 /* at */);
         print_scaled(s);
-        print(814 /*pt*/);
+        print(818 /*pt*/);
     } else {
         if (s != (-1000)) {
-            print(1042 /* scaled */);
+            print(1046 /* scaled */);
             print_int((-s));
         }
     }
     if (file_opened) {
-        print(1048 /* not loadable: Bad metric (TFM) file*/);
+        print(1052 /* not loadable: Bad metric (TFM) file*/);
     } else {
-        print(1049 /* not loadable: Metric (TFM) file not found*/);
+        print(1053 /* not loadable: Metric (TFM) file not found*/);
     }
     help_ptr = 5;
-    help_line[4] = 1050 /*I wasn't able to read the size data for this font,*/;
-    help_line[3] = 1051 /*so I will ignore the font specification.*/;
-    help_line[2] = 1052 /*[Wizards can fix TFM files using TFtoPL/PLtoTF.]*/;
-    help_line[1] = 1053 /*You might try inserting a different font spec;*/;
-    help_line[0] = 1054 /*e.g., type `I\font<same font id>=<substitute font name>'.*/;
+    help_line[4] = 1054 /*I wasn't able to read the size data for this font,*/;
+    help_line[3] = 1055 /*so I will ignore the font specification.*/;
+    help_line[2] = 1056 /*[Wizards can fix TFM files using TFtoPL/PLtoTF.]*/;
+    help_line[1] = 1057 /*You might try inserting a different font spec;*/;
+    help_line[0] = 1058 /*e.g., type `I\font<same font id>=<substitute font name>'.*/;
     error_();
 L30:;
     if (file_opened) {
@@ -3210,9 +3210,9 @@ L30:;
 void Engine::char_warning(int32_t f, int32_t c) {
     if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (35))].int_ > 0) {
         begin_diagnostic();
-        print_nl(1055 /*Missing character: There is no */);
+        print_nl(1059 /*Missing character: There is no */);
         print(c);
-        print(1056 /* in font */);
+        print(1060 /* in font */);
         slow_print(font_name[f]);
         print_char(33);
         end_diagnostic(false);
@@ -3596,7 +3596,7 @@ void Engine::special_out(int32_t p) {
     show_token_list(mem[mem[(p + 1)].hh.rh].hh.rh, 0, (pool_size - pool_ptr));
     selector = old_setting;
     if ((pool_ptr + 1) > pool_size) {
-        overflow(837 /*pool size*/, (pool_size - init_pool_ptr));
+        overflow(841 /*pool size*/, (pool_size - init_pool_ptr));
     }
     if (((pool_ptr - str_start[str_ptr])) < 256) {
         dvi_buf[dvi_ptr] = (239);
@@ -3656,10 +3656,10 @@ void Engine::write_out(int32_t p) {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1057 /*Unbalanced write command*/);
+        print(1061 /*Unbalanced write command*/);
         help_ptr = 2;
-        help_line[1] = 1058 /*On this page there's a \write with fewer real {'s than }'s.*/;
-        help_line[0] = 1059 /*I can't handle that very well; good luck.*/;
+        help_line[1] = 1062 /*On this page there's a \write with fewer real {'s than }'s.*/;
+        help_line[0] = 1063 /*I can't handle that very well; good luck.*/;
         error_();
         do {
             get_token();
@@ -3704,11 +3704,11 @@ void Engine::out_what(int32_t p) {
                         cur_area = mem[(p + 2)].hh.lh;
                         cur_ext = mem[(p + 2)].hh.rh;
                         if (cur_ext == 258 /**/) {
-                            cur_ext = 1033 /*.tex*/;
+                            cur_ext = 1037 /*.tex*/;
                         }
                         pack_file_name(cur_name, cur_area, cur_ext);
                         while (!a_open_out(write_file[j])) {
-                            prompt_file_name(1060 /*output file name*/, 1033 /*.tex*/);
+                            prompt_file_name(1064 /*output file name*/, 1037 /*.tex*/);
                         }
                         write_open[j] = true;
                         log_openout(j);
@@ -3946,7 +3946,7 @@ void Engine::hlist_out() {
                 }
                 goto L13;
             } break;
-            case 11: case 9: {
+            case 11: case 9: case 40: {
                 cur_h = (cur_h + mem[(p + (1))].int_);
             } break;
             case 6: {

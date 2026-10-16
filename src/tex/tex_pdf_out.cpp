@@ -22,6 +22,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <fstream>
@@ -376,6 +377,7 @@ struct PdfContent {
     int32_t pdf_font = -1;       // its PdfFont
     double size_sp = 0;          // its size
     double extend = 1, slant = 0;
+    bool skewed = false;         // the text matrix set last was not a translation (Td would keep it)
     int64_t line_x = 0, line_y = 0;  // the text line's origin, in milli-bp
     double px = 0;               // where the PDF's text position is now, in sp along the line
     int32_t line_v = 0;          // the line's baseline (TeX's v)
@@ -383,9 +385,15 @@ struct PdfContent {
     std::set<int32_t> xforms, ximages;
     std::vector<int32_t> annots;
     std::string page_put;        // entries \special{pdf:put @thispage <<...>>} adds to the page
-    // a link begun by \pdfstartlink and not yet ended
-    int32_t link_node = 0;
-    int32_t link_h = 0, link_v = 0, link_box = 0;
+    // links begun by \pdfstartlink and not yet ended: a form's own, or
+    // the pages' (where a link goes on from one page to the next)
+    std::vector<PdfLink> own_links;
+    std::vector<PdfLink> *links = &own_links;
+    int32_t level = 0;  // nesting of the box being shipped
+
+    PdfContent() = default;
+    PdfContent(const PdfContent &) = delete;
+    PdfContent &operator=(const PdfContent &) = delete;
 };
 
 namespace {
@@ -409,6 +417,7 @@ void EndText(PdfContent &pc) {
 }  // namespace
 
 int32_t Engine::pdf_font_index(int32_t fnt) {
+    fnt = pdf_font_root(fnt);  // a copy is its font (scaled across, if expanded)
     const std::string tfm = pool_to_string(font_name[fnt]);
     auto it = pdf_.font_by_tfm.find(tfm);
     if (it != pdf_.font_by_tfm.end()) return it->second;
@@ -437,35 +446,58 @@ double Engine::pdf_char_width(int32_t pf, int32_t pc) {
     const four_quarters ci = char_info(fnt, pc);
     if (ci.b0 == 0) return 0;
     const double w = static_cast<double>(char_width(fnt, ci)) * 1000.0 / font_size[fnt];
-    return static_cast<double>(std::llround(w * 1000.0)) / 1000.0;
+    return static_cast<double>(std::llround(w * 10.0)) / 10.0;  // to 0.1, as pdfTeX writes them
 }
 
 void Engine::pdf_out_char(PdfContent &pc, int32_t fnt, int32_t ch, int32_t h, int32_t v) {
+    h += font_letterspace(fnt) / 2;  // a letterspaced glyph sits in the middle of its widened box
     if (fnt != pc.font) {
-        EndArray(pc);
+        if (const int32_t vf = pdf_vf(fnt); vf >= 0) {
+            pdf_out_vf_char(pc, vf, fnt, ch, h, v);
+            return;
+        }
         const int32_t pf = pdf_font_index(fnt);
         const PdfMapEntry *m = pdf_map_entry(pdf_.fonts[static_cast<size_t>(pf)].tfm);
-        const double ext = m ? m->extend : 1, sl = m ? m->slant : 0;
-        if (!pc.in_text || ext != pc.extend || sl != pc.slant) {
-            // a fresh text matrix: the next character positions itself with Tm
-            if (!pc.in_text) {
-                pc.s += "BT\n";
-                pc.line_x = pc.line_y = 0;  // BT starts from the identity matrix
+        const double ext = (m ? m->extend : 1) * (1000 + font_expansion_of(fnt)) / 1000.0, sl = m ? m->slant : 0;
+        const bool same = pc.in_text && pc.font >= 0 && pf == pc.pdf_font && ext == pc.extend && sl == pc.slant &&
+                          font_size[fnt] == font_size[pc.font];
+        if (same) {
+            pc.font = fnt;  // a copy drawn just as its font is: nothing to change in the PDF
+        } else {
+            EndArray(pc);
+            if (!pc.in_text || ext != pc.extend || sl != pc.slant) {
+                // a fresh text matrix: the next character positions itself with Tm
+                if (!pc.in_text) {
+                    pc.s += "BT\n";
+                    pc.line_x = pc.line_y = 0;  // BT starts from the identity matrix
+                    pc.skewed = false;
+                }
+                pc.in_text = true;
+                pc.extend = ext;
+                pc.slant = sl;
+                pc.line_v = v + 1;  // force positioning
             }
-            pc.in_text = true;
-            pc.extend = ext;
-            pc.slant = sl;
-            pc.line_v = v + 1;  // force positioning
+            pc.font = fnt;
+            pc.pdf_font = pf;
+            // the size in bp to 4 decimals, as pdfTeX writes it; positions
+            // within the line are reckoned in the PDF's units, from that size
+            const int64_t size4 = std::llround(font_size[fnt] / kSpPerBp * 10000.0);
+            pc.size_sp = static_cast<double>(size4) / 10000.0 * kSpPerBp;
+            pc.fonts.insert(pf);
+            std::string size = std::to_string(size4 / 10000);
+            if (size4 % 10000 != 0) {
+                char buf[8];
+                std::snprintf(buf, sizeof buf, ".%04d", static_cast<int>(size4 % 10000));
+                size += buf;
+                while (size.back() == '0') size.pop_back();
+            }
+            pc.s += "/F" + std::to_string(pdf_.fonts[static_cast<size_t>(pf)].res) + " " + size + " Tf\n";
         }
-        pc.font = fnt;
-        pc.pdf_font = pf;
-        pc.size_sp = font_size[fnt];
-        pc.fonts.insert(pf);
-        pc.s += "/F" + std::to_string(pdf_.fonts[static_cast<size_t>(pf)].res) + " " + Num(Milli(font_size[fnt])) + " Tf\n";
     }
     if (!pc.in_text) {
         pc.s += "BT\n";
         pc.line_x = pc.line_y = 0;
+        pc.skewed = false;
         pc.in_text = true;
         pc.line_v = v + 1;
     }
@@ -474,8 +506,9 @@ void Engine::pdf_out_char(PdfContent &pc, int32_t fnt, int32_t ch, int32_t h, in
     if (v != pc.line_v || std::fabs(delta) > 100.0 * pc.size_sp) {
         EndArray(pc);
         const int64_t x = Milli(h), y = Milli(pc.page_h - v);
-        if (pc.extend != 1 || pc.slant != 0) {
+        if (pc.extend != 1 || pc.slant != 0 || pc.skewed) {
             pc.s += NumD(pc.extend) + " 0 " + NumD(pc.slant) + " 1 " + Num(x) + " " + Num(y) + " Tm\n";
+            pc.skewed = pc.extend != 1 || pc.slant != 0;
         } else {
             pc.s += Num(x - pc.line_x) + " " + Num(y - pc.line_y) + " Td\n";
         }
@@ -507,6 +540,182 @@ void Engine::pdf_out_char(PdfContent &pc, int32_t fnt, int32_t ch, int32_t h, in
     }
     pdf_.fonts[static_cast<size_t>(pc.pdf_font)].used[b] = true;
     pc.px += pdf_char_width(pc.pdf_font, ch) * unit;
+}
+
+// --- Virtual fonts --------------------------------------------------------------------------------
+//
+// A font with a .vf file is virtual, as in pdfTeX (the VF is looked for
+// before the map file): each character is drawn by its packet, a little
+// DVI program setting characters of the VF's local fonts, rules and
+// specials. The character's width is still its TFM's.
+
+namespace {
+
+uint32_t VfUnsigned(const std::string &d, size_t &i, int n) {
+    uint32_t v = 0;
+    for (int k = 0; k < n && i < d.size(); k++) v = (v << 8) | static_cast<unsigned char>(d[i++]);
+    return v;
+}
+
+int32_t VfSigned(const std::string &d, size_t &i, int n) {
+    const uint32_t v = VfUnsigned(d, i, n);
+    if (n < 4 && (v & (1u << (8 * n - 1)))) return static_cast<int32_t>(v) - (1 << (8 * n));
+    return static_cast<int32_t>(v);
+}
+
+// a fix_word times a size, rounded as TeX scales TFM dimensions (§571-572)
+int32_t VfScaled(int32_t fw, int32_t size) {
+    int32_t z = size, alpha = 16;
+    while (z >= 0x800000) {
+        z /= 2;
+        alpha += alpha;
+    }
+    const int32_t beta = 256 / alpha;
+    alpha *= z;
+    const auto u = static_cast<uint32_t>(fw);
+    const int32_t a = static_cast<int32_t>(u >> 24), b = static_cast<int32_t>((u >> 16) & 255),
+                  c = static_cast<int32_t>((u >> 8) & 255), d = static_cast<int32_t>(u & 255);
+    const int32_t sw = (((d * z) / 256 + c * z) / 256 + b * z) / beta;
+    return a == 0 ? sw : a == 255 ? sw - alpha : 0;
+}
+
+}  // namespace
+
+int32_t Engine::pdf_vf_local_font(const std::string &name, int32_t size) {
+    for (int32_t lfont = tc::font_base + 1; lfont <= font_ptr; lfont++)
+        if (font_size[lfont] == size && pool_to_string(font_name[lfont]) == name) return lfont;
+    const int32_t lfont = read_font_info(tc::null_cs, pool_string(name.c_str()), 258 /* "" */, size);
+    return lfont == tc::null_font ? -1 : lfont;
+}
+
+int32_t Engine::pdf_vf(int32_t fnt) {
+    if (auto it = pdf_.vf_of_font.find(fnt); it != pdf_.vf_of_font.end()) return it->second;
+    pdf_.vf_of_font[fnt] = -1;
+    if (!resolver || fnt == tc::null_font) return -1;
+    const std::string path = resolver->find(pool_to_string(font_name[fnt]) + ".vf", kOtherFile);
+    if (path.empty()) return -1;
+    const std::string d = ReadFile(path);
+    if (d.size() < 11 || static_cast<unsigned char>(d[0]) != 247 || static_cast<unsigned char>(d[1]) != 202) return -1;
+    size_t i = 2;
+    i += 1 + static_cast<unsigned char>(d[i]) + 8;  // the comment, checksum and design size
+    PdfVirtualFont vf;
+    while (i < d.size()) {
+        const int op = static_cast<unsigned char>(d[i++]);
+        if (op <= 242) {
+            uint32_t len, cc;
+            if (op == 242) {
+                len = VfUnsigned(d, i, 4);
+                cc = VfUnsigned(d, i, 4);
+                i += 4;
+            } else {
+                len = static_cast<uint32_t>(op);
+                cc = VfUnsigned(d, i, 1);
+                i += 3;
+            }
+            if (i + len > d.size()) break;
+            vf.packets[static_cast<int32_t>(cc)] = d.substr(i, len);
+            i += len;
+        } else if (op >= 243 && op <= 246) {
+            const auto k = static_cast<int32_t>(VfUnsigned(d, i, op - 242));
+            i += 4;  // checksum
+            const int32_t s = VfSigned(d, i, 4);
+            i += 4;  // design size
+            const int a = static_cast<int>(VfUnsigned(d, i, 1)), l = static_cast<int>(VfUnsigned(d, i, 1));
+            if (i + static_cast<size_t>(a + l) > d.size()) break;
+            const std::string name = d.substr(i + static_cast<size_t>(a), static_cast<size_t>(l));
+            i += static_cast<size_t>(a + l);
+            const int32_t lfont = pdf_vf_local_font(name, VfScaled(s, font_size[fnt]));
+            if (lfont < 0) continue;
+            vf.fonts[k] = lfont;
+            if (vf.first < 0) vf.first = lfont;
+        } else {
+            break;  // the postamble
+        }
+    }
+    pdf_.vfs.push_back(std::move(vf));
+    const auto n = static_cast<int32_t>(pdf_.vfs.size()) - 1;
+    pdf_.vf_of_font[fnt] = n;
+    return n;
+}
+
+void Engine::pdf_out_vf_char(PdfContent &pc, int32_t vf, int32_t fnt, int32_t ch, int32_t h, int32_t v) {
+    using namespace tc;
+    std::string pkt;
+    int32_t lfont;
+    {
+        const PdfVirtualFont &x = pdf_.vfs[static_cast<size_t>(vf)];
+        auto it = x.packets.find(ch);
+        if (it == x.packets.end() || pdf_.vf_depth >= 10) return;  // no such character; a VF drawing itself
+        pkt = it->second;
+        lfont = x.first;
+    }
+    const int32_t size = font_size[fnt];
+    struct Regs {
+        int32_t h, v, w, x, y, z;
+    };
+    Regs r{h, v, 0, 0, 0, 0};
+    std::vector<Regs> stack;
+    ++pdf_.vf_depth;
+    auto set_char = [&](int32_t code, bool move) {
+        if (lfont < 0) return;
+        pdf_out_char(pc, lfont, code, r.h, r.v);
+        if (move && code >= font_bc[lfont] && code <= font_ec[lfont]) r.h += char_width(lfont, char_info(lfont, code));
+    };
+    auto local_font = [&](int32_t k) {
+        const PdfVirtualFont &x = pdf_.vfs[static_cast<size_t>(vf)];
+        auto it = x.fonts.find(k);
+        lfont = it == x.fonts.end() ? -1 : it->second;
+    };
+    size_t i = 0;
+    while (i < pkt.size()) {
+        const int op = static_cast<unsigned char>(pkt[i++]);
+        if (op < 128) {
+            set_char(op, true);
+        } else if (op <= 131) {
+            set_char(static_cast<int32_t>(VfUnsigned(pkt, i, op - 127)), true);
+        } else if (op == 132 || op == 137) {
+            const int32_t a = VfScaled(VfSigned(pkt, i, 4), size), b = VfScaled(VfSigned(pkt, i, 4), size);
+            if (a > 0 && b > 0) pdf_out_rule(pc, r.h, r.v, b, a);
+            if (op == 132) r.h += b;
+        } else if (op <= 136) {
+            set_char(static_cast<int32_t>(VfUnsigned(pkt, i, op - 132)), false);
+        } else if (op == 141) {
+            stack.push_back(r);
+        } else if (op == 142) {
+            if (!stack.empty()) {
+                r = stack.back();
+                stack.pop_back();
+            }
+        } else if (op >= 143 && op <= 146) {
+            r.h += VfScaled(VfSigned(pkt, i, op - 142), size);
+        } else if (op >= 147 && op <= 151) {
+            if (op > 147) r.w = VfScaled(VfSigned(pkt, i, op - 147), size);
+            r.h += r.w;
+        } else if (op >= 152 && op <= 156) {
+            if (op > 152) r.x = VfScaled(VfSigned(pkt, i, op - 152), size);
+            r.h += r.x;
+        } else if (op >= 157 && op <= 160) {
+            r.v += VfScaled(VfSigned(pkt, i, op - 156), size);
+        } else if (op >= 161 && op <= 165) {
+            if (op > 161) r.y = VfScaled(VfSigned(pkt, i, op - 161), size);
+            r.v += r.y;
+        } else if (op >= 166 && op <= 170) {
+            if (op > 166) r.z = VfScaled(VfSigned(pkt, i, op - 166), size);
+            r.v += r.z;
+        } else if (op >= 171 && op <= 234) {
+            local_font(op - 171);
+        } else if (op >= 235 && op <= 238) {
+            local_font(static_cast<int32_t>(VfUnsigned(pkt, i, op - 234)));
+        } else if (op >= 239 && op <= 242) {
+            const uint32_t len = VfUnsigned(pkt, i, op - 238);
+            if (i + len > pkt.size()) break;
+            pdf_special(pc, pkt.substr(i, len), r.h, r.v);
+            i += len;
+        } else if (op != 138) {
+            break;  // not a command a packet may hold
+        }
+    }
+    --pdf_.vf_depth;
 }
 
 void Engine::pdf_out_rule(PdfContent &pc, int32_t h, int32_t v, int32_t w, int32_t ht) {
@@ -555,7 +764,9 @@ void Engine::pdf_out_whatsit(PdfContent &pc, int32_t p, int32_t h, int32_t v, in
     auto list_text = [&]() { return link(p + 5) != null ? tokens_to_string(link(link(p + 5))) : std::string(); };
     auto dim = [&](int32_t x, int32_t box_dim) { return x == null_flag ? box_dim : x; };
     switch (sub) {
-    case pdf_literal_node: pdf_out_literal(pc, list_text(), d.mode, h, v); return;
+    case pdf_literal_node:
+        pdf_out_literal(pc, d.shipout ? pdf_expand_at_shipout(link(p + 5)) : list_text(), d.mode, h, v);
+        return;
     case pdf_colorstack_node: {
         if (d.stack < 0 || d.stack >= static_cast<int32_t>(pdf_.colorstacks.size())) return;
         PdfColorStack &cs = pdf_.colorstacks[static_cast<size_t>(d.stack)];
@@ -621,29 +832,29 @@ void Engine::pdf_out_whatsit(PdfContent &pc, int32_t p, int32_t h, int32_t v, in
         pc.annots.push_back(d.obj);
         return;
     }
-    case pdf_start_link_node:
-        pc.link_node = p;
-        pc.link_h = h;
-        pc.link_v = v;
-        pc.link_box = this_box;
-        return;
-    case pdf_end_link_node: {
-        if (pc.link_node == 0) return;
-        const int32_t q = pc.link_node;
-        const PdfNodeData ld = pdf_node(q);
-        const int32_t ht = dim(height(q), height(pc.link_box)), dp = dim(depth(q), depth(pc.link_box));
-        const int32_t m = dimen_par(pdf_link_margin_code);
-        const int32_t lx1 = pc.link_h, lx2 = width(q) != null_flag ? pc.link_h + width(q) : h;
-        const std::string rect = Num(Milli(lx1 - m)) + " " + Num(Milli(pc.page_h - pc.link_v - dp - m)) + " " +
-                                 Num(Milli(lx2 + m)) + " " + Num(Milli(pc.page_h - pc.link_v + ht + m));
-        std::string attr = link(q + 5) != null ? tokens_to_string(link(link(q + 5))) : std::string();
+    case pdf_start_link_node: {
         // a `user` action is the rest of the annotation, /Subtype and all
-        const bool user = ld.text.rfind("user ", 0) == 0;
-        pdf_write_object_text(ld.obj, "<< /Type /Annot " + std::string(user ? "" : "/Subtype /Link ") + attr +
-                                          " /Rect [" + rect + "] " + (user ? ld.text.substr(5) : pdf_action(ld.text)) +
-                                          " >>");
-        pc.annots.push_back(ld.obj);
-        pc.link_node = 0;
+        const bool user = d.text.rfind("user ", 0) == 0;
+        PdfLink l;
+        l.level = pc.level;
+        l.width = width(p);
+        l.height = height(p);
+        l.depth = depth(p);
+        l.head = "<< /Type /Annot " + std::string(user ? "" : "/Subtype /Link ") + list_text();
+        l.tail = (user ? d.text.substr(5) : pdf_action(d.text)) + " >>";
+        l.obj = d.obj;
+        l.h = h;
+        l.v = v;
+        l.box = this_box;
+        l.open = true;
+        pc.links->push_back(std::move(l));
+        return;
+    }
+    case pdf_end_link_node: {
+        if (pc.links->empty()) return;
+        const PdfLink &l = pc.links->back();
+        if (l.open) pdf_write_link_part(pc, pc.links->size() - 1, l.width != null_flag ? l.h + l.width : h);
+        pc.links->pop_back();
         return;
     }
     case pdf_dest_node: {
@@ -694,6 +905,54 @@ void Engine::pdf_out_whatsit(PdfContent &pc, int32_t p, int32_t h, int32_t v, in
     default:
         return;  // threads, snapping: not drawn
     }
+}
+
+// The text of a token list expanded now, as \write expands its text when
+// the page ships (\pdfliteral shipout).
+std::string Engine::pdf_expand_at_shipout(int32_t toks) {
+    using namespace tc;
+    if (toks == null) return "";
+    int32_t q = get_avail();
+    info(q) = right_brace_token + '}';
+    const int32_t r = get_avail();
+    link(q) = r;
+    info(r) = cs_token_flag + end_write;
+    begin_token_list(q, inserted);
+    begin_token_list(toks, write_text);
+    q = get_avail();
+    info(q) = left_brace_token + '{';
+    begin_token_list(q, inserted);
+    const int32_t old_mode = mode();
+    mode() = 0;
+    cur_cs = write_loc;
+    q = scan_toks(false, true);
+    get_token();
+    if (cur_tok != cs_token_flag + end_write) {
+        print_err_str("Unbalanced literal");
+        set_help({"This \\pdfliteral shipout has fewer real {'s than }'s."});
+        error_();
+        do get_token();
+        while (cur_tok != cs_token_flag + end_write);
+    }
+    mode() = old_mode;
+    end_token_list();
+    std::string text = tokens_to_string(link(def_ref));
+    flush_list(def_ref);
+    return text;
+}
+
+// One part of a link: its annotation, from where the part began to `right`.
+void Engine::pdf_write_link_part(PdfContent &pc, size_t k, int32_t right) {
+    using namespace tc;
+    PdfLink &l = (*pc.links)[k];
+    const int32_t ht = l.height == null_flag ? height(l.box) : l.height;
+    const int32_t dp = l.depth == null_flag ? depth(l.box) : l.depth;
+    const int32_t m = dimen_par(pdf_link_margin_code);
+    const std::string rect = Num(Milli(l.h - m)) + " " + Num(Milli(pc.page_h - l.v - dp - m)) + " " +
+                             Num(Milli(right + m)) + " " + Num(Milli(pc.page_h - l.v + ht + m));
+    pdf_write_object_text(l.obj, l.head + " /Rect [" + rect + "] " + l.tail);
+    pc.annots.push_back(l.obj);
+    l.open = false;
 }
 
 // --- dvipdfmx's pdf: specials ---------------------------------------------------------------
@@ -933,6 +1192,15 @@ void Engine::pdf_hlist_out(PdfContent &pc, int32_t this_box, int32_t &cur_h_, in
     int32_t cur_g = 0;
     const int32_t g_order = glue_order(this_box), g_sign = glue_sign(this_box);
     const int32_t base_line = cur_v_, left_edge = cur_h_;
+    ++pc.level;
+    for (PdfLink &l : *pc.links) {
+        if (l.level != pc.level || l.open || l.width != tc::null_flag) continue;
+        l.obj = pdf_new_obj(PdfObject::Link);
+        l.h = left_edge;
+        l.v = base_line;
+        l.box = this_box;
+        l.open = true;
+    }
     int32_t p = list_ptr(this_box);
     while (p != null) {
         if (is_char_node(p)) {
@@ -1025,7 +1293,8 @@ void Engine::pdf_hlist_out(PdfContent &pc, int32_t this_box, int32_t &cur_h_, in
             break;
         }
         case kern_node:
-        case math_node: cur_h_ += width(p); break;
+        case math_node:
+        case margin_kern_node: cur_h_ += width(p); break;
         case ligature_node: {
             const int32_t q = p + 1;  // lig_char(p)
             pdf_out_char(pc, type(q), subtype(q), cur_h_, cur_v_);
@@ -1043,6 +1312,13 @@ void Engine::pdf_hlist_out(PdfContent &pc, int32_t this_box, int32_t &cur_h_, in
         }
         p = link(p);
     }
+    // a link still open at the end of its line runs to the line's end
+    for (size_t k = 0; k < pc.links->size(); ++k) {
+        const PdfLink &l = (*pc.links)[k];
+        if (l.open && l.box == this_box && l.width == tc::null_flag)
+            pdf_write_link_part(pc, k, left_edge + width(this_box));
+    }
+    --pc.level;
 }
 
 void Engine::pdf_vlist_out(PdfContent &pc, int32_t this_box, int32_t &cur_h_, int32_t &cur_v_) {
@@ -1053,6 +1329,7 @@ void Engine::pdf_vlist_out(PdfContent &pc, int32_t this_box, int32_t &cur_h_, in
     const int32_t left_edge = cur_h_;
     cur_v_ -= height(this_box);
     const int32_t top_edge = cur_v_;
+    ++pc.level;
     int32_t p = list_ptr(this_box);
     while (p != null) {
         if (is_char_node(p)) confusion(pool_string("vlistout"));
@@ -1152,6 +1429,7 @@ void Engine::pdf_vlist_out(PdfContent &pc, int32_t this_box, int32_t &cur_h_, in
         }
         p = link(p);
     }
+    --pc.level;
 }
 
 // --- Objects -----------------------------------------------------------------------------------
@@ -1600,6 +1878,7 @@ void Engine::pdf_ship_out(int32_t p) {
                                ? dimen_par(pdf_page_height_code)
                                : height(p) + depth(p) + 2 * dimen_par(pdf_v_origin_code);
     pc.page_h = page_h;
+    pc.links = &pdf_.page_links;
     // stacks marked `page` start each page with their current value
     for (size_t k = 0; k < pdf_.colorstacks.size(); k++) {
         if (pdf_.colorstacks[k].page_start && !pdf_.colorstacks[k].stack.empty())

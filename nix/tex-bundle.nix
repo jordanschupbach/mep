@@ -6,9 +6,9 @@
 #
 # What is in it: what mep's own LaTeX output asks for (the org and mepml
 # exports, maths previews through standalone, Beamer decks), the common
-# packages a hand-written article reaches for, Latin Modern and the
-# CM/AMS fonts. Anything else comes from a system TeX Live with
-# tex_packages = bundle+system.
+# packages a hand-written article reaches for, Latin Modern, the CM/AMS
+# fonts and psnfss's PostScript fonts. Anything else comes from a system
+# TeX Live with tex_packages = bundle+system.
 { pkgs, bundleScript }:
 
 let
@@ -22,6 +22,10 @@ let
     "beamer"
     "booktabs" "caption" "enumitem" "mathtools" "listings" "multirow" "cleveref"
     "wrapfig" "setspace" "parskip" "microtype" "csquotes" "siunitx" "lastpage" "titlesec"
+    # psnfss's fonts (times, helvet, mathptmx, mathpazo ...): URW's
+    # PostScript 35, Charter and Utopia, through virtual fonts
+    "times" "helvetic" "courier" "palatino" "avantgar" "bookman" "ncntrsbk" "zapfchan"
+    "mathpazo" "fpl" "charter" "utopia" "rsfs"
   ];
   tree = tl.combine (pkgs.lib.genAttrs names (n: tl.${n}));
 

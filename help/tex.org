@@ -59,13 +59,15 @@ latexmk) does:
   the exit status is 1.
 
 LaTeX, its packages and fonts come from mep's own TeX bundle: a part of
-TeX Live installed with mep (=share/mep/tex/tex-bundle.mtb=, about 21
+TeX Live installed with mep (=share/mep/tex/tex-bundle.mtb=, about 26
 MB) and unpacked into =~/.cache/mep/tex= the first time. It holds the
 LaTeX kernel, amsmath and amssymb, graphics, xcolor, hyperref, geometry,
 Beamer, TikZ and tcolorbox, standalone, the tools bundle, booktabs,
 caption, enumitem, mathtools, listings, siunitx, microtype and some
-more, with Latin Modern and the Computer Modern and AMS fonts. Its
-=LICENSES.txt= lists every package in it and its licence.
+more, with Latin Modern, the Computer Modern and AMS fonts, and the
+PostScript fonts of psnfss (=times=, =mathptmx=, =helvet=, =courier=,
+=mathpazo=, =bookman=, =charter=, =utopia= ...). Its =LICENSES.txt=
+lists every package in it and its licence.
 
 The setting /TeX packages/ (=--packages=) says where else to look:
 
@@ -95,8 +97,11 @@ with cm-super is used for it under =bundle+system=.
 | =--rebuild-format=      | make the format again                                  |
 | =-v=                    | say on stderr when the bundle is unpacked, a format made or a run repeated |
 
-Not done yet: links broken across lines, virtual fonts (the Times and
-Helvetica packages), bitmap fonts, and micro-typography.
+microtype works as under pdfLaTeX: characters protrude into the margins,
+fonts expand to even out the spacing (both change where lines break, as
+they do in pdfLaTeX), and =\textls= letterspaces. Not done yet: bitmap
+(PK) fonts, article threads, and a few e-TeX extras (=\lastlinefit=,
+right-to-left text with =\beginR=).
 
 * On the command line
 

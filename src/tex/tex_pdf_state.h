@@ -88,6 +88,27 @@ struct PdfMapEntry {
     bool embed = true;
 };
 
+// A virtual font (.vf): each character is a packet of DVI commands that
+// draws it from other fonts (its local fonts, loaded as TeX fonts).
+struct PdfVirtualFont {
+    std::unordered_map<int32_t, int32_t> fonts;     // local font number -> TeX font
+    int32_t first = -1;                              // the font a packet starts in
+    std::unordered_map<int32_t, std::string> packets;  // by character code
+};
+
+// A link begun by \pdfstartlink and not yet ended. A link of running
+// width still open at the end of its line goes on in the next box at the
+// same nesting level (the paragraph's next line, the page's foot, the next
+// page ...) as another annotation: pdfTeX's link stack.
+struct PdfLink {
+    int32_t level = 0;  // the box nesting it began at
+    int32_t width = 0, height = 0, depth = 0;  // \pdfstartlink's (null_flag: running)
+    std::string head, tail;  // the annotation around its /Rect (the node goes with its page)
+    int32_t obj = 0;    // this part's annotation
+    int32_t h = 0, v = 0, box = 0;  // where this part begins, in which box
+    bool open = false;  // a part is being drawn
+};
+
 struct PdfState {
     PdfState() {
         PdfColorStack c;  // stack 0 is pdfTeX's own: \pdfcolorstack 0 is always there
@@ -100,6 +121,10 @@ struct PdfState {
     std::vector<PdfObject> objects;          // by object number (index 0 unused)
     std::vector<PdfNodeData> nodes;          // whatsit data
     std::vector<int32_t> free_nodes;
+    std::vector<PdfLink> page_links;         // links open across lines and pages
+    std::unordered_map<int32_t, int32_t> vf_of_font;  // TeX font -> index in vfs, or -1: not virtual
+    std::vector<PdfVirtualFont> vfs;
+    int32_t vf_depth = 0;                    // virtual characters being drawn, one inside another
     int32_t last_obj = 0, last_xform = 0, last_ximage = 0, last_ximage_pages = 0, last_annot = 0, last_link = 0;
     int32_t last_ximage_colordepth = 0, retval = 0;
     int32_t last_x_pos = 0, last_y_pos = 0;
@@ -115,6 +140,17 @@ struct PdfState {
     uint64_t random_seed = 0;
     uint64_t random_state = 0;
     bool random_init = false;
+    // font expansion: \pdffontexpand's limits by font, and the expanded
+    // copies of fonts made for lines (tex_microtype.cpp)
+    struct FontExpand {
+        int32_t stretch = 0, shrink = 0, step = 0;
+    };
+    std::unordered_map<int32_t, FontExpand> font_expand;
+    FontExpand expand_last;  // the limits of the font last measured
+    std::map<std::pair<int32_t, int32_t>, int32_t> expanded_fonts;  // (font, expansion) -> its copy
+    std::unordered_map<int32_t, std::pair<int32_t, int32_t>> expanded_of;  // copy -> (font, expansion)
+    std::unordered_map<int32_t, int32_t> font_copy_of;  // \letterspacefont, \pdfcopyfont -> the font copied
+    std::unordered_map<int32_t, int32_t> letterspace;   // the width a letterspaced font adds, in sp
     // font character codes (\lpcode ...), by (code, font, char)
     std::unordered_map<int64_t, int32_t> font_char_codes;
     std::unordered_map<int32_t, std::string> font_attrs;

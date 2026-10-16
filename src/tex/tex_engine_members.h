@@ -160,6 +160,38 @@ std::string pdf_action(const std::string &a);
 /** @brief hlist_out and vlist_out for PDF: the box's contents into `c`, at TeX's (h, v). */
 void pdf_hlist_out(PdfContent &c, int32_t this_box, int32_t &cur_h_, int32_t &cur_v_);
 void pdf_vlist_out(PdfContent &c, int32_t this_box, int32_t &cur_h_, int32_t &cur_v_);
+void pdf_write_link_part(PdfContent &c, size_t k, int32_t right);
+std::string pdf_expand_at_shipout(int32_t toks);
+int32_t pdf_vf(int32_t fnt);
+// tex_microtype.cpp: character protrusion
+bool margin_skippable(int32_t p);
+int32_t margin_protrusion(int32_t p, int32_t side);
+int32_t margin_first_item(int32_t p, bool top);
+int32_t margin_last_item(int32_t l, int32_t r, bool top);
+int32_t margin_line_start(int32_t l, bool discard);
+int32_t line_protrusion(int32_t pass, int32_t brk);
+int32_t new_margin_kern(int32_t w, int32_t side);
+int32_t protrude_right(int32_t q, bool after);
+int32_t protrude_left(int32_t q);
+int32_t margin_kern_of_box(int32_t b, bool right);
+// tex_microtype.cpp: font expansion
+int32_t font_base_of(int32_t fnt);
+int32_t font_expansion_of(int32_t fnt);
+int32_t font_char_code_of_base(int32_t code, int32_t fnt, int32_t chr);
+int32_t char_expand_amount(int32_t fnt, int32_t chr, bool stretching);
+int32_t make_font_copy(int32_t base, int32_t e, int32_t ls, bool own_params);
+int32_t expanded_font(int32_t base, int32_t e);
+int32_t font_cs_text(int32_t u);
+void new_font_copy(bool letterspace, bool global);
+int32_t pdf_font_root(int32_t fnt);
+int32_t font_letterspace(int32_t fnt);
+int32_t char_stretch(int32_t fnt, int32_t chr);
+int32_t char_shrink(int32_t fnt, int32_t chr);
+int32_t expansion_shortfall(int32_t shortfall, int32_t fstretch, int32_t fshrink);
+void print_font_expansion(int32_t fnt);
+void expand_line(int32_t q, int32_t w);
+int32_t pdf_vf_local_font(const std::string &name, int32_t size);
+void pdf_out_vf_char(PdfContent &c, int32_t vf, int32_t fnt, int32_t ch, int32_t h, int32_t v);
 void pdf_begin_file();
 void pdf_begin_obj(int32_t n);
 void pdf_write_object_text(int32_t n, const std::string &body);

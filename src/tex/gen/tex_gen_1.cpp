@@ -46,109 +46,109 @@ void Engine::end_diagnostic(bool blank_line) {
 void Engine::print_length_param(int32_t n) {
     switch (n) {
     case 0: {
-        print_esc(555 /*parindent*/);
+        print_esc(557 /*parindent*/);
     } break;
     case 1: {
-        print_esc(556 /*mathsurround*/);
+        print_esc(558 /*mathsurround*/);
     } break;
     case 2: {
-        print_esc(557 /*lineskiplimit*/);
+        print_esc(559 /*lineskiplimit*/);
     } break;
     case 3: {
-        print_esc(558 /*hsize*/);
+        print_esc(560 /*hsize*/);
     } break;
     case 4: {
-        print_esc(559 /*vsize*/);
+        print_esc(561 /*vsize*/);
     } break;
     case 5: {
-        print_esc(560 /*maxdepth*/);
+        print_esc(562 /*maxdepth*/);
     } break;
     case 6: {
-        print_esc(561 /*splitmaxdepth*/);
+        print_esc(563 /*splitmaxdepth*/);
     } break;
     case 7: {
-        print_esc(562 /*boxmaxdepth*/);
+        print_esc(564 /*boxmaxdepth*/);
     } break;
     case 8: {
-        print_esc(563 /*hfuzz*/);
+        print_esc(565 /*hfuzz*/);
     } break;
     case 9: {
-        print_esc(564 /*vfuzz*/);
+        print_esc(566 /*vfuzz*/);
     } break;
     case 10: {
-        print_esc(565 /*delimitershortfall*/);
+        print_esc(567 /*delimitershortfall*/);
     } break;
     case 11: {
-        print_esc(566 /*nulldelimiterspace*/);
+        print_esc(568 /*nulldelimiterspace*/);
     } break;
     case 12: {
-        print_esc(567 /*scriptspace*/);
+        print_esc(569 /*scriptspace*/);
     } break;
     case 13: {
-        print_esc(568 /*predisplaysize*/);
+        print_esc(570 /*predisplaysize*/);
     } break;
     case 14: {
-        print_esc(569 /*displaywidth*/);
+        print_esc(571 /*displaywidth*/);
     } break;
     case 15: {
-        print_esc(570 /*displayindent*/);
+        print_esc(572 /*displayindent*/);
     } break;
     case 16: {
-        print_esc(571 /*overfullrule*/);
+        print_esc(573 /*overfullrule*/);
     } break;
     case 17: {
-        print_esc(572 /*hangindent*/);
+        print_esc(574 /*hangindent*/);
     } break;
     case 18: {
-        print_esc(573 /*hoffset*/);
+        print_esc(575 /*hoffset*/);
     } break;
     case 19: {
-        print_esc(574 /*voffset*/);
+        print_esc(576 /*voffset*/);
     } break;
     case 20: {
-        print_esc(575 /*emergencystretch*/);
+        print_esc(577 /*emergencystretch*/);
     } break;
     case 21: {
-        print_esc(576 /*pdfhorigin*/);
+        print_esc(578 /*pdfhorigin*/);
     } break;
     case 22: {
-        print_esc(577 /*pdfvorigin*/);
+        print_esc(579 /*pdfvorigin*/);
     } break;
     case 23: {
-        print_esc(578 /*pdfpagewidth*/);
+        print_esc(580 /*pdfpagewidth*/);
     } break;
     case 24: {
-        print_esc(579 /*pdfpageheight*/);
+        print_esc(581 /*pdfpageheight*/);
     } break;
     case 25: {
-        print_esc(580 /*pdflinkmargin*/);
+        print_esc(582 /*pdflinkmargin*/);
     } break;
     case 26: {
-        print_esc(581 /*pdfdestmargin*/);
+        print_esc(583 /*pdfdestmargin*/);
     } break;
     case 27: {
-        print_esc(582 /*pdfthreadmargin*/);
+        print_esc(584 /*pdfthreadmargin*/);
     } break;
     case 28: {
-        print_esc(583 /*pdffirstlineheight*/);
+        print_esc(585 /*pdffirstlineheight*/);
     } break;
     case 29: {
-        print_esc(584 /*pdflastlinedepth*/);
+        print_esc(586 /*pdflastlinedepth*/);
     } break;
     case 30: {
-        print_esc(585 /*pdfeachlineheight*/);
+        print_esc(587 /*pdfeachlineheight*/);
     } break;
     case 31: {
-        print_esc(586 /*pdfeachlinedepth*/);
+        print_esc(588 /*pdfeachlinedepth*/);
     } break;
     case 32: {
-        print_esc(587 /*pdfignoreddimen*/);
+        print_esc(589 /*pdfignoreddimen*/);
     } break;
     case 33: {
-        print_esc(588 /*pdfpxdimen*/);
+        print_esc(590 /*pdfpxdimen*/);
     } break;
     default: {
-        print(589 /*[unknown dimen parameter!]*/);
+        print(591 /*[unknown dimen parameter!]*/);
     } break;
     }
 }
@@ -158,42 +158,42 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
     int32_t n{};
     switch (cmd) {
     case 1: {
-        print(590 /*begin-group character */);
+        print(592 /*begin-group character */);
         print(chr_code);
     } break;
     case 2: {
-        print(591 /*end-group character */);
+        print(593 /*end-group character */);
         print(chr_code);
     } break;
     case 3: {
-        print(592 /*math shift character */);
+        print(594 /*math shift character */);
         print(chr_code);
     } break;
     case 6: {
-        print(593 /*macro parameter character */);
+        print(595 /*macro parameter character */);
         print(chr_code);
     } break;
     case 7: {
-        print(594 /*superscript character */);
+        print(596 /*superscript character */);
         print(chr_code);
     } break;
     case 8: {
-        print(595 /*subscript character */);
+        print(597 /*subscript character */);
         print(chr_code);
     } break;
     case 9: {
-        print(596 /*end of alignment template*/);
+        print(598 /*end of alignment template*/);
     } break;
     case 10: {
-        print(597 /*blank space */);
+        print(599 /*blank space */);
         print(chr_code);
     } break;
     case 11: {
-        print(598 /*the letter */);
+        print(600 /*the letter */);
         print(chr_code);
     } break;
     case 12: {
-        print(599 /*the character */);
+        print(601 /*the character */);
         print(chr_code);
     } break;
     case 75: case 76: {
@@ -201,61 +201,61 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
             print_skip_param((chr_code - ((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1))));
         } else {
             if (chr_code < ((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768)))) {
-                print_esc(600 /*skip*/);
+                print_esc(602 /*skip*/);
                 print_int((chr_code - ((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18)))));
             } else {
-                print_esc(601 /*muskip*/);
+                print_esc(603 /*muskip*/);
                 print_int((chr_code - ((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768)))));
             }
         }
     } break;
     case 72: {
         if (chr_code >= ((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19))) {
-            print_esc(602 /*toks*/);
+            print_esc(604 /*toks*/);
             print_int((chr_code - ((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19))));
         } else {
             switch (chr_code) {
             case 599369: {
-                print_esc(603 /*output*/);
+                print_esc(605 /*output*/);
             } break;
             case 599370: {
-                print_esc(604 /*everypar*/);
+                print_esc(606 /*everypar*/);
             } break;
             case 599371: {
-                print_esc(605 /*everymath*/);
+                print_esc(607 /*everymath*/);
             } break;
             case 599372: {
-                print_esc(606 /*everydisplay*/);
+                print_esc(608 /*everydisplay*/);
             } break;
             case 599373: {
-                print_esc(607 /*everyhbox*/);
+                print_esc(609 /*everyhbox*/);
             } break;
             case 599374: {
-                print_esc(608 /*everyvbox*/);
+                print_esc(610 /*everyvbox*/);
             } break;
             case 599375: {
-                print_esc(609 /*everyjob*/);
+                print_esc(611 /*everyjob*/);
             } break;
             case 599376: {
-                print_esc(610 /*everycr*/);
+                print_esc(612 /*everycr*/);
             } break;
             case 599378: {
-                print_esc(611 /*everyeof*/);
+                print_esc(613 /*everyeof*/);
             } break;
             case 599383: {
-                print_esc(612 /*pdfpagesattr*/);
+                print_esc(614 /*pdfpagesattr*/);
             } break;
             case 599384: {
-                print_esc(613 /*pdfpageattr*/);
+                print_esc(615 /*pdfpageattr*/);
             } break;
             case 599385: {
-                print_esc(614 /*pdfpageresources*/);
+                print_esc(616 /*pdfpageresources*/);
             } break;
             case 599386: {
-                print_esc(615 /*pdfpkmode*/);
+                print_esc(617 /*pdfpkmode*/);
             } break;
             default: {
-                print_esc(616 /*errhelp*/);
+                print_esc(618 /*errhelp*/);
             } break;
             }
         }
@@ -264,7 +264,7 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
         if (chr_code < ((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103)))) {
             print_param((chr_code - ((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256))));
         } else {
-            print_esc(617 /*count*/);
+            print_esc(619 /*count*/);
             print_int((chr_code - ((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103)))));
         }
     } break;
@@ -272,74 +272,82 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
         if (chr_code < ((((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (34)))) {
             print_length_param((chr_code - ((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256))));
         } else {
-            print_esc(618 /*dimen*/);
+            print_esc(620 /*dimen*/);
             print_int((chr_code - ((((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (34)))));
         }
     } break;
     case 45: {
-        print_esc(411 /*accent*/);
+        print_esc(413 /*accent*/);
     } break;
     case 90: {
-        print_esc(619 /*advance*/);
+        print_esc(621 /*advance*/);
     } break;
     case 40: {
-        print_esc(620 /*afterassignment*/);
+        print_esc(622 /*afterassignment*/);
     } break;
     case 41: {
-        print_esc(621 /*aftergroup*/);
+        print_esc(623 /*aftergroup*/);
     } break;
     case 77: {
-        print_esc(622 /*fontdimen*/);
+        print_esc(624 /*fontdimen*/);
     } break;
     case 61: {
-        print_esc(623 /*begingroup*/);
+        print_esc(625 /*begingroup*/);
     } break;
     case 42: {
-        print_esc(624 /*penalty*/);
+        print_esc(626 /*penalty*/);
     } break;
     case 16: {
-        print_esc(625 /*char*/);
+        print_esc(627 /*char*/);
     } break;
     case 107: {
         print_esc(263 /*csname*/);
     } break;
     case 88: {
-        print_esc(626 /*font*/);
+        if (chr_code == 1) {
+            print_esc(628 /*letterspacefont*/);
+        } else {
+            if (chr_code == 2) {
+                print_esc(629 /*pdfcopyfont*/);
+            } else {
+                print_esc(630 /*font*/);
+            }
+        }
     } break;
     case 15: {
-        print_esc(627 /*delimiter*/);
+        print_esc(631 /*delimiter*/);
     } break;
     case 92: {
-        print_esc(628 /*divide*/);
+        print_esc(632 /*divide*/);
     } break;
     case 67: {
         print_esc(264 /*endcsname*/);
     } break;
     case 62: {
-        print_esc(629 /*endgroup*/);
+        print_esc(633 /*endgroup*/);
     } break;
     case 64: {
         print_esc(32);
     } break;
     case 102: {
         if (chr_code == 0) {
-            print_esc(630 /*expandafter*/);
+            print_esc(634 /*expandafter*/);
         } else {
             if (chr_code == 1) {
-                print_esc(631 /*unless*/);
+                print_esc(635 /*unless*/);
             } else {
-                print_esc(632 /*pdfprimitive*/);
+                print_esc(636 /*pdfprimitive*/);
             }
         }
     } break;
     case 32: {
-        print_esc(633 /*halign*/);
+        print_esc(637 /*halign*/);
     } break;
     case 36: {
-        print_esc(634 /*hrule*/);
+        print_esc(638 /*hrule*/);
     } break;
     case 39: {
-        print_esc(635 /*ignorespaces*/);
+        print_esc(639 /*ignorespaces*/);
     } break;
     case 37: {
         print_esc(368 /*insert*/);
@@ -348,149 +356,149 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
         print_esc(47);
     } break;
     case 18: {
-        print_esc(396 /*mark*/);
+        print_esc(398 /*mark*/);
         if (chr_code > 0) {
             print_char(115);
         }
     } break;
     case 46: {
-        print_esc(636 /*mathaccent*/);
+        print_esc(640 /*mathaccent*/);
     } break;
     case 17: {
-        print_esc(637 /*mathchar*/);
+        print_esc(641 /*mathchar*/);
     } break;
     case 54: {
-        print_esc(398 /*mathchoice*/);
+        print_esc(400 /*mathchoice*/);
     } break;
     case 91: {
-        print_esc(638 /*multiply*/);
+        print_esc(642 /*multiply*/);
     } break;
     case 34: {
-        print_esc(639 /*noalign*/);
+        print_esc(643 /*noalign*/);
     } break;
     case 65: {
-        print_esc(640 /*noboundary*/);
+        print_esc(644 /*noboundary*/);
     } break;
     case 103: {
-        print_esc(641 /*noexpand*/);
+        print_esc(645 /*noexpand*/);
     } break;
     case 55: {
         print_esc(380 /*nonscript*/);
     } break;
     case 63: {
-        print_esc(642 /*omit*/);
+        print_esc(646 /*omit*/);
     } break;
     case 66: {
-        print_esc(410 /*radical*/);
+        print_esc(412 /*radical*/);
     } break;
     case 96: {
         if (chr_code == 0) {
-            print_esc(643 /*read*/);
+            print_esc(647 /*read*/);
         } else {
-            print_esc(644 /*readline*/);
+            print_esc(648 /*readline*/);
         }
     } break;
     case 0: {
-        print_esc(645 /*relax*/);
+        print_esc(649 /*relax*/);
     } break;
     case 98: {
-        print_esc(646 /*setbox*/);
+        print_esc(650 /*setbox*/);
     } break;
     case 80: {
-        print_esc(647 /*prevgraf*/);
+        print_esc(651 /*prevgraf*/);
     } break;
     case 84: {
         switch (chr_code) {
         case 599379: {
-            print_esc(648 /*interlinepenalties*/);
+            print_esc(652 /*interlinepenalties*/);
         } break;
         case 599380: {
-            print_esc(649 /*clubpenalties*/);
+            print_esc(653 /*clubpenalties*/);
         } break;
         case 599381: {
-            print_esc(650 /*widowpenalties*/);
+            print_esc(654 /*widowpenalties*/);
         } break;
         case 599382: {
-            print_esc(651 /*displaywidowpenalties*/);
+            print_esc(655 /*displaywidowpenalties*/);
         } break;
         default: {
-            print_esc(652 /*parshape*/);
+            print_esc(656 /*parshape*/);
         } break;
         }
     } break;
     case 109: {
         if (chr_code == 0) {
-            print_esc(653 /*the*/);
+            print_esc(657 /*the*/);
         } else {
             if (chr_code == 1) {
-                print_esc(654 /*unexpanded*/);
+                print_esc(658 /*unexpanded*/);
             } else {
-                print_esc(655 /*detokenize*/);
+                print_esc(659 /*detokenize*/);
             }
         }
     } break;
     case 71: {
-        print_esc(602 /*toks*/);
+        print_esc(604 /*toks*/);
     } break;
     case 38: {
-        print_esc(397 /*vadjust*/);
+        print_esc(399 /*vadjust*/);
     } break;
     case 33: {
         if (chr_code != 0) {
             switch (chr_code) {
             case 6: {
-                print_esc(656 /*beginL*/);
+                print_esc(660 /*beginL*/);
             } break;
             case 7: {
-                print_esc(657 /*endL*/);
+                print_esc(661 /*endL*/);
             } break;
             case 10: {
-                print_esc(658 /*beginR*/);
+                print_esc(662 /*beginR*/);
             } break;
             default: {
-                print_esc(659 /*endR*/);
+                print_esc(663 /*endR*/);
             } break;
             }
         } else {
-            print_esc(660 /*valign*/);
+            print_esc(664 /*valign*/);
         }
     } break;
     case 56: {
-        print_esc(409 /*vcenter*/);
+        print_esc(411 /*vcenter*/);
     } break;
     case 35: {
-        print_esc(661 /*vrule*/);
+        print_esc(665 /*vrule*/);
     } break;
     case 13: {
-        print_esc(662 /*par*/);
+        print_esc(666 /*par*/);
     } break;
     case 104: {
         if (chr_code == 0) {
-            print_esc(663 /*input*/);
+            print_esc(667 /*input*/);
         } else {
             if (chr_code == 2) {
-                print_esc(664 /*scantokens*/);
+                print_esc(668 /*scantokens*/);
             } else {
-                print_esc(665 /*endinput*/);
+                print_esc(669 /*endinput*/);
             }
         }
     } break;
     case 110: {
         switch (((chr_code % (5)))) {
         case 1: {
-            print_esc(666 /*firstmark*/);
+            print_esc(670 /*firstmark*/);
         } break;
         case 2: {
-            print_esc(667 /*botmark*/);
+            print_esc(671 /*botmark*/);
         } break;
         case 3: {
-            print_esc(668 /*splitfirstmark*/);
+            print_esc(672 /*splitfirstmark*/);
         } break;
         case 4: {
-            print_esc(669 /*splitbotmark*/);
+            print_esc(673 /*splitbotmark*/);
         } break;
         default: {
-            print_esc(670 /*topmark*/);
+            print_esc(674 /*topmark*/);
         } break;
         }
         if (chr_code >= (5)) {
@@ -499,64 +507,64 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
     } break;
     case 89: {
         if (chr_code == (0)) {
-            print_esc(617 /*count*/);
+            print_esc(619 /*count*/);
         } else {
             if (chr_code == (1)) {
-                print_esc(618 /*dimen*/);
+                print_esc(620 /*dimen*/);
             } else {
                 if (chr_code == (2)) {
-                    print_esc(600 /*skip*/);
+                    print_esc(602 /*skip*/);
                 } else {
-                    print_esc(601 /*muskip*/);
+                    print_esc(603 /*muskip*/);
                 }
             }
         }
     } break;
     case 79: {
         if (chr_code == (1)) {
-            print_esc(671 /*prevdepth*/);
+            print_esc(675 /*prevdepth*/);
         } else {
-            print_esc(672 /*spacefactor*/);
+            print_esc(676 /*spacefactor*/);
         }
     } break;
     case 82: {
         if (chr_code == 0) {
-            print_esc(673 /*deadcycles*/);
+            print_esc(677 /*deadcycles*/);
         } else {
             if (chr_code == 2) {
-                print_esc(674 /*interactionmode*/);
+                print_esc(678 /*interactionmode*/);
             } else {
-                print_esc(675 /*insertpenalties*/);
+                print_esc(679 /*insertpenalties*/);
             }
         }
     } break;
     case 83: {
         if (chr_code == (1)) {
-            print_esc(676 /*wd*/);
+            print_esc(680 /*wd*/);
         } else {
             if (chr_code == (3)) {
-                print_esc(677 /*ht*/);
+                print_esc(681 /*ht*/);
             } else {
-                print_esc(678 /*dp*/);
+                print_esc(682 /*dp*/);
             }
         }
     } break;
     case 70: {
         switch (chr_code) {
         case 0: {
-            print_esc(679 /*lastpenalty*/);
+            print_esc(683 /*lastpenalty*/);
         } break;
         case 1: {
-            print_esc(680 /*lastkern*/);
+            print_esc(684 /*lastkern*/);
         } break;
         case 2: {
-            print_esc(681 /*lastskip*/);
+            print_esc(685 /*lastskip*/);
         } break;
         case 3: {
-            print_esc(682 /*inputlineno*/);
+            print_esc(686 /*inputlineno*/);
         } break;
         case 4: {
-            print_esc(683 /*badness*/);
+            print_esc(687 /*badness*/);
         } break;
         default: {
             print_etex_last_item(chr_code);
@@ -566,25 +574,25 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
     case 108: {
         switch (chr_code) {
         case 0: {
-            print_esc(684 /*number*/);
+            print_esc(688 /*number*/);
         } break;
         case 1: {
-            print_esc(685 /*romannumeral*/);
+            print_esc(689 /*romannumeral*/);
         } break;
         case 2: {
-            print_esc(686 /*string*/);
+            print_esc(690 /*string*/);
         } break;
         case 3: {
-            print_esc(687 /*meaning*/);
+            print_esc(691 /*meaning*/);
         } break;
         case 4: {
-            print_esc(688 /*fontname*/);
+            print_esc(692 /*fontname*/);
         } break;
         case 6: {
-            print_esc(689 /*eTeXrevision*/);
+            print_esc(693 /*eTeXrevision*/);
         } break;
         case 5: {
-            print_esc(690 /*jobname*/);
+            print_esc(694 /*jobname*/);
         } break;
         default: {
             print_pdf_convert(chr_code);
@@ -593,179 +601,179 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
     } break;
     case 105: {
         if (chr_code >= (32)) {
-            print_esc(631 /*unless*/);
+            print_esc(635 /*unless*/);
         }
         switch ((chr_code % (32))) {
         case 1: {
-            print_esc(691 /*ifcat*/);
+            print_esc(695 /*ifcat*/);
         } break;
         case 2: {
-            print_esc(692 /*ifnum*/);
+            print_esc(696 /*ifnum*/);
         } break;
         case 3: {
-            print_esc(693 /*ifdim*/);
+            print_esc(697 /*ifdim*/);
         } break;
         case 4: {
-            print_esc(694 /*ifodd*/);
+            print_esc(698 /*ifodd*/);
         } break;
         case 5: {
-            print_esc(695 /*ifvmode*/);
+            print_esc(699 /*ifvmode*/);
         } break;
         case 6: {
-            print_esc(696 /*ifhmode*/);
+            print_esc(700 /*ifhmode*/);
         } break;
         case 7: {
-            print_esc(697 /*ifmmode*/);
+            print_esc(701 /*ifmmode*/);
         } break;
         case 8: {
-            print_esc(698 /*ifinner*/);
+            print_esc(702 /*ifinner*/);
         } break;
         case 9: {
-            print_esc(699 /*ifvoid*/);
+            print_esc(703 /*ifvoid*/);
         } break;
         case 10: {
-            print_esc(700 /*ifhbox*/);
+            print_esc(704 /*ifhbox*/);
         } break;
         case 11: {
-            print_esc(701 /*ifvbox*/);
+            print_esc(705 /*ifvbox*/);
         } break;
         case 12: {
-            print_esc(702 /*ifx*/);
+            print_esc(706 /*ifx*/);
         } break;
         case 13: {
-            print_esc(703 /*ifeof*/);
+            print_esc(707 /*ifeof*/);
         } break;
         case 14: {
-            print_esc(704 /*iftrue*/);
+            print_esc(708 /*iftrue*/);
         } break;
         case 15: {
-            print_esc(705 /*iffalse*/);
+            print_esc(709 /*iffalse*/);
         } break;
         case 16: {
-            print_esc(706 /*ifcase*/);
+            print_esc(710 /*ifcase*/);
         } break;
         case 17: {
-            print_esc(707 /*ifdefined*/);
+            print_esc(711 /*ifdefined*/);
         } break;
         case 18: {
-            print_esc(708 /*ifcsname*/);
+            print_esc(712 /*ifcsname*/);
         } break;
         case 19: {
-            print_esc(709 /*iffontchar*/);
+            print_esc(713 /*iffontchar*/);
         } break;
         case 20: {
-            print_esc(710 /*ifincsname*/);
+            print_esc(714 /*ifincsname*/);
         } break;
         case 21: {
-            print_esc(711 /*ifpdfprimitive*/);
+            print_esc(715 /*ifpdfprimitive*/);
         } break;
         case 22: {
-            print_esc(712 /*ifpdfabsnum*/);
+            print_esc(716 /*ifpdfabsnum*/);
         } break;
         case 23: {
-            print_esc(713 /*ifpdfabsdim*/);
+            print_esc(717 /*ifpdfabsdim*/);
         } break;
         default: {
-            print_esc(714 /*if*/);
+            print_esc(718 /*if*/);
         } break;
         }
     } break;
     case 106: {
         if (chr_code == (2)) {
-            print_esc(715 /*fi*/);
+            print_esc(719 /*fi*/);
         } else {
             if (chr_code == (4)) {
-                print_esc(716 /*or*/);
+                print_esc(720 /*or*/);
             } else {
-                print_esc(717 /*else*/);
+                print_esc(721 /*else*/);
             }
         }
     } break;
     case 4: {
         if (chr_code == (256)) {
-            print_esc(718 /*span*/);
+            print_esc(722 /*span*/);
         } else {
-            print(719 /*alignment tab character */);
+            print(723 /*alignment tab character */);
             print(chr_code);
         }
     } break;
     case 5: {
         if (chr_code == (257)) {
-            print_esc(720 /*cr*/);
+            print_esc(724 /*cr*/);
         } else {
-            print_esc(721 /*crcr*/);
+            print_esc(725 /*crcr*/);
         }
     } break;
     case 81: {
         switch (chr_code) {
         case 0: {
-            print_esc(722 /*pagegoal*/);
+            print_esc(726 /*pagegoal*/);
         } break;
         case 1: {
-            print_esc(723 /*pagetotal*/);
+            print_esc(727 /*pagetotal*/);
         } break;
         case 2: {
-            print_esc(724 /*pagestretch*/);
+            print_esc(728 /*pagestretch*/);
         } break;
         case 3: {
-            print_esc(725 /*pagefilstretch*/);
+            print_esc(729 /*pagefilstretch*/);
         } break;
         case 4: {
-            print_esc(726 /*pagefillstretch*/);
+            print_esc(730 /*pagefillstretch*/);
         } break;
         case 5: {
-            print_esc(727 /*pagefilllstretch*/);
+            print_esc(731 /*pagefilllstretch*/);
         } break;
         case 6: {
-            print_esc(728 /*pageshrink*/);
+            print_esc(732 /*pageshrink*/);
         } break;
         default: {
-            print_esc(729 /*pagedepth*/);
+            print_esc(733 /*pagedepth*/);
         } break;
         }
     } break;
     case 14: {
         if (chr_code == 1) {
-            print_esc(730 /*dump*/);
+            print_esc(734 /*dump*/);
         } else {
-            print_esc(386 /*end*/);
+            print_esc(388 /*end*/);
         }
     } break;
     case 26: {
         switch (chr_code) {
         case 4: {
-            print_esc(731 /*hskip*/);
+            print_esc(735 /*hskip*/);
         } break;
         case 0: {
-            print_esc(732 /*hfil*/);
+            print_esc(736 /*hfil*/);
         } break;
         case 1: {
-            print_esc(733 /*hfill*/);
+            print_esc(737 /*hfill*/);
         } break;
         case 2: {
-            print_esc(734 /*hss*/);
+            print_esc(738 /*hss*/);
         } break;
         default: {
-            print_esc(735 /*hfilneg*/);
+            print_esc(739 /*hfilneg*/);
         } break;
         }
     } break;
     case 27: {
         switch (chr_code) {
         case 4: {
-            print_esc(736 /*vskip*/);
+            print_esc(740 /*vskip*/);
         } break;
         case 0: {
-            print_esc(737 /*vfil*/);
+            print_esc(741 /*vfil*/);
         } break;
         case 1: {
-            print_esc(738 /*vfill*/);
+            print_esc(742 /*vfill*/);
         } break;
         case 2: {
-            print_esc(739 /*vss*/);
+            print_esc(743 /*vss*/);
         } break;
         default: {
-            print_esc(740 /*vfilneg*/);
+            print_esc(744 /*vfilneg*/);
         } break;
         }
     } break;
@@ -780,94 +788,94 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
     } break;
     case 21: {
         if (chr_code == 1) {
-            print_esc(741 /*moveleft*/);
+            print_esc(745 /*moveleft*/);
         } else {
-            print_esc(742 /*moveright*/);
+            print_esc(746 /*moveright*/);
         }
     } break;
     case 22: {
         if (chr_code == 1) {
-            print_esc(743 /*raise*/);
+            print_esc(747 /*raise*/);
         } else {
-            print_esc(744 /*lower*/);
+            print_esc(748 /*lower*/);
         }
     } break;
     case 20: {
         switch (chr_code) {
         case 0: {
-            print_esc(745 /*box*/);
+            print_esc(749 /*box*/);
         } break;
         case 1: {
-            print_esc(746 /*copy*/);
+            print_esc(750 /*copy*/);
         } break;
         case 2: {
-            print_esc(747 /*lastbox*/);
+            print_esc(751 /*lastbox*/);
         } break;
         case 3: {
-            print_esc(748 /*vsplit*/);
+            print_esc(752 /*vsplit*/);
         } break;
         case 4: {
-            print_esc(749 /*vtop*/);
+            print_esc(753 /*vtop*/);
         } break;
         case 5: {
-            print_esc(750 /*vbox*/);
+            print_esc(754 /*vbox*/);
         } break;
         default: {
-            print_esc(751 /*hbox*/);
+            print_esc(755 /*hbox*/);
         } break;
         }
     } break;
     case 31: {
         if (chr_code == (100)) {
-            print_esc(752 /*leaders*/);
+            print_esc(756 /*leaders*/);
         } else {
             if (chr_code == (101)) {
-                print_esc(753 /*cleaders*/);
+                print_esc(757 /*cleaders*/);
             } else {
                 if (chr_code == (102)) {
-                    print_esc(754 /*xleaders*/);
+                    print_esc(758 /*xleaders*/);
                 } else {
-                    print_esc(755 /*shipout*/);
+                    print_esc(759 /*shipout*/);
                 }
             }
         }
     } break;
     case 43: {
         if (chr_code == 0) {
-            print_esc(756 /*noindent*/);
+            print_esc(760 /*noindent*/);
         } else {
-            print_esc(757 /*indent*/);
+            print_esc(761 /*indent*/);
         }
     } break;
     case 25: {
         if (chr_code == (10)) {
-            print_esc(758 /*unskip*/);
+            print_esc(762 /*unskip*/);
         } else {
             if (chr_code == (11)) {
-                print_esc(759 /*unkern*/);
+                print_esc(763 /*unkern*/);
             } else {
-                print_esc(760 /*unpenalty*/);
+                print_esc(764 /*unpenalty*/);
             }
         }
     } break;
     case 23: {
         if (chr_code == (1)) {
-            print_esc(761 /*unhcopy*/);
+            print_esc(765 /*unhcopy*/);
         } else {
-            print_esc(762 /*unhbox*/);
+            print_esc(766 /*unhbox*/);
         }
     } break;
     case 24: {
         if (chr_code == (1)) {
-            print_esc(763 /*unvcopy*/);
+            print_esc(767 /*unvcopy*/);
         } else {
             if (chr_code == (2)) {
-                print_esc(764 /*pagediscards*/);
+                print_esc(768 /*pagediscards*/);
             } else {
                 if (chr_code == (3)) {
-                    print_esc(765 /*splitdiscards*/);
+                    print_esc(769 /*splitdiscards*/);
                 } else {
-                    print_esc(766 /*unvbox*/);
+                    print_esc(770 /*unvbox*/);
                 }
             }
         }
@@ -876,58 +884,58 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
         if (chr_code == 1) {
             print_esc(45);
         } else {
-            print_esc(394 /*discretionary*/);
+            print_esc(396 /*discretionary*/);
         }
     } break;
     case 48: {
         if (chr_code == 1) {
-            print_esc(767 /*leqno*/);
+            print_esc(771 /*leqno*/);
         } else {
-            print_esc(768 /*eqno*/);
+            print_esc(772 /*eqno*/);
         }
     } break;
     case 50: {
         switch (chr_code) {
         case 16: {
-            print_esc(399 /*mathord*/);
+            print_esc(401 /*mathord*/);
         } break;
         case 17: {
-            print_esc(400 /*mathop*/);
+            print_esc(402 /*mathop*/);
         } break;
         case 18: {
-            print_esc(401 /*mathbin*/);
+            print_esc(403 /*mathbin*/);
         } break;
         case 19: {
-            print_esc(402 /*mathrel*/);
+            print_esc(404 /*mathrel*/);
         } break;
         case 20: {
-            print_esc(403 /*mathopen*/);
+            print_esc(405 /*mathopen*/);
         } break;
         case 21: {
-            print_esc(404 /*mathclose*/);
+            print_esc(406 /*mathclose*/);
         } break;
         case 22: {
-            print_esc(405 /*mathpunct*/);
+            print_esc(407 /*mathpunct*/);
         } break;
         case 23: {
-            print_esc(406 /*mathinner*/);
+            print_esc(408 /*mathinner*/);
         } break;
         case 26: {
-            print_esc(408 /*underline*/);
+            print_esc(410 /*underline*/);
         } break;
         default: {
-            print_esc(407 /*overline*/);
+            print_esc(409 /*overline*/);
         } break;
         }
     } break;
     case 51: {
         if (chr_code == (1)) {
-            print_esc(415 /*limits*/);
+            print_esc(417 /*limits*/);
         } else {
             if (chr_code == (2)) {
-                print_esc(416 /*nolimits*/);
+                print_esc(418 /*nolimits*/);
             } else {
-                print_esc(769 /*displaylimits*/);
+                print_esc(773 /*displaylimits*/);
             }
         }
     } break;
@@ -937,123 +945,123 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
     case 52: {
         switch (chr_code) {
         case 1: {
-            print_esc(770 /*over*/);
+            print_esc(774 /*over*/);
         } break;
         case 2: {
-            print_esc(771 /*atop*/);
+            print_esc(775 /*atop*/);
         } break;
         case 3: {
-            print_esc(772 /*abovewithdelims*/);
+            print_esc(776 /*abovewithdelims*/);
         } break;
         case 4: {
-            print_esc(773 /*overwithdelims*/);
+            print_esc(777 /*overwithdelims*/);
         } break;
         case 5: {
-            print_esc(774 /*atopwithdelims*/);
+            print_esc(778 /*atopwithdelims*/);
         } break;
         default: {
-            print_esc(775 /*above*/);
+            print_esc(779 /*above*/);
         } break;
         }
     } break;
     case 49: {
         if (chr_code == (((((((((((((((((((13) + 3)) + 7)) + 1)) + 1)) + 1)) + 1)) + 1)) + 1)) + 1))) {
-            print_esc(412 /*left*/);
+            print_esc(414 /*left*/);
         } else {
             if (chr_code == (1)) {
-                print_esc(414 /*middle*/);
+                print_esc(416 /*middle*/);
             } else {
-                print_esc(413 /*right*/);
+                print_esc(415 /*right*/);
             }
         }
     } break;
     case 93: {
         if (chr_code == 1) {
-            print_esc(776 /*long*/);
+            print_esc(780 /*long*/);
         } else {
             if (chr_code == 2) {
-                print_esc(777 /*outer*/);
+                print_esc(781 /*outer*/);
             } else {
                 if (chr_code == 8) {
-                    print_esc(778 /*protected*/);
+                    print_esc(782 /*protected*/);
                 } else {
-                    print_esc(779 /*global*/);
+                    print_esc(783 /*global*/);
                 }
             }
         }
     } break;
     case 97: {
         if (chr_code == 0) {
-            print_esc(780 /*def*/);
+            print_esc(784 /*def*/);
         } else {
             if (chr_code == 1) {
-                print_esc(781 /*gdef*/);
+                print_esc(785 /*gdef*/);
             } else {
                 if (chr_code == 2) {
-                    print_esc(782 /*edef*/);
+                    print_esc(786 /*edef*/);
                 } else {
-                    print_esc(783 /*xdef*/);
+                    print_esc(787 /*xdef*/);
                 }
             }
         }
     } break;
     case 94: {
         if (chr_code != (0)) {
-            print_esc(784 /*futurelet*/);
+            print_esc(788 /*futurelet*/);
         } else {
-            print_esc(785 /*let*/);
+            print_esc(789 /*let*/);
         }
     } break;
     case 95: {
         switch (chr_code) {
         case 0: {
-            print_esc(786 /*chardef*/);
+            print_esc(790 /*chardef*/);
         } break;
         case 1: {
-            print_esc(787 /*mathchardef*/);
+            print_esc(791 /*mathchardef*/);
         } break;
         case 2: {
-            print_esc(788 /*countdef*/);
+            print_esc(792 /*countdef*/);
         } break;
         case 3: {
-            print_esc(789 /*dimendef*/);
+            print_esc(793 /*dimendef*/);
         } break;
         case 4: {
-            print_esc(790 /*skipdef*/);
+            print_esc(794 /*skipdef*/);
         } break;
         case 5: {
-            print_esc(791 /*muskipdef*/);
+            print_esc(795 /*muskipdef*/);
         } break;
         default: {
-            print_esc(792 /*toksdef*/);
+            print_esc(796 /*toksdef*/);
         } break;
         }
     } break;
     case 68: {
-        print_esc(625 /*char*/);
+        print_esc(627 /*char*/);
         print_hex(chr_code);
     } break;
     case 69: {
-        print_esc(637 /*mathchar*/);
+        print_esc(641 /*mathchar*/);
         print_hex(chr_code);
     } break;
     case 85: {
         if (chr_code == ((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48))) {
-            print_esc(793 /*catcode*/);
+            print_esc(797 /*catcode*/);
         } else {
             if (chr_code == ((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256))) {
-                print_esc(794 /*mathcode*/);
+                print_esc(798 /*mathcode*/);
             } else {
                 if (chr_code == ((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256))) {
-                    print_esc(795 /*lccode*/);
+                    print_esc(799 /*lccode*/);
                 } else {
                     if (chr_code == ((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256))) {
-                        print_esc(796 /*uccode*/);
+                        print_esc(800 /*uccode*/);
                     } else {
                         if (chr_code == ((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256))) {
-                            print_esc(797 /*sfcode*/);
+                            print_esc(801 /*sfcode*/);
                         } else {
-                            print_esc(798 /*delcode*/);
+                            print_esc(802 /*delcode*/);
                         }
                     }
                 }
@@ -1065,55 +1073,55 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
     } break;
     case 99: {
         if (chr_code == 1) {
-            print_esc(799 /*patterns*/);
+            print_esc(803 /*patterns*/);
         } else {
-            print_esc(800 /*hyphenation*/);
+            print_esc(804 /*hyphenation*/);
         }
     } break;
     case 78: {
         switch (chr_code) {
         case 0: {
-            print_esc(801 /*hyphenchar*/);
+            print_esc(805 /*hyphenchar*/);
         } break;
         case 1: {
-            print_esc(802 /*skewchar*/);
+            print_esc(806 /*skewchar*/);
         } break;
         case 2: {
-            print_esc(803 /*lpcode*/);
+            print_esc(807 /*lpcode*/);
         } break;
         case 3: {
-            print_esc(804 /*rpcode*/);
+            print_esc(808 /*rpcode*/);
         } break;
         case 4: {
-            print_esc(805 /*efcode*/);
+            print_esc(809 /*efcode*/);
         } break;
         case 5: {
-            print_esc(806 /*tagcode*/);
+            print_esc(810 /*tagcode*/);
         } break;
         case 6: {
-            print_esc(807 /*knbscode*/);
+            print_esc(811 /*knbscode*/);
         } break;
         case 7: {
-            print_esc(808 /*stbscode*/);
+            print_esc(812 /*stbscode*/);
         } break;
         case 8: {
-            print_esc(809 /*shbscode*/);
+            print_esc(813 /*shbscode*/);
         } break;
         case 9: {
-            print_esc(810 /*knbccode*/);
+            print_esc(814 /*knbccode*/);
         } break;
         default: {
-            print_esc(811 /*knaccode*/);
+            print_esc(815 /*knaccode*/);
         } break;
         }
     } break;
     case 87: {
-        print(812 /*select font */);
+        print(816 /*select font */);
         slow_print(font_name[chr_code]);
         if (font_size[chr_code] != font_dsize[chr_code]) {
-            print(813 /* at */);
+            print(817 /* at */);
             print_scaled(font_size[chr_code]);
-            print(814 /*pt*/);
+            print(818 /*pt*/);
         }
     } break;
     case 100: {
@@ -1128,58 +1136,58 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
             print_esc(284 /*scrollmode*/);
         } break;
         default: {
-            print_esc(815 /*errorstopmode*/);
+            print_esc(819 /*errorstopmode*/);
         } break;
         }
     } break;
     case 60: {
         if (chr_code == 0) {
-            print_esc(816 /*closein*/);
+            print_esc(820 /*closein*/);
         } else {
-            print_esc(817 /*openin*/);
+            print_esc(821 /*openin*/);
         }
     } break;
     case 58: {
         if (chr_code == 0) {
-            print_esc(818 /*message*/);
+            print_esc(822 /*message*/);
         } else {
-            print_esc(819 /*errmessage*/);
+            print_esc(823 /*errmessage*/);
         }
     } break;
     case 57: {
         if (chr_code == ((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256))) {
-            print_esc(820 /*lowercase*/);
+            print_esc(824 /*lowercase*/);
         } else {
-            print_esc(821 /*uppercase*/);
+            print_esc(825 /*uppercase*/);
         }
     } break;
     case 19: {
         switch (chr_code) {
         case 1: {
-            print_esc(822 /*showbox*/);
+            print_esc(826 /*showbox*/);
         } break;
         case 2: {
-            print_esc(823 /*showthe*/);
+            print_esc(827 /*showthe*/);
         } break;
         case 3: {
-            print_esc(824 /*showlists*/);
+            print_esc(828 /*showlists*/);
         } break;
         case 4: {
-            print_esc(825 /*showgroups*/);
+            print_esc(829 /*showgroups*/);
         } break;
         case 5: {
-            print_esc(826 /*showtokens*/);
+            print_esc(830 /*showtokens*/);
         } break;
         case 6: {
-            print_esc(827 /*showifs*/);
+            print_esc(831 /*showifs*/);
         } break;
         default: {
-            print_esc(828 /*show*/);
+            print_esc(832 /*show*/);
         } break;
         }
     } break;
     case 101: {
-        print(829 /*undefined*/);
+        print(833 /*undefined*/);
     } break;
     case 111: case 112: case 113: case 114: {
         n = (cmd - (((100) + 11)));
@@ -1187,21 +1195,21 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
             n = (n + 4);
         }
         if (podd((n / 4))) {
-            print_esc(778 /*protected*/);
+            print_esc(782 /*protected*/);
         }
         if (podd(n)) {
-            print_esc(776 /*long*/);
+            print_esc(780 /*long*/);
         }
         if (podd((n / 2))) {
-            print_esc(777 /*outer*/);
+            print_esc(781 /*outer*/);
         }
         if (n > 0) {
             print_char(32);
         }
-        print(830 /*macro*/);
+        print(834 /*macro*/);
     } break;
     case 115: {
-        print_esc(831 /*outer endtemplate*/);
+        print_esc(835 /*outer endtemplate*/);
     } break;
     case 59: {
         switch (chr_code) {
@@ -1218,7 +1226,7 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
             print_esc(375 /*special*/);
         } break;
         case 4: {
-            print_esc(832 /*immediate*/);
+            print_esc(836 /*immediate*/);
         } break;
         case 5: {
             print_esc(376 /*setlanguage*/);
@@ -1229,7 +1237,7 @@ void Engine::print_cmd_chr(int32_t cmd, int32_t chr_code) {
         }
     } break;
     default: {
-        print(833 /*[unknown command code!]*/);
+        print(837 /*[unknown command code!]*/);
     } break;
     }
 }
@@ -1253,18 +1261,18 @@ void Engine::show_eqtb(int32_t n) {
                     print_skip_param((n - ((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1))));
                     print_char(61);
                     if (n < (((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (15))) {
-                        print_spec(eqtb[n].hh.rh, 814 /*pt*/);
+                        print_spec(eqtb[n].hh.rh, 818 /*pt*/);
                     } else {
                         print_spec(eqtb[n].hh.rh, 382 /*mu*/);
                     }
                 } else {
                     if (n < ((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768)))) {
-                        print_esc(600 /*skip*/);
+                        print_esc(602 /*skip*/);
                         print_int((n - ((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18)))));
                         print_char(61);
-                        print_spec(eqtb[n].hh.rh, 814 /*pt*/);
+                        print_spec(eqtb[n].hh.rh, 818 /*pt*/);
                     } else {
-                        print_esc(601 /*muskip*/);
+                        print_esc(603 /*muskip*/);
                         print_int((n - ((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768)))));
                         print_char(61);
                         print_spec(eqtb[n].hh.rh, 382 /*mu*/);
@@ -1273,7 +1281,7 @@ void Engine::show_eqtb(int32_t n) {
             } else {
                 if (n < ((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256))) {
                     if (n == (((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))))) {
-                        print_esc(652 /*parshape*/);
+                        print_esc(656 /*parshape*/);
                         print_char(61);
                         if (eqtb[(((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))))].hh.rh == 0) {
                             print_char(48);
@@ -1298,7 +1306,7 @@ void Engine::show_eqtb(int32_t n) {
                                 }
                             } else {
                                 if (n < ((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768)))) {
-                                    print_esc(602 /*toks*/);
+                                    print_esc(604 /*toks*/);
                                     print_int((n - ((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19))));
                                     print_char(61);
                                     if (eqtb[n].hh.rh != 0) {
@@ -1306,11 +1314,11 @@ void Engine::show_eqtb(int32_t n) {
                                     }
                                 } else {
                                     if (n < ((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768)))) {
-                                        print_esc(745 /*box*/);
+                                        print_esc(749 /*box*/);
                                         print_int((n - ((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768)))));
                                         print_char(61);
                                         if (eqtb[n].hh.rh == 0) {
-                                            print(834 /*void*/);
+                                            print(838 /*void*/);
                                         } else {
                                             depth_threshold = 0;
                                             breadth_max = 1;
@@ -1319,7 +1327,7 @@ void Engine::show_eqtb(int32_t n) {
                                     } else {
                                         if (n < ((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48))) {
                                             if (n == ((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768)))) {
-                                                print(835 /*current font*/);
+                                                print(839 /*current font*/);
                                             } else {
                                                 if (n < (((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 16)) {
                                                     print_esc(267 /*textfont*/);
@@ -1339,18 +1347,18 @@ void Engine::show_eqtb(int32_t n) {
                                         } else {
                                             if (n < ((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256))) {
                                                 if (n < ((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256))) {
-                                                    print_esc(793 /*catcode*/);
+                                                    print_esc(797 /*catcode*/);
                                                     print_int((n - ((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48))));
                                                 } else {
                                                     if (n < ((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256))) {
-                                                        print_esc(795 /*lccode*/);
+                                                        print_esc(799 /*lccode*/);
                                                         print_int((n - ((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256))));
                                                     } else {
                                                         if (n < ((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256))) {
-                                                            print_esc(796 /*uccode*/);
+                                                            print_esc(800 /*uccode*/);
                                                             print_int((n - ((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256))));
                                                         } else {
-                                                            print_esc(797 /*sfcode*/);
+                                                            print_esc(801 /*sfcode*/);
                                                             print_int((n - ((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256))));
                                                         }
                                                     }
@@ -1358,7 +1366,7 @@ void Engine::show_eqtb(int32_t n) {
                                                 print_char(61);
                                                 print_int(eqtb[n].hh.rh);
                                             } else {
-                                                print_esc(794 /*mathcode*/);
+                                                print_esc(798 /*mathcode*/);
                                                 print_int((n - ((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256))));
                                                 print_char(61);
                                                 print_int((eqtb[n].hh.rh - 0));
@@ -1375,10 +1383,10 @@ void Engine::show_eqtb(int32_t n) {
                             print_param((n - ((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256))));
                         } else {
                             if (n < ((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768)))) {
-                                print_esc(617 /*count*/);
+                                print_esc(619 /*count*/);
                                 print_int((n - ((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103)))));
                             } else {
-                                print_esc(798 /*delcode*/);
+                                print_esc(802 /*delcode*/);
                                 print_int((n - ((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768)))));
                             }
                         }
@@ -1389,12 +1397,12 @@ void Engine::show_eqtb(int32_t n) {
                             if (n < ((((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (34)))) {
                                 print_length_param((n - ((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256))));
                             } else {
-                                print_esc(618 /*dimen*/);
+                                print_esc(620 /*dimen*/);
                                 print_int((n - ((((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (34)))));
                             }
                             print_char(61);
                             print_scaled(eqtb[n].int_);
-                            print(814 /*pt*/);
+                            print(818 /*pt*/);
                         } else {
                             print_char(63);
                         }
@@ -1438,7 +1446,7 @@ int32_t Engine::id_lookup(int32_t j, int32_t l) {
                 if (hash[p].rh > 0) {
                     do {
                         if ((hash_used == (((((((1) + 256)) + 256)) + 1)))) {
-                            overflow(836 /*hash size*/, (524288));
+                            overflow(840 /*hash size*/, (524288));
                         }
                         hash_used = (hash_used - 1);
                     } while (!(hash[hash_used].rh == 0));
@@ -1446,7 +1454,7 @@ int32_t Engine::id_lookup(int32_t j, int32_t l) {
                     p = hash_used;
                 }
                 if ((pool_ptr + l) > pool_size) {
-                    overflow(837 /*pool size*/, (pool_size - init_pool_ptr));
+                    overflow(841 /*pool size*/, (pool_size - init_pool_ptr));
                 }
                 d = ((pool_ptr - str_start[str_ptr]));
                 while (pool_ptr > str_start[str_ptr]) {
@@ -1505,7 +1513,7 @@ void Engine::new_save_level(int32_t c) {
     if (save_ptr > max_save_stack) {
         max_save_stack = save_ptr;
         if (max_save_stack > (save_size - 6)) {
-            overflow(838 /*save size*/, save_size);
+            overflow(842 /*save size*/, save_size);
         }
     }
     save_stack[(save_ptr + 0)].int_ = line_;
@@ -1514,7 +1522,7 @@ void Engine::new_save_level(int32_t c) {
     save_stack[save_ptr].hh.b1 = cur_group;
     save_stack[save_ptr].hh.rh = cur_boundary;
     if (cur_level == (65535)) {
-        overflow(839 /*grouping levels*/, ((65535) - (0)));
+        overflow(843 /*grouping levels*/, ((65535) - (0)));
     }
     cur_boundary = save_ptr;
     cur_level = (cur_level + 1);
@@ -1554,7 +1562,7 @@ void Engine::eq_save(int32_t p, int32_t l) {
     if (save_ptr > max_save_stack) {
         max_save_stack = save_ptr;
         if (max_save_stack > (save_size - 6)) {
-            overflow(838 /*save size*/, save_size);
+            overflow(842 /*save size*/, save_size);
         }
     }
     if (l == ((0))) {
@@ -1572,11 +1580,11 @@ void Engine::eq_save(int32_t p, int32_t l) {
 // §278
 void Engine::eq_define(int32_t p, int32_t t, int32_t e) {
     if (((eqtb[p].hh.b0 == t)) && ((eqtb[p].hh.rh == e))) {
-        assign_trace(p, 840 /*reassigning*/);
+        assign_trace(p, 844 /*reassigning*/);
         eq_destroy(eqtb[p]);
         goto L10;
     }
-    assign_trace(p, 841 /*changing*/);
+    assign_trace(p, 845 /*changing*/);
     if (eqtb[p].hh.b1 == cur_level) {
         eq_destroy(eqtb[p]);
     } else {
@@ -1587,42 +1595,42 @@ void Engine::eq_define(int32_t p, int32_t t, int32_t e) {
     eqtb[p].hh.b1 = cur_level;
     eqtb[p].hh.b0 = t;
     eqtb[p].hh.rh = e;
-    assign_trace(p, 842 /*into*/);
+    assign_trace(p, 846 /*into*/);
 L10:;
 }
 
 // §279
 void Engine::eq_word_define(int32_t p, int32_t w) {
     if (eqtb[p].int_ == w) {
-        assign_trace(p, 840 /*reassigning*/);
+        assign_trace(p, 844 /*reassigning*/);
         goto L10;
     }
-    assign_trace(p, 841 /*changing*/);
+    assign_trace(p, 845 /*changing*/);
     if (xeq_level[p] != cur_level) {
         eq_save(p, xeq_level[p]);
         xeq_level[p] = cur_level;
     }
     eqtb[p].int_ = w;
-    assign_trace(p, 842 /*into*/);
+    assign_trace(p, 846 /*into*/);
 L10:;
 }
 
 // §280
 void Engine::geq_define(int32_t p, int32_t t, int32_t e) {
-    assign_trace(p, 843 /*globally changing*/);
+    assign_trace(p, 847 /*globally changing*/);
     eq_destroy(eqtb[p]);
     eqtb[p].hh.b1 = ((((0)) + 1));
     eqtb[p].hh.b0 = t;
     eqtb[p].hh.rh = e;
-    assign_trace(p, 842 /*into*/);
+    assign_trace(p, 846 /*into*/);
 }
 
 // §280
 void Engine::geq_word_define(int32_t p, int32_t w) {
-    assign_trace(p, 843 /*globally changing*/);
+    assign_trace(p, 847 /*globally changing*/);
     eqtb[p].int_ = w;
     xeq_level[p] = ((((0)) + 1));
-    assign_trace(p, 842 /*into*/);
+    assign_trace(p, 846 /*into*/);
 }
 
 // §281
@@ -1631,7 +1639,7 @@ void Engine::save_for_after(int32_t t) {
         if (save_ptr > max_save_stack) {
             max_save_stack = save_ptr;
             if (max_save_stack > (save_size - 6)) {
-                overflow(838 /*save size*/, save_size);
+                overflow(842 /*save size*/, save_size);
             }
         }
         save_stack[save_ptr].hh.b0 = (2);
@@ -1681,13 +1689,13 @@ void Engine::unsave() {
                     if (eqtb[p].hh.b1 == ((((0)) + 1))) {
                         eq_destroy(save_stack[save_ptr]);
                         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (37))].int_ > 0) {
-                            restore_trace(p, 844 /*retaining*/);
+                            restore_trace(p, 848 /*retaining*/);
                         }
                     } else {
                         eq_destroy(eqtb[p]);
                         eqtb[p] = save_stack[save_ptr];
                         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (37))].int_ > 0) {
-                            restore_trace(p, 845 /*restoring*/);
+                            restore_trace(p, 849 /*restoring*/);
                         }
                     }
                 } else {
@@ -1695,11 +1703,11 @@ void Engine::unsave() {
                         eqtb[p] = save_stack[save_ptr];
                         xeq_level[p] = l;
                         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (37))].int_ > 0) {
-                            restore_trace(p, 845 /*restoring*/);
+                            restore_trace(p, 849 /*restoring*/);
                         }
                     } else {
                         if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (37))].int_ > 0) {
-                            restore_trace(p, 844 /*retaining*/);
+                            restore_trace(p, 848 /*retaining*/);
                         }
                     }
                 }
@@ -1713,7 +1721,7 @@ void Engine::unsave() {
         cur_boundary = save_stack[save_ptr].hh.rh;
         save_ptr = (save_ptr - 1);
     } else {
-        confusion(846 /*curlevel*/);
+        confusion(850 /*curlevel*/);
     }
 }
 
@@ -1723,13 +1731,13 @@ void Engine::prepare_mag() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(847 /*Incompatible magnification (*/);
+        print(851 /*Incompatible magnification (*/);
         print_int(eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (17))].int_);
-        print(848 /*);*/);
-        print_nl(849 /* the previous value will be retained*/);
+        print(852 /*);*/);
+        print_nl(853 /* the previous value will be retained*/);
         help_ptr = 2;
-        help_line[1] = 850 /*I can handle only one magnification ratio per job. So I've*/;
-        help_line[0] = 851 /*reverted to the magnification you used earlier on this run.*/;
+        help_line[1] = 854 /*I can handle only one magnification ratio per job. So I've*/;
+        help_line[0] = 855 /*reverted to the magnification you used earlier on this run.*/;
         int_error(mag_set);
         geq_word_define((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (17)), mag_set);
     }
@@ -1737,9 +1745,9 @@ void Engine::prepare_mag() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(852 /*Illegal magnification has been changed to 1000*/);
+        print(856 /*Illegal magnification has been changed to 1000*/);
         help_ptr = 1;
-        help_line[0] = 853 /*The magnification ratio must be between 1 and 32768.*/;
+        help_line[0] = 857 /*The magnification ratio must be between 1 and 32768.*/;
         int_error(eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (17))].int_);
         geq_word_define((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (17)), 1000);
     }
@@ -1775,7 +1783,7 @@ void Engine::show_cur_cmd_chr() {
     print_nl(123);
     if (cur_list.mode_field != shown_mode) {
         print_mode(cur_list.mode_field);
-        print(854 /*: */);
+        print(858 /*: */);
         shown_mode = cur_list.mode_field;
     }
     print_cmd_chr(cur_cmd, cur_chr);
@@ -1819,12 +1827,12 @@ void Engine::show_context() {
                     if (cur_input.name_field <= 17) {
                         if ((cur_input.name_field == 0)) {
                             if (base_ptr == 0) {
-                                print_nl(855 /*<*>*/);
+                                print_nl(859 /*<*>*/);
                             } else {
-                                print_nl(856 /*<insert> */);
+                                print_nl(860 /*<insert> */);
                             }
                         } else {
-                            print_nl(857 /*<read */);
+                            print_nl(861 /*<read */);
                             if (cur_input.name_field == 17) {
                                 print_char(42);
                             } else {
@@ -1833,7 +1841,7 @@ void Engine::show_context() {
                             print_char(62);
                         }
                     } else {
-                        print_nl(858 /*l.*/);
+                        print_nl(862 /*l.*/);
                         print_int(line_);
                     }
                     print_char(32);
@@ -1864,57 +1872,57 @@ void Engine::show_context() {
                 } else {
                     switch (cur_input.index_field) {
                     case 0: {
-                        print_nl(859 /*<argument> */);
+                        print_nl(863 /*<argument> */);
                     } break;
                     case 1: case 2: {
-                        print_nl(860 /*<template> */);
+                        print_nl(864 /*<template> */);
                     } break;
                     case 3: {
                         if (cur_input.loc_field == 0) {
-                            print_nl(861 /*<recently read> */);
+                            print_nl(865 /*<recently read> */);
                         } else {
-                            print_nl(862 /*<to be read again> */);
+                            print_nl(866 /*<to be read again> */);
                         }
                     } break;
                     case 4: {
-                        print_nl(863 /*<inserted text> */);
+                        print_nl(867 /*<inserted text> */);
                     } break;
                     case 5: {
                         print_ln();
                         print_cs(cur_input.name_field);
                     } break;
                     case 6: {
-                        print_nl(864 /*<output> */);
+                        print_nl(868 /*<output> */);
                     } break;
                     case 7: {
-                        print_nl(865 /*<everypar> */);
+                        print_nl(869 /*<everypar> */);
                     } break;
                     case 8: {
-                        print_nl(866 /*<everymath> */);
+                        print_nl(870 /*<everymath> */);
                     } break;
                     case 9: {
-                        print_nl(867 /*<everydisplay> */);
+                        print_nl(871 /*<everydisplay> */);
                     } break;
                     case 10: {
-                        print_nl(868 /*<everyhbox> */);
+                        print_nl(872 /*<everyhbox> */);
                     } break;
                     case 11: {
-                        print_nl(869 /*<everyvbox> */);
+                        print_nl(873 /*<everyvbox> */);
                     } break;
                     case 12: {
-                        print_nl(870 /*<everyjob> */);
+                        print_nl(874 /*<everyjob> */);
                     } break;
                     case 13: {
-                        print_nl(871 /*<everycr> */);
+                        print_nl(875 /*<everycr> */);
                     } break;
                     case 14: {
-                        print_nl(872 /*<everyeof> */);
+                        print_nl(876 /*<everyeof> */);
                     } break;
                     case 15: {
-                        print_nl(873 /*<mark> */);
+                        print_nl(877 /*<mark> */);
                     } break;
                     case 16: {
-                        print_nl(874 /*<write> */);
+                        print_nl(878 /*<write> */);
                     } break;
                     default: {
                         print_nl(63);
@@ -2000,7 +2008,7 @@ void Engine::begin_token_list(int32_t p, int32_t t) {
     if (input_ptr > max_in_stack) {
         max_in_stack = input_ptr;
         if (input_ptr == stack_size) {
-            overflow(875 /*input stack size*/, stack_size);
+            overflow(879 /*input stack size*/, stack_size);
         }
     }
     input_stack[input_ptr] = cur_input;
@@ -2019,13 +2027,13 @@ void Engine::begin_token_list(int32_t p, int32_t t) {
                 print_nl(258 /**/);
                 switch (t) {
                 case 15: {
-                    print_esc(396 /*mark*/);
+                    print_esc(398 /*mark*/);
                 } break;
                 case 16: {
                     print_esc(373 /*write*/);
                 } break;
                 case 14: {
-                    print_esc(611 /*everyeof*/);
+                    print_esc(613 /*everyeof*/);
                 } break;
                 default: {
                     print_cmd_chr((72), ((t - (6)) + ((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 1))));
@@ -2060,7 +2068,7 @@ void Engine::end_token_list() {
             if (align_state > 500000) {
                 align_state = 0;
             } else {
-                fatal_error(876 /*(interwoven alignment preambles are not allowed)*/);
+                fatal_error(880 /*(interwoven alignment preambles are not allowed)*/);
             }
         }
     }
@@ -2089,7 +2097,7 @@ void Engine::back_input() {
     if (input_ptr > max_in_stack) {
         max_in_stack = input_ptr;
         if (input_ptr == stack_size) {
-            overflow(875 /*input stack size*/, stack_size);
+            overflow(879 /*input stack size*/, stack_size);
         }
     }
     input_stack[input_ptr] = cur_input;
@@ -2120,7 +2128,7 @@ void Engine::ins_error() {
 // §329
 void Engine::begin_file_reading() {
     if (in_open == max_in_open) {
-        overflow(877 /*text input levels*/, max_in_open);
+        overflow(881 /*text input levels*/, max_in_open);
     }
     if (first == buf_size) {
         overflow(303 /*buffer size*/, buf_size);
@@ -2129,7 +2137,7 @@ void Engine::begin_file_reading() {
     if (input_ptr > max_in_stack) {
         max_in_stack = input_ptr;
         if (input_ptr == stack_size) {
-            overflow(875 /*input stack size*/, stack_size);
+            overflow(879 /*input stack size*/, stack_size);
         }
     }
     input_stack[input_ptr] = cur_input;
@@ -2183,15 +2191,15 @@ void Engine::check_outer_validity() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(878 /*File ended*/);
+                print(882 /*File ended*/);
             } else {
                 cur_cs = 0;
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(879 /*Forbidden control sequence found*/);
+                print(883 /*Forbidden control sequence found*/);
             }
-            print(880 /* while scanning */);
+            print(884 /* while scanning */);
             p = get_avail();
             switch (scanner_status) {
             case 2: {
@@ -2199,7 +2207,7 @@ void Engine::check_outer_validity() {
                 mem[p].hh.lh = ((512) + 125);
             } break;
             case 3: {
-                print(881 /*use*/);
+                print(885 /*use*/);
                 mem[p].hh.lh = par_token;
                 long_state = (((100) + 13));
             } break;
@@ -2220,30 +2228,30 @@ void Engine::check_outer_validity() {
             } break;
             }
             begin_token_list(p, (4));
-            print(882 /* of */);
+            print(886 /* of */);
             sprint_cs(warning_index);
             help_ptr = 4;
-            help_line[3] = 883 /*I suspect you have forgotten a `}', causing me*/;
-            help_line[2] = 884 /*to read past where you wanted me to stop.*/;
-            help_line[1] = 885 /*I'll try to recover; but if the error is serious,*/;
-            help_line[0] = 886 /*you'd better type `E' or `X' now and fix your file.*/;
+            help_line[3] = 887 /*I suspect you have forgotten a `}', causing me*/;
+            help_line[2] = 888 /*to read past where you wanted me to stop.*/;
+            help_line[1] = 889 /*I'll try to recover; but if the error is serious,*/;
+            help_line[0] = 890 /*you'd better type `E' or `X' now and fix your file.*/;
             error_();
         } else {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(887 /*Incomplete */);
+            print(891 /*Incomplete */);
             print_cmd_chr((((100) + 5)), cur_if);
-            print(888 /*; all text was ignored after line */);
+            print(892 /*; all text was ignored after line */);
             print_int(skip_line);
             help_ptr = 3;
-            help_line[2] = 889 /*A forbidden control sequence occurred in skipped text.*/;
-            help_line[1] = 890 /*This kind of error happens when you say `\if...' and forget*/;
-            help_line[0] = 891 /*the matching `\fi'. I've inserted a `\fi'; this might work.*/;
+            help_line[2] = 893 /*A forbidden control sequence occurred in skipped text.*/;
+            help_line[1] = 894 /*This kind of error happens when you say `\if...' and forget*/;
+            help_line[0] = 895 /*the matching `\fi'. I've inserted a `\fi'; this might work.*/;
             if (cur_cs != 0) {
                 cur_cs = 0;
             } else {
-                help_line[2] = 892 /*The file ended while I was skipping conditional text.*/;
+                help_line[2] = 896 /*The file ended while I was skipping conditional text.*/;
             }
             cur_tok = (4095 + (((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 4)));
             ins_error();
@@ -2454,10 +2462,10 @@ L20:;
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(893 /*Text line contains an invalid character*/);
+                print(897 /*Text line contains an invalid character*/);
                 help_ptr = 2;
-                help_line[1] = 894 /*A funny symbol that I can't read has just been input.*/;
-                help_line[0] = 895 /*Continue, and I'll forget that it ever happened.*/;
+                help_line[1] = 898 /*A funny symbol that I can't read has just been input.*/;
+                help_line[0] = 899 /*Continue, and I'll forget that it ever happened.*/;
                 deletions_allowed = false;
                 error_();
                 deletions_allowed = true;
@@ -2560,7 +2568,7 @@ L20:;
                         cur_input.limit_field = (cur_input.limit_field + 1);
                     }
                     if (cur_input.limit_field == cur_input.start_field) {
-                        print_nl(896 /*(Please type a command or say `\end')*/);
+                        print_nl(900 /*(Please type a command or say `\end')*/);
                     }
                     print_ln();
                     first = cur_input.start_field;
@@ -2575,7 +2583,7 @@ L20:;
                     first = (cur_input.limit_field + 1);
                     cur_input.loc_field = cur_input.start_field;
                 } else {
-                    fatal_error(897 /**** (job aborted, no legal \end found)*/);
+                    fatal_error(901 /**** (job aborted, no legal \end found)*/);
                 }
             }
             if (interrupt != 0) {
@@ -2632,7 +2640,7 @@ L20:;
         if (cur_cmd >= (4)) {
             if (align_state == 0) {
                 if (((scanner_status == (4))) || ((cur_align == 0))) {
-                    fatal_error(876 /*(interwoven alignment preambles are not allowed)*/);
+                    fatal_error(880 /*(interwoven alignment preambles are not allowed)*/);
                 }
                 cur_cmd = mem[(cur_align + (5))].hh.lh;
                 mem[(cur_align + (5))].hh.lh = cur_chr;
@@ -2665,7 +2673,7 @@ void Engine::firm_up_the_line() {
                 }
             }
             first = cur_input.limit_field;
-            print(898 /*=>*/);
+            print(902 /*=>*/);
             term_input();
             if (last > first) {
                 {
@@ -2761,14 +2769,14 @@ void Engine::macro_call() {
                     if (interaction == (3)) {
                     }
                     print_nl(293 /*! */);
-                    print(899 /*Use of */);
+                    print(903 /*Use of */);
                     sprint_cs(warning_index);
-                    print(900 /* doesn't match its definition*/);
+                    print(904 /* doesn't match its definition*/);
                     help_ptr = 4;
-                    help_line[3] = 901 /*If you say, e.g., `\def\a1{...}', then you must always*/;
-                    help_line[2] = 902 /*put `1' after `\a', since control sequence names are*/;
-                    help_line[1] = 903 /*made up of letters only. The macro here has not been*/;
-                    help_line[0] = 904 /*followed by the required stuff, so I'm ignoring it.*/;
+                    help_line[3] = 905 /*If you say, e.g., `\def\a1{...}', then you must always*/;
+                    help_line[2] = 906 /*put `1' after `\a', since control sequence names are*/;
+                    help_line[1] = 907 /*made up of letters only. The macro here has not been*/;
+                    help_line[0] = 908 /*followed by the required stuff, so I'm ignoring it.*/;
                     error_();
                     goto L10;
                 } else {
@@ -2809,13 +2817,13 @@ void Engine::macro_call() {
                         if (interaction == (3)) {
                         }
                         print_nl(293 /*! */);
-                        print(905 /*Paragraph ended before */);
+                        print(909 /*Paragraph ended before */);
                         sprint_cs(warning_index);
-                        print(906 /* was complete*/);
+                        print(910 /* was complete*/);
                         help_ptr = 3;
-                        help_line[2] = 907 /*I suspect you've forgotten a `}', causing me to apply this*/;
-                        help_line[1] = 908 /*control sequence to too much text. How can we recover?*/;
-                        help_line[0] = 909 /*My plan is to forget the whole thing and hope for the best.*/;
+                        help_line[2] = 911 /*I suspect you've forgotten a `}', causing me to apply this*/;
+                        help_line[1] = 912 /*control sequence to too much text. How can we recover?*/;
+                        help_line[0] = 913 /*My plan is to forget the whole thing and hope for the best.*/;
                         back_error();
                     }
                     pstack[n] = mem[(mem_top - 3)].hh.rh;
@@ -2852,13 +2860,13 @@ void Engine::macro_call() {
                                     if (interaction == (3)) {
                                     }
                                     print_nl(293 /*! */);
-                                    print(905 /*Paragraph ended before */);
+                                    print(909 /*Paragraph ended before */);
                                     sprint_cs(warning_index);
-                                    print(906 /* was complete*/);
+                                    print(910 /* was complete*/);
                                     help_ptr = 3;
-                                    help_line[2] = 907 /*I suspect you've forgotten a `}', causing me to apply this*/;
-                                    help_line[1] = 908 /*control sequence to too much text. How can we recover?*/;
-                                    help_line[0] = 909 /*My plan is to forget the whole thing and hope for the best.*/;
+                                    help_line[2] = 911 /*I suspect you've forgotten a `}', causing me to apply this*/;
+                                    help_line[1] = 912 /*control sequence to too much text. How can we recover?*/;
+                                    help_line[0] = 913 /*My plan is to forget the whole thing and hope for the best.*/;
                                     back_error();
                                 }
                                 pstack[n] = mem[(mem_top - 3)].hh.rh;
@@ -2894,16 +2902,16 @@ void Engine::macro_call() {
                     if (interaction == (3)) {
                     }
                     print_nl(293 /*! */);
-                    print(910 /*Argument of */);
+                    print(914 /*Argument of */);
                     sprint_cs(warning_index);
-                    print(911 /* has an extra }*/);
+                    print(915 /* has an extra }*/);
                     help_ptr = 6;
-                    help_line[5] = 912 /*I've run across a `}' that doesn't seem to match anything.*/;
-                    help_line[4] = 913 /*For example, `\def\a#1{...}' and `\a}' would produce*/;
-                    help_line[3] = 914 /*this error. If you simply proceed now, the `\par' that*/;
-                    help_line[2] = 915 /*I've just inserted will cause me to report a runaway*/;
-                    help_line[1] = 916 /*argument that might be the root of the problem. But if*/;
-                    help_line[0] = 917 /*your `}' was spurious, just type `2' and it will go away.*/;
+                    help_line[5] = 916 /*I've run across a `}' that doesn't seem to match anything.*/;
+                    help_line[4] = 917 /*For example, `\def\a#1{...}' and `\a}' would produce*/;
+                    help_line[3] = 918 /*this error. If you simply proceed now, the `\par' that*/;
+                    help_line[2] = 919 /*I've just inserted will cause me to report a runaway*/;
+                    help_line[1] = 920 /*argument that might be the root of the problem. But if*/;
+                    help_line[0] = 921 /*your `}' was spurious, just type `2' and it will go away.*/;
                     align_state = (align_state + 1);
                     long_state = (((100) + 11));
                     cur_tok = par_token;
@@ -2950,7 +2958,7 @@ void Engine::macro_call() {
                     begin_diagnostic();
                     print_nl(match_chr);
                     print_int(n);
-                    print(918 /*<-*/);
+                    print(922 /*<-*/);
                     show_token_list(pstack[(n - 1)], 0, 1000);
                     end_diagnostic(false);
                 }
@@ -2967,7 +2975,7 @@ void Engine::macro_call() {
         if ((param_ptr + n) > max_param_stack) {
             max_param_stack = (param_ptr + n);
             if (max_param_stack > param_size) {
-                overflow(919 /*parameter stack size*/, param_size);
+                overflow(923 /*parameter stack size*/, param_size);
             }
         }
         {

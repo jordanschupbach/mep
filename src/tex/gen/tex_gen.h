@@ -274,6 +274,8 @@ struct Engine : EngineBase {
     PArray<int32_t> best_place{};  // §834
     PArray<int32_t> best_pl_line{};  // §834
     int32_t disc_width{};  // §840
+    int32_t disc_stretch{};  // §840
+    int32_t disc_shrink{};  // §840
     int32_t easy_line{};  // §848
     int32_t last_special_line{};  // §848
     int32_t first_width{};  // §848

@@ -69,10 +69,13 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 - [x] Settings rows (`tex_engine`, `tex_system_command`, `tex_rasterizer`);
       `:TexInfo`; help/tex.org.
 - [x] pdftoppm no longer required (default `tex_rasterizer = builtin`).
-- [ ] The a11y test's tagged-PDF round trip still calls tectonic directly;
-      move it onto TexCompile once the builtin engine can stand in.
+- [x] The a11y test's tagged-PDF round trip runs through mep-tex (phase 6).
 
-### Phase 2 -- previews that look like TeX
+### Phase 2 -- previews that look like TeX -- superseded
+Previews go through the engine itself since phase 6 (standalone, cached
+PNGs), so they are TeX's own output; the in-house maths layout stays as
+the fallback when no engine runs. These items are kept for that fallback
+only.
 - [ ] Embed Latin Modern Math (OTF, CFF outlines; gfx/cff.cpp reads them).
 - [ ] OpenType MATH table reader: constants, italic corrections, top
       accent attachment, glyph variants and assemblies for stretchy
@@ -118,10 +121,33 @@ manual), not ported: etex.ch forbids modified copies, pdfTeX is GPL.
       (copied through mep's PDF parser). Pages render identically to
       TeX Live's pdflatex with poppler (article+amsmath; hyperref, colour,
       lmodern/T1, graphicx rotation, includegraphics).
-- [ ] Backend remainder: links broken across lines, threads, virtual
-      fonts (psnfss), PK/Type 3 fallback, letterspacing/`\pdfcopyfont`,
-      micro-typography (`\pdfprotrudechars`, `\pdfadjustspacing` --
-      parsed, not applied), object streams, `\pdfliteral shipout`.
+- [x] Links broken across lines and pages (pdfTeX's link stack: a part
+      per line, and the boxes at the same nesting level after a page
+      break), rectangles identical to pdfTeX's.
+- [x] Virtual fonts (`.vf` packets: characters, rules, specials, nested
+      VFs; local fonts loaded as TeX fonts). The bundle carries psnfss's
+      fonts (times, helvetic, courier, palatino, avantgar, bookman,
+      ncntrsbk, zapfchan, mathpazo/fpl, charter, utopia, rsfs; 26 MB in
+      all): every psnfss style compiles, Times and Palatino
+      pixel-identical to pdflatex.
+- [x] Micro-typography (`tex_microtype.cpp`, written from the manual and
+      checked against pdfTeX as a black box): protrusion (margin kern
+      nodes, `\lpcode`/`\rpcode`, `\pdfprotrudechars=2` in the line
+      breaker, `\leftmarginkern`/`\rightmarginkern`) -- `\showbox`
+      identical; font expansion (`\pdffontexpand`, `\efcode`, expanded
+      font copies, the step nearest the line's need, `\pdfadjustspacing=2`
+      counting font stretch/shrink in the breaker's widths, drawn with a
+      scaled text matrix) -- the same breaks and `Tm` scales as pdfTeX;
+      3 lines in 231 of a stress test pick a step one off.
+- [x] `\letterspacefont` (quad-relative, own font parameters, glyphs
+      centred) and `\pdfcopyfont`, taking `\global` like `\font`;
+      microtype's `\textls` matches pdflatex.
+- [x] `\pdfliteral shipout` (expanded when the page ships).
+- [x] Font sizes in `Tf` to 4 decimals and `/Widths` to 0.1, as pdfTeX
+      writes them, positions reckoned from those (TJ kerns as pdfTeX's
+      but for rounding ties).
+- [ ] Backend remainder: threads, PK/Type 3 fallback (needs METAFONT-made
+      bitmaps the bundle does not have), object streams.
 - [x] `mep-tex compile` (`tex_compile.cpp`): format chosen from the
       document, built once and cached in `~/.cache/mep/tex/formats/`
       (keyed by engine build + trees; old ones pruned), reruns while aux
@@ -129,7 +155,7 @@ manual), not ported: etex.ch forbids modified copies, pdfTeX is GPL.
       or the usual paths (`ls-R` read instead of walking). The editor's
       builtin backend is enabled. A mepml export (tcolorbox/TikZ,
       hyperref, T1) is pixel-identical to TeX Live's pdflatex.
-- [ ] Runs: standalone (previews), beamer (mepml decks).
+- [x] Runs: standalone (previews), beamer (mepml decks) -- see phase 5.
 
 ### Phase 5 -- bundle and resolver -- done
 - [x] `tools/tex_bundle.py` packs a TeX Live tree's tex/, fonts (tfm,

@@ -13,11 +13,142 @@
 
 namespace meptex {
 
+// §978
+int32_t Engine::vsplit(int32_t n, int32_t h) {
+    int32_t v{};
+    int32_t p{};
+    int32_t q{};
+    int32_t Result{};
+    v = eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + n)].hh.rh;
+    if (cur_mark[(3)] != 0) {
+        delete_token_ref(cur_mark[(3)]);
+        cur_mark[(3)] = 0;
+        delete_token_ref(cur_mark[(4)]);
+        cur_mark[(4)] = 0;
+    }
+    vsplit_marks_init();
+    if (v == 0) {
+        Result = 0;
+        goto L10;
+    }
+    if (mem[v].hh.b0 != (1)) {
+        if (interaction == (3)) {
+        }
+        print_nl(293 /*! */);
+        print(258 /**/);
+        print_esc(752 /*vsplit*/);
+        print(1171 /* needs a */);
+        print_esc(754 /*vbox*/);
+        help_ptr = 2;
+        help_line[1] = 1172 /*The box you are trying to split is an \hbox.*/;
+        help_line[0] = 1173 /*I can't split such a box, so I'll leave it alone.*/;
+        error_();
+        Result = 0;
+        goto L10;
+    }
+    q = vert_break(mem[(v + (5))].hh.rh, h, eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (6))].int_);
+    p = mem[(v + (5))].hh.rh;
+    if (p == q) {
+        mem[(v + (5))].hh.rh = 0;
+    } else {
+        while (true) {
+            if (mem[p].hh.b0 == (4)) {
+                if (mem[(p + 1)].hh.lh != 0) {
+                    vsplit_class_mark(p);
+                } else {
+                    if (cur_mark[(3)] == 0) {
+                        cur_mark[(3)] = mem[(p + 1)].hh.rh;
+                        cur_mark[(4)] = cur_mark[(3)];
+                        mem[cur_mark[(3)]].hh.lh = (mem[cur_mark[(3)]].hh.lh + 2);
+                    } else {
+                        delete_token_ref(cur_mark[(4)]);
+                        cur_mark[(4)] = mem[(p + 1)].hh.rh;
+                        mem[cur_mark[(4)]].hh.lh = (mem[cur_mark[(4)]].hh.lh + 1);
+                    }
+                }
+            }
+            if (mem[p].hh.rh == q) {
+                mem[p].hh.rh = 0;
+                goto L30;
+            }
+            p = mem[p].hh.rh;
+        }
+    }
+L30:;
+    flush_node_list(split_disc);
+    split_disc = 0;
+    prune_saving = ((eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (62))].int_ > 0));
+    q = prune_page_top(q);
+    prune_saving = false;
+    p = mem[(v + (5))].hh.rh;
+    free_node(v, (7));
+    if (q == 0) {
+        eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + n)].hh.rh = 0;
+    } else {
+        eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + n)].hh.rh = vpackage(q, 0, (1), 1073741823);
+    }
+    Result = vpackage(p, h, (0), eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (6))].int_);
+L10:;
+    return Result;
+}
+
+// §986
+void Engine::print_totals() {
+    print_scaled(page_so_far[1]);
+    if (page_so_far[2] != 0) {
+        print(325 /* plus */);
+        print_scaled(page_so_far[2]);
+        print(258 /**/);
+    }
+    if (page_so_far[3] != 0) {
+        print(325 /* plus */);
+        print_scaled(page_so_far[3]);
+        print(324 /*fil*/);
+    }
+    if (page_so_far[4] != 0) {
+        print(325 /* plus */);
+        print_scaled(page_so_far[4]);
+        print(1174 /*fill*/);
+    }
+    if (page_so_far[5] != 0) {
+        print(325 /* plus */);
+        print_scaled(page_so_far[5]);
+        print(1175 /*filll*/);
+    }
+    if (page_so_far[6] != 0) {
+        print(326 /* minus */);
+        print_scaled(page_so_far[6]);
+    }
+}
+
+// §988
+void Engine::freeze_page_specs(int32_t s) {
+    page_contents = s;
+    page_so_far[0] = eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (4))].int_;
+    page_max_depth = eqtb[(((((((((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (103))) + (32768))) + 256)) + (5))].int_;
+    page_so_far[7] = 0;
+    page_so_far[1] = 0;
+    page_so_far[2] = 0;
+    page_so_far[3] = 0;
+    page_so_far[4] = 0;
+    page_so_far[5] = 0;
+    page_so_far[6] = 0;
+    least_page_cost = 1073741823;
+    if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (33))].int_ > 0) {
+        begin_diagnostic();
+        print_nl(1176 /*%% goal height=*/);
+        print_scaled(page_so_far[0]);
+        print(1177 /*, max depth=*/);
+        print_scaled(page_max_depth);
+        end_diagnostic(false);
+    }
+}
+
 // §993
 void Engine::box_error(int32_t n) {
     error_();
     begin_diagnostic();
-    print_nl(1066 /*The following box has been deleted:*/);
+    print_nl(1070 /*The following box has been deleted:*/);
     show_box(eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + n)].hh.rh);
     end_diagnostic(true);
     flush_node_list(eqtb[(((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + n)].hh.rh);
@@ -33,11 +164,11 @@ void Engine::ensure_vbox(int32_t n) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1174 /*Insertions can only be added to a vbox*/);
+            print(1178 /*Insertions can only be added to a vbox*/);
             help_ptr = 3;
-            help_line[2] = 1175 /*Tut tut: You're trying to \insert into a*/;
-            help_line[1] = 1176 /*\box register that now contains an \hbox.*/;
-            help_line[0] = 1177 /*Proceed, and I'll discard its present contents.*/;
+            help_line[2] = 1179 /*Tut tut: You're trying to \insert into a*/;
+            help_line[1] = 1180 /*\box register that now contains an \hbox.*/;
+            help_line[0] = 1181 /*Proceed, and I'll discard its present contents.*/;
             box_error(n);
         }
     }
@@ -79,11 +210,11 @@ void Engine::fire_up(int32_t c) {
         }
         print_nl(293 /*! */);
         print(258 /**/);
-        print_esc(745 /*box*/);
-        print(1178 /*255 is not void*/);
+        print_esc(749 /*box*/);
+        print(1182 /*255 is not void*/);
         help_ptr = 2;
-        help_line[1] = 1179 /*You shouldn't use \box255 except in \output routines.*/;
-        help_line[0] = 1177 /*Proceed, and I'll discard its present contents.*/;
+        help_line[1] = 1183 /*You shouldn't use \box255 except in \output routines.*/;
+        help_line[0] = 1181 /*Proceed, and I'll discard its present contents.*/;
         box_error(255);
     }
     insert_penalties = 0;
@@ -237,13 +368,13 @@ void Engine::fire_up(int32_t c) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1180 /*Output loop---*/);
+            print(1184 /*Output loop---*/);
             print_int(dead_cycles);
-            print(1181 /* consecutive dead cycles*/);
+            print(1185 /* consecutive dead cycles*/);
             help_ptr = 3;
-            help_line[2] = 1182 /*I've concluded that your \output is awry; it never does a*/;
-            help_line[1] = 1183 /*\shipout, so I'm shipping \box255 out myself. Next time*/;
-            help_line[0] = 1184 /*increase \maxdeadcycles if you want me to be more patient!*/;
+            help_line[2] = 1186 /*I've concluded that your \output is awry; it never does a*/;
+            help_line[1] = 1187 /*\shipout, so I'm shipping \box255 out myself. Next time*/;
+            help_line[0] = 1188 /*increase \maxdeadcycles if you want me to be more patient!*/;
             error_();
         } else {
             output_active = true;
@@ -418,13 +549,13 @@ void Engine::build_page() {
                     if (interaction == (3)) {
                     }
                     print_nl(293 /*! */);
-                    print(1185 /*Infinite glue shrinkage inserted from */);
-                    print_esc(600 /*skip*/);
+                    print(1189 /*Infinite glue shrinkage inserted from */);
+                    print_esc(602 /*skip*/);
                     print_int(n);
                     help_ptr = 3;
-                    help_line[2] = 1186 /*The correction glue for page breaking with insertions*/;
-                    help_line[1] = 1187 /*must have finite shrinkability. But you may proceed,*/;
-                    help_line[0] = 1127 /*since the offensive shrinkability has been made finite.*/;
+                    help_line[2] = 1190 /*The correction glue for page breaking with insertions*/;
+                    help_line[1] = 1191 /*must have finite shrinkability. But you may proceed,*/;
+                    help_line[0] = 1131 /*since the offensive shrinkability has been made finite.*/;
                     error_();
                 }
             }
@@ -457,13 +588,13 @@ void Engine::build_page() {
                     mem[(r + (3))].int_ = (mem[(r + (3))].int_ + best_height_plus_depth);
                     if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (33))].int_ > 0) {
                         begin_diagnostic();
-                        print_nl(1188 /*% split*/);
+                        print_nl(1192 /*% split*/);
                         print_int(n);
-                        print(1189 /* to */);
+                        print(1193 /* to */);
                         print_scaled(w);
                         print_char(44);
                         print_scaled(best_height_plus_depth);
-                        print(1136 /* p=*/);
+                        print(1140 /* p=*/);
                         if (q == 0) {
                             print_int(((-((10000)))));
                         } else {
@@ -494,7 +625,7 @@ void Engine::build_page() {
             goto L80;
         } break;
         default: {
-            confusion(1190 /*page*/);
+            confusion(1194 /*page*/);
         } break;
         }
         if (pi < ((10000))) {
@@ -530,19 +661,19 @@ void Engine::build_page() {
             if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (33))].int_ > 0) {
                 begin_diagnostic();
                 print_nl(37);
-                print(1132 /* t=*/);
+                print(1136 /* t=*/);
                 print_totals();
-                print(1191 /* g=*/);
+                print(1195 /* g=*/);
                 print_scaled(page_so_far[0]);
-                print(1135 /* b=*/);
+                print(1139 /* b=*/);
                 if (b == 1073741823) {
                     print_char(42);
                 } else {
                     print_int(b);
                 }
-                print(1136 /* p=*/);
+                print(1140 /* p=*/);
                 print_int(pi);
-                print(1192 /* c=*/);
+                print(1196 /* c=*/);
                 if (c == 1073741823) {
                     print_char(42);
                 } else {
@@ -585,12 +716,12 @@ void Engine::build_page() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(1193 /*Infinite glue shrinkage found on current page*/);
+                print(1197 /*Infinite glue shrinkage found on current page*/);
                 help_ptr = 4;
-                help_line[3] = 1194 /*The page about to be output contains some infinitely*/;
-                help_line[2] = 1165 /*shrinkable glue, e.g., `\vss' or `\vskip 0pt minus 1fil'.*/;
-                help_line[1] = 1166 /*Such glue doesn't belong there; but you can safely proceed,*/;
-                help_line[0] = 1127 /*since the offensive shrinkability has been made finite.*/;
+                help_line[3] = 1198 /*The page about to be output contains some infinitely*/;
+                help_line[2] = 1169 /*shrinkable glue, e.g., `\vss' or `\vskip 0pt minus 1fil'.*/;
+                help_line[1] = 1170 /*Such glue doesn't belong there; but you can safely proceed,*/;
+                help_line[0] = 1131 /*since the offensive shrinkability has been made finite.*/;
                 error_();
                 r = new_spec(q);
                 mem[r].hh.b1 = (0);
@@ -673,10 +804,10 @@ void Engine::insert_dollar_sign() {
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(1195 /*Missing $ inserted*/);
+    print(1199 /*Missing $ inserted*/);
     help_ptr = 2;
-    help_line[1] = 1196 /*I've inserted a begin-math/end-math symbol since I think*/;
-    help_line[0] = 1197 /*you left one out. Proceed, with fingers crossed.*/;
+    help_line[1] = 1200 /*I've inserted a begin-math/end-math symbol since I think*/;
+    help_line[0] = 1201 /*you left one out. Proceed, with fingers crossed.*/;
     ins_error();
 }
 
@@ -685,9 +816,9 @@ void Engine::you_cant() {
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(920 /*You can't use `*/);
+    print(924 /*You can't use `*/);
     print_cmd_chr(cur_cmd, cur_chr);
-    print(1198 /*' in */);
+    print(1202 /*' in */);
     print_mode(cur_list.mode_field);
 }
 
@@ -695,10 +826,10 @@ void Engine::you_cant() {
 void Engine::report_illegal_case() {
     you_cant();
     help_ptr = 4;
-    help_line[3] = 1199 /*Sorry, but I'm not programmed to handle this case;*/;
-    help_line[2] = 1200 /*I'll just pretend that you didn't ask for it.*/;
-    help_line[1] = 1201 /*If you're in the wrong mode, you might be able to*/;
-    help_line[0] = 1202 /*return to the right one by typing `I}' or `I$' or `I\par'.*/;
+    help_line[3] = 1203 /*Sorry, but I'm not programmed to handle this case;*/;
+    help_line[2] = 1204 /*I'll just pretend that you didn't ask for it.*/;
+    help_line[1] = 1205 /*If you're in the wrong mode, you might be able to*/;
+    help_line[0] = 1206 /*return to the right one by typing `I}' or `I$' or `I\par'.*/;
     error_();
 }
 
@@ -790,10 +921,10 @@ void Engine::off_save() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(926 /*Extra */);
+        print(930 /*Extra */);
         print_cmd_chr(cur_cmd, cur_chr);
         help_ptr = 1;
-        help_line[0] = 1203 /*Things are pretty mixed up, but I think the worst is over.*/;
+        help_line[0] = 1207 /*Things are pretty mixed up, but I think the worst is over.*/;
         error_();
     } else {
         back_input();
@@ -802,11 +933,11 @@ void Engine::off_save() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(922 /*Missing */);
+        print(926 /*Missing */);
         switch (cur_group) {
         case 14: {
             mem[p].hh.lh = (4095 + (((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 2)));
-            print_esc(629 /*endgroup*/);
+            print_esc(633 /*endgroup*/);
         } break;
         case 15: {
             mem[p].hh.lh = ((768) + 36);
@@ -817,21 +948,21 @@ void Engine::off_save() {
             mem[p].hh.rh = get_avail();
             p = mem[p].hh.rh;
             mem[p].hh.lh = ((3072) + 46);
-            print_esc(1204 /*right.*/);
+            print_esc(1208 /*right.*/);
         } break;
         default: {
             mem[p].hh.lh = ((512) + 125);
             print_char(125);
         } break;
         }
-        print(923 /* inserted*/);
+        print(927 /* inserted*/);
         begin_token_list(mem[(mem_top - 3)].hh.rh, (4));
         help_ptr = 5;
-        help_line[4] = 1205 /*I've inserted something that you may have forgotten.*/;
-        help_line[3] = 1206 /*(See the <inserted text> above.)*/;
-        help_line[2] = 1207 /*With luck, this will get me unwedged. But if you*/;
-        help_line[1] = 1208 /*really didn't forget anything, try typing `2' now; then*/;
-        help_line[0] = 1209 /*my insertion and my current dilemma will both disappear.*/;
+        help_line[4] = 1209 /*I've inserted something that you may have forgotten.*/;
+        help_line[3] = 1210 /*(See the <inserted text> above.)*/;
+        help_line[2] = 1211 /*With luck, this will get me unwedged. But if you*/;
+        help_line[1] = 1212 /*really didn't forget anything, try typing `2' now; then*/;
+        help_line[0] = 1213 /*my insertion and my current dilemma will both disappear.*/;
         error_();
     }
 }
@@ -841,26 +972,26 @@ void Engine::extra_right_brace() {
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(1210 /*Extra }, or forgotten */);
+    print(1214 /*Extra }, or forgotten */);
     switch (cur_group) {
     case 14: {
-        print_esc(629 /*endgroup*/);
+        print_esc(633 /*endgroup*/);
     } break;
     case 15: {
         print_char(36);
     } break;
     case 16: {
-        print_esc(413 /*right*/);
+        print_esc(415 /*right*/);
     } break;
     default: {
     } break;
     }
     help_ptr = 5;
-    help_line[4] = 1211 /*I've deleted a group-closing symbol because it seems to be*/;
-    help_line[3] = 1212 /*spurious, as in `$x}$'. But perhaps the } is legitimate and*/;
-    help_line[2] = 1213 /*you forgot something else, as in `\hbox{$x}'. In such cases*/;
-    help_line[1] = 1214 /*the way to recover is to insert both the forgotten and the*/;
-    help_line[0] = 1215 /*deleted material, e.g., by typing `I$}'.*/;
+    help_line[4] = 1215 /*I've deleted a group-closing symbol because it seems to be*/;
+    help_line[3] = 1216 /*spurious, as in `$x}$'. But perhaps the } is legitimate and*/;
+    help_line[2] = 1217 /*you forgot something else, as in `\hbox{$x}'. In such cases*/;
+    help_line[1] = 1218 /*the way to recover is to insert both the forgotten and the*/;
+    help_line[0] = 1219 /*deleted material, e.g., by typing `I$}'.*/;
     error_();
     align_state = (align_state + 1);
 }
@@ -936,11 +1067,11 @@ void Engine::box_end(int32_t box_context) {
                         if (interaction == (3)) {
                         }
                         print_nl(293 /*! */);
-                        print(1216 /*Leaders not followed by proper glue*/);
+                        print(1220 /*Leaders not followed by proper glue*/);
                         help_ptr = 3;
-                        help_line[2] = 1217 /*You should say `\leaders <box or rule><hskip or vskip>'.*/;
-                        help_line[1] = 1218 /*I found the <box or rule>, but there's no suitable*/;
-                        help_line[0] = 1219 /*<hskip or vskip>, so I'm ignoring these leaders.*/;
+                        help_line[2] = 1221 /*You should say `\leaders <box or rule><hskip or vskip>'.*/;
+                        help_line[1] = 1222 /*I found the <box or rule>, but there's no suitable*/;
+                        help_line[0] = 1223 /*<hskip or vskip>, so I'm ignoring these leaders.*/;
                         back_error();
                         flush_node_list(cur_box);
                     }
@@ -974,14 +1105,14 @@ void Engine::begin_box(int32_t box_context) {
         if (pabs(cur_list.mode_field) == (((((((1) + (100)) + 1)) + (100)) + 1))) {
             you_cant();
             help_ptr = 1;
-            help_line[0] = 1220 /*Sorry; this \lastbox will be void.*/;
+            help_line[0] = 1224 /*Sorry; this \lastbox will be void.*/;
             error_();
         } else {
             if (((cur_list.mode_field == (1))) && ((cur_list.head_field == cur_list.tail_field))) {
                 you_cant();
                 help_ptr = 2;
-                help_line[1] = 1221 /*Sorry...I usually can't take things from the current page.*/;
-                help_line[0] = 1222 /*This \lastbox will therefore be void.*/;
+                help_line[1] = 1225 /*Sorry...I usually can't take things from the current page.*/;
+                help_line[0] = 1226 /*This \lastbox will therefore be void.*/;
                 error_();
             } else {
                 if (!((cur_list.tail_field >= hi_mem_min))) {
@@ -1017,14 +1148,14 @@ void Engine::begin_box(int32_t box_context) {
     case 3: {
         scan_eight_bit_int();
         n = cur_val;
-        if (!scan_keyword(1073 /*to*/)) {
+        if (!scan_keyword(1077 /*to*/)) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1223 /*Missing `to' inserted*/);
+            print(1227 /*Missing `to' inserted*/);
             help_ptr = 2;
-            help_line[1] = 1224 /*I'm working on `\vsplit<box number> to <dimen>';*/;
-            help_line[0] = 1225 /*will look for the <dimen> next.*/;
+            help_line[1] = 1228 /*I'm working on `\vsplit<box number> to <dimen>';*/;
+            help_line[0] = 1229 /*will look for the <dimen> next.*/;
             error_();
         }
         scan_dimen(false, false, false);
@@ -1083,11 +1214,11 @@ void Engine::scan_box(int32_t box_context) {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1226 /*A <box> was supposed to be here*/);
+            print(1230 /*A <box> was supposed to be here*/);
             help_ptr = 3;
-            help_line[2] = 1227 /*I was expecting to see \hbox or \vbox or \copy or \box or*/;
-            help_line[1] = 1228 /*something like that. So you might find something missing in*/;
-            help_line[0] = 1229 /*your output. But keep trying; you can fix this later.*/;
+            help_line[2] = 1231 /*I was expecting to see \hbox or \vbox or \copy or \box or*/;
+            help_line[1] = 1232 /*something like that. So you might find something missing in*/;
+            help_line[0] = 1233 /*your output. But keep trying; you can fix this later.*/;
             back_error();
         }
     }
@@ -1199,12 +1330,12 @@ void Engine::head_for_vmode() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(920 /*You can't use `*/);
-            print_esc(634 /*hrule*/);
-            print(1230 /*' here except with leaders*/);
+            print(924 /*You can't use `*/);
+            print_esc(638 /*hrule*/);
+            print(1234 /*' here except with leaders*/);
             help_ptr = 2;
-            help_line[1] = 1231 /*To put a horizontal rule in an hbox or an alignment,*/;
-            help_line[0] = 1232 /*you should use \leaders or \hrulefill (see The TeXbook).*/;
+            help_line[1] = 1235 /*To put a horizontal rule in an hbox or an alignment,*/;
+            help_line[0] = 1236 /*you should use \leaders or \hrulefill (see The TeXbook).*/;
             error_();
         }
     } else {
@@ -1238,10 +1369,10 @@ void Engine::begin_insert_or_adjust() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(941 /*Bad register code*/);
+            print(945 /*Bad register code*/);
             help_ptr = 2;
-            help_line[1] = 1233 /*A register number must be between 0 and 255.*/;
-            help_line[0] = 943 /*I changed this one to zero.*/;
+            help_line[1] = 1237 /*A register number must be between 0 and 255.*/;
+            help_line[0] = 947 /*I changed this one to zero.*/;
             int_error(cur_val);
             cur_val = 0;
         }
@@ -1249,11 +1380,11 @@ void Engine::begin_insert_or_adjust() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1234 /*You can't */);
+            print(1238 /*You can't */);
             print_esc(368 /*insert*/);
             print_int(255);
             help_ptr = 1;
-            help_line[0] = 1235 /*I'm changing to \insert0; box 255 is special.*/;
+            help_line[0] = 1239 /*I'm changing to \insert0; box 255 is special.*/;
             error_();
             cur_val = 0;
         }
@@ -1307,13 +1438,13 @@ void Engine::delete_last() {
         if (((cur_chr != (10))) || ((last_glue != 268435455))) {
             you_cant();
             help_ptr = 2;
-            help_line[1] = 1221 /*Sorry...I usually can't take things from the current page.*/;
-            help_line[0] = 1236 /*Try `I\vskip-\lastskip' instead.*/;
+            help_line[1] = 1225 /*Sorry...I usually can't take things from the current page.*/;
+            help_line[0] = 1240 /*Try `I\vskip-\lastskip' instead.*/;
             if (cur_chr == (11)) {
-                help_line[0] = (1237 /*Try `I\kern-\lastkern' instead.*/);
+                help_line[0] = (1241 /*Try `I\kern-\lastkern' instead.*/);
             } else {
                 if (cur_chr != (10)) {
-                    help_line[0] = (1238 /*Perhaps you can make the output routine do it.*/);
+                    help_line[0] = (1242 /*Perhaps you can make the output routine do it.*/);
                 }
             }
             error_();
@@ -1372,11 +1503,11 @@ void Engine::unpackage() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1239 /*Incompatible list can't be unboxed*/);
+        print(1243 /*Incompatible list can't be unboxed*/);
         help_ptr = 3;
-        help_line[2] = 1240 /*Sorry, Pandora. (You sneaky devil.)*/;
-        help_line[1] = 1241 /*I refuse to unbox an \hbox in vertical mode or vice versa.*/;
-        help_line[0] = 1242 /*And I can't open any boxes in math mode.*/;
+        help_line[2] = 1244 /*Sorry, Pandora. (You sneaky devil.)*/;
+        help_line[1] = 1245 /*I refuse to unbox an \hbox in vertical mode or vice versa.*/;
+        help_line[0] = 1246 /*And I can't open any boxes in math mode.*/;
         error_();
         goto L10;
     }
@@ -1456,12 +1587,12 @@ void Engine::build_discretionary() {
                         if (interaction == (3)) {
                         }
                         print_nl(293 /*! */);
-                        print(1243 /*Improper discretionary list*/);
+                        print(1247 /*Improper discretionary list*/);
                         help_ptr = 1;
-                        help_line[0] = 1244 /*Discretionary lists must contain only boxes and kerns.*/;
+                        help_line[0] = 1248 /*Discretionary lists must contain only boxes and kerns.*/;
                         error_();
                         begin_diagnostic();
-                        print_nl(1245 /*The following discretionary sublist has been deleted:*/);
+                        print_nl(1249 /*The following discretionary sublist has been deleted:*/);
                         show_box(p);
                         end_diagnostic(true);
                         flush_node_list(p);
@@ -1490,11 +1621,11 @@ L30:;
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1246 /*Illegal math */);
-            print_esc(394 /*discretionary*/);
+            print(1250 /*Illegal math */);
+            print_esc(396 /*discretionary*/);
             help_ptr = 2;
-            help_line[1] = 1247 /*Sorry: The third part of a discretionary break must be*/;
-            help_line[0] = 1248 /*empty, in math formulas. I had to delete your third part.*/;
+            help_line[1] = 1251 /*Sorry: The third part of a discretionary break must be*/;
+            help_line[0] = 1252 /*empty, in math formulas. I had to delete your third part.*/;
             flush_node_list(p);
             n = 0;
             error_();
@@ -1507,10 +1638,10 @@ L30:;
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1249 /*Discretionary list is too long*/);
+            print(1253 /*Discretionary list is too long*/);
             help_ptr = 2;
-            help_line[1] = 1250 /*Wow---I never thought anybody would tweak me here.*/;
-            help_line[0] = 1251 /*You can't seriously need such a huge discretionary list?*/;
+            help_line[1] = 1254 /*Wow---I never thought anybody would tweak me here.*/;
+            help_line[0] = 1255 /*You can't seriously need such a huge discretionary list?*/;
             error_();
         }
         if (n > 0) {
@@ -1596,23 +1727,23 @@ void Engine::align_error() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1252 /*Misplaced */);
+        print(1256 /*Misplaced */);
         print_cmd_chr(cur_cmd, cur_chr);
         if (cur_tok == ((1024) + 38)) {
             help_ptr = 6;
-            help_line[5] = 1253 /*I can't figure out why you would want to use a tab mark*/;
-            help_line[4] = 1254 /*here. If you just want an ampersand, the remedy is*/;
-            help_line[3] = 1255 /*simple: Just type `I\&' now. But if some right brace*/;
-            help_line[2] = 1256 /*up above has ended a previous alignment prematurely,*/;
-            help_line[1] = 1257 /*you're probably due for more error messages, and you*/;
-            help_line[0] = 1258 /*might try typing `S' now just to see what is salvageable.*/;
+            help_line[5] = 1257 /*I can't figure out why you would want to use a tab mark*/;
+            help_line[4] = 1258 /*here. If you just want an ampersand, the remedy is*/;
+            help_line[3] = 1259 /*simple: Just type `I\&' now. But if some right brace*/;
+            help_line[2] = 1260 /*up above has ended a previous alignment prematurely,*/;
+            help_line[1] = 1261 /*you're probably due for more error messages, and you*/;
+            help_line[0] = 1262 /*might try typing `S' now just to see what is salvageable.*/;
         } else {
             help_ptr = 5;
-            help_line[4] = 1253 /*I can't figure out why you would want to use a tab mark*/;
-            help_line[3] = 1259 /*or \cr or \span just now. If something like a right brace*/;
-            help_line[2] = 1256 /*up above has ended a previous alignment prematurely,*/;
-            help_line[1] = 1257 /*you're probably due for more error messages, and you*/;
-            help_line[0] = 1258 /*might try typing `S' now just to see what is salvageable.*/;
+            help_line[4] = 1257 /*I can't figure out why you would want to use a tab mark*/;
+            help_line[3] = 1263 /*or \cr or \span just now. If something like a right brace*/;
+            help_line[2] = 1260 /*up above has ended a previous alignment prematurely,*/;
+            help_line[1] = 1261 /*you're probably due for more error messages, and you*/;
+            help_line[0] = 1262 /*might try typing `S' now just to see what is salvageable.*/;
         }
         error_();
     } else {
@@ -1621,21 +1752,21 @@ void Engine::align_error() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(934 /*Missing { inserted*/);
+            print(938 /*Missing { inserted*/);
             align_state = (align_state + 1);
             cur_tok = ((256) + 123);
         } else {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1260 /*Missing } inserted*/);
+            print(1264 /*Missing } inserted*/);
             align_state = (align_state - 1);
             cur_tok = ((512) + 125);
         }
         help_ptr = 3;
-        help_line[2] = 1261 /*I've put in what seems to be necessary to fix*/;
-        help_line[1] = 1262 /*the current column of the current alignment.*/;
-        help_line[0] = 1263 /*Try to go on, since this might almost work.*/;
+        help_line[2] = 1265 /*I've put in what seems to be necessary to fix*/;
+        help_line[1] = 1266 /*the current column of the current alignment.*/;
+        help_line[0] = 1267 /*Try to go on, since this might almost work.*/;
         ins_error();
     }
 }
@@ -1645,11 +1776,11 @@ void Engine::no_align_error() {
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(1252 /*Misplaced */);
-    print_esc(639 /*noalign*/);
+    print(1256 /*Misplaced */);
+    print_esc(643 /*noalign*/);
     help_ptr = 2;
-    help_line[1] = 1264 /*I expect to see \noalign only after the \cr of*/;
-    help_line[0] = 1265 /*an alignment. Proceed, and I'll ignore this case.*/;
+    help_line[1] = 1268 /*I expect to see \noalign only after the \cr of*/;
+    help_line[0] = 1269 /*an alignment. Proceed, and I'll ignore this case.*/;
     error_();
 }
 
@@ -1658,11 +1789,11 @@ void Engine::omit_error() {
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(1252 /*Misplaced */);
-    print_esc(642 /*omit*/);
+    print(1256 /*Misplaced */);
+    print_esc(646 /*omit*/);
     help_ptr = 2;
-    help_line[1] = 1266 /*I expect to see \omit only after tab marks or the \cr of*/;
-    help_line[0] = 1265 /*an alignment. Proceed, and I'll ignore this case.*/;
+    help_line[1] = 1270 /*I expect to see \omit only after tab marks or the \cr of*/;
+    help_line[0] = 1269 /*an alignment. Proceed, and I'll ignore this case.*/;
     error_();
 }
 
@@ -1674,7 +1805,7 @@ void Engine::do_endv() {
         base_ptr = (base_ptr - 1);
     }
     if ((((input_stack[base_ptr].index_field != (2))) || ((input_stack[base_ptr].loc_field != 0))) || ((input_stack[base_ptr].state_field != (0)))) {
-        fatal_error(876 /*(interwoven alignment preambles are not allowed)*/);
+        fatal_error(880 /*(interwoven alignment preambles are not allowed)*/);
     }
     if (cur_group == (6)) {
         end_graf();
@@ -1691,10 +1822,10 @@ void Engine::cs_error() {
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(926 /*Extra */);
+    print(930 /*Extra */);
     print_esc(264 /*endcsname*/);
     help_ptr = 1;
-    help_line[0] = 1267 /*I'm ignoring this, since I wasn't doing a \csname.*/;
+    help_line[0] = 1271 /*I'm ignoring this, since I wasn't doing a \csname.*/;
     error_();
 }
 
@@ -1944,9 +2075,9 @@ void Engine::math_limit_switch() {
     if (interaction == (3)) {
     }
     print_nl(293 /*! */);
-    print(1268 /*Limit controls must follow a math operator*/);
+    print(1272 /*Limit controls must follow a math operator*/);
     help_ptr = 1;
-    help_line[0] = 1269 /*I'm ignoring this misplaced \limits or \nolimits command.*/;
+    help_line[0] = 1273 /*I'm ignoring this misplaced \limits or \nolimits command.*/;
     error_();
 L10:;
 }
@@ -1975,14 +2106,14 @@ void Engine::scan_delimiter(int32_t p, bool r) {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1270 /*Missing delimiter (. inserted)*/);
+        print(1274 /*Missing delimiter (. inserted)*/);
         help_ptr = 6;
-        help_line[5] = 1271 /*I was expecting to see something like `(' or `\{' or*/;
-        help_line[4] = 1272 /*`\}' here. If you typed, e.g., `{' instead of `\{', you*/;
-        help_line[3] = 1273 /*should probably delete the `{' by typing `1' now, so that*/;
-        help_line[2] = 1274 /*braces don't get unbalanced. Otherwise just proceed.*/;
-        help_line[1] = 1275 /*Acceptable delimiters are characters whose \delcode is*/;
-        help_line[0] = 1276 /*nonnegative, or you can use `\delimiter <delimiter code>'.*/;
+        help_line[5] = 1275 /*I was expecting to see something like `(' or `\{' or*/;
+        help_line[4] = 1276 /*`\}' here. If you typed, e.g., `{' instead of `\{', you*/;
+        help_line[3] = 1277 /*should probably delete the `{' by typing `1' now, so that*/;
+        help_line[2] = 1278 /*braces don't get unbalanced. Otherwise just proceed.*/;
+        help_line[1] = 1279 /*Acceptable delimiters are characters whose \delcode is*/;
+        help_line[0] = 1280 /*nonnegative, or you can use `\delimiter <delimiter code>'.*/;
         back_error();
         cur_val = 0;
     }
@@ -2011,12 +2142,12 @@ void Engine::math_ac() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1277 /*Please use */);
-        print_esc(636 /*mathaccent*/);
-        print(1278 /* for accents in math mode*/);
+        print(1281 /*Please use */);
+        print_esc(640 /*mathaccent*/);
+        print(1282 /* for accents in math mode*/);
         help_ptr = 2;
-        help_line[1] = 1279 /*I'm changing \accent to \mathaccent here; wish me luck.*/;
-        help_line[0] = 1280 /*(Accents are not the same in formulas as they are in text.)*/;
+        help_line[1] = 1283 /*I'm changing \accent to \mathaccent here; wish me luck.*/;
+        help_line[0] = 1284 /*(Accents are not the same in formulas as they are in text.)*/;
         error_();
     }
     mem[cur_list.tail_field].hh.rh = get_node((5));
@@ -2059,7 +2190,7 @@ int32_t Engine::fin_mlist(int32_t p) {
         } else {
             q = mem[(cur_list.aux_field.int_ + 2)].hh.lh;
             if (((mem[q].hh.b0 != (((((((((((((((((((13) + 3)) + 7)) + 1)) + 1)) + 1)) + 1)) + 1)) + 1)) + 1)))) || ((cur_list.etex_aux_field == 0))) {
-                confusion(413 /*right*/);
+                confusion(415 /*right*/);
             }
             mem[(cur_list.aux_field.int_ + 2)].hh.lh = mem[cur_list.etex_aux_field].hh.rh;
             mem[cur_list.etex_aux_field].hh.rh = cur_list.aux_field.int_;
@@ -2124,16 +2255,16 @@ void Engine::sub_sup() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(1281 /*Double superscript*/);
+                print(1285 /*Double superscript*/);
                 help_ptr = 1;
-                help_line[0] = 1282 /*I treat `x^1^2' essentially like `x^1{}^2'.*/;
+                help_line[0] = 1286 /*I treat `x^1^2' essentially like `x^1{}^2'.*/;
             } else {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(1283 /*Double subscript*/);
+                print(1287 /*Double subscript*/);
                 help_ptr = 1;
-                help_line[0] = 1284 /*I treat `x_1_2' essentially like `x_1{}_2'.*/;
+                help_line[0] = 1288 /*I treat `x_1_2' essentially like `x_1{}_2'.*/;
             }
             error_();
         }
@@ -2156,11 +2287,11 @@ void Engine::math_fraction() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1285 /*Ambiguous; you need another { and }*/);
+        print(1289 /*Ambiguous; you need another { and }*/);
         help_ptr = 3;
-        help_line[2] = 1286 /*I'm ignoring this fraction specification, since I don't*/;
-        help_line[1] = 1287 /*know whether a construction like `x \over y \over z'*/;
-        help_line[0] = 1288 /*means `{x \over y} \over z' or `x \over {y \over z}'.*/;
+        help_line[2] = 1290 /*I'm ignoring this fraction specification, since I don't*/;
+        help_line[1] = 1291 /*know whether a construction like `x \over y \over z'*/;
+        help_line[0] = 1292 /*means `{x \over y} \over z' or `x \over {y \over z}'.*/;
         error_();
     } else {
         cur_list.aux_field.int_ = get_node((6));
@@ -2206,15 +2337,15 @@ void Engine::math_left_right() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(926 /*Extra */);
+            print(930 /*Extra */);
             if (t == (1)) {
-                print_esc(414 /*middle*/);
+                print_esc(416 /*middle*/);
                 help_ptr = 1;
-                help_line[0] = 1289 /*I'm ignoring a \middle that had no matching \left.*/;
+                help_line[0] = 1293 /*I'm ignoring a \middle that had no matching \left.*/;
             } else {
-                print_esc(413 /*right*/);
+                print_esc(415 /*right*/);
                 help_ptr = 1;
-                help_line[0] = 1290 /*I'm ignoring a \right that had no matching \left.*/;
+                help_line[0] = 1294 /*I'm ignoring a \right that had no matching \left.*/;
             }
             error_();
         } else {
@@ -2272,11 +2403,11 @@ void Engine::after_math() {
         if (interaction == (3)) {
         }
         print_nl(293 /*! */);
-        print(1291 /*Math formula deleted: Insufficient symbol fonts*/);
+        print(1295 /*Math formula deleted: Insufficient symbol fonts*/);
         help_ptr = 3;
-        help_line[2] = 1292 /*Sorry, but I can't typeset math unless \textfont 2*/;
-        help_line[1] = 1293 /*and \scriptfont 2 and \scriptscriptfont 2 have all*/;
-        help_line[0] = 1294 /*the \fontdimen values needed in math symbol fonts.*/;
+        help_line[2] = 1296 /*Sorry, but I can't typeset math unless \textfont 2*/;
+        help_line[1] = 1297 /*and \scriptfont 2 and \scriptscriptfont 2 have all*/;
+        help_line[0] = 1298 /*the \fontdimen values needed in math symbol fonts.*/;
         error_();
         flush_math();
         danger = true;
@@ -2285,11 +2416,11 @@ void Engine::after_math() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1295 /*Math formula deleted: Insufficient extension fonts*/);
+            print(1299 /*Math formula deleted: Insufficient extension fonts*/);
             help_ptr = 3;
-            help_line[2] = 1296 /*Sorry, but I can't typeset math unless \textfont 3*/;
-            help_line[1] = 1297 /*and \scriptfont 3 and \scriptscriptfont 3 have all*/;
-            help_line[0] = 1298 /*the \fontdimen values needed in math extension fonts.*/;
+            help_line[2] = 1300 /*Sorry, but I can't typeset math unless \textfont 3*/;
+            help_line[1] = 1301 /*and \scriptfont 3 and \scriptscriptfont 3 have all*/;
+            help_line[0] = 1302 /*the \fontdimen values needed in math extension fonts.*/;
             error_();
             flush_math();
             danger = true;
@@ -2304,10 +2435,10 @@ void Engine::after_math() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1119 /*Display math should end with $$*/);
+            print(1123 /*Display math should end with $$*/);
             help_ptr = 2;
-            help_line[1] = 1120 /*The `$' that I just saw supposedly matches a previous `$$'.*/;
-            help_line[0] = 1121 /*So I shall assume that you typed `$$' both times.*/;
+            help_line[1] = 1124 /*The `$' that I just saw supposedly matches a previous `$$'.*/;
+            help_line[0] = 1125 /*So I shall assume that you typed `$$' both times.*/;
             back_error();
         }
         cur_mlist = p;
@@ -2325,11 +2456,11 @@ void Engine::after_math() {
             if (interaction == (3)) {
             }
             print_nl(293 /*! */);
-            print(1291 /*Math formula deleted: Insufficient symbol fonts*/);
+            print(1295 /*Math formula deleted: Insufficient symbol fonts*/);
             help_ptr = 3;
-            help_line[2] = 1292 /*Sorry, but I can't typeset math unless \textfont 2*/;
-            help_line[1] = 1293 /*and \scriptfont 2 and \scriptscriptfont 2 have all*/;
-            help_line[0] = 1294 /*the \fontdimen values needed in math symbol fonts.*/;
+            help_line[2] = 1296 /*Sorry, but I can't typeset math unless \textfont 2*/;
+            help_line[1] = 1297 /*and \scriptfont 2 and \scriptscriptfont 2 have all*/;
+            help_line[0] = 1298 /*the \fontdimen values needed in math symbol fonts.*/;
             error_();
             flush_math();
             danger = true;
@@ -2338,11 +2469,11 @@ void Engine::after_math() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(1295 /*Math formula deleted: Insufficient extension fonts*/);
+                print(1299 /*Math formula deleted: Insufficient extension fonts*/);
                 help_ptr = 3;
-                help_line[2] = 1296 /*Sorry, but I can't typeset math unless \textfont 3*/;
-                help_line[1] = 1297 /*and \scriptfont 3 and \scriptscriptfont 3 have all*/;
-                help_line[0] = 1298 /*the \fontdimen values needed in math extension fonts.*/;
+                help_line[2] = 1300 /*Sorry, but I can't typeset math unless \textfont 3*/;
+                help_line[1] = 1301 /*and \scriptfont 3 and \scriptscriptfont 3 have all*/;
+                help_line[0] = 1302 /*the \fontdimen values needed in math extension fonts.*/;
                 error_();
                 flush_math();
                 danger = true;
@@ -2375,10 +2506,10 @@ void Engine::after_math() {
                 if (interaction == (3)) {
                 }
                 print_nl(293 /*! */);
-                print(1119 /*Display math should end with $$*/);
+                print(1123 /*Display math should end with $$*/);
                 help_ptr = 2;
-                help_line[1] = 1120 /*The `$' that I just saw supposedly matches a previous `$$'.*/;
-                help_line[0] = 1121 /*So I shall assume that you typed `$$' both times.*/;
+                help_line[1] = 1124 /*The `$' that I just saw supposedly matches a previous `$$'.*/;
+                help_line[0] = 1125 /*So I shall assume that you typed `$$' both times.*/;
                 back_error();
             }
         }
@@ -2480,36 +2611,6 @@ void Engine::after_math() {
             cur_list.tail_field = mem[cur_list.tail_field].hh.rh;
         }
         resume_after_display();
-    }
-}
-
-// §1201
-void Engine::resume_after_display() {
-    if (cur_group != (15)) {
-        confusion(1299 /*display*/);
-    }
-    unsave();
-    cur_list.pg_field = (cur_list.pg_field + 3);
-    push_nest();
-    cur_list.mode_field = ((((1) + (100)) + 1));
-    cur_list.aux_field.hh.lh = 1000;
-    if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (50))].int_ <= 0) {
-        cur_lang = 0;
-    } else {
-        if (eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (50))].int_ > 255) {
-            cur_lang = 0;
-        } else {
-            cur_lang = eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (50))].int_;
-        }
-    }
-    cur_list.aux_field.hh.rh = cur_lang;
-    cur_list.pg_field = (((((norm_min(eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (51))].int_) * 64) + norm_min(eqtb[(((((((((((((((((((((((((((((((((((((((((((1) + 256)) + 256)) + 1)) + (524288))) + 10)) + font_max) + 1)) + 1)) + (18))) + (32768))) + (32768))) + 19)) + (32768))) + (32768))) + 1)) + 48)) + 256)) + 256)) + 256)) + 256)) + 256)) + (52))].int_))) * 65536) + cur_lang);
-    get_x_token();
-    if (cur_cmd != (10)) {
-        back_input();
-    }
-    if (nest_ptr == 1) {
-        build_page();
     }
 }
 

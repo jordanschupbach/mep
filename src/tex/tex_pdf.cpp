@@ -381,8 +381,6 @@ void Engine::print_pdf_extension(int32_t chr) {
     case pdf_set_random_seed_code: n = "pdfsetrandomseed"; break;
     case quitvmode_code: n = "quitvmode"; break;
     case partokenname_code: n = "partokenname"; break;
-    case letterspace_font_code: n = "letterspacefont"; break;
-    case pdf_copy_font_code: n = "pdfcopyfont"; break;
     default:
         print_str(n);
         return;
@@ -701,10 +699,19 @@ void Engine::pdf_convert(int32_t code) {
         return;
     }
     case left_margin_kern_code:
-    case right_margin_kern_code:
+    case right_margin_kern_code: {
         scan_eight_bit_int();
-        insert_string("0pt");
+        const int32_t v = margin_kern_of_box(equiv(tc::box_base + cur_val), code == right_margin_kern_code);
+        const int32_t saved = selector;
+        selector = new_string;
+        const int32_t b = pool_ptr;
+        print_scaled(v);
+        print_str("pt");
+        selector = saved;
+        link(garbage()) = str_toks(b);
+        begin_token_list(link(temp_head()), inserted);
         return;
+    }
     case pdf_ximage_bbox_code: {
         scan_int();
         const int32_t n = cur_val;
@@ -1019,11 +1026,22 @@ void Engine::do_pdf_extension(int32_t chr) {
         return;
     }
     case pdf_font_expand_code: {
+        // \pdffontexpand font stretch shrink step [autoexpand]: in thousandths
         scan_font_ident();
+        const int32_t fnt = cur_val;
         scan_int();
+        int32_t st = std::clamp(cur_val, 0, 1000);
         scan_int();
+        int32_t sh = std::clamp(cur_val, 0, 500);
         scan_int();
+        const int32_t step = std::clamp(cur_val, 0, 100);
         scan_kw("autoexpand");
+        if (step > 0) {
+            st -= st % step;
+            sh -= sh % step;
+        }
+        if (step > 0 && (st > 0 || sh > 0)) pdf_.font_expand[fnt] = {st, sh, step};
+        else pdf_.font_expand.erase(fnt);
         return;
     }
     case pdf_include_chars_code:
@@ -1065,12 +1083,6 @@ void Engine::do_pdf_extension(int32_t chr) {
         par_token = cs_token_flag + par_loc;
         return;
     }
-    case letterspace_font_code:
-    case pdf_copy_font_code:
-        print_err_str("Sorry, this pdfTeX font command is not implemented yet");
-        set_help({"mep-tex does not make letterspaced or copied fonts yet."});
-        error_();
-        return;
     default:
         confusion(pool_string("ext1"));
         return;

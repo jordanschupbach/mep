@@ -1,0 +1,324 @@
+================================================================================
+Automatic semicolons at line breaks
+================================================================================
+
+a = b
+(c)
+d
+++e
+return
+x
+let f = 1
+
+--------------------------------------------------------------------------------
+
+(program
+  (expression_statement
+    (assignment_expression
+      (identifier)
+      (call_expression
+        (identifier)
+        (arguments
+          (identifier)))))
+  (expression_statement
+    (identifier))
+  (expression_statement
+    (update_expression
+      (identifier)))
+  (return_statement)
+  (expression_statement
+    (identifier))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (number))))
+
+================================================================================
+Automatic semicolon before a closing brace and at the end
+================================================================================
+
+function g() { return 1 }
+h()
+
+--------------------------------------------------------------------------------
+
+(program
+  (function_declaration
+    (identifier)
+    (formal_parameters)
+    (statement_block
+      (return_statement
+        (number))))
+  (expression_statement
+    (call_expression
+      (identifier)
+      (arguments))))
+
+================================================================================
+Regex versus division
+================================================================================
+
+x = a / b / c
+y = /[/]+/g.test(s)
+if (z) /re/.exec(t)
+
+--------------------------------------------------------------------------------
+
+(program
+  (expression_statement
+    (assignment_expression
+      (identifier)
+      (binary_expression
+        (binary_expression
+          (identifier)
+          (identifier))
+        (identifier))))
+  (expression_statement
+    (assignment_expression
+      (identifier)
+      (call_expression
+        (member_expression
+          (regex
+            (regex_pattern)
+            (regex_flags))
+          (property_identifier))
+        (arguments
+          (identifier)))))
+  (if_statement
+    (parenthesized_expression
+      (identifier))
+    (expression_statement
+      (call_expression
+        (member_expression
+          (regex
+            (regex_pattern))
+          (property_identifier))
+        (arguments
+          (identifier))))))
+
+================================================================================
+Template literals with nested substitutions
+================================================================================
+
+`a ${b ? `c${d}` : 'e'} \n f`
+
+--------------------------------------------------------------------------------
+
+(program
+  (expression_statement
+    (template_string
+      (string_fragment)
+      (template_substitution
+        (ternary_expression
+          (identifier)
+          (template_string
+            (string_fragment)
+            (template_substitution
+              (identifier)))
+          (string
+            (string_fragment))))
+      (string_fragment)
+      (escape_sequence)
+      (string_fragment))))
+
+================================================================================
+A conditional's ? versus optional chaining and ??
+================================================================================
+
+a ? b : c
+d?.e ?? f?.[0]
+g ?.5 : 1
+
+--------------------------------------------------------------------------------
+
+(program
+  (expression_statement
+    (ternary_expression
+      (identifier)
+      (identifier)
+      (identifier)))
+  (expression_statement
+    (binary_expression
+      (member_expression
+        (identifier)
+        (optional_chain)
+        (property_identifier))
+      (subscript_expression
+        (identifier)
+        (optional_chain)
+        (number))))
+  (expression_statement
+    (ternary_expression
+      (identifier)
+      (number)
+      (number))))
+
+================================================================================
+HTML-like comments
+================================================================================
+
+<!-- an old comment
+x = 1
+--> another
+y = a-->b
+
+--------------------------------------------------------------------------------
+
+(program
+  (html_comment)
+  (expression_statement
+    (assignment_expression
+      (identifier)
+      (number)))
+  (html_comment)
+  (expression_statement
+    (assignment_expression
+      (identifier)
+      (binary_expression
+        (update_expression
+          (identifier))
+        (identifier)))))
+
+================================================================================
+await of a call
+================================================================================
+
+async function f() {
+  await (async () => 1)()
+  await
+  g()
+}
+
+--------------------------------------------------------------------------------
+
+(program
+  (function_declaration
+    (identifier)
+    (formal_parameters)
+    (statement_block
+      (expression_statement
+        (await_expression
+          (call_expression
+            (parenthesized_expression
+              (arrow_function
+                (formal_parameters)
+                (number)))
+            (arguments))))
+      (expression_statement
+        (await_expression
+          (call_expression
+            (identifier)
+            (arguments)))))))
+
+================================================================================
+Hashbang and class members
+================================================================================
+
+#!/usr/bin/env node
+class A extends B {
+  #p = 1
+  static { init() }
+  get q() { return this.#p }
+  async *r() {}
+}
+
+--------------------------------------------------------------------------------
+
+(program
+  (hash_bang_line)
+  (class_declaration
+    (identifier)
+    (class_heritage
+      (identifier))
+    (class_body
+      (field_definition
+        (private_property_identifier)
+        (number))
+      (class_static_block
+        (statement_block
+          (expression_statement
+            (call_expression
+              (identifier)
+              (arguments)))))
+      (method_definition
+        (property_identifier)
+        (formal_parameters)
+        (statement_block
+          (return_statement
+            (member_expression
+              (this)
+              (private_property_identifier)))))
+      (method_definition
+        (property_identifier)
+        (formal_parameters)
+        (statement_block)))))
+
+================================================================================
+JSX elements, text and expressions
+================================================================================
+
+const el = <Panel a="1" {...p}><b>hi &amp; {x}</b><></></Panel>;
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (jsx_element
+        (jsx_opening_element
+          (identifier)
+          (jsx_attribute
+            (property_identifier)
+            (string
+              (string_fragment)))
+          (jsx_expression
+            (spread_element
+              (identifier))))
+        (jsx_element
+          (jsx_opening_element
+            (identifier))
+          (jsx_text)
+          (html_character_reference)
+          (jsx_text)
+          (jsx_expression
+            (identifier))
+          (jsx_closing_element
+            (identifier)))
+        (jsx_element
+          (jsx_opening_element)
+          (jsx_closing_element))
+        (jsx_closing_element
+          (identifier))))))
+
+================================================================================
+Destructuring and defaults
+================================================================================
+
+const { a, b: [c = 1, ...d], ...e } = f
+for (const [k, v] of m) {}
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (object_pattern
+        (shorthand_property_identifier_pattern)
+        (pair_pattern
+          (property_identifier)
+          (array_pattern
+            (assignment_pattern
+              (identifier)
+              (number))
+            (rest_pattern
+              (identifier))))
+        (rest_pattern
+          (identifier)))
+      (identifier)))
+  (for_in_statement
+    (array_pattern
+      (identifier)
+      (identifier))
+    (identifier)
+    (statement_block)))

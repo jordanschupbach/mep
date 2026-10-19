@@ -40,6 +40,7 @@ import subprocess
 import sys
 import tarfile
 import textwrap
+import threading
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -113,8 +114,15 @@ LANGUAGES = {
     ),
     'javascript': dict(
         globs=['*.js', '*.mjs', '*.cjs', '*.jsx'],
-        sources=[('nodejs.src', ['*/lib/*.js', '*/lib/*.mjs'])],
-        oracle=['node', '--check', '{}'],
+        # Three React front ends for JSX (Node's lib/ has none).
+        sources=[('nodejs.src', ['*/lib/*.js', '*/lib/*.mjs']),
+                 ('mastodon.src', ['app/javascript/*.js', 'app/javascript/*.jsx']),
+                 ('homepage-dashboard.src', ['src/*.js', 'src/*.jsx']),
+                 ('navidrome.src', ['ui/src/*.js', 'ui/src/*.jsx'])],
+        # node rejects JSX: esbuild (strict, and parses JSX) checks .jsx.
+        oracle=['sh', '-c', 'case "$1" in *.jsx) exec nix shell nixpkgs#esbuild --command '
+                'esbuild --loader=jsx --log-level=error "$1" >/dev/null;; '
+                '*) exec node --check "$1";; esac', 'sh', '{}'],
         tokens=['`', '${', '/', '/g', '=>', '<div>', '</div>', ';', '\n'],
     ),
     'org': dict(
@@ -646,8 +654,13 @@ def stream_error_bytes(exe, files):
     out, current, lines = {}, None, []
     with subprocess.Popen([str(exe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                           errors='replace') as proc:
-        proc.stdin.write(''.join(f + '\n' for f in files))
-        proc.stdin.close()
+        # Fed from a thread: the dump answers each name as it reads it, so
+        # writing the whole list first deadlocks once both pipes fill.
+        def feed():
+            proc.stdin.write(''.join(f + '\n' for f in files))
+            proc.stdin.close()
+        feeder = threading.Thread(target=feed)
+        feeder.start()
         for line in proc.stdout:
             if line.startswith('@@FILE '):
                 current, lines = line[7:].rstrip('\n'), []
@@ -655,6 +668,7 @@ def stream_error_bytes(exe, files):
                 out[current] = error_bytes(lines)
             else:
                 lines.append(line)
+    feeder.join()
     if proc.returncode != 0:
         die(f'{exe} failed (exit {proc.returncode}) after {len(out)} of {len(files)} files')
     return out

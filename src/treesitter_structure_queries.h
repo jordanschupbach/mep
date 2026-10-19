@@ -40,15 +40,6 @@ static const char *kStructureCpp = R"TSQ(
 (function_definition declarator: (reference_declarator (function_declarator declarator: (qualified_identifier) @name))) @definition.method
 )TSQ";
 
-static const char *kStructureJavascript = R"TSQ(
-(class_declaration name: (identifier) @name) @definition.class
-(function_declaration name: (identifier) @name) @definition.function
-(generator_function_declaration name: (identifier) @name) @definition.function
-(method_definition name: (property_identifier) @name) @definition.method
-(variable_declarator name: (identifier) @name value: (arrow_function)) @definition.function
-(variable_declarator name: (identifier) @name value: (function_expression)) @definition.function
-)TSQ";
-
 // Typescript/tsx share this: JSX adds element syntax, not new declaration
 // node shapes, so the same query covers both (see treesitter.cpp's
 // DynamicStructureQueryTable, which keys both filetypes to this string).

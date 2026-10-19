@@ -41,14 +41,13 @@ tempted to grow this list back:
 C, C++, Lua (mep's own scripting/config language — `~/.config/mep/init.lua`
 and any `.lua` file need this regardless of what else is available),
 Python, JavaScript, Markdown (+ its separate inline-formatting grammar),
-and Org. C, Python, Lua, R, Nix, justfiles and mepml have grammars of mep's
+and Org. C, Python, JavaScript, Lua, R, Nix, justfiles and mepml have grammars of mep's
 own instead (`grammars/`), and `plans/TREESITTER_GRAMMAR_PLAN.md` replaces the rest of
 this set the same way, one grammar at a time.
 
 | name | repo | tag/commit | subdir |
 |---|---|---|---|
 | cpp | https://github.com/tree-sitter/tree-sitter-cpp | v0.23.4 | . |
-| javascript | https://github.com/tree-sitter/tree-sitter-javascript | v0.25.0 | . |
 | markdown | https://github.com/tree-sitter-grammars/tree-sitter-markdown | v0.5.3 | tree-sitter-markdown |
 | markdown_inline | https://github.com/tree-sitter-grammars/tree-sitter-markdown | v0.5.3 | tree-sitter-markdown-inline |
 | org | https://github.com/nvim-orgmode/tree-sitter-org | 2.0.4 | . |

@@ -26,6 +26,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -751,6 +752,99 @@ void TestLua() {
 }
 
 // ---------------------------------------------------------------------------
+// JavaScript: mep's own grammar (grammars/tree-sitter-javascript), compiled in
+// ---------------------------------------------------------------------------
+
+void TestJavascript() {
+    CHECK(TreesitterHasFoldQuery("js"));
+    CHECK(TreesitterHasStructureQuery("js"));
+    const std::string src =
+        "#!/usr/bin/env node\n"
+        "import fs, { readFile as rf } from 'node:fs';\n"
+        "export const MAX_SIZE = 10;\n"
+        "// A comment.\n"
+        "export class Point extends Base {\n"
+        "  #x = 0;\n"
+        "  constructor(x, { y } = {}, ...rest) {\n"
+        "    super(x);\n"
+        "  }\n"
+        "  get norm() { return Math.hypot(this.#x, 1); }\n"
+        "  onClick = () => {};\n"
+        "}\n"
+        "async function* gen(a) {\n"
+        "  for (const k of a) if (k in a) yield await k;\n"
+        "  try { throw new Error(`bad ${a}\\n`); } catch (e) { console.log(e?.message ?? /re/g); }\n"
+        "}\n"
+        "const area = (r) => r * r\n"
+        "const el = <Panel title=\"t\"><b>hi &amp; {MAX_SIZE}</b></Panel>;\n"
+        "outer: while (true) break outer;\n";
+    ExpectCaptures("js", src, "#!", "preproc");
+    ExpectCaptures("js", src, "import", "include");
+    ExpectCaptures("js", src, "readFile", "variable");
+    ExpectCaptures("js", src, "as rf", "include");
+    ExpectCaptures("js", src, "'node:fs'", "string");
+    ExpectCaptures("js", src, "MAX_SIZE =", "variable constructor constant");
+    ExpectCaptures("js", src, "// A", "comment");
+    ExpectCaptures("js", src, "class", "keyword");
+    ExpectCaptures("js", src, "Point", "variable constructor");
+    ExpectCaptures("js", src, "#x =", "property");
+    ExpectCaptures("js", src, "constructor", "property function.method constructor");
+    ExpectCaptures("js", src, "x, {", "variable variable.parameter");
+    ExpectCaptures("js", src, "y }", "variable.parameter");
+    ExpectCaptures("js", src, "rest", "variable variable.parameter");
+    ExpectCaptures("js", src, "super", "variable.builtin");
+    ExpectCaptures("js", src, "get", "keyword");
+    ExpectCaptures("js", src, "norm", "property function.method");
+    ExpectCaptures("js", src, "return", "keyword.return");
+    ExpectCaptures("js", src, "Math", "variable constructor module");
+    ExpectCaptures("js", src, "hypot", "property method.call");
+    ExpectCaptures("js", src, "this", "variable.builtin");
+    ExpectCaptures("js", src, "async", "keyword.function");
+    ExpectCaptures("js", src, "gen", "variable function");
+    ExpectCaptures("js", src, "for", "repeat");
+    ExpectCaptures("js", src, "of a", "repeat");
+    ExpectCaptures("js", src, "in a", "keyword.operator");
+    ExpectCaptures("js", src, "yield", "keyword");
+    ExpectCaptures("js", src, "try", "exception");
+    ExpectCaptures("js", src, "new", "keyword.operator");
+    ExpectCaptures("js", src, "Error", "variable constructor constructor");
+    ExpectCaptures("js", src, "`bad", "string");
+    ExpectCaptures("js", src, "${", "string punctuation.interpolation");
+    ExpectCaptures("js", src, "\\n`", "string string.escape");
+    ExpectCaptures("js", src, "e) {", "variable variable.parameter");
+    ExpectCaptures("js", src, "console", "variable variable.builtin");
+    ExpectCaptures("js", src, "?.", "punctuation.delimiter");
+    ExpectCaptures("js", src, "??", "operator");
+    ExpectCaptures("js", src, "/re/", "string.special operator string.special");
+    ExpectCaptures("js", src, "area", "variable function");
+    ExpectCaptures("js", src, "r) =>", "variable variable.parameter");
+    ExpectCaptures("js", src, "=>", "operator");
+    // JSX: a component is a constructor, an HTML element a tag.
+    ExpectCaptures("js", src, "Panel title", "variable constructor tag constructor");
+    ExpectCaptures("js", src, "title", "property attribute");
+    ExpectCaptures("js", src, "b>hi", "variable tag");
+    ExpectCaptures("js", src, "&amp;", "string.escape");
+    ExpectCaptures("js", src, "{MAX_SIZE}", "punctuation.bracket punctuation.interpolation");
+    ExpectCaptures("js", src, "true", "boolean");
+    ExpectCaptures("js", src, "outer:", "label");
+
+    ExpectOutline("js", src,
+                  "0:variable:MAX_SIZE@2\n"
+                  "0:class:Point@4\n"
+                  "1:method:constructor@6\n"
+                  "1:method:norm@9\n"
+                  "1:method:onClick@10\n"
+                  "0:function:gen@12\n"
+                  "0:function:area@16\n");
+    ExpectOutline("js", "module.exports.f = function () {};\nconst C = class {};\nconst o = { g() {}, h: () => 1 };\n",
+                  "0:function:f@0\n0:class:C@1\n0:method:g@2\n0:method:h@2\n");
+
+    bool body = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("js", src)) body = body || (f.start_row == 4 && f.end_row == 11);
+    CHECK(body);
+}
+
+// ---------------------------------------------------------------------------
 // R: mep's own grammar (grammars/tree-sitter-r), compiled in
 // ---------------------------------------------------------------------------
 
@@ -923,13 +1017,28 @@ void TestTiebreakAcrossLanguages() {
 // Markdown, only the touched paragraphs' inline layer is re-parsed). After
 // every edit it must say exactly what a fresh whole-text pass says, row by
 // row and in the same order (plans/PERFORMANCE_PLAN.md 2.6).
+// A row's spans in painting order: only overlapping spans' relative order
+// shows, and a span containing another is at least as wide on the row, so
+// a stable sort by width keeps that order while ignoring how disjoint
+// spans happen to be listed -- a row the incremental path carries over
+// keeps its old listing when an edit elsewhere lengthens a node through it
+// (an opened template string), the whole-text pass lists it afresh.
+std::vector<TSHighlightSpan> PaintOrder(std::vector<TSHighlightSpan> row) {
+    std::stable_sort(row.begin(), row.end(), [](const TSHighlightSpan &a, const TSHighlightSpan &b) {
+        return a.col_end - a.col_start > b.col_end - b.col_start;
+    });
+    return row;
+}
+
 void CheckRowsMatchWholeText(const std::string &ft, const std::string &key, const std::string &text) {
-    const auto &rows = TreesitterHighlightRows(ft, text, key);
+    std::vector<std::vector<TSHighlightSpan>> rows = TreesitterHighlightRows(ft, text, key);
     static int fresh = 0;
     const std::vector<TSHighlightSpan> whole = TreesitterHighlight(ft, text, "whole-" + std::to_string(fresh++));
     std::vector<std::vector<TSHighlightSpan>> want(rows.size());
     for (const TSHighlightSpan &sp : whole)
         if (sp.row >= 0 && static_cast<size_t>(sp.row) < want.size()) want[static_cast<size_t>(sp.row)].push_back(sp);
+    for (auto &row : rows) row = PaintOrder(std::move(row));
+    for (auto &row : want) row = PaintOrder(std::move(row));
     bool same = rows.size() == want.size();
     for (size_t r = 0; same && r < rows.size(); r++) {
         same = rows[r].size() == want[r].size();
@@ -976,6 +1085,10 @@ void TestIncrementalRowsMatchWholeText() {
     for (int i = 0; i < 50; i++)
         lua += "local function f" + std::to_string(i) + "(x)\n  --[==[ note ]==]\n  return [[s" + std::to_string(i) +
                "]] .. x\nend\n\n";
+    std::string js;
+    for (int i = 0; i < 50; i++)
+        js += "function f" + std::to_string(i) + "(x) {\n  /* note */ const s = `a${x}b" + std::to_string(i) +
+              "`\n  return <p a=\"1\">x {s}</p>\n}\n\n";
     std::string nix = "{\n";
     for (int i = 0; i < 50; i++)
         nix += "  a" + std::to_string(i) + " = ./p/${x}.nix;\n  s" + std::to_string(i) + " = ''\n    v ${y}\n  '';\n";
@@ -1022,6 +1135,12 @@ void TestIncrementalRowsMatchWholeText() {
           {"return [[s9]] .. x", "return [[s9]] .. x ]==]"},                          // ...to a later close
           {"return [[s20]]", "return [=[s20]]"},
           {"local function f30(x)", "global function f30(x)"}}},
+        {"js", js,
+         {{"/* note */ const s = `a${x}b3`", "/* note const s = `a${x}b3`"},  // a block comment runs on
+          {"const s = `a${x}b9`", "*/ const s = `a${x}b9`"},                  // ...and closes later
+          {"`a${x}b20`", "`a${x b20`"},                                       // a substitution left open
+          {"`a${x}b25`\n  return", "`a${x}b25\n  return"},                    // a template left open
+          {"return <p a=\"1\">x {s}</p>\n}\n\nfunction f30", "return <p a=\"1\">x {s}\n}\n\nfunction f30"}}},  // an unclosed element
         {"nix", nix,
          {{"a3 = ./p/${x}.nix;", "a3 = ./p/${x.nix;"},
           {"s7 = ''", "s7 = \""},
@@ -1061,6 +1180,7 @@ int main() {
     TestJust();
     TestC();
     TestLua();
+    TestJavascript();
     TestR();
     TestRStructure();
     TestSpanOrderAndClipping();

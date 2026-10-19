@@ -497,7 +497,7 @@ function(ts_build name)
     target_include_directories(ts_${name} PRIVATE "${base}")
 endfunction()
 
-set(TS_GRAMMAR_NAMES cpp javascript markdown markdown_inline org)
+set(TS_GRAMMAR_NAMES cpp markdown markdown_inline org)
 set(TS_GRAMMAR_LIBS "")
 foreach(gname ${TS_GRAMMAR_NAMES})
     ts_build(${gname})
@@ -556,6 +556,7 @@ mep_grammar(r R)
 mep_grammar(lua Lua)
 mep_grammar(c C)
 mep_grammar(python Python)
+mep_grammar(javascript Javascript)
 
 # mepml's default style sheet (assets/mepml/default.mepss: mep's whole
 # default look for mepml documents, docs/mepml-spec/style.md) embedded for

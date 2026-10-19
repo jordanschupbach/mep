@@ -36,6 +36,7 @@
 #include "lua_queries.h"
 #include "c_queries.h"
 #include "python_queries.h"
+#include "javascript_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -46,7 +47,6 @@
 // resolvable at link time.
 extern "C" {
 const TSLanguage *tree_sitter_cpp(void);
-const TSLanguage *tree_sitter_javascript(void);
 const TSLanguage *tree_sitter_markdown(void);
 const TSLanguage *tree_sitter_markdown_inline(void);
 const TSLanguage *tree_sitter_org(void);
@@ -57,6 +57,7 @@ const TSLanguage *tree_sitter_r(void);      // mep's own: grammars/tree-sitter-r
 const TSLanguage *tree_sitter_lua(void);    // mep's own: grammars/tree-sitter-lua
 const TSLanguage *tree_sitter_c(void);      // mep's own: grammars/tree-sitter-c
 const TSLanguage *tree_sitter_python(void); // mep's own: grammars/tree-sitter-python
+const TSLanguage *tree_sitter_javascript(void); // mep's own: grammars/tree-sitter-javascript
 }
 
 // The process-wide caches below -- parse trees and row answers per key,
@@ -259,13 +260,46 @@ const char *OcamlInterfaceHighlights() {
 // (its tree-sitter.json lists both), and on its own a .ts file got no
 // strings, functions or most keywords. JavaScript's patterns go first so
 // the TypeScript ones, later, win where both match.
+//
+// Not all of mep's JavaScript query: a pattern naming a node or shape
+// TypeScript's grammar lacks fails the whole query there, so
+// grammars/tree-sitter-javascript/queries/highlights.scm keeps those in
+// two trailing sections, found by their headers: "JavaScript only" (bare
+// parameters, which TypeScript wraps in required_parameter) is left out
+// of both, "JSX" is kept for .tsx alone.
 /**
- * @brief Returns the JavaScript highlight query followed by the TypeScript
- * one, built once and kept for the process lifetime.
+ * @brief Returns the part of the JavaScript highlight query TypeScript's
+ * grammars share, with the JSX section too when `jsx`, followed by the
+ * TypeScript query.
+ * @param jsx Whether to keep the JSX section (for the tsx grammar).
+ * @return The combined query source.
+ */
+std::string LayeredTypescriptHighlights(bool jsx) {
+    const std::string js = kHighlightsJavascript;
+    const size_t js_only = js.find("; ---- JavaScript only");
+    const size_t jsx_section = js.find("; ---- JSX");
+    std::string query = js.substr(0, js_only);
+    if (jsx && jsx_section != std::string::npos) query += js.substr(jsx_section);
+    return query + kHighlightsTypescript;
+}
+
+/**
+ * @brief Returns the .ts highlight query, built once and kept for the
+ * process lifetime.
  * @return The combined query source, stable for QueryFor's pointer-keyed cache.
  */
 const char *TypescriptHighlights() {
-    static const std::string query = std::string(kHighlightsJavascript) + kHighlightsTypescript;
+    static const std::string query = LayeredTypescriptHighlights(false);
+    return query.c_str();
+}
+
+/**
+ * @brief Returns the .tsx highlight query (TypeScript's, plus JavaScript's
+ * JSX patterns), built once and kept for the process lifetime.
+ * @return The combined query source, stable for QueryFor's pointer-keyed cache.
+ */
+const char *TsxHighlights() {
+    static const std::string query = LayeredTypescriptHighlights(true);
     return query.c_str();
 }
 
@@ -301,7 +335,7 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"ts", {"typescript", TypescriptHighlights()}},
         {"mts", {"typescript", TypescriptHighlights()}},
         {"cts", {"typescript", TypescriptHighlights()}},
-        {"tsx", {"tsx", TypescriptHighlights()}},
+        {"tsx", {"tsx", TsxHighlights()}},
         {"v", {"verilog", kHighlightsVerilog}},
         {"sv", {"verilog", kHighlightsVerilog}},
         {"vh", {"verilog", kHighlightsVerilog}},

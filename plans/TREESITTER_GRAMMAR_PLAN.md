@@ -16,7 +16,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 
 ---------------------------------------------------------------------------
 
-## 1. Where things stand (2026-10-18)
+## 1. Where things stand (2026-10-19)
 
 ### Done
 
@@ -29,12 +29,12 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | lua | vendored tree-sitter-grammars/tree-sitter-lua v0.5.0 | same 47 node types / 23 fields; identical trees on 3,192 of 3,214 files, the other 22 reviewed differences where Lua agrees with us (`test/known-differences.txt`) |
 | c | vendored tree-sitter/tree-sitter-c v0.24.2 | same 125 node types / 39 fields; every top-level item both grammars parse without errors is identical (49,606 checked), except 3 files where the old grammar misread a preprocessor-split `else`; 2.7% fewer bytes in error regions |
 | python | vendored tree-sitter/tree-sitter-python v0.25.0 | same 123 node types / 32 fields; identical trees on 7,508 of 7,523 files, the other 15 an old-scanner bug (`test/known-differences.txt`); 9.6% fewer bytes in errors on damaged code |
+| javascript | vendored tree-sitter/tree-sitter-javascript v0.25.0 | same 114 node types / 36 fields; identical trees on 2,093 of 2,096 files (585 `.jsx`), the other 3 an old-grammar `await` bug (`test/known-differences.txt`); 5.2% fewer bytes in errors on damaged code |
 
 ### Still vendored (`third_party/grammars/`)
 
 | Grammar | Upstream | `parser.c` | Scanner | Queries mep uses | Hard-coded in `treesitter.cpp` |
 | --- | --- | --- | --- | --- | --- |
-| javascript | tree-sitter v0.25.0 | 2.7M | 364 lines (ASI, templates, regex) | highlights 206, folds 14, structure 8 | -- |
 | cpp | tree-sitter v0.23.4 | **16.9M** | 148 lines (raw strings) | highlights 154, folds 13, structure 18 | -- |
 | org | nvim-orgmode 2.0.4 | 3.3M | 422 lines | highlights 80 (`Org*` captures), folds 6 | -- |
 | markdown | tree-sitter-grammars v0.5.3 | 2.0M | **1,602 lines** | highlights 69 | `(inline)` nodes feed the inline pass |
@@ -260,14 +260,43 @@ copy removed.
   corpus's nixpkgs sources (Nix garbage-collected numpy's and Django's
   source directories in the middle of the phase).
 
-### Phase 4: JavaScript  `[ ]`
+### Phase 4: JavaScript  `[x]`
 
-- Reference: ECMA-262 (current edition) Annex A, plus JSX.
-- Scanner: automatic semicolon insertion, regex vs. division, template
-  literals with `${}` nesting, HTML comments in scripts, hashbang.
-- Corpus: Node's `lib/` from `nixpkgs#nodejs.src`, mep's `web/` and
-  `launcher/`, a few npm packages.
-- Oracle: `node --check`.
+Done 2026-10-19: `grammars/tree-sitter-javascript` (README there), vendored
+copy removed.
+
+- Reference: ECMA-262 (2025) Annex A and §12, Annex B's HTML-like
+  comments, stage-3 decorators and `using`, and JSX.
+- Scanner: stateless -- automatic semicolons, template text, a
+  conditional's `?` vs `?.`, HTML-like comments, JSX text; the parser's
+  valid-token set tells it whether it is in an expression or a literal.
+- Corpus: Node 22's `lib/` (and its bundled `deps/`), three React front
+  ends for JSX (homepage-dashboard, navidrome, Mastodon) and the
+  repository's JavaScript (2,096 files, 371k lines); `node --check` as
+  oracle, esbuild for `.jsx` (Node rejects JSX).
+- Result: same 114 node types / 36 fields; identical trees on 2,093
+  files. The other 3 are one old-grammar bug (`test/known-differences.txt`):
+  `await (f)()` and `await` + line break + operand were read as a name
+  `await`. Same 6 parse failures as the old grammar, all accepted by the
+  language, two shared limitations (README): a JSX attribute named by a
+  reserved word right after the tag name (`<Collapse in={x}>`; putting the
+  attributes under the `properties` reserved context was tried and does
+  not fix it), and no automatic semicolon between an arrow function's `{}`
+  body and a next line starting with `[`. Fuzz clean on 5,096 files;
+  recovery 5.2% fewer error bytes (better in 66, worse in 84).
+- Queries: highlights rewritten in mep's convention, and TypeScript's
+  query now layers over only the part of it TypeScript's grammar shares
+  (`LayeredTypescriptHighlights`: a "JavaScript only" section for bare
+  parameters, and a "JSX" section kept for `.tsx`); folds add clauses,
+  patterns, argument/parameter lists, imports, templates, comments and JSX
+  elements; the outline adds `#private` methods, function-valued fields,
+  `const C = class {}`, `module.exports.f =` assignments, object members
+  and top-level ALL_CAPS constants.
+- Tooling fixed on the way: `grammar-recovery` deadlocked once both pipes
+  to the dump filled (the file list is now fed from a thread); and
+  `CheckRowsMatchWholeText` compares rows in painting order, not listing
+  order -- a row the incremental path carries over keeps its old listing
+  when an edit elsewhere lengthens a node through it (an opened template).
 
 ### Phase 5: C++  `[ ]`
 

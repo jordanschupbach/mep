@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "javascript",
+      "camelcase": "JavaScript",
+      "scope": "source.js",
+      "path": ".",
+      "file-types": ["js", "mjs", "cjs", "jsx"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "JavaScript, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

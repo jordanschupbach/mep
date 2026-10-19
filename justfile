@@ -218,6 +218,10 @@ c-grammar:
 python-grammar:
     cd grammars/tree-sitter-python && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
 
+# The same for mep's JavaScript grammar (grammars/tree-sitter-javascript).
+javascript-grammar:
+    cd grammars/tree-sitter-javascript && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+
 # Replacing a vendored tree-sitter grammar with mep's own: the tools in
 # tools/ts_grammar_diff (README there; plans/TREESITTER_GRAMMAR_PLAN.md).
 

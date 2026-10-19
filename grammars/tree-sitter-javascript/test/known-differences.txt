@@ -1,0 +1,14 @@
+# Corpus files whose trees differ from the vendored tree-sitter-javascript
+# 0.25's, reviewed, where this grammar is right and the old one wrong.
+# Node accepts them all, so the oracle cannot tell; see README.md.
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff (grammar-diff).
+
+# `await` is an operator here, never a name: all three are inside async
+# functions (ECMA-262 §15.8: AwaitExpression has no line-terminator
+# restriction, and `await` is reserved in async code). The old grammar
+# read `await (async () => {...})()` as a call of a function named
+# `await`, and a line holding only `await` as the name `await` ended by
+# a semicolon, leaving the next line's call unawaited.
+*/deps/undici/src/lib/web/fetch/index.js           # await (f)() is await of the call
+*/deps/npm/test/lib/commands/ls.js                 # await, line break, operand
+*/src/widgets/urbackup/proxy.js                    # await (f)() is await of the call

@@ -50,14 +50,15 @@ tick, .envrc, justfile, README, TODO; also =:MepNewProject=) and
 "new" is =C-t= and "by path" is =C-f=.) =:MepProjectAdd= adds the current
 directory without opening the picker at all.
 
-The wizard's options page has two notebook presets. Each one ticks a
-working set of packages (you can still untick them one by one), turns the
-flake on, writes a starter notebook and opens it:
+The wizard's options page has three presets. Each one ticks a working set
+of packages (you can still untick them one by one), turns the flake on,
+writes a starter file and opens it:
 
 | Preset                | Packages                                                  | Starter          |
 |-----------------------+-----------------------------------------------------------+------------------|
 | /Python notebook/     | ipython, matplotlib, numpy, pandas                        | =analysis.ipynb= |
 | /R Markdown notebook/ | ggplot2, plus jsonlite, rmarkdown, knitr and pandoc       | =analysis.Rmd=   |
+| /C project/           | gcc, gdb, gnumake, pkg-config                             | =main.c=         |
 
 The R preset's extra packages are the ones the [[file:notebooks.html][R notebook kernel]] and knitting
 need, so they are added even if you untick ggplot2. The new project's
@@ -66,6 +67,12 @@ notebook can be run at once -- a chunk waits for the flake to finish
 building rather than needing R installed anywhere else. With the justfile on, it
 also gets a =knit= recipe. An existing file of the same name is never
 overwritten.
+
+The C rows include libraries as well as tools: check, cmocka, criterion,
+curl, glib, gsl, jansson, libuv, ncurses, openssl, raylib, SDL2, sqlite and
+zlib. With the justfile on, its =build= recipe compiles =main.c= and links
+every library you ticked through =pkg-config=, so tick pkg-config too (the C
+preset does).
 
 =C-f= (also =:MepProjectAddPath=) opens a picker whose
 prompt is the path itself, starting at the current directory. As you type it

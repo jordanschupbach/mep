@@ -5231,9 +5231,11 @@ const char *kBuiltinFileTree =
     // A curated catalog of dev packages, grouped by language, offered as
     // checkboxes on the wizard's second page. Each entry's `attr` is a real
     // nixpkgs attribute (verified against nixpkgs-unstable): python/r via
-    // withPackages/rWrapper, java/cpp as top-level pkgs (see the flake writer
+    // withPackages/rWrapper, java/cpp/c as top-level pkgs (see the flake writer
     // below). `label` is what the picker shows; it equals `attr` except where a
-    // prettier name exists (R's data.table -> rPackages.data_table).
+    // prettier name exists (R's data.table -> rPackages.data_table). A C
+    // library's `pc` is the pkg-config module it ships (checked against the
+    // package's lib/pkgconfig), which the justfile's build recipe links.
     "mep.new_project_packages = {\n"
     "  {label = 'ipython', lang = 'python', attr = 'ipython'},\n"
     "  {label = 'matplotlib', lang = 'python', attr = 'matplotlib'},\n"
@@ -5265,10 +5267,32 @@ const char *kBuiltinFileTree =
     "  {label = 'gdb', lang = 'cpp', attr = 'gdb'},\n"
     "  {label = 'gnumake', lang = 'cpp', attr = 'gnumake'},\n"
     "  {label = 'ninja', lang = 'cpp', attr = 'ninja'},\n"
+    "  {label = 'bear', lang = 'c', attr = 'bear'},\n"
+    "  {label = 'clang', lang = 'c', attr = 'clang'},\n"
+    "  {label = 'gcc', lang = 'c', attr = 'gcc'},\n"
+    "  {label = 'gdb', lang = 'c', attr = 'gdb'},\n"
+    "  {label = 'gnumake', lang = 'c', attr = 'gnumake'},\n"
+    "  {label = 'meson', lang = 'c', attr = 'meson'},\n"
+    "  {label = 'pkg-config', lang = 'c', attr = 'pkg-config'},\n"
+    "  {label = 'valgrind', lang = 'c', attr = 'valgrind'},\n"
+    "  {label = 'check', lang = 'c', attr = 'check', pc = 'check'},\n"
+    "  {label = 'cmocka', lang = 'c', attr = 'cmocka', pc = 'cmocka'},\n"
+    "  {label = 'criterion', lang = 'c', attr = 'criterion', pc = 'criterion'},\n"
+    "  {label = 'curl', lang = 'c', attr = 'curl', pc = 'libcurl'},\n"
+    "  {label = 'glib', lang = 'c', attr = 'glib', pc = 'glib-2.0'},\n"
+    "  {label = 'gsl', lang = 'c', attr = 'gsl', pc = 'gsl'},\n"
+    "  {label = 'jansson', lang = 'c', attr = 'jansson', pc = 'jansson'},\n"
+    "  {label = 'libuv', lang = 'c', attr = 'libuv', pc = 'libuv'},\n"
+    "  {label = 'ncurses', lang = 'c', attr = 'ncurses', pc = 'ncurses'},\n"
+    "  {label = 'openssl', lang = 'c', attr = 'openssl', pc = 'openssl'},\n"
+    "  {label = 'raylib', lang = 'c', attr = 'raylib', pc = 'raylib'},\n"
+    "  {label = 'SDL2', lang = 'c', attr = 'SDL2', pc = 'sdl2'},\n"
+    "  {label = 'sqlite', lang = 'c', attr = 'sqlite', pc = 'sqlite3'},\n"
+    "  {label = 'zlib', lang = 'c', attr = 'zlib', pc = 'zlib'},\n"
     "}\n"
     // .envrc body: byte-for-byte the repo's own .envrc / the `envrc` snippet
     // (kBuiltinSnippets) so nix-direnv caching behaves identically.
-    // Notebook presets: one checkbox that ticks a working set of the
+    // Presets: one checkbox that ticks a working set of the
     // package rows above (so they stay visible and can be unticked one by
     // one) and, on create, adds what a notebook needs that isn't in that
     // catalogue -- `extra` R packages / top-level `tools` -- plus a starter
@@ -5281,6 +5305,8 @@ const char *kBuiltinFileTree =
     "  {id = 'r-notebook', label = 'R Markdown notebook (analysis.Rmd)',\n"
     "   pkgs = {'ggplot2'}, lang = 'r', extra = {'jsonlite', 'rmarkdown', 'knitr'}, tools = {'pandoc'},\n"
     "   file = 'analysis.Rmd'},\n"
+    "  {id = 'c-project', label = 'C project (main.c)',\n"
+    "   pkgs = {'gcc', 'gdb', 'gnumake', 'pkg-config'}, lang = 'c', file = 'main.c'},\n"
     "}\n"
     "function mep.new_project_preset_text(id, name)\n"
     "  if id == 'python-notebook' then\n"
@@ -5329,6 +5355,15 @@ const char *kBuiltinFileTree =
     "      'ggplot(mtcars, aes(wt, mpg)) + geom_point()',\n"
     "      '```',\n"
     "    }, '\\n') .. '\\n'\n"
+    "  elseif id == 'c-project' then\n"
+    "    return table.concat({\n"
+    "      '#include <stdio.h>',\n"
+    "      '',\n"
+    "      'int main(void) {',\n"
+    "      '    printf(\"Hello, world!\\\\n\");',\n"
+    "      '    return 0;',\n"
+    "      '}',\n"
+    "    }, '\\n') .. '\\n'\n"
     "  end\n"
     "  return ''\n"
     "end\n"
@@ -5345,11 +5380,12 @@ const char *kBuiltinFileTree =
     // flake.nix body: the `basic-flake` snippet shape (flake-utils +
     // eachDefaultSystem + mkShell) with the selected packages spliced into the
     // devShell. Python collapses into one python3.withPackages, R into one
-    // rWrapper.override; java/cpp attrs are top-level pkgs.<attr>.
+    // rWrapper.override; java/cpp/c attrs are top-level pkgs.<attr>.
     "function mep.new_project_flake_text(by_lang)\n"
     "  local pkg_lines = {}\n"
     "  for _, attr in ipairs(by_lang.java) do pkg_lines[#pkg_lines + 1] = '            pkgs.' .. attr end\n"
     "  for _, attr in ipairs(by_lang.cpp) do pkg_lines[#pkg_lines + 1] = '            pkgs.' .. attr end\n"
+    "  for _, attr in ipairs(by_lang.c) do pkg_lines[#pkg_lines + 1] = '            pkgs.' .. attr end\n"
     "  for _, attr in ipairs(by_lang.tools or {}) do pkg_lines[#pkg_lines + 1] = '            pkgs.' .. attr end\n"
     "  if #by_lang.python > 0 then\n"
     "    pkg_lines[#pkg_lines + 1] = '            (pkgs.python3.withPackages (ps: with ps; [ ' .. table.concat(by_lang.python, ' ') .. ' ]))'\n"
@@ -5391,9 +5427,11 @@ const char *kBuiltinFileTree =
     // package selected. Recipe names stay unsuffixed for a single language and
     // gain a -<lang> suffix when several are active (so `run`/`build` never
     // collide). `default` always lists the recipes.
-    "function mep.new_project_justfile_text(langs, presets)\n"
+    // `c_pc` is the pkg-config modules of the ticked C libraries, so the C
+    // build recipe compiles and links against them.
+    "function mep.new_project_justfile_text(langs, presets, c_pc)\n"
     "  local active = {}\n"
-    "  for _, l in ipairs({'python', 'cpp', 'r', 'java'}) do if langs[l] then active[#active + 1] = l end end\n"
+    "  for _, l in ipairs({'python', 'cpp', 'c', 'r', 'java'}) do if langs[l] then active[#active + 1] = l end end\n"
     "  local multi = #active > 1\n"
     "  local out = {'default:', '    @just --list', ''}\n"
     "  local function emit(lang, verb, cmd)\n"
@@ -5406,6 +5444,9 @@ const char *kBuiltinFileTree =
     "    if lang == 'python' then emit('python', 'run', 'python main.py') emit('python', 'test', 'pytest')\n"
     "    elseif lang == 'cpp' then emit('cpp', 'build', 'cmake -S . -B build && cmake --build build') emit('cpp', 'run', './build/main')\n"
     "    elseif lang == 'r' then emit('r', 'run', 'Rscript main.R')\n"
+    "    elseif lang == 'c' then\n"
+    "      local flags = (c_pc and #c_pc > 0) and (' $(pkg-config --cflags --libs ' .. table.concat(c_pc, ' ') .. ')') or ''\n"
+    "      emit('c', 'build', 'cc -std=c17 -Wall -Wextra -g -o main main.c' .. flags) emit('c', 'run', './main')\n"
     "    elseif lang == 'java' then emit('java', 'build', 'mvn -q package') emit('java', 'run', 'mvn -q exec:java') end\n"
     "  end\n"
     "  if presets and presets['r-notebook'] then\n"
@@ -5431,7 +5472,8 @@ const char *kBuiltinFileTree =
     "end\n"
     "function mep.new_project_generate(path, rows)\n"
     "  local flake_on, just_on = false, false\n"
-    "  local by_lang = {python = {}, java = {}, r = {}, cpp = {}, tools = {}}\n"
+    "  local by_lang = {python = {}, java = {}, r = {}, cpp = {}, c = {}, tools = {}}\n"
+    "  local c_pc = {}\n"
     "  local langs = {}\n"
     "  local files = {}\n"
     "  local presets = {}\n"
@@ -5446,6 +5488,7 @@ const char *kBuiltinFileTree =
     "    elseif r.kind == 'preset' and r.enabled then presets[r.preset.id] = r.preset\n"
     "    elseif r.kind == 'pkg' and r.enabled then\n"
     "      add(by_lang[r.lang], r.attr)\n"
+    "      if r.pc then add(c_pc, r.pc) end\n"
     "      langs[r.lang] = true\n"
     "    end\n"
     "  end\n"
@@ -5465,7 +5508,7 @@ const char *kBuiltinFileTree =
     "  end\n"
     "  if just_on then\n"
     "    local j = io.open(path .. '/justfile', 'w')\n"
-    "    if j then j:write(mep.new_project_justfile_text(langs, presets)) j:close() end\n"
+    "    if j then j:write(mep.new_project_justfile_text(langs, presets, c_pc)) j:close() end\n"
     "  end\n"
     "  local name = path:match('([^/]+)/*$') or 'project'\n"
     "  for _, r in ipairs(files) do\n"
@@ -5513,7 +5556,7 @@ const char *kBuiltinFileTree =
     "    rows[#rows + 1] = {id = 'preset-' .. pr.id, kind = 'preset', label = pr.label, preset = pr, enabled = false}\n"
     "  end\n"
     "  for i, p in ipairs(mep.new_project_packages) do\n"
-    "    rows[#rows + 1] = {id = 'pkg-' .. i, kind = 'pkg', label = p.label, lang = p.lang, attr = p.attr, enabled = false}\n"
+    "    rows[#rows + 1] = {id = 'pkg-' .. i, kind = 'pkg', label = p.label, lang = p.lang, attr = p.attr, pc = p.pc, enabled = false}\n"
     "  end\n"
     "  rows[#rows + 1] = {id = 'create', kind = 'create', label = 'Create project'}\n"
     "  local function index_of(id)\n"

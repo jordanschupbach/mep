@@ -365,6 +365,21 @@ def find_image_block(msg):
     return None
 
 
+def user_messages(body):
+    """The wire messages minus any system one. The question rides as the
+    system prompt -- Anthropic's top-level `system`, OpenAI's role=system
+    entry -- so messages[0] is not always the passage."""
+    return [m for m in (body.get("messages") or []) if m.get("role") != "system"]
+
+
+def instructions(body):
+    """The system prompt as sent, in either provider's spelling."""
+    if body.get("system"):
+        return body["system"]
+    return "\n".join(m.get("content") or "" for m in (body.get("messages") or [])
+                     if m.get("role") == "system")
+
+
 # ------------------------------------------------------------------ checks
 
 RESULTS = []
@@ -625,7 +640,7 @@ def run_checks(build_dir, keep):
                 check("a request reached the API (%s)" % provider, body is not None,
                       "captured %d bodies" % len(sink.bodies))
                 if body:
-                    msgs = body.get("messages") or []
+                    msgs = user_messages(body)
                     found = find_image_block(msgs[0]) if msgs else None
                     check("the page arrived as an image block (%s)" % provider, found is not None,
                           json.dumps(body)[:220])
@@ -640,7 +655,7 @@ def run_checks(build_dir, keep):
                         print("      %s: %s block, %s, %d chars of base64"
                               % (provider, spelling, media, len(data)))
                     # The text half must still be there, asking about the page.
-                    txt = json.dumps(msgs[0].get("content"))
+                    txt = json.dumps(instructions(body))
                     check("the question travelled with it (%s)" % provider,
                           "no extractable text" in txt, txt[:200])
             finally:
@@ -688,7 +703,7 @@ def run_checks(build_dir, keep):
                 path, body = sink.last_json()
                 check("a request reached the API", body is not None, "captured %d" % len(sink.bodies))
                 if body:
-                    msgs = body.get("messages") or []
+                    msgs = user_messages(body)
                     found = find_image_block(msgs[0]) if msgs else None
                     check("the page went as an image despite having text",
                           found is not None, json.dumps(body)[:200])
@@ -751,7 +766,7 @@ def run_checks(build_dir, keep):
             path, body = sink.last_json()
             check("a request reached the API", body is not None, "captured %d" % len(sink.bodies))
             if body:
-                msgs = body.get("messages") or []
+                msgs = user_messages(body)
                 found = find_image_block(msgs[0]) if msgs else None
                 check("no image attached when the text extracted", found is None,
                       json.dumps(body)[:200])

@@ -14,32 +14,39 @@
 <h1>Snippets</h1>
 <h1>Expanding one</h1>
 <p>Type a trigger and press <code>Tab</code>. Triggers also appear in the <a href="completion.html">completion</a>
-popup, so you do not have to remember them -- start typing and look.</p>
+popup, so you do not have to remember them -- start typing and look. In an
+Org, LaTeX or Markdown note, <code>Tab</code> never expands a word; accept the trigger
+from the popup instead (<code>Ctrl-Y</code>), see <a href="org-notes.html">Note-taking</a>.</p>
 <p><code>&lt;leader&gt;yy</code> (<code>:MepSnippets</code>) opens a picker of every snippet available for
 the current filetype.</p>
-<h1>Tabstops</h1>
-<p>A snippet can place the cursor in several spots in turn.</p>
+<h1>Fields</h1>
+<p>A snippet can place the cursor in several spots in turn. The cursor lands
+on the first field with its default text selected: typing replaces it,
+<code>Backspace</code> clears it, and moving on without typing keeps it.</p>
 <table>
-<tr><th>Command</th><th>Does</th></tr>
-<tr><td><code>:MepSnippetNext</code></td><td>jump to the next tabstop</td></tr>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>Tab</code></td><td>next field; from the last, past the snippet</td></tr>
+<tr><td><code>Shift-Tab</code></td><td>previous field</td></tr>
+<tr><td><code>Ctrl-J</code> / <code>Ctrl-K</code></td><td>cycle a choice field</td></tr>
+<tr><td><code>:MepSnippetNext</code></td><td>jump to the next field</td></tr>
 <tr><td><code>:MepSnippetPrev</code></td><td>jump to the previous one</td></tr>
 </table>
+<p>Fields follow the text: type as much as you like in one and the next is
+still where it belongs. A snippet expanded inside another one's field is
+walked first, and its end leads back to the outer field. <code>Tab</code> works only
+while the cursor is inside a snippet; elsewhere it indents as usual.</p>
 <p>Syntax inside a snippet body:</p>
 <table>
 <tr><th>Form</th><th>Means</th></tr>
-<tr><td><code>$1</code>, <code>$2</code></td><td>tabstops, visited in order</td></tr>
-<tr><td><code>${1:default}</code></td><td>a tabstop pre-filled with text</td></tr>
-<tr><td><code>$0</code></td><td>where the cursor finishes</td></tr>
+<tr><td><code>$1</code>, <code>$2</code></td><td>fields, visited in order</td></tr>
+<tr><td><code>${1:default}</code></td><td>a field pre-filled with text (braces may nest inside)</td></tr>
+<tr><td><code>$1</code> again</td><td>a mirror: copies field 1 as it is typed</td></tr>
+<tr><td><code>$0</code></td><td>where the cursor finishes (default: the very end)</td></tr>
 <tr><td><code>\$</code></td><td>a literal dollar sign</td></tr>
 </table>
-<p>With <code>${1:default}</code> the cursor lands at the <b>start</b> of the default text, so
-typing replaces it.</p>
-<h1>A limitation worth knowing</h1>
-<p>Tabstop positions are computed once, at expansion time, as fixed offsets --
-they are not tracked through later edits.</p>
-<p>In practice: jumping between tabstops immediately after expanding works
-correctly. Editing heavily <b>before</b> jumping to a later tabstop can leave
-that tabstop stale. Expand, fill in, then move on.</p>
+<p>A choice field is written <code>${1|a,b,c|}</code>: it starts as <code>a</code>, and <code>Ctrl-J</code> /
+<code>Ctrl-K</code> cycle it. Lines after the first are indented like the line the
+trigger was on.</p>
 <h1>What ships</h1>
 <p>Curated sets for <code>c</code>, <code>cpp</code>, <code>go</code>, <code>lua</code>, <code>py</code>, <code>rs</code>, <code>nix</code> and <code>envrc</code>.</p>
 <p>The <code>py</code> set includes <code>print</code>, which expands to <code>print()</code> with the cursor
@@ -79,8 +86,8 @@ script: the imports, some example data, the plot call, labels and
 <code>plt.show()</code>. Expand one into an empty file and run it as is, or tab
 through the tabstops to swap in your own data and labels.</p>
 <h1>Adding your own</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.snippets.py = mep.snippets.py <span class="tok-purple">or</span> {}
-mep.snippets.py[<span class="tok-green">'main'</span>] = {
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.snippets.py = <span class="tok-cyan">mep</span>.snippets.py or <span class="tok-blue">{</span>}
+<span class="tok-cyan">mep</span>.snippets.py[<span class="tok-green">'main'</span>] = {
   <span class="tok-green">'def main() -&gt; None:'</span>,
   <span class="tok-green">'    ${1:pass}'</span>,
   <span class="tok-green">''</span>,

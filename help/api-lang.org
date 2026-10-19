@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (60)
+* The bindings (67)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -25,6 +25,7 @@ that it does nothing.
 | =mep.completion_path_prefix= | detects a path fragment ending at the cursor for path completion |
 | =mep.completion_rank= | sorts completion items by text length then alphabetically, capped to a maximum count |
 | =mep.completion_scan_buffer_words= | scans the current buffer for words starting with a prefix |
+| =mep.completion_state= | reports whether the completion menu is open and what it lists |
 | =mep.dap_breakpoint_lines= | lists the breakpoint line numbers set for a file |
 | =mep.dap_toggle_breakpoint= | toggles a debugger breakpoint at the cursor's current line |
 | =mep.diff_lines= | -- |
@@ -54,6 +55,7 @@ that it does nothing.
 | =mep.lsp_stop= | kills an LSP server process and removes its tracked client state |
 | =mep.lsp_symbols_flatten= | flattens a nested LSP DocumentSymbol/SymbolInformation tree into a flat list of display rows |
 | =mep.lsp_word_at_cursor= | -- |
+| =mep.lsp_write_pending= | bytes: what mep has written to the |
 | =mep.set_completion_accept_hook= | registers fn as the hook invoked when a completion item is accepted (used for LSP insertTextFormatSnippet expansion) |
 | =mep.set_completion_keyword_triggers= | registers the statement keywords that trigger completion with no prefix |
 | =mep.set_completion_resolve_hook= | see SetCompletionResolveHookRef's |
@@ -62,6 +64,8 @@ that it does nothing.
 | =mep.set_inline_suggestion_accept_hook= | fn(accepted_length) -- 0 for a |
 | =mep.set_insert_tab_hook= | fn(shift) -> bool |
 | =mep.snippet_active= | returns whether a snippet's tabstop state is live |
+| =mep.snippet_choice_cycle= | cycles the active choice stop |
+| =mep.snippet_info= | describes the innermost snippet session's current stop |
 | =mep.snippet_jump= | moves to the next/previous snippet tab-stop |
 | =mep.snippet_splice= | splices a multi-line snippet body into the buffer at a row |
 | =mep.spell_add= | add to the personal "good" dictionary (nvim zg) |
@@ -77,6 +81,9 @@ that it does nothing.
 | =mep.ts_captures= | runs the vendored Treesitter grammar (if any) for a filetype over source text |
 | =mep.ts_fold_ranges= | runs the vendored Treesitter fold query (if any) over source text |
 | =mep.ts_highlight= | highlights text with its Treesitter grammar straight into decorations in `ns` |
+| =mep.ts_highlight_async_ready= | true once since the last call if a |
+| =mep.ts_highlight_buffer= | true, or nil |
+| =mep.ts_highlight_mepml_buffer= | true, or |
 | =mep.ts_structure= | runs the vendored Treesitter structure query (if any) over source text to build a document outline |
 
 * See also

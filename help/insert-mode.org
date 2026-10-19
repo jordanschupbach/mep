@@ -42,19 +42,26 @@ search prompt, where the inserted text is kept to one printable line.
 
 A completion popup appears as you type, merging buffer words, snippet
 triggers, filesystem paths and -- when a language server is attached --
-its suggestions, into one list with duplicates collapsed.
+its suggestions, into one list with duplicates collapsed. =Ctrl-N= /
+=Ctrl-P= move through it (=Ctrl-N= also opens it when it is shut),
+=Ctrl-Y= accepts, =Ctrl-E= opens or closes it.
 
-While the popup is open =Tab= belongs to it. Inline AI suggestions (the
-dimmed text that appears ahead of the cursor) also use =Tab=, but only when
-the popup is closed, so the two never compete for the key.
+In a code buffer, while the popup is open =Tab= belongs to it. Inline AI
+suggestions (the dimmed text that appears ahead of the cursor) also use
+=Tab=, but only when the popup is closed, so the two never compete for the
+key; =Ctrl-L= accepts one too.
 
-* Indentation and snippets
+Org, LaTeX and Markdown notes keep the popup off =Tab= altogether -- see
+[[file:org-notes.html][Note-taking]]. There =Enter= accepts only an entry
+you moved onto with =Ctrl-N= / =Ctrl-P=; otherwise it is a newline.
 
-A snippet trigger followed by =Tab= expands it. After expanding, =:MepSnippetNext=
-and =:MepSnippetPrev= move between its tabstops. Jumping between tabstops
-immediately after expansion is reliable; editing heavily before jumping to a
-later tabstop can leave it stale, because positions are computed once at
-expansion time.
+* Snippets
+
+A snippet trigger followed by =Tab= expands it in a code buffer (in a note,
+accept it from the popup instead). =Tab= / =Shift-Tab= then move between
+its fields, typing replaces a field's placeholder, and =Tab= from the last
+field jumps past the end. Outside a snippet, =Tab= indents. See
+[[file:snippets.html][Snippets]].
 
 * See also
 

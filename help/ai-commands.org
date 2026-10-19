@@ -12,10 +12,21 @@
 | =:MepAiSendSelection=       | the Visual selection             |
 | =:MepAiReplaceSelection=    | the selection, replacing it with the reply |
 | =:MepAiCancel=              | cancel a request in flight       |
+| =<Esc>= (Normal mode)       | stop a reply that is still typing |
 | =gl=                        | send the buffer                  |
 
 =:MepAiReplaceSelection= is the one that edits your file: select, ask for a
 rewrite, and the reply takes the selection's place.
+
+=K= on a Visual selection sends it with the Settings panel's /Visual K
+prompt/ (=<leader>hS=, under Quick ask) as the system prompt, so a
+highlighted term gets a short answer under it, not an essay. It is a row of
+its own, separate from the /Default prompt/ =K= uses on a PDF passage;
+change the wording there to change how terse it is, or =d= to restore
+mep's own.
+
+A reply streams in at the cursor. =<Esc>= in Normal mode stops it where it
+is; whatever has already arrived stays in the buffer.
 
 * Context
 

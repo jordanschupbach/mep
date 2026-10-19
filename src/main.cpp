@@ -11582,6 +11582,7 @@ const char *kBuiltinCompletion =
     "  local seen, words = {}, {}\n"
     "  local row, col = mep.cursor()\n"
     "  local line = mep.get_line(row)\n"
+    "  local note = mep_snippet_is_note_ft and mep_snippet_is_note_ft(mep_lsp_filetype(mep.filename() or ''))\n"
     // Path context takes over the whole source when detected -- an
     // identifier match like "function" sitting next to a half-typed
     // filename would just be noise, so buffer words/snippets/LSP are
@@ -11619,12 +11620,23 @@ const char *kBuiltinCompletion =
     "  if bs_col >= 1 and line:sub(bs_col, bs_col) == '\\\\' then\n"
     "    local ft = mep_lsp_filetype(mep.filename())\n"
     "    local double_bs = bs_col > 1 and line:sub(bs_col - 1, bs_col - 1) == '\\\\'\n"
+    // In note buffers (org/markdown/tex) the list waits for two letters
+    // after the backslash and matches fuzzily -- '\\al' offers \\alpha and
+    // \\aleph, '\\lra' \\leftrightarrow -- prefix matches first, then the
+    // rest in order of how tightly the letters cluster.
     "    if (ft == 'tex' or ft == 'sty' or ft == 'cls' or ft == 'org' or ft == 'md')\n"
     "        and not double_bs then\n"
+    "      if note and #prefix < 2 then return {} end\n"
+    "      local pat = '^' .. prefix:gsub('.', function(c) return c:gsub('%W', '%%%0') .. '.-' end)\n"
     "      for _, name in ipairs(mep.latex_commands) do\n"
-    "        if #name > #prefix and name:sub(1, #prefix) == prefix and not seen[name] then\n"
-    "          seen[name] = true\n"
-    "          words[#words + 1] = {text = name, kind = 'latex'}\n"
+    "        if #name > #prefix and not seen[name] then\n"
+    "          if name:sub(1, #prefix) == prefix then\n"
+    "            seen[name] = true\n"
+    "            words[#words + 1] = {text = name, kind = 'latex', priority = -1}\n"
+    "          elseif note and name:match(pat) then\n"
+    "            seen[name] = true\n"
+    "            words[#words + 1] = {text = name, kind = 'latex'}\n"
+    "          end\n"
     "        end\n"
     "      end\n"
     "      return mep_completion_rank(words)\n"
@@ -11650,16 +11662,32 @@ const char *kBuiltinCompletion =
     // its module list after `import` (Editor::SetCompletionKeywordTriggers).
     "  if prefix ~= '' then\n"
     // Snippet trigger names for the current filetype (Phase 23) count as
-    // completion candidates too -- accepting one inserts the trigger word
-    // itself, same as any buffer word; expanding it into the full snippet
-    // body still needs the separate explicit mep.snippet_trigger() key.
+    // completion candidates too. In a code buffer accepting one inserts
+    // the trigger word itself, same as any buffer word, and Tab expands
+    // it; in a note buffer (org/tex/markdown) accepting it expands it
+    // (kBuiltinSnippets' accept hook), snippets sort ahead of everything
+    // else, and they are offered from the first typed letter -- the other
+    // sources still wait for two (buffer words) or three (LSP).
     "    local ft = mep_snippet_filetype and mep_snippet_filetype()\n"
     "    local snip_set = ft and mep.snippets and mep.snippets[ft]\n"
+    "    mep_completion_offered_snippets = {}\n"
     "    if snip_set then\n"
     "      for name, _ in pairs(snip_set) do\n"
-    "        if #name > #prefix and name:sub(1, #prefix) == prefix then\n"
+    "        if #name >= #prefix and name:sub(1, #prefix) == prefix and mep_snippet_allowed(ft, name) then\n"
     "          seen[name] = true\n"
+    "          mep_completion_offered_snippets[name] = true\n"
     "          words[#words + 1] = {text = name, kind = 'snippet'}\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    // Math autosnippet triggers, where their condition holds (in math,
+    // for all but the zone openers): accepting one types the trigger and
+    // the autosnippet poller (kBuiltinMathSnippets) expands it.
+    "    if mep_autosnip_menu_triggers then\n"
+    "      for _, t in ipairs(mep_autosnip_menu_triggers(prefix)) do\n"
+    "        if not seen[t] then\n"
+    "          seen[t] = true\n"
+    "          words[#words + 1] = {text = t, kind = 'snippet'}\n"
     "        end\n"
     "      end\n"
     "    end\n"
@@ -11668,10 +11696,15 @@ const char *kBuiltinCompletion =
     // (lua_env.cpp); it dedupes within the buffer scan only, so `seen`
     // (already carrying any snippet trigger names claimed above) still
     // needs its own filter pass here.
-    "    for _, w in ipairs(mep.completion_scan_buffer_words(prefix)) do\n"
-    "      if not seen[w] then\n"
-    "        seen[w] = true\n"
-    "        words[#words + 1] = {text = w, kind = 'buffer'}\n"
+    "    if note then\n"
+    "      for _, w in ipairs(words) do w.priority = -2 end\n"
+    "    end\n"
+    "    if not note or #prefix >= 2 then\n"
+    "      for _, w in ipairs(mep.completion_scan_buffer_words(prefix)) do\n"
+    "        if not seen[w] then\n"
+    "          seen[w] = true\n"
+    "          words[#words + 1] = {text = w, kind = 'buffer'}\n"
+    "        end\n"
     "      end\n"
     "    end\n"
     "  end\n"
@@ -11684,7 +11717,7 @@ const char *kBuiltinCompletion =
     // whatever's attached to the org buffer itself (normally nothing).
     "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
     "  local client = (poly and poly.client) or (mep.lsp_client_for and mep.lsp_client_for())\n"
-    "  if client then\n"
+    "  if client and not (note and not poly and #prefix < 3) then\n"
     "    local start_col = col - 1 - #prefix\n"
     "    if mep_lsp_completion_cache.row == row and mep_lsp_completion_cache.start_col == start_col then\n"
     "      for _, w in ipairs(mep_lsp_completion_cache.items) do\n"
@@ -12037,10 +12070,18 @@ const char *kBuiltinSnippets =
     "local function mep_snippet_splice(row, before, after, body)\n"
     "  mep.snippet_splice(row, before, after, body)\n"
     "end\n"
+    // mep.snippet_conditions[ft][name] (kBuiltinOrgSnippets fills it): a
+    // snippet whose condition fails at the cursor is neither offered in
+    // the completion menu nor expanded.
+    "function mep_snippet_allowed(ft, name)\n"
+    "  local conds = mep.snippet_conditions and mep.snippet_conditions[ft]\n"
+    "  local cond = conds and conds[name]\n"
+    "  return not cond or cond()\n"
+    "end\n"
     "function mep.snippet_expand(name)\n"
     "  local ft = mep_snippet_filetype()\n"
     "  local set = ft and mep.snippets[ft]\n"
-    "  local body = set and set[name]\n"
+    "  local body = set and mep_snippet_allowed(ft, name) and set[name]\n"
     // A body may be a function returning the line array instead of the
     // array itself -- for templates that need values computed at expand
     // time (kBuiltinOrgSnippets' `date`/`title` embed os.date output).
@@ -12069,7 +12110,16 @@ const char *kBuiltinSnippets =
     // registry snippet's fixed trigger word) and re-splices it as a real
     // snippet body via the same mep_snippet_splice this file's own
     // mep.snippet_expand uses.\n"
+    // In a note buffer (org/tex/markdown) the menu is also how a regular
+    // snippet expands: accepting an entry offered as a snippet expands it
+    // in place of the trigger word just inserted (the kind is remembered
+    // by kBuiltinCompletion's source in mep_completion_offered_snippets).
     "mep.set_completion_accept_hook(function(text)\n"
+    "  if mep_completion_offered_snippets and mep_completion_offered_snippets[text]\n"
+    "      and mep_snippet_is_note_ft and mep_snippet_is_note_ft(mep_lsp_filetype(mep.filename() or '')) then\n"
+    "    mep.snippet_expand(text)\n"
+    "    return\n"
+    "  end\n"
     "  if mep_lsp_completion_iformat[text] ~= 2 then return end\n"
     "  local row, col = mep.cursor()\n"
     "  local body = {}\n"
@@ -25744,45 +25794,32 @@ const char *kBuiltinOrgBib =
     "mep.command('MepOrgBibCitePreview', mep.org_bib_cite_preview)\n";
 
 // Math autosnippets: LaTeX shortcuts that expand the instant their
-// trigger text is typed (no Tab), for fast math entry in org and tex
-// buffers -- ported behavior-for-behavior from a LuaSnip-based Neovim
-// note-taking config. Nothing else in mep expands as-you-type (the
-// completion popup only offers, mep.snippets only expands explicitly), so
-// the engine here is its own small thing: an insert-mode poller on
-// mep.on_frame that fires when the cursor ADVANCED on the same row with
-// the line's content changed -- i.e. exactly when text was just typed
-// (or pasted) before the cursor. It deliberately does NOT watch
-// mep.buffer_change_epoch(): PushUndo bumps that once at Insert-mode
-// entry and EnterNormal once at exit, leaving it frozen for the entire
-// insert session (see EnterNormal's own comment, editor.cpp) -- an
-// epoch-gated poller literally never sees the keystrokes it exists to
-// react to. Re-deriving from the live cursor/line every frame is the
-// same pattern Editor::UpdateCompletionPopup already uses for its
-// prefix. The advanced-on-same-row rule keeps it quiet on cursor motion
-// (line unchanged), backspace (col shrinks), and Enter (row changes);
-// after its own splice it re-primes the tracked state so it never
-// rescans text it just inserted.
+// trigger text is typed (no Tab), for fast math entry in org, tex and
+// markdown buffers -- ported behavior-for-behavior from a LuaSnip-based
+// Neovim note-taking config (plans/LATEX_IN_ORG_TYPING_SPEC.md). Nothing
+// else in mep expands as-you-type, so the engine here is its own small
+// thing: an insert-mode poller on mep.on_frame that fires when something
+// was just typed on the cursor's row -- the cursor ADVANCED with the
+// line's content changed, or mep.insert_typed_count() moved (a keystroke
+// that replaced a selected placeholder shrinks the line). It deliberately
+// does NOT watch mep.buffer_change_epoch(): PushUndo bumps that once at
+// Insert-mode entry and EnterNormal once at exit, leaving it frozen for
+// the entire insert session (see EnterNormal's own comment, editor.cpp).
+// The rule keeps it quiet on cursor motion (line unchanged), backspace,
+// and Enter (row changes); after its own splice it re-primes the tracked
+// state so it never rescans text it just inserted.
 //
 // Math-zone gating: almost every trigger is an ordinary letter sequence
 // ('sum', 'in', 'bar'), and typing those words in prose must never
-// expand. mep_in_mathzone decides "is the cursor inside math" two ways:
-// (1) closed fragments straight from mep.org_latex_scan_fragments (the
-// same C++ scanner kBuiltinOrgLatex renders from -- $..$, $$..$$,
-// \(..\), \[..\], math environments, latex blocks), cached per edit
-// epoch; (2) an unclosed-delimiter fallback for the just-typed-the-
-// opener case, scanning back from the cursor (bounded, resetting at a
-// blank line or an org heading so one stray '$' earlier in the file
-// can't poison everything below it) and counting still-open math
-// delimiters. Treesitter/syntax stacks are deliberately not consulted --
-// org buffers are treesitter-highlighted, not tex-syntax, so a
-// synstack-style check can't work there; buffer text is the only source
-// both filetypes share.
+// expand. mep_in_mathzone (global, also the prose-only gate of the org
+// 'cbl' snippet) scans the text up to the cursor -- see its own comment.
 //
 // The spec table mep.autosnippets is user-extensible like mep.snippets
-// (ft -> array of specs; org and tex share one list). Spec fields:
-//   trig    literal trigger, matched against the text before the cursor
-//   body    tabstop template ($N/${N}/${N:default}/$0, '\n' = new line),
-//           spliced through the same engine as mep.snippets bodies
+// (ft -> array of specs; org, tex and markdown share one list). Fields:
+//   trig    literal trigger, matched against the text before the cursor,
+//           case-sensitively
+//   body    tabstop template (Editor::SnippetSplice's syntax, '\n' = new
+//           line), spliced through the same engine as mep.snippets bodies
 //   math    require mep_in_mathzone (default true; the openers mk/dk/ck/
 //           flalign set false -- their whole job is opening a zone from
 //           prose)
@@ -25792,15 +25829,14 @@ const char *kBuiltinOrgBib =
 //           complete \command (hand-typed or completion-accepted) never
 //           re-expands its tail.
 //   pattern Lua pattern (anchored to the cursor at match time) + fn
-//           returning the body from its captures -- used by the
-//           letter+digit auto-subscript and by the absorb-the-leading-
-//           backslash triggers: 'in' -> \in fires first while typing
-//           'int'/'indep', so those match '\?int'/'\?indep' and swallow
-//           the backslash instead of stacking a second one. Pattern
-//           specs with guard=true re-create word's boundary check by
-//           hand (Lua patterns have no lookbehind).
-// One expansion = one undo step (Editor::SnippetSplice pushes exactly
-// one), so `u` restores the trigger text.
+//           returning the body from its captures -- the letter+digit
+//           auto-subscript. guard=true re-creates word's boundary check
+//           by hand (Lua patterns have no lookbehind).
+// A trigger whose prefix is itself a trigger ('int' after 'in', ';ph'
+// after ';p') is reachable through the absorb rule -- see
+// mep_autosnip_index. One expansion = one undo step
+// (Editor::SnippetSplice pushes exactly one), so `u` restores the
+// trigger text.
 const char *kBuiltinMathSnippets =
     "mep.autosnippets = mep.autosnippets or {}\n"
     "mep.autosnippets_enabled = true\n"
@@ -25829,13 +25865,17 @@ const char *kBuiltinMathSnippets =
     "s('xi', 'x_{i}$0')\n"
     "s('xj', 'x_{j}$0')\n"
     "p('([%a])(%d)$', function(a, d) return a .. '_{' .. d .. '}$0' end)\n"
-    // Big operators. int/indep are pattern specs -- see the block comment.
+    // ...and a second digit typed straight after an auto-subscript joins it
+    // (x12 -> x_{1} -> x_{12}), so multi-digit indices need no braces typed.
+    "p('_{(%d+)}(%d)$', function(a, d) return '_{' .. a .. d .. '}$0' end)\n"
+    // Big operators. int/inf/indep start with the 'in' trigger -- see the
+    // absorb rule in the block comment.
     "s('sum', '\\\\sum_{${1:i=1}}^{${2:n}} ${3:a_i}$0')\n"
     "s('prod', '\\\\prod_{${1:i=1}}^{${2:n}} ${3:a_i}$0')\n"
     "s('lim', '\\\\lim_{${1:n} \\\\to ${2:\\\\infty}} ${3:a_n}$0')\n"
     "s('nsum', '\\\\sum_{i=1}^{n}$0')\n"
     "s('nprod', '\\\\prod_{i=1}^{n}$0')\n"
-    "p('(\\\\?)int$', function() return '\\\\int_{${1:a}}^{${2:b}} ${3:f(x)} \\\\, d${4:x}$0' end, {guard = true})\n"
+    "s('int', '\\\\int_{${1:a}}^{${2:b}} ${3:f(x)} \\\\, d${4:x}$0')\n"
     // Log-like functions, bare so subscripts typed after compose.
     "s('log', '\\\\log$0')\n"
     "s('exp', '\\\\exp$0')\n"
@@ -25910,16 +25950,9 @@ const char *kBuiltinMathSnippets =
     "s('notin', '\\\\notin$0')\n"
     "s('AA', '\\\\forall$0', {word = false})\n"
     "s('EE', '\\\\exists$0', {word = false})\n"
-    // Environments. beg prompts for the environment name (the tabstop
-    // engine has no mirror node to keep \begin/\end in sync, so the name
-    // is asked for once and written at both ends).
-    "s('beg', nil, {expand = function(row, keep, after)\n"
-    "  mep.ui_input('Environment', 'align*', function(env)\n"
-    "    if not env or env == '' then return end\n"
-    "    mep.snippet_splice(row, keep, after,\n"
-    "        {'\\\\begin{' .. env .. '}', '  $0', '\\\\end{' .. env .. '}'})\n"
-    "  end)\n"
-    "end})\n"
+    // Environments. beg's \end{} name mirrors its \begin{} name live as it is
+    // typed (the engine's $1-repeated-is-a-mirror rule).
+    "s('beg', '\\\\begin{${1:env}}\\n  ${2:body}\\n\\\\end{$1}$0')\n"
     "s('ali', '\\\\begin{align*}\\n  ${1:a &= b}\\n\\\\end{align*}$0')\n"
     "s('aeq', '\\\\begin{align*}\\n  ${1:a} &= ${2:b} \\\\\\\\\\n  &= ${3:c}\\n\\\\end{align*}$0')\n"
     "s('cases', '\\\\begin{cases}\\n  ${1:a} & ${2:condition} \\\\\\\\\\n  ${3:b} & ${4:\\\\text{otherwise}}\\n\\\\end{cases}$0')\n"
@@ -25929,7 +25962,7 @@ const char *kBuiltinMathSnippets =
     // Statistics: moments, distributions (capitalized triggers so
     // lowercase English words never collide), probability, optimisation.
     // Ind is capitalized so it can't fire inside 'independent' typed in a
-    // \text{}; indep shares int's absorb-the-\in trick. The independence
+    // \text{}; indep is absorbed over \in like int. The independence
     // glyph is a raw \perp\!\!\!\perp sequence, not a \newcommand, so it
     // renders without any preamble help.
     "s('Ev', '\\\\mathbb{E}\\\\left[ ${1:X} \\\\right]$0')\n"
@@ -25959,7 +25992,7 @@ const char *kBuiltinMathSnippets =
     "s('iid', '\\\\overset{\\\\text{iid}}{\\\\sim}$0')\n"
     "s('perp', '\\\\perp$0')\n"
     "s('iperp', '\\\\perp\\\\!\\\\!\\\\!\\\\perp$0')\n"
-    "p('(\\\\?)indep$', function() return '\\\\perp\\\\!\\\\!\\\\!\\\\perp$0' end, {guard = true})\n"
+    "s('indep', '\\\\perp\\\\!\\\\!\\\\!\\\\perp$0')\n"
     "s('argmax', '\\\\underset{${1:\\\\theta}}{\\\\arg\\\\max}\\\\;$0')\n"
     "s('argmin', '\\\\underset{${1:\\\\theta}}{\\\\arg\\\\min}\\\\;$0')\n"
     "s('convp', '\\\\xrightarrow{p}$0')\n"
@@ -25993,138 +26026,242 @@ const char *kBuiltinMathSnippets =
     "s('ck', '\\\\[\\n  ${1}\\n\\\\]$0', {math = false})\n"
     "s('flalign', '\\\\begin{flalign*}\\n  ${1:a} &= ${2:b} & \\\\\\\\\\n  ${3:c} &= ${4:d} &\\n\\\\end{flalign*}$0', {math = false})\n"
     // org and tex share the math set (the source config's
-    // filetype_extend('org', {'tex'})). tex additionally gets '.' ->
-    // \dots -- the source config registers that one for tex only (its
-    // synstack gating never fires in org, and a bare-dot autosnippet in
-    // prose-heavy org would be too eager). A COPY, not an alias: the
-    // trigger index cache is keyed per spec table.
+    // filetype_extend('org', {'tex'})); markdown gets it too, since $...$
+    // math is just as common in .md notes. tex additionally gets '.' ->
+    // \dots -- the source config registers that one for tex only (a bare-dot
+    // autosnippet in prose-heavy org would be too eager). A COPY, not an
+    // alias: the trigger index cache is keyed per spec table.
     "mep.autosnippets.org = M\n"
+    "mep.autosnippets.md = M\n"
+    "mep.autosnippets.markdown = M\n"
     "local TEX = {}\n"
     "for i2 = 1, #M do TEX[i2] = M[i2] end\n"
     "TEX[#TEX + 1] = {trig = '.', body = '\\\\dots$0', math = true, word = true}\n"
     "mep.autosnippets.tex = TEX\n"
-    // Trigger index: per-spec-table cache of (a) plain triggers bucketed
-    // by their last character -- only the bucket for the just-typed char
-    // is scanned per edit -- sorted longest-first so 'argmax' beats
-    // 'max' and ';th' beats ';h'; (b) pattern specs in registration
-    // order.
+    // What a tab-stop-free body actually puts in the buffer ('\\in$0' ->
+    // '\in'), or nil for a body with fields or no fixed text.
+    "local function mep_autosnip_literal(sp)\n"
+    "  if sp.pattern or sp.expand or type(sp.body) ~= 'string' then return nil end\n"
+    "  local b = sp.body:gsub('%$0$', ''):gsub('%${0}$', '')\n"
+    "  if b:find('$', 1, true) or b:find('\\n', 1, true) then return nil end\n"
+    "  return b\n"
+    "end\n"
+    // Trigger index: per-spec-table cache of (a) plain triggers bucketed by
+    // their last character -- only the bucket for the just-typed char is
+    // scanned per edit -- sorted longest-first so 'argmax' beats 'max' and
+    // ';th' beats ';h'; (b) pattern specs in registration order.
+    //
+    // The absorb rule, computed here for every trigger rather than hand-
+    // listed: autosnippets fire the instant their text is complete, so a
+    // trigger T with a proper prefix P that is itself a trigger never gets
+    // typed whole -- P fires first and leaves its *expansion* behind. 'in'
+    // turns into '\in' before the 't' of 'int' arrives, ';p' into '\pi'
+    // before the 'h' of ';ph'. So each such T also matches as P's literal
+    // expansion followed by the rest of T ('\in' .. 't', '\pi' .. 'h'), and
+    // firing replaces that whole run -- the backslash included, so the result
+    // is '\int...' and '\phi', never '\\int' or '\pih'. Only prefixes whose
+    // expansion is plain text qualify (one with fields would have opened a
+    // snippet session instead of leaving fixed text).
     "local mep_autosnip_index_cache = {}\n"
     "local function mep_autosnip_index(specs)\n"
     "  local cached = mep_autosnip_index_cache[specs]\n"
     "  if cached then return cached end\n"
-    "  local by_last, pats = {}, {}\n"
+    "  local by_last, pats, literal = {}, {}, {}\n"
+    "  for _, sp in ipairs(specs) do\n"
+    "    if not sp.pattern then\n"
+    "      local lit = mep_autosnip_literal(sp)\n"
+    "      if lit then literal[sp.trig] = lit end\n"
+    "    end\n"
+    "  end\n"
     "  for _, sp in ipairs(specs) do\n"
     "    if sp.pattern then\n"
     "      pats[#pats + 1] = sp\n"
     "    else\n"
+    "      local alts = {}\n"
+    "      for k = #sp.trig - 1, 1, -1 do\n"
+    "        local lit = literal[sp.trig:sub(1, k)]\n"
+    "        if lit then alts[#alts + 1] = lit .. sp.trig:sub(k + 1) end\n"
+    "      end\n"
+    "      local entry = {sp = sp, forms = {sp.trig}}\n"
+    "      for _, a in ipairs(alts) do entry.forms[#entry.forms + 1] = a end\n"
     "      local c = sp.trig:sub(-1)\n"
     "      by_last[c] = by_last[c] or {}\n"
-    "      table.insert(by_last[c], sp)\n"
+    "      table.insert(by_last[c], entry)\n"
     "    end\n"
     "  end\n"
     "  for _, bucket in pairs(by_last) do\n"
-    "    table.sort(bucket, function(a, b) return #a.trig > #b.trig end)\n"
+    "    table.sort(bucket, function(a, b) return #a.sp.trig > #b.sp.trig end)\n"
     "  end\n"
     "  cached = {by_last = by_last, pats = pats}\n"
     "  mep_autosnip_index_cache[specs] = cached\n"
     "  return cached\n"
     "end\n"
-    "local mep_math_envs = {}\n"
-    "for _, e in ipairs({'equation', 'equation*', 'align', 'align*',\n"
-    "    'aligned', 'alignat', 'alignat*', 'gather', 'gather*', 'gathered',\n"
-    "    'multline', 'multline*', 'flalign', 'flalign*', 'split', 'cases',\n"
-    "    'array', 'matrix', 'bmatrix', 'pmatrix', 'vmatrix', 'Bmatrix',\n"
-    "    'Vmatrix', 'smallmatrix', 'math', 'displaymath'}) do\n"
-    "  mep_math_envs[e] = true\n"
-    "end\n"
-    // No caching here: buffer_change_epoch is frozen during an insert
-    // session (header comment above), so an epoch-keyed cache would serve
-    // stale fragments for the exact keystrokes that matter. The scan only
-    // runs when a trigger's text+boundary already matched (in_math() is
-    // lazy), so it's one buffer scan per would-be expansion, not per key.
-    "local function mep_math_fragments()\n"
-    "  return mep.org_latex_scan_fragments()\n"
-    "end\n"
-    "local function mep_in_mathzone(row, col)\n"
-    // Closed fragments first: the scanner's rows/cols are 1-indexed,
-    // inline col_end is one past the span's last char, so 'strictly
-    // between the delimiters' is col > col_start and col < col_end.
-    "  local frags = mep_math_fragments()\n"
-    "  for _, b in ipairs(frags.blocks) do\n"
-    "    if row >= b.start_row and row <= b.end_row then return true end\n"
-    "  end\n"
-    "  for _, frag in ipairs(frags.inlines) do\n"
-    "    for _, sp in ipairs(frag.parts) do\n"
-    "      if sp.row == row and col > sp.col_start and col < sp.col_end then\n"
-    "        return true\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
-    // Unclosed fallback: walk up to the nearest blank line / org heading
-    // (bounded to 300 rows), then count still-open delimiters from there
-    // to the cursor.
-    "  local first = row\n"
-    "  local floor_row = math.max(1, row - 500)\n"
-    "  while first > floor_row do\n"
-    "    local prev = mep.get_line(first - 1)\n"
-    "    if not prev or prev:match('^%s*$') or prev:match('^%*+ ') then break end\n"
-    "    first = first - 1\n"
-    "  end\n"
-    "  local text = ''\n"
-    "  for r = first, row - 1 do\n"
-    "    text = text .. (mep.get_line(r) or '') .. '\\n'\n"
-    "  end\n"
-    "  text = text .. (mep.get_line(row) or ''):sub(1, col - 1)\n"
-    "  local i, n = 1, #text\n"
-    "  local dollar, ddollar = false, false\n"
-    "  local paren, brack, env = 0, 0, 0\n"
-    "  while i <= n do\n"
-    "    local ch = text:sub(i, i)\n"
-    "    local two = text:sub(i, i + 1)\n"
-    "    if two == '$$' then\n"
-    "      ddollar = not ddollar\n"
-    "      i = i + 2\n"
-    "    elseif ch == '$' then\n"
-    "      dollar = not dollar\n"
-    "      i = i + 1\n"
-    "    elseif two == '\\\\(' then\n"
-    "      paren = paren + 1\n"
-    "      i = i + 2\n"
-    "    elseif two == '\\\\)' then\n"
-    "      paren = math.max(0, paren - 1)\n"
-    "      i = i + 2\n"
-    "    elseif two == '\\\\[' then\n"
-    "      brack = brack + 1\n"
-    "      i = i + 2\n"
-    "    elseif two == '\\\\]' then\n"
-    "      brack = math.max(0, brack - 1)\n"
-    "      i = i + 2\n"
-    "    elseif ch == '\\\\' then\n"
-    "      local env_open = text:match('^\\\\begin{([%a*]+)}', i)\n"
-    "      if env_open and mep_math_envs[env_open] then\n"
-    "        env = env + 1\n"
-    "      else\n"
-    "        local env_close = text:match('^\\\\end{([%a*]+)}', i)\n"
-    "        if env_close and mep_math_envs[env_close] then\n"
-    "          env = math.max(0, env - 1)\n"
+    // Every trigger whose plain form can never be typed whole because a
+    // proper prefix fires first, with what it absorbs instead. :MepAutosnippetAudit
+    // prints it -- the programmatic check that the absorb rule covers every
+    // prefix collision (an entry here with no forms beyond its own would be
+    // an unreachable trigger).
+    "function mep.autosnippet_prefix_audit(ft)\n"
+    "  local specs = mep.autosnippets[ft or 'org'] or {}\n"
+    "  local idx = mep_autosnip_index(specs)\n"
+    "  local out = {}\n"
+    "  for _, bucket in pairs(idx.by_last) do\n"
+    "    for _, e in ipairs(bucket) do\n"
+    "      local trig = e.sp.trig\n"
+    "      for k = #trig - 1, 1, -1 do\n"
+    "        for _, other in ipairs(specs) do\n"
+    "          if not other.pattern and other.trig == trig:sub(1, k) then\n"
+    "            out[#out + 1] = {trig = trig, prefix = other.trig, forms = e.forms}\n"
+    "          end\n"
     "        end\n"
     "      end\n"
-    "      i = i + 1\n"
-    "    else\n"
-    "      i = i + 1\n"
     "    end\n"
     "  end\n"
-    "  return dollar or ddollar or paren > 0 or brack > 0 or env > 0\n"
+    "  table.sort(out, function(a, b) return a.trig < b.trig end)\n"
+    "  return out\n"
+    "end\n"
+    "mep.command('MepAutosnippetAudit', function()\n"
+    "  local lines = {}\n"
+    "  for _, a in ipairs(mep.autosnippet_prefix_audit(mep_snippet_filetype())) do\n"
+    "    lines[#lines + 1] = a.trig .. '  (prefix ' .. a.prefix .. ' fires first)  matches: ' .. table.concat(a.forms, '  ')\n"
+    "  end\n"
+    "  if #lines == 0 then lines[1] = 'No trigger has another trigger as a prefix.' end\n"
+    "  mep.hover_show('Autosnippet prefix audit', table.concat(lines, '\\n'))\n"
+    "end)\n"
+    "local mep_math_envs = {}\n"
+    "for _, e in ipairs({'equation', 'align', 'alignat', 'gather', 'multline',\n"
+    "    'flalign', 'math', 'displaymath', 'array', 'cases', 'matrix', 'pmatrix',\n"
+    "    'bmatrix', 'Bmatrix', 'vmatrix', 'Vmatrix', 'smallmatrix', 'split',\n"
+    "    'aligned', 'gathered'}) do\n"
+    "  mep_math_envs[e] = true\n"
+    "end\n"
+    // Is the cursor in math? A text scan, not a syntax query -- org buffers are
+    // treesitter-highlighted, not tex-syntax, so there is no math syntax group
+    // to ask. Reads at most 500 rows back, the cursor row only up to the
+    // cursor. '$' toggles inline math, '$$' display math; \( \[ open and \) \]
+    // close display math; \begin/\end of a math environment (starred or not)
+    // count depth. A blank line or an org heading closes any open $ / \( / \[
+    // -- a paragraph boundary heals a stray '$', so one typo can't turn the
+    // rest of the file into math -- but environment depth carries across
+    // (align bodies have blank lines). '\\' (a row break) and '\$' (a literal
+    // dollar) are dropped before scanning so neither reads as a delimiter.
+    // Text inside \text{...} still counts as math: the risky triggers are
+    // capitalized (Ind, Pr, Var) instead.
+    "function mep_in_mathzone(row, col)\n"
+    "  if not row then row, col = mep.cursor() end\n"
+    "  local first = math.max(1, row - 500)\n"
+    "  local inline, display, depth = false, false, 0\n"
+    "  for r = first, row do\n"
+    "    local line = mep.get_line(r) or ''\n"
+    "    if r == row then line = line:sub(1, col - 1) end\n"
+    "    if line:match('^%s*$') or line:match('^%*+%s') then\n"
+    "      inline, display = false, false\n"
+    "    end\n"
+    "    local text = line:gsub('\\\\\\\\', ''):gsub('\\\\%$', '')\n"
+    "    local i, n = 1, #text\n"
+    "    while i <= n do\n"
+    "      local c = text:sub(i, i)\n"
+    "      if c == '$' then\n"
+    "        if text:sub(i + 1, i + 1) == '$' then\n"
+    "          display = not display\n"
+    "          i = i + 2\n"
+    "        else\n"
+    "          inline = not inline\n"
+    "          i = i + 1\n"
+    "        end\n"
+    "      elseif c == '\\\\' then\n"
+    "        local d = text:sub(i + 1, i + 1)\n"
+    "        if d == '(' or d == '[' then\n"
+    "          display = true\n"
+    "          i = i + 2\n"
+    "        elseif d == ')' or d == ']' then\n"
+    "          display = false\n"
+    "          i = i + 2\n"
+    "        else\n"
+    "          local kw, name, e = text:match('^\\\\(%a+){(%a+)%*?}()', i)\n"
+    "          if kw == 'begin' and mep_math_envs[name] then\n"
+    "            depth = depth + 1\n"
+    "            i = e\n"
+    "          elseif kw == 'end' and mep_math_envs[name] then\n"
+    "            depth = math.max(0, depth - 1)\n"
+    "            i = e\n"
+    "          else\n"
+    "            i = i + 1\n"
+    "          end\n"
+    "        end\n"
+    "      else\n"
+    "        i = i + 1\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return inline or display or depth > 0\n"
     "end\n"
     "local function mep_autosnip_lines(body)\n"
     "  local lines = {}\n"
     "  for l in (body .. '\\n'):gmatch('(.-)\\n') do lines[#lines + 1] = l end\n"
-    "  if not body:find('$', 1, true) then\n"
-    "    lines[#lines] = lines[#lines] .. '$0'\n"
-    "  end\n"
     "  return lines\n"
     "end\n"
+    // The word-boundary rule: a word trigger fires only at line start or
+    // after a non-word character. A backslash counts as part of the word too,
+    // so an already-complete \command (hand-typed or completion-accepted)
+    // never re-expands its own tail.
+    "local function mep_autosnip_boundary_ok(prev)\n"
+    "  return prev == '' or not prev:match('[%w_\\\\]')\n"
+    "end\n"
+    // Tries every spec against the text before the cursor; returns the number
+    // of characters to replace and the spec (or a pattern spec's body), or nil.
+    "local function mep_autosnip_match(specs, before, in_math)\n"
+    "  local idx = mep_autosnip_index(specs)\n"
+    "  local bucket = idx.by_last[before:sub(-1)]\n"
+    "  if bucket then\n"
+    "    for _, e in ipairs(bucket) do\n"
+    "      local sp = e.sp\n"
+    "      for _, form in ipairs(e.forms) do\n"
+    "        if #before >= #form and before:sub(-#form) == form then\n"
+    "          local prev = #before > #form and before:sub(#before - #form, #before - #form) or ''\n"
+    "          if (not sp.word or mep_autosnip_boundary_ok(prev)) and (not sp.math or in_math()) then\n"
+    "            return #form, sp.body, sp.expand\n"
+    "          end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  for _, sp in ipairs(idx.pats) do\n"
+    "    local s0, e0, c1, c2 = before:find(sp.pattern)\n"
+    "    if s0 and e0 == #before and (not sp.math or in_math()) then\n"
+    "      local prev = s0 > 1 and before:sub(s0 - 1, s0 - 1) or ''\n"
+    "      if not sp.guard or mep_autosnip_boundary_ok(prev) then\n"
+    "        return #before - s0 + 1, sp.fn(c1, c2)\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // Plain word triggers that may show in the completion menu at the cursor
+    // (their condition holds there) -- kBuiltinCompletion lists them beside
+    // the regular snippets; accepting one types the trigger and the poller
+    // below expands it.
+    "function mep_autosnip_menu_triggers(prefix)\n"
+    "  local ft = mep_snippet_filetype()\n"
+    "  local specs = ft and mep.autosnippets[ft]\n"
+    "  if not specs or not mep.autosnippets_enabled then return {} end\n"
+    "  local row, col = mep.cursor()\n"
+    "  local math_here\n"
+    "  local out = {}\n"
+    "  for _, sp in ipairs(specs) do\n"
+    "    local t = sp.trig\n"
+    "    if t and t:match('^[%w_]+$') and #t > #prefix and t:sub(1, #prefix) == prefix then\n"
+    "      if sp.math and math_here == nil then math_here = mep_in_mathzone(row, col) end\n"
+    "      if not sp.math or math_here then out[#out + 1] = t end\n"
+    "    end\n"
+    "  end\n"
+    "  return out\n"
+    "end\n"
+    // Something was just typed: the same row, and either the cursor moved
+    // right with the line changed, or a printable key went in (a keystroke
+    // that replaced a selected placeholder shrinks the line instead).
     "local mep_autosnip_prev_row, mep_autosnip_prev_col, mep_autosnip_prev_line\n"
+    "local mep_autosnip_prev_typed = 0\n"
     "mep.on_frame(function()\n"
     "  if not mep.autosnippets_enabled or not mep.is_insert_mode() then\n"
     "    mep_autosnip_prev_row = nil\n"
@@ -26136,17 +26273,15 @@ const char *kBuiltinMathSnippets =
     "    mep_autosnip_prev_row = nil\n"
     "    return\n"
     "  end\n"
-    // "Just typed" = same row, cursor moved right, content changed (see
-    // the header comment for why buffer_change_epoch can't be the signal
-    // here). The first tick after entering Insert only primes the state.
-    "  local typed = row == mep_autosnip_prev_row\n"
-    "      and col > mep_autosnip_prev_col and line ~= mep_autosnip_prev_line\n"
+    "  local typed_count = mep.insert_typed_count()\n"
+    "  local typed = row == mep_autosnip_prev_row and line ~= mep_autosnip_prev_line\n"
+    "      and (col > mep_autosnip_prev_col or typed_count ~= mep_autosnip_prev_typed)\n"
     "  mep_autosnip_prev_row, mep_autosnip_prev_col, mep_autosnip_prev_line = row, col, line\n"
+    "  mep_autosnip_prev_typed = typed_count\n"
     "  if not typed then return end\n"
     "  local ft = mep_snippet_filetype()\n"
     "  local specs = ft and mep.autosnippets[ft]\n"
     "  if not specs then return end\n"
-    "  local idx = mep_autosnip_index(specs)\n"
     "  local before = line:sub(1, col - 1)\n"
     "  if before == '' then return end\n"
     "  local mathzone\n"
@@ -26154,47 +26289,22 @@ const char *kBuiltinMathSnippets =
     "    if mathzone == nil then mathzone = mep_in_mathzone(row, col) end\n"
     "    return mathzone\n"
     "  end\n"
-    "  local function fire(trig_len, body, expand)\n"
-    "    local keep = before:sub(1, #before - trig_len)\n"
-    "    local after = line:sub(col)\n"
-    "    if expand then\n"
-    "      expand(row, keep, after)\n"
-    "    else\n"
-    "      mep.snippet_splice(row, keep, after, mep_autosnip_lines(body))\n"
-    "    end\n"
+    "  local n, body, expand = mep_autosnip_match(specs, before, in_math)\n"
+    "  if not n then return end\n"
+    "  local keep = before:sub(1, #before - n)\n"
+    "  local after = line:sub(col)\n"
+    "  if expand then\n"
+    "    expand(row, keep, after)\n"
+    "  else\n"
+    "    mep.snippet_splice(row, keep, after, mep_autosnip_lines(body))\n"
+    "  end\n"
     // Re-prime the tracked state from the post-splice cursor/line so the
-    // next tick reads "nothing typed" and the engine never rescans text
-    // it inserted itself (also what makes `u` clean: one undo step per
+    // next tick reads "nothing typed" and the engine never rescans text it
+    // inserted itself (also what makes `u` clean: one undo step per
     // expansion, no cascade).
-    "    local nrow, ncol = mep.cursor()\n"
-    "    mep_autosnip_prev_row, mep_autosnip_prev_col = nrow, ncol\n"
-    "    mep_autosnip_prev_line = mep.get_line(nrow)\n"
-    "  end\n"
-    "  local bucket = idx.by_last[before:sub(-1)]\n"
-    "  if bucket then\n"
-    "    for _, sp in ipairs(bucket) do\n"
-    "      local t = sp.trig\n"
-    "      if #before >= #t and before:sub(-#t) == t then\n"
-    "        local prev = #before > #t\n"
-    "            and before:sub(#before - #t, #before - #t) or ''\n"
-    "        if (not sp.word or prev == '' or not prev:match('[%w_\\\\]'))\n"
-    "            and (not sp.math or in_math()) then\n"
-    "          fire(#t, sp.body, sp.expand)\n"
-    "          return\n"
-    "        end\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
-    "  for _, sp in ipairs(idx.pats) do\n"
-    "    local s0, e0, c1, c2 = before:find(sp.pattern)\n"
-    "    if s0 and e0 == #before and (not sp.math or in_math()) then\n"
-    "      local prev = s0 > 1 and before:sub(s0 - 1, s0 - 1) or ''\n"
-    "      if not sp.guard or prev == '' or not prev:match('[%w\\\\]') then\n"
-    "        fire(#before - s0 + 1, sp.fn(c1, c2))\n"
-    "        return\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
+    "  local nrow, ncol = mep.cursor()\n"
+    "  mep_autosnip_prev_row, mep_autosnip_prev_col = nrow, ncol\n"
+    "  mep_autosnip_prev_line = mep.get_line(nrow)\n"
     "end)\n"
     "mep.command('MepAutosnippetsToggle', function()\n"
     "  mep.autosnippets_enabled = not mep.autosnippets_enabled\n"
@@ -26202,28 +26312,17 @@ const char *kBuiltinMathSnippets =
     "      (mep.autosnippets_enabled and 'enabled' or 'disabled'), 'info')\n"
     "end)\n";
 
-// Org note-taking structural snippets: regular Tab-expanded templates,
+// Org note-taking structural snippets: regular menu-expanded templates,
 // deliberately NOT autosnippets (kBuiltinMathSnippets) -- 'title', 'date',
 // 'quote' etc. are ordinary English words, and typing them in prose must
-// never expand on its own. They go through the explicit expansion paths
-// only: the insert-Tab hook wired at the bottom of this block, the
-// <leader>yy picker, or :MepSnippets. Bodies live in the same
-// mep.snippets registry as every code filetype's snippets (kBuiltinSnippets),
-// so the completion popup already offers the trigger names in org buffers
-// and init.lua can extend/override entries the usual way. The tabstop
-// engine has no choice/mirror nodes, so where the reference LuaSnip
-// config cycled a choice (src language, callout label, mermaid direction)
-// the most common value ships as a ${N:default} instead.
-//
-// The mermaid snippets (graph/gex/gnode/gedge/gwedge) put a quick
-// auto-laid-out node/edge graph in a '#+begin_src mermaid' block:
-// mermaid's dagre engine positions the nodes, the direction keyword
-// (LR/TD/BT/RL) is the only layout knob, 'id((label))' is a circle node,
-// an embedded <br/> stacks a name over a value inside one label, and
-// '-->|w|' is a weighted/labelled edge. kBuiltinOrgExport renders these
-// blocks as <pre class="mermaid"> + a mermaid.js include on HTML export;
-// the PDF path keeps them as plain code boxes (rendering mermaid needs a
-// JS engine -- the mmdc CLI -- which the devshell doesn't carry).
+// never expand on its own. They show in the completion menu as soon as a
+// letter of the trigger is typed, and expand when it is accepted (Ctrl-Y,
+// or Enter on an entry moved onto); <leader>yy and :MepSnippets reach
+// them too. Bodies live in the same mep.snippets registry as every code
+// filetype's snippets (kBuiltinSnippets), so init.lua can extend/override
+// entries the usual way. Choice fields (${N|a,b|}) cycle with Ctrl-J/
+// Ctrl-K. The TikZ graph snippets are shared with tex buffers; mermaid
+// versions of the same graphs (m-prefixed) are org-only.
 //
 // 'cbl' ("come back later") is just a canned call of kBuiltinOrgNotes'
 // {{{hl(color,text)}}} highlight macro -- orange, fixed text -- riding
@@ -26233,23 +26332,42 @@ const char *kBuiltinMathSnippets =
 // parser leaves them alone.
 const char *kBuiltinOrgSnippets =
     "mep.snippets.org = mep.snippets.org or {}\n"
+    "mep.snippets.tex = mep.snippets.tex or {}\n"
     "local O = mep.snippets.org\n"
-    // Code/example blocks. Language defaults match mep.org_babel_langs
-    // keys (kBuiltinOrgBabel); OrgSrcBlockAt lowercases the header lang,
-    // so the conventional '#+begin_src R' spelling still resolves to L.r.
-    "O.src = {'#+begin_src ${1:python}', '${0}', '#+end_src'}\n"
-    "O.nsrc = {'#+NAME: ${1:name}', '#+begin_src ${2:python} :results output', '${0}', '#+end_src'}\n"
-    "O.pysrc = {'#+begin_src python', '${0}', '#+end_src'}\n"
-    "O.rsrc = {'#+begin_src R', '${0}', '#+end_src'}\n"
-    "O.javasrc = {'#+begin_src java', '${0}', '#+end_src'}\n"
-    "O.cppsrc = {'#+begin_src cpp', '${0}', '#+end_src'}\n"
-    "O.ex = {'#+begin_example', '${0}', '#+end_example'}\n"
-    "O.quote = {'#+begin_quote', '${0}', '#+end_quote'}\n"
-    // Labelled aside/admonition; Label alternatives from the reference
-    // config's choice node: Note/Tip/Warning/Definition/Example.
-    "O.callout = {'#+begin_quote', '*${1:Note}:* ${0}', '#+end_quote'}\n"
+    // Code/example blocks. ${N|a,b|} is a choice field: Ctrl-J/Ctrl-K cycle
+    // it in place (the empty last choice leaves a bare #+begin_src).
+    // OrgSrcBlockAt lowercases the header lang, so the conventional
+    // '#+begin_src R' spelling still resolves to mep.org_babel_langs' r.
+    "O.src = {'#+begin_src ${1|python,lua,bash,R,cpp,|}', '$2', '#+end_src'}\n"
+    "O.nsrc = {'#+NAME: ${1:name}', '#+begin_src ${2|python,lua,bash,R,cpp,|} :results output', '$3', '#+end_src'}\n"
+    "O.pysrc = {'#+begin_src python', '$1', '#+end_src'}\n"
+    "O.rsrc = {'#+begin_src R', '$1', '#+end_src'}\n"
+    "O.javasrc = {'#+begin_src java', '$1', '#+end_src'}\n"
+    "O.cppsrc = {'#+begin_src cpp', '$1', '#+end_src'}\n"
+    "O.ex = {'#+begin_example', '$1', '#+end_example'}\n"
+    "O.quote = {'#+begin_quote', '$1', '#+end_quote'}\n"
+    // Pseudocode: the body is LaTeX math-mode pseudocode, one statement per
+    // line, indented with \quad / \qquad, keywords via \textbf{...}. pcodex
+    // is a filled-in example of the idiom (condensed nearest neighbour).
+    "O.pcode = {'#+begin_pseudocode', '$1', '#+end_pseudocode'}\n"
+    "O.pcodex = {\n"
+    "  '#+begin_pseudocode',\n"
+    "  '\\\\mathcal{Z} \\\\gets \\\\emptyset',\n"
+    "  '\\\\textbf{repeat}',\n"
+    "  '\\\\quad \\\\textbf{for all } x \\\\in \\\\mathcal{X} \\\\text{ (in random order)}',\n"
+    "  \"\\\\qquad \\\\text{find } x' \\\\in \\\\mathcal{Z} \\\\text{ such that } \\\\lVert x-x' \\\\rVert = \\\\min_{x^{j} \\\\in \\\\mathcal{Z}} \\\\lVert x-x^{j} \\\\rVert\",\n"
+    "  \"\\\\qquad \\\\textbf{if } \\\\operatorname{class}(x) \\\\neq \\\\operatorname{class}(x') \\\\text{ add } x \\\\text{ to } \\\\mathcal{Z}\",\n"
+    "  '\\\\textbf{until } \\\\mathcal{Z} \\\\text{ does not change}',\n"
+    "  '#+end_pseudocode',\n"
+    "}\n"
+    // Labelled aside/admonition: a quote block with a bold lead-in label,
+    // cycled through the choice list.
+    "O.callout = {'#+begin_quote', '*${1|Note,Tip,Warning,Definition,Example|}:* $2', '#+end_quote'}\n"
     // New-note file header. A function body (see mep.snippet_expand):
-    // computed at expand time so the #+DATE line carries today's date.
+    // computed at expand time so the #+DATE line carries today's date. The
+    // reference config also seeds a '#+MACRO: hl ...' line for Emacs; mep
+    // renders and exports {{{hl(...)}}} itself, and a buffer-level #+MACRO
+    // would take precedence over that, so it is left out here.
     "O.title = function()\n"
     "  return {\n"
     "    '#+TITLE: ${1:Title}',\n"
@@ -26257,58 +26375,111 @@ const char *kBuiltinOrgSnippets =
     "    '#+DATE: ' .. os.date('%Y-%m-%d'),\n"
     "    '#+STARTUP: noindent',\n"
     "    '',\n"
-    "    '${0}',\n"
+    "    '# This is used to shrink the pdf page margins',\n"
+    "    '#+LATEX_HEADER: \\\\usepackage[left=0.75in,right=0.75in,top=1in,bottom=1in]{geometry}',\n"
+    "    '',\n"
+    "    '# This is used to shrink the spacing between bullet points',\n"
+    "    '#+LATEX_HEADER: \\\\usepackage{enumitem}',\n"
+    "    '#+LATEX_HEADER: \\\\setlist[itemize]{itemsep=2pt, topsep=4pt}',\n"
+    "    '',\n"
+    "    '$0',\n"
     "  }\n"
     "end\n"
-    "O.date = function() return {os.date('%Y-%m-%d') .. '${0}'} end\n"
+    "O.date = function() return {os.date('%Y-%m-%d')} end\n"
     // Links / anchors / cross-references. 'cid' gives a heading a stable
     // :CUSTOM_ID: anchor; 'sref'/'aref' target it from another page /
     // within the same file; 'oref' links a whole page.
-    "O.img = {'[[file:${1:path}][${2:caption}]]${0}'}\n"
-    "O.pdf = {'#+begin_export html', '<embed src=\"${1:file.pdf}\" width=\"100%\" height=\"800px\" type=\"application/pdf\">', '#+end_export', '${0}'}\n"
-    "O.link = {'[[${1:target}][${2:description}]]${0}'}\n"
-    "O.cid = {':PROPERTIES:', ':CUSTOM_ID: ${1:anchor-id}', ':END:', '${0}'}\n"
-    "O.oref = {'[[file:${1:../page/index.org}][${2:description}]]${0}'}\n"
-    "O.sref = {'[[file:${1:../page/index.org}::#${2:anchor-id}][${3:description}]]${0}'}\n"
-    "O.aref = {'[[#${1:anchor-id}][${2:description}]]${0}'}\n"
-    "O.tbl = {'| ${1:h1} | ${2:h2} |', '|----+----|', '| ${3} | ${4} |${0}'}\n"
+    "O.img = {'[[file:${1:path}][${2:caption}]]'}\n"
+    "O.pdf = {'#+begin_export html', '<embed src=\"${1:file.pdf}\" width=\"100%\" height=\"${2:800}px\" type=\"application/pdf\">', '#+end_export'}\n"
+    "O.link = {'[[${1:target}][${2:description}]]'}\n"
+    "O.cid = {':PROPERTIES:', ':CUSTOM_ID: ${1:anchor-id}', ':END:'}\n"
+    "O.oref = {'[[file:${1:../page/index.org}][${2:description}]]'}\n"
+    "O.sref = {'[[file:${1:../page/index.org}::#${2:anchor-id}][${3:description}]]'}\n"
+    "O.aref = {'[[#${1:anchor-id}][${2:description}]]'}\n"
+    "O.tbl = {'| ${1:h1} | ${2:h2} |', '|----+----|', '| $3 | $4 |'}\n"
     // Citations (kBuiltinOrgBib's org-cite syntax) + bibliography stub.
-    "O.cite = {'[cite:@${1:key}]${0}'}\n"
-    "O.refs = {'* References', '', '#+print_bibliography:', '${0}'}\n"
-    "O.h1 = {'* ${0}'}\n"
-    "O.h2 = {'** ${0}'}\n"
-    "O.h3 = {'*** ${0}'}\n"
-    // Tab-expanded twins of kBuiltinMathSnippets' mk/dk/ck math-zone
-    // openers, for inserting the same three shapes deliberately instead
-    // of by fast-typing. dk/ck differ only in export centering: \\(..\\)
-    // stays inline, \\[..\\] exports centered; both render identically
-    // in-editor via kBuiltinOrgLatex.
-    "O.mm = {'\\\\$${1}\\\\$${0}'}\n"
-    "O.dm = {'\\\\(', '  ${1}', '\\\\)', '${0}'}\n"
-    "O.cm = {'\\\\[', '  ${1}', '\\\\]', '${0}'}\n"
-    // Numbered + labelled display equation (amsmath \\begin{equation}, no
-    // star = numbered) and its cross-reference. eqref is wrapped in
-    // \\(..\\) on purpose: a bare \\eqref outside math delimiters prints
-    // literally in a MathJax HTML export, and org's own [[eq:name]] link
-    // syntax cannot resolve a raw LaTeX \\label.
-    "O.eqn = {'\\\\begin{equation}', '  \\\\label{eq:${1:name}}', '  ${2:E = mc^2}', '\\\\end{equation}', '${0}'}\n"
-    "O.eqref = {'\\\\(\\\\eqref{eq:${1:name}}\\\\)${0}'}\n"
-    // Mermaid graphs (see the block comment above).
-    "O.graph = {'#+begin_src mermaid', 'graph ${1:LR}', '    ${2:a}((${3:name}<br/>${4:value})) --- ${5:b}((${6:name}<br/>${7:value}))', '#+end_src', '${0}'}\n"
-    "O.gex = {'#+begin_src mermaid', 'graph LR', '    a((Start<br/>0)) -->|3| b((B<br/>3))', '    b -->|5| c((Goal<br/>8))', '    a -->|9| c', '#+end_src', '${0}'}\n"
-    "O.gnode = {'${1:id}((${2:name}<br/>${3:value}))${0}'}\n"
-    "O.gedge = {'${1:a} ${2:---} ${3:b}${0}'}\n"
-    "O.gwedge = {'${1:a} ${2:-->}|${3:weight}| ${4:b}${0}'}\n"
-    // Come-back-later marker (kBuiltinOrgNotes' hl macro, orange).
-    "O.cbl = {'{{{hl(orange,COME BACK LATER)}}}${0}'}\n"
-    // Insert-mode Tab: jump tabstops while a spliced snippet is live,
-    // else expand the word before the cursor as a snippet trigger, else
-    // fall through (Editor's insert dispatch already gave the completion
-    // popup first claim on Tab, so accept-completion is unaffected; a
-    // second Tab right after accepting a trigger-word candidate expands
-    // it). Registered here, not in kBuiltinSnippets, purely because this
-    // block is the first consumer -- the hook itself is global and works
-    // for every filetype's snippet set.
+    "O.cite = {'[cite:@${1:key}]'}\n"
+    "O.refs = {'* References', '', '#+print_bibliography:'}\n"
+    "O.h1 = {'* $1'}\n"
+    "O.h2 = {'** $1'}\n"
+    "O.h3 = {'*** $1'}\n"
+    // Menu twins of kBuiltinMathSnippets' mk/dk/ck math-zone openers, for
+    // inserting the same three shapes deliberately instead of by fast-typing.
+    // dk/ck differ only in export centering: \(..\) stays inline, \[..\]
+    // exports centered; both render identically in-editor via kBuiltinOrgLatex.
+    "O.mm = {'\\\\$$1\\\\$'}\n"
+    "O.dm = {'\\\\(', '  $1', '\\\\)'}\n"
+    "O.cm = {'\\\\[', '  $1', '\\\\]'}\n"
+    // Numbered + labelled display equation (amsmath \begin{equation}, no
+    // star = numbered) and its cross-reference. eqref is wrapped in \(..\)
+    // on purpose: a bare \eqref outside math delimiters prints literally in a
+    // MathJax HTML export, and org's own [[eq:name]] link syntax cannot
+    // resolve a raw LaTeX \label.
+    "O.eqn = {'\\\\begin{equation}', '  \\\\label{eq:${1:name}}', '  ${2:E = mc^2}', '\\\\end{equation}'}\n"
+    "O.eqref = {'\\\\(\\\\eqref{eq:${1:name}}\\\\)'}\n"
+    // Come-back-later marker (kBuiltinOrgNotes' hl macro, orange). Prose
+    // only: see mep.snippet_conditions below.
+    "O.cbl = {'{{{hl(orange,COME BACK LATER)}}}'}\n"
+    // TikZ graphs, shared by tex and org (org exports a raw tikzpicture
+    // verbatim to LaTeX). Layout is pgf's graphdrawing engine, so the PDF
+    // needs LuaLaTeX with the graphdrawing + quotes libraries loaded. Nodes
+    // are `id [as={name \\ value}]` (name and value stacked in one circle).
+    "local TIKZ = {\n"
+    "  graph = {\n"
+    "    '\\\\begin{tikzpicture}[',\n"
+    "    '  >={Stealth[]},',\n"
+    "    '  every node/.style={draw, circle, align=center, inner sep=4pt},',\n"
+    "    ']',\n"
+    "    '  \\\\graph[${1|spring layout,layered layout,tree layout|}, node distance=20mm]{',\n"
+    "    '    ${2:a} [as={${3:A} \\\\\\\\ ${4:1}}] -- ${5:b} [as={${6:B} \\\\\\\\ ${7:2}}];',\n"
+    "    '  };',\n"
+    "    '\\\\end{tikzpicture}',\n"
+    "  },\n"
+    "  gex = {\n"
+    "    '\\\\begin{tikzpicture}[',\n"
+    "    '  >={Stealth[]},',\n"
+    "    '  every node/.style={draw, circle, align=center, inner sep=4pt},',\n"
+    "    ']',\n"
+    "    '  \\\\graph[spring layout, node distance=20mm]{',\n"
+    "    '    a [as={Start \\\\\\\\ 0}] ->[\"3\"] b [as={B \\\\\\\\ 3}];',\n"
+    "    '    b ->[\"5\"] c [as={Goal \\\\\\\\ 8}];',\n"
+    "    '    a ->[\"9\"] c;',\n"
+    "    '  };',\n"
+    "    '\\\\end{tikzpicture}',\n"
+    "  },\n"
+    "  gnode = {'${1:id} [as={${2:name} \\\\\\\\ ${3:value}}]'},\n"
+    "  gedge = {'${1:a} ${2|--,->,<->|} ${3:b};'},\n"
+    "  gwedge = {'${1:a} ${2|--,->,<->|}[\"${3:1}\"] ${4:b};'},\n"
+    "}\n"
+    "for k, v in pairs(TIKZ) do\n"
+    "  O[k] = v\n"
+    "  mep.snippets.tex[k] = v\n"
+    "end\n"
+    // Mermaid graphs: the same quick node/edge diagrams in a
+    // '#+begin_src mermaid' block, which mep can show without a TeX engine --
+    // mermaid's dagre engine positions the nodes, 'id((label))' is a circle
+    // node, <br/> stacks a name over a value, '-->|w|' is a weighted edge.
+    // kBuiltinOrgExport renders these blocks with mermaid.js on HTML export;
+    // PDF export keeps them as code boxes.
+    "O.mgraph = {'#+begin_src mermaid', 'graph ${1|LR,TD,BT,RL|}', '    ${2:a}((${3:name}<br/>${4:value})) --- ${5:b}((${6:name}<br/>${7:value}))', '#+end_src'}\n"
+    "O.mgex = {'#+begin_src mermaid', 'graph LR', '    a((Start<br/>0)) -->|3| b((B<br/>3))', '    b -->|5| c((Goal<br/>8))', '    a -->|9| c', '#+end_src'}\n"
+    "O.mgnode = {'${1:id}((${2:name}<br/>${3:value}))'}\n"
+    "O.mgedge = {'${1:a} ${2|---,-->|} ${3:b}'}\n"
+    "O.mgwedge = {'${1:a} ${2|-->,---|}|${3:weight}| ${4:b}'}\n"
+    // Per-snippet conditions: mep.snippet_conditions[ft][trigger] is a
+    // function that must return true for the snippet to be offered in the
+    // completion menu or expanded. cbl is prose-only -- never inside math.
+    "mep.snippet_conditions = mep.snippet_conditions or {}\n"
+    "mep.snippet_conditions.org = mep.snippet_conditions.org or {}\n"
+    "mep.snippet_conditions.org.cbl = function() return not mep_in_mathzone() end\n"
+    // Insert-mode Tab, once Editor::HandleInsertInput has had first claim
+    // (it jumps a live snippet's stops itself): in a code buffer, Tab after a
+    // trigger word expands it. Note buffers (org/tex/markdown) never expand
+    // on Tab -- 'quote', 'date', 'title' are ordinary words there -- the
+    // completion menu (Ctrl-Y, or Enter on an entry moved onto) is the
+    // expansion path. A code block inside an org note follows its language.
+    "local MEP_NOTE_FT = {org = true, tex = true, md = true, markdown = true, rmd = true, Rmd = true}\n"
+    "function mep_snippet_is_note_ft(ft) return MEP_NOTE_FT[ft] == true end\n"
     "mep.set_insert_tab_hook(function(shift)\n"
     "  if mep.snippet_active() then\n"
     "    mep.snippet_jump(shift and -1 or 1)\n"
@@ -26319,12 +26490,223 @@ const char *kBuiltinOrgSnippets =
     "  local line = mep.get_line(row)\n"
     "  local word = line and line:sub(1, col - 1):match('[%w_]+$')\n"
     "  local ft = word and mep_snippet_filetype()\n"
-    "  local set = ft and mep.snippets and mep.snippets[ft]\n"
+    "  if not ft or MEP_NOTE_FT[ft] then return false end\n"
+    "  local set = mep.snippets and mep.snippets[ft]\n"
     "  if set and set[word] then\n"
     "    mep.snippet_expand(word)\n"
     "    return true\n"
     "  end\n"
     "  return false\n"
+    "end)\n";
+
+// Math delimiter-balance linter for org and tex buffers (:MepMathLint).
+// The autosnippet math-zone scan (mep_in_mathzone, kBuiltinMathSnippets)
+// heals itself at every paragraph so a stray '$' can't swallow the rest
+// of the file -- which also means a stray '$' never shows up while typing,
+// only later as a broken PDF. This catches it: a stack (not toggles) over
+// $, $$, \( \), \[ \] and \begin/\end of the math environments, each
+// problem reported as a warning at the exact delimiter. A blank line or an
+// org heading closes the paragraph and reports whatever is still open; org
+// src/example/export bodies, #+ directives, '# ' comments and ':' drawer/
+// fixed-width lines are skipped, and so are tex '%' comments. Parentheses
+// are deliberately not checked (\left( and half-open intervals like (0,1]
+// would drown the real problems).
+const char *kBuiltinMathLint =
+    "local MEP_LINT_ENVS = {}\n"
+    "for _, e in ipairs({'equation', 'align', 'alignat', 'gather', 'multline',\n"
+    "    'flalign', 'math', 'displaymath', 'array', 'cases', 'matrix', 'pmatrix',\n"
+    "    'bmatrix', 'Bmatrix', 'vmatrix', 'Vmatrix', 'smallmatrix', 'split',\n"
+    "    'aligned', 'gathered'}) do\n"
+    "  MEP_LINT_ENVS[e] = true\n"
+    "end\n"
+    "local MEP_LINT_CLOSER = {['\\\\('] = '\\\\)', ['\\\\['] = '\\\\]', ['$'] = '$', ['$$'] = '$$'}\n"
+    // Scans lines (an array of strings) as `ft` ('org' or 'tex') and returns
+    // {row=, col=, len=, message=} for each delimiter that is unclosed,
+    // unopened or closed by the wrong partner. rows/cols are 1-indexed.
+    "function mep_math_lint_lines(lines, ft)\n"
+    "  local out, stack = {}, {}\n"
+    "  local function label(o) return o.env and ('\\\\begin{' .. o.env .. '}') or o.tok end\n"
+    "  local function flush()\n"
+    "    for _, o in ipairs(stack) do\n"
+    "      out[#out + 1] = {row = o.row, col = o.col, len = #o.tok, message = label(o) .. ' is never closed'}\n"
+    "    end\n"
+    "    stack = {}\n"
+    "  end\n"
+    // A closer: matches the top of the stack, or something deeper (whatever
+    // sits above that was left open), or nothing (an unopened closer).
+    "  local function close(want, tok, row, col, name)\n"
+    "    for k = #stack, 1, -1 do\n"
+    "      local o = stack[k]\n"
+    "      if o.tok == want and o.env == name then\n"
+    "        for j = #stack, k + 1, -1 do\n"
+    "          local x = stack[j]\n"
+    "          out[#out + 1] = {row = x.row, col = x.col, len = #x.tok,\n"
+    "                           message = label(x) .. ' is never closed (' .. tok .. ' on line ' .. row .. ' closes the ' .. label(o) .. ' around it)'}\n"
+    "          stack[j] = nil\n"
+    "        end\n"
+    "        stack[k] = nil\n"
+    "        return\n"
+    "      end\n"
+    "    end\n"
+    "    local top = stack[#stack]\n"
+    "    out[#out + 1] = {row = row, col = col, len = #tok,\n"
+    "                     message = tok .. (top and (' does not match ' .. label(top) .. ' opened on line ' .. top.row) or ' has nothing to close')}\n"
+    "  end\n"
+    "  local in_block = nil\n"
+    "  for row, raw in ipairs(lines) do\n"
+    "    local line = raw\n"
+    "    local skip = false\n"
+    "    if ft == 'org' then\n"
+    "      local lower = line:lower()\n"
+    "      if in_block then\n"
+    "        if lower:match('^%s*#%+end_' .. in_block) then in_block = nil end\n"
+    "        skip = true\n"
+    "      else\n"
+    "        local kind = lower:match('^%s*#%+begin_(%a+)')\n"
+    "        if kind == 'src' or kind == 'example' or kind == 'export' then\n"
+    "          in_block = kind\n"
+    "          skip = true\n"
+    "        elseif line:match('^%s*#%+') or line:match('^%s*#%s') or line:match('^%s*#$') or line:match('^%s*:') then\n"
+    "          skip = true\n"
+    "        end\n"
+    "      end\n"
+    "      if not skip and (line:match('^%s*$') or line:match('^%*+%s')) then\n"
+    "        flush()\n"
+    "        skip = true\n"
+    "      end\n"
+    "    else\n"
+    // tex: drop a % comment (an escaped \% stays text).
+    "      local c = 1\n"
+    "      while true do\n"
+    "        local p = line:find('%', c, true)\n"
+    "        if not p then break end\n"
+    "        if p == 1 or line:sub(p - 1, p - 1) ~= '\\\\' then\n"
+    "          line = line:sub(1, p - 1)\n"
+    "          break\n"
+    "        end\n"
+    "        c = p + 1\n"
+    "      end\n"
+    "      if line:match('^%s*$') and raw:match('^%s*$') then\n"
+    "        flush()\n"
+    "        skip = true\n"
+    "      end\n"
+    "    end\n"
+    "    if not skip then\n"
+    // '\\' (a row break) and '\$' (a literal dollar) blanked out, columns kept.
+    "      local text = line:gsub('\\\\\\\\', '  '):gsub('\\\\%$', '  ')\n"
+    "      local i, n = 1, #text\n"
+    "      while i <= n do\n"
+    "        local c = text:sub(i, i)\n"
+    "        if c == '$' then\n"
+    "          local tok = text:sub(i + 1, i + 1) == '$' and '$$' or '$'\n"
+    "          local top = stack[#stack]\n"
+    "          if top and top.tok == tok then\n"
+    "            stack[#stack] = nil\n"
+    "          else\n"
+    "            stack[#stack + 1] = {tok = tok, row = row, col = i}\n"
+    "          end\n"
+    "          i = i + #tok\n"
+    "        elseif c == '\\\\' then\n"
+    "          local two = text:sub(i, i + 1)\n"
+    "          if two == '\\\\(' or two == '\\\\[' then\n"
+    "            stack[#stack + 1] = {tok = two, row = row, col = i}\n"
+    "            i = i + 2\n"
+    "          elseif two == '\\\\)' then\n"
+    "            close('\\\\(', two, row, i)\n"
+    "            i = i + 2\n"
+    "          elseif two == '\\\\]' then\n"
+    "            close('\\\\[', two, row, i)\n"
+    "            i = i + 2\n"
+    "          else\n"
+    "            local kw, name, star, e = text:match('^\\\\(%a+){(%a+)(%*?)}()', i)\n"
+    "            if kw == 'begin' and MEP_LINT_ENVS[name] then\n"
+    "              stack[#stack + 1] = {tok = '\\\\begin', env = name .. star, row = row, col = i}\n"
+    "              i = e\n"
+    "            elseif kw == 'end' and MEP_LINT_ENVS[name] then\n"
+    "              close('\\\\begin', '\\\\end{' .. name .. star .. '}', row, i, name .. star)\n"
+    "              i = e\n"
+    "            else\n"
+    "              i = i + 1\n"
+    "            end\n"
+    "          end\n"
+    "        else\n"
+    "          i = i + 1\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    "  flush()\n"
+    "  table.sort(out, function(a, b) return a.row < b.row or (a.row == b.row and a.col < b.col) end)\n"
+    "  return out\n"
+    "end\n"
+    "local mep_math_lint_ns = nil\n"
+    // Lints the current buffer (org or tex) and draws each problem as a
+    // warning at the exact delimiter. Returns the problem list.
+    "function mep.math_lint()\n"
+    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  if not mep_math_lint_ns then mep_math_lint_ns = mep.ns_create('math_lint') end\n"
+    "  mep.ns_clear(mep_math_lint_ns)\n"
+    "  if ft ~= 'org' and ft ~= 'tex' then return {} end\n"
+    "  local lines = {}\n"
+    "  for r = 1, mep.line_count() do lines[r] = mep.get_line(r) end\n"
+    "  local probs = mep_math_lint_lines(lines, ft)\n"
+    "  local seen_row = {}\n"
+    "  for _, p in ipairs(probs) do\n"
+    "    mep.deco_add(mep_math_lint_ns, {row = p.row, col_start = p.col, col_end = p.col + p.len,\n"
+    "                                    hl_group = 'Warn', underline = true})\n"
+    "    if not seen_row[p.row] then\n"
+    "      seen_row[p.row] = true\n"
+    "      mep.deco_add(mep_math_lint_ns, {row = p.row, sign = '!', sign_shape = 'triangle', sign_hl = 'Warn',\n"
+    "                                      sign_badge = true, virt_text = '  ' .. p.message, virt_text_hl = 'Warn',\n"
+    "                                      virt_text_eol = true, priority = 9})\n"
+    "    end\n"
+    "  end\n"
+    "  return probs\n"
+    "end\n"
+    "mep.command('MepMathLint', function()\n"
+    "  local probs = mep.math_lint()\n"
+    "  if #probs == 0 then mep.notify('Math delimiters balance') return end\n"
+    "  local items = {}\n"
+    "  for _, p in ipairs(probs) do items[#items + 1] = p.row .. ':' .. p.col .. '  ' .. p.message end\n"
+    "  mep.picker_open('Math delimiters', items, function(item)\n"
+    "    if not item then return end\n"
+    "    local r, c = item:match('^(%d+):(%d+)')\n"
+    "    if r then mep.set_cursor(tonumber(r), tonumber(c)) end\n"
+    "  end)\n"
+    "end)\n"
+    // When it runs: on save, on leaving Insert mode, and 200 ms after an edit
+    // made outside Insert mode -- never while typing, when a half-typed $..$
+    // is unbalanced by definition.
+    "mep.on_buffer_saved(function() mep.math_lint() end)\n"
+    "local mep_math_lint_was_insert = false\n"
+    "local mep_math_lint_epoch = nil\n"
+    "local mep_math_lint_due = nil\n"
+    "local mep_math_lint_buf = nil\n"
+    "mep.on_frame(function()\n"
+    "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
+    "  if ft ~= 'org' and ft ~= 'tex' then\n"
+    "    mep_math_lint_was_insert = false\n"
+    "    return\n"
+    "  end\n"
+    "  local insert = mep.is_insert_mode()\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local epoch = mep.buffer_change_epoch()\n"
+    "  if buf ~= mep_math_lint_buf then\n"
+    "    mep_math_lint_buf = buf\n"
+    "    mep_math_lint_epoch = epoch\n"
+    "    mep_math_lint_due = mep.clock()\n"
+    "  end\n"
+    "  if mep_math_lint_was_insert and not insert then\n"
+    "    mep_math_lint_due = mep.clock()\n"
+    "  elseif not insert and epoch ~= mep_math_lint_epoch then\n"
+    "    mep_math_lint_due = mep.clock() + 0.2\n"
+    "  end\n"
+    "  mep_math_lint_was_insert = insert\n"
+    "  mep_math_lint_epoch = epoch\n"
+    "  if mep_math_lint_due and not insert and mep.clock() >= mep_math_lint_due then\n"
+    "    mep_math_lint_due = nil\n"
+    "    mep.math_lint()\n"
+    "  end\n"
     "end)\n";
 
 // Accessibility commands (:A11yRead, :A11yTree, :A11yCheck, :A11ySpeak)
@@ -27687,9 +28069,8 @@ const char *kBuiltinOrgNotes =
 // row inserts its LaTeX literally with the caret dropped at the most
 // useful interior slot, and 'key' rows are documentation only. Row
 // content is verified against the mep port's actual triggers (e.g. no
-// 'text' alias -- deliberately absent from the snippet set; mermaid
-// graph rows, not the source config's TikZ; mep's own DAP keys), so the
-// popup never advertises a trigger that doesn't fire here.
+// 'text' alias -- deliberately absent from the snippet set; mep's own DAP
+// keys), so the popup never advertises a trigger that doesn't fire here.
 //
 // Escape/q while popped out are consumed by HandleSidebarInput before
 // on_key and only dock the popout -- the on_frame watcher below notices
@@ -27708,7 +28089,13 @@ const char *kBuiltinSnippetHelp =
     // Tab 1: mep keybindings for the note-taking features ('key' rows).
     "local t1 = tab('mep')\n"
     "sec(t1, 'Completion / snippets', 'key', {\n"
-    "  {'Tab', '', 'jump snippet tabstop / expand trigger word (popup open: accept completion)'},\n"
+    "  {'Tab / S-Tab', '', 'next / previous snippet field; from the last one, jump past the snippet'},\n"
+    "  {'C-n / C-p', '', 'next / previous menu item (C-n opens the menu)'},\n"
+    "  {'C-y', '', 'accept menu item (expands a snippet)'},\n"
+    "  {'Enter', '', 'accept only an item moved onto with C-n/C-p; else newline'},\n"
+    "  {'C-e', '', 'open / close the completion menu'},\n"
+    "  {'C-j / C-k', '', 'cycle a choice field (src language, callout label, ...)'},\n"
+    "  {':MepMathLint', '', 'check $, \\\\(, \\\\[ and math environments balance'},\n"
     "  {'<leader>yy', '', 'snippet picker for the current filetype (in a code block: its language)'},\n"
     "  {':MepAutosnippetsToggle', '', 'math autosnippets on/off'},\n"
     "  {'<leader>?', '', 'this cheatsheet'},\n"
@@ -27748,9 +28135,9 @@ const char *kBuiltinSnippetHelp =
     "  {'mk', '$ $', 'inline $...$ (fires from prose)'},\n"
     "  {'dk', '\\\\(  \\\\)', 'math zone - renders in editor, NOT centered on export'},\n"
     "  {'ck', '\\\\[  \\\\]', 'math zone - renders in editor, CENTERED on export'},\n"
-    "  {'mm', '$ $', 'inline $...$ (org snippet, Tab)'},\n"
-    "  {'dm', '\\\\(  \\\\)', 'not-centered math zone (org snippet, Tab)'},\n"
-    "  {'cm', '\\\\[  \\\\]', 'centered math zone (org snippet, Tab)'},\n"
+    "  {'mm', '$ $', 'inline $...$ (org snippet, menu)'},\n"
+    "  {'dm', '\\\\(  \\\\)', 'not-centered math zone (org snippet, menu)'},\n"
+    "  {'cm', '\\\\[  \\\\]', 'centered math zone (org snippet, menu)'},\n"
     "})\n"
     "sec(t2, 'Fractions / scripts / roots', 'auto', {\n"
     "  {'//', '\\\\frac{num}{den}', 'fraction'},\n"
@@ -27795,7 +28182,7 @@ const char *kBuiltinSnippetHelp =
     "local t3 = tab('Snippets')\n"
     "sec(t3, 'Note scaffold (org)', 'snip', {\n"
     "  {'title', '#+TITLE: ...', 'new-note header (title/author/date)'},\n"
-    "  {'src', '#+begin_src <lang>', 'code block'},\n"
+    "  {'src', '#+begin_src <lang>', 'code block (C-j cycles the language)'},\n"
     "  {'nsrc', '#+NAME + #+begin_src', 'named source block (:results output)'},\n"
     "  {'pysrc', '#+begin_src python', 'Python code block'},\n"
     "  {'rsrc', '#+begin_src R', 'R code block'},\n"
@@ -27803,7 +28190,9 @@ const char *kBuiltinSnippetHelp =
     "  {'cppsrc', '#+begin_src cpp', 'C++ code block'},\n"
     "  {'ex', '#+begin_example', 'example block'},\n"
     "  {'quote', '#+begin_quote', 'quote block'},\n"
-    "  {'callout', '*Note:* ...', 'labelled aside / admonition'},\n"
+    "  {'callout', '*Note:* ...', 'labelled aside / admonition (C-j cycles the label)'},\n"
+    "  {'pcode', '#+begin_pseudocode', 'pseudocode block (LaTeX math lines)'},\n"
+    "  {'pcodex', '#+begin_pseudocode ...', 'worked pseudocode example'},\n"
     "})\n"
     "sec(t3, 'Structure (org)', 'snip', {\n"
     "  {'h1 h2 h3', '* / ** / ***', 'headings'},\n"
@@ -27828,14 +28217,22 @@ const char *kBuiltinSnippetHelp =
     "  {'eqref', '\\\\(\\\\eqref{eq:name}\\\\)', 'reference an eqn number'},\n"
     "  {'cbl', '{{{hl(orange,COME BACK LATER)}}}', 'come-back-later marker'},\n"
     "})\n"
-    // Tab 4: mermaid graph snippets.
+    // Tab 4: graph snippets -- TikZ (org and tex) and mermaid (org).
     "local t4 = tab('Graphs')\n"
-    "sec(t4, 'Mermaid graphs (org - type trigger + Tab)', 'snip', {\n"
-    "  {'graph', '#+begin_src mermaid ...', 'auto-laid-out graph scaffold (direction LR/TD/BT)'},\n"
-    "  {'gex', 'graph LR ...', 'ready-made weighted example (renders as-is)'},\n"
-    "  {'gnode', 'id((name<br/>value))', 'circle node: name / value stacked'},\n"
-    "  {'gedge', 'a --- b', 'edge (--- / --> / <-->)'},\n"
-    "  {'gwedge', 'a -->|w| b', 'weighted / labelled edge'},\n"
+    "sec(t4, 'TikZ graphs (org/tex - type trigger, accept from the menu)', 'snip', {\n"
+    "  {'graph', '\\\\begin{tikzpicture} ... \\\\graph', 'auto-laid-out graph (C-j cycles spring/layered/tree)'},\n"
+    "  {'gex', '\\\\graph[spring layout] ...', 'ready-made weighted directed example'},\n"
+    "  {'gnode', 'id [as={name \\\\\\\\ value}]', 'node: name / value stacked'},\n"
+    "  {'gedge', 'a -- b;', 'edge (C-j cycles -- / -> / <->)'},\n"
+    "  {'gwedge', 'a ->[\"1\"] b;', 'weighted / labelled edge'},\n"
+    "  {'--', '', 'PDF needs LuaLaTeX with the graphdrawing + quotes libraries'},\n"
+    "})\n"
+    "sec(t4, 'Mermaid graphs (org)', 'snip', {\n"
+    "  {'mgraph', '#+begin_src mermaid ...', 'auto-laid-out graph scaffold (C-j cycles LR/TD/BT/RL)'},\n"
+    "  {'mgex', 'graph LR ...', 'ready-made weighted example (renders as-is)'},\n"
+    "  {'mgnode', 'id((name<br/>value))', 'circle node: name / value stacked'},\n"
+    "  {'mgedge', 'a --- b', 'edge (--- / -->)'},\n"
+    "  {'mgwedge', 'a -->|w| b', 'weighted / labelled edge'},\n"
     "  {'--', '', 'HTML export renders via mermaid.js; PDF keeps the source as a code box'},\n"
     "})\n"
     // Tab 5: letters & symbols. '--' rows are reference-only (no trigger;
@@ -27947,7 +28344,7 @@ const char *kBuiltinSnippetHelp =
     "  {'ali', '\\\\begin{align*} ... \\\\end{align*}', 'aligned equations'},\n"
     "  {'aeq', 'a &= b \\\\\\\\ &= c', 'multi-line eqn aligned on ='},\n"
     "  {'flalign', '\\\\begin{flalign*} ... \\\\end{flalign*}', 'full-width eqns; opens its own zone'},\n"
-    "  {'beg', '\\\\begin{env} ... \\\\end{env}', 'generic environment (prompts for name)'},\n"
+    "  {'beg', '\\\\begin{env} ... \\\\end{env}', 'generic environment (\\\\end name follows as you type)'},\n"
     "})\n"
     "sec(t7, 'Vectors (& = next col, \\\\\\\\ = new row)', 'auto', {\n"
     "  {'cvec', '\\\\begin{bmatrix} a \\\\\\\\ b \\\\end{bmatrix}', 'column vector'},\n"
@@ -28074,6 +28471,16 @@ const char *kBuiltinSnippetHelp =
     "  local set = ft and mep.snippets and mep.snippets[ft]\n"
     "  local body = set and set[want]\n"
     "  if type(body) == 'function' then body = body() end\n"
+    // An autosnippet row (the math-zone openers, say) expands its own body.
+    "  if not body then\n"
+    "    for _, sp in ipairs((ft and mep.autosnippets and mep.autosnippets[ft]) or {}) do\n"
+    "      if sp.trig == want and type(sp.body) == 'string' then\n"
+    "        body = {}\n"
+    "        for l in (sp.body .. '\\n'):gmatch('(.-)\\n') do body[#body + 1] = l end\n"
+    "        break\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
     "  if body then\n"
     "    local row, col = mep.cursor()\n"
     "    local line = mep.get_line(row) or ''\n"
@@ -30990,6 +31397,9 @@ const char *kBuiltinAi =
     "  return true\n"
     "end\n"
     "local mep_ai_active_job = nil\n"
+    // Jobs mep.ai_cancel killed, so their on_exit can tell on_done the
+    // request was stopped rather than finished.
+    "local mep_ai_cancelled_jobs = {}\n"
     // mep_ai_json_encode/mep_ai_utf8_encode/mep_ai_json_decode ported to
     // reuse this file's own Json engine (json.h/lua_env.cpp -- now with
     // real surrogate-pair \u handling, a genuine latent-bug fix along the
@@ -31040,10 +31450,15 @@ const char *kBuiltinAi =
     // OpenAI's flat tool_calls/role='tool' shape, so this converts one
     // shared conversation into Anthropic's wire shape just before sending
     // -- the only place that needs to know about the difference.
+    // A 'system' entry is the one role OpenAI keeps in the array and
+    // Anthropic does not: it rides beside the messages as the body's own
+    // `system` field, so it is lifted out here and returned second.
     "local function mep_ai_to_anthropic_messages(messages)\n"
-    "  local out = {}\n"
+    "  local out, system = {}, nil\n"
     "  for _, m in ipairs(messages) do\n"
-    "    if m.role == 'tool' then\n"
+    "    if m.role == 'system' then\n"
+    "      system = (system and (system .. '\\n\\n') or '') .. (m.content or '')\n"
+    "    elseif m.role == 'tool' then\n"
     "      out[#out + 1] = {role = 'user', content = {\n"
     "        {type = 'tool_result', tool_use_id = m.tool_call_id, content = m.content or ''}}}\n"
     "    elseif m.role == 'assistant' and m.tool_calls then\n"
@@ -31069,10 +31484,10 @@ const char *kBuiltinAi =
     "      out[#out + 1] = {role = m.role, content = m.content or ''}\n"
     "    end\n"
     "  end\n"
-    "  return out\n"
+    "  return out, system\n"
     "end\n"
     // Streams a chat turn. on_delta(text) fires per streamed chunk;
-    // on_done(tool_calls) fires once, with an array of {id,name,args}
+    // on_done(tool_calls, cancelled) fires once, with an array of {id,name,args}
     // (empty if the model didn't call a tool).
     // Only the fields the API itself defines go in the body: the
     // messages array doubles as mep's own conversation store, and a
@@ -31111,7 +31526,9 @@ const char *kBuiltinAi =
     "    if mep.ai_provider == 'anthropic' then\n"
     "      url = mep.ai_anthropic_base_url .. '/v1/messages'\n"
     "      headers = {'-H', 'x-api-key: ' .. key, '-H', 'anthropic-version: 2023-06-01', '-H', 'Content-Type: application/json'}\n"
-    "      body = {model = mep.ai_anthropic_model, max_tokens = mep.ai_max_tokens, stream = true, messages = mep_ai_to_anthropic_messages(messages)}\n"
+    "      local wire, system = mep_ai_to_anthropic_messages(messages)\n"
+    "      body = {model = mep.ai_anthropic_model, max_tokens = mep.ai_max_tokens, stream = true, messages = wire}\n"
+    "      if system and system ~= '' then body.system = system end\n"
     "      if tools then body.tools = tools end\n"
     "    else\n"
     "      url = mep.ai_base_url .. '/chat/completions'\n"
@@ -31128,7 +31545,8 @@ const char *kBuiltinAi =
     "    argv[#argv + 1] = '--data-binary'\n"
     "    argv[#argv + 1] = '@' .. tmpfile\n"
     "    local tool_calls = {}\n"
-    "    mep_ai_active_job = mep.job_start(argv, {\n"
+    "    local job\n"
+    "    job = mep.job_start(argv, {\n"
     "      on_stdout = function(line)\n"
     "        if line:sub(1, 6) ~= 'data: ' then return end\n"
     "        local payload = line:sub(7)\n"
@@ -31174,20 +31592,38 @@ const char *kBuiltinAi =
     "      end,\n"
     "      on_exit = function(code)\n"
     "        os.remove(tmpfile)\n"
-    "        mep_ai_active_job = nil\n"
+    // Only its own job: a cancelled request exits after the kill, by
+    // which time the next request may already be the active one.
+    "        if mep_ai_active_job == job then mep_ai_active_job = nil end\n"
+    "        local cancelled = mep_ai_cancelled_jobs[job] == true\n"
+    "        if job then mep_ai_cancelled_jobs[job] = nil end\n"
     "        local calls = {}\n"
-    "        for _, tc in pairs(tool_calls) do calls[#calls + 1] = tc end\n"
-    "        on_done(calls)\n"
+    // A stopped stream's tool calls are half-streamed arguments, never
+    // something to run.
+    "        if not cancelled then\n"
+    "          for _, tc in pairs(tool_calls) do calls[#calls + 1] = tc end\n"
+    "        end\n"
+    "        on_done(calls, cancelled)\n"
     "      end,\n"
     "    })\n"
+    "    mep_ai_active_job = job\n"
     "  end)\n"
     "end\n"
     // Exported so another builtin chunk can make a request of its own
     // without reimplementing the SSE/curl plumbing -- kBuiltinPdfAi
     // streams a short answer into a float_preview box with it.
     "mep.ai_request = mep_ai_request\n"
+    // The 'ai-stream' marker is cleared even with no job to kill: Escape
+    // in Normal mode stops a stream by looking for it, so one left behind
+    // would otherwise keep eating every Escape.
     "function mep.ai_cancel()\n"
-    "  if mep_ai_active_job then mep.job_kill(mep_ai_active_job) mep_ai_active_job = nil mep.participant_clear('ai-stream') mep.notify('AI stream cancelled') end\n"
+    "  mep.participant_clear('ai-stream')\n"
+    "  if mep_ai_active_job then\n"
+    "    mep_ai_cancelled_jobs[mep_ai_active_job] = true\n"
+    "    mep.job_kill(mep_ai_active_job)\n"
+    "    mep_ai_active_job = nil\n"
+    "    mep.notify('AI stream cancelled')\n"
+    "  end\n"
     "end\n"
     "mep.command('MepAiCancel', mep.ai_cancel)\n"
     // Change where the key comes from, without hunting through Settings or
@@ -31241,27 +31677,36 @@ const char *kBuiltinAi =
     // in, before the "AI response complete" notification -- e.g.
     // mep.ai_replace_selection uses it to drop back to Normal mode, the
     // way a human typing the same replacement by hand would on <Esc>.
-    "function mep.ai_send_text(prompt, on_complete)\n"
+    // `system`, if given, goes as a system prompt rather than glued onto
+    // the text: a model treats it as standing instructions, which is what
+    // keeps a "be brief" from being drowned by a long passage.
+    "function mep.ai_send_text(prompt, on_complete, system)\n"
     "  local where = ''\n"
     "  local name = mep.filename() or ''\n"
     "  if name ~= '' then where = name:match('([^/]+)$') or name end\n"
-    "  if mep.ai_http_redirect(prompt, where, 'Asking the model') then\n"
+    "  local redirected = prompt\n"
+    "  if system and system ~= '' then redirected = system .. '\\n\\n' .. prompt end\n"
+    "  if mep.ai_http_redirect(redirected, where, 'Asking the model') then\n"
     "    if on_complete then on_complete() end\n"
     "    return\n"
     "  end\n"
     "  local buf = mep.current_buffer()\n"
     "  local row, col = mep.cursor()\n"
     "  mep.participant_set('ai-stream', 'AI', buf, row, col, 'writing')\n"
-    "  mep_ai_request({{role = 'user', content = prompt}}, nil,\n"
+    "  local messages = {{role = 'user', content = prompt}}\n"
+    "  if system and system ~= '' then table.insert(messages, 1, {role = 'system', content = system}) end\n"
+    "  mep_ai_request(messages, nil,\n"
     "    function(delta)\n"
     "      mep.insert_text(delta)\n"
     "      local r, c = mep.cursor()\n"
     "      mep.participant_set('ai-stream', 'AI', buf, r, c, 'writing')\n"
     "    end,\n"
-    "    function(tool_calls)\n"
+    "    function(tool_calls, cancelled)\n"
     "      mep.participant_clear('ai-stream')\n"
     "      if on_complete then on_complete() end\n"
-    "      mep.notify('AI response complete')\n"
+    // Cancelled: mep.ai_cancel has already said so, and "complete" on top
+    // of it would claim the opposite.
+    "      if not cancelled then mep.notify('AI response complete') end\n"
     "    end)\n"
     "end\n"
     "function mep.ai_send_buffer()\n"
@@ -31284,6 +31729,16 @@ const char *kBuiltinAi =
     // Visual-mode key below, not just left as an ex-command someone has
     // to type ':' to reach (typing ':' would already have exited Visual
     // by the time it ran).
+    // Visual K's system prompt, its own Settings row ("Visual K prompt")
+    // rather than the PDF popup's mep.pdf_ask_prompt: a highlight in a
+    // text buffer is as often a request (a comment describing code to
+    // write) as a term to explain, and its answer lands in the file, so
+    // the two want different wording. Brevity is the default either way:
+    // with no instructions a model answers a lone term with an essay.
+    "mep.ai_selection_prompt = mep.ai_selection_prompt or\n"
+    "  'The user highlighted the text below in their editor. Respond to it as briefly as possible: ' ..\n"
+    "  'answer a question or define a term in one to three short lines; if it asks for code or text, ' ..\n"
+    "  'give only that, with no explanation. No preamble, no headings, no restating it.'\n"
     "function mep.ai_send_selection()\n"
     "  local sel = mep.visual_selection()\n"
     "  if sel == '' then mep.notify('No Visual selection', 'warn') return end\n"
@@ -31314,7 +31769,7 @@ const char *kBuiltinAi =
     "      mep.insert_text('\\n')\n"
     "    end\n"
     "  end\n"
-    "  mep.ai_send_text(sel)\n"
+    "  mep.ai_send_text(sel, nil, mep.ai_selection_prompt)\n"
     "end\n"
     // Replace-selection variant of the above: sends the same prompt (the
     // highlighted text) but, unlike mep.ai_send_selection, first deletes
@@ -31945,7 +32400,8 @@ const char *kBuiltinAi =
     "      assistant_msg.content = assistant_msg.content .. delta\n"
     "      mep_ai_agent_render()\n"
     "    end,\n"
-    "    function(tool_calls)\n"
+    "    function(tool_calls, cancelled)\n"
+    "      if cancelled then return end\n"
     "      if #tool_calls == 0 then mep.notify('AI turn complete') return end\n"
     "      assistant_msg.tool_calls = {}\n"
     "      for _, tc in ipairs(tool_calls) do\n"
@@ -33165,9 +33621,12 @@ const char *kBuiltinPdfAi =
     "  mep_pdf_ai_last = {quoted = quoted, question = question, answer = '',\n"
     "                     passage = passage, where = where, image = image ~= nil}\n"
     "  mep.notify('Asking about ' .. title .. '...')\n"
-    "  local msg = {role = 'user', content = question .. '\\n\\n' .. quoted}\n"
+    // The question goes as the system prompt, not in front of the quote:
+    // instructions there hold up against a long page of background that
+    // otherwise buries them.
+    "  local msg = {role = 'user', content = quoted}\n"
     "  if image then msg.images = {{media_type = 'image/png', data = image}} end\n"
-    "  mep.ai_request({msg}, nil,\n"
+    "  mep.ai_request({{role = 'system', content = question}, msg}, nil,\n"
     "    function(delta)\n"
     "      answer = answer .. delta\n"
     "      mep_pdf_ai_last.answer = answer\n"
@@ -33184,8 +33643,8 @@ const char *kBuiltinPdfAi =
     "      end\n"
     "      mep.float_preview_set_text(mep_pdf_ai_wrap(mep.ai_plain_text(answer), mep.pdf_ask_wrap or 72))\n"
     "    end,\n"
-    "    function()\n"
-    "      if answer == '' then mep.notify('No answer from the model', 'warn') end\n"
+    "    function(_, cancelled)\n"
+    "      if answer == '' and not cancelled then mep.notify('No answer from the model', 'warn') end\n"
     "    end)\n"
     "end\n"
     // --- Hand a highlighted passage to Claude Code ------------------------
@@ -36712,6 +37171,8 @@ const char *kBuiltinSettings =
     // value is already there -- and this is the only copy, so there is no
     // second spelling of the prompt to drift out of step with it.
     "local MEP_PDF_ASK_PROMPT_DEFAULT = mep.pdf_ask_prompt or ''\n"
+    // The same, for Visual K's row (mep.ai_selection_prompt, kBuiltinAi).
+    "local MEP_AI_SELECTION_PROMPT_DEFAULT = mep.ai_selection_prompt or ''\n"
     "\n"
     // The models offered for each provider, as (id, label) pairs: the id
     // is what the API wants and the label is what a person recognises it
@@ -36832,10 +37293,17 @@ const char *kBuiltinSettings =
     // edit. Clearing the row (d) restores mep's own wording -- see
     // MEP_PDF_ASK_PROMPT_DEFAULT below for why that needs capturing.
     "  {section = '', key = 'pdf_ask_prompt', label = 'Default prompt', kind = 'text', wide = true,\n"
-    "   hint = 'What K asks about a passage. d restores mep\\'s own wording.',\n"
+    "   hint = 'Sent with K on a PDF passage. d restores mep\\'s own wording.',\n"
     "   get = function() return mep.pdf_ask_prompt or '' end,\n"
     "   set = function(v)\n"
     "     mep.pdf_ask_prompt = (v ~= '' and v) or MEP_PDF_ASK_PROMPT_DEFAULT\n"
+    "   end},\n"
+    "\n"
+    "  {section = '', key = 'ai_selection_prompt', label = 'Visual K prompt', kind = 'text', wide = true,\n"
+    "   hint = 'Sent with K on a Visual selection in a buffer. d restores mep\\'s own wording.',\n"
+    "   get = function() return mep.ai_selection_prompt or '' end,\n"
+    "   set = function(v)\n"
+    "     mep.ai_selection_prompt = (v ~= '' and v) or MEP_AI_SELECTION_PROMPT_DEFAULT\n"
     "   end},\n"
     "\n"
     "  {section = '', key = 'pdf_ask_context', label = 'Context sent with a passage', kind = 'choice',\n"
@@ -38122,6 +38590,7 @@ void DrawOrgBlockSettingsOverlay() {
         wide_source[static_cast<size_t>(entry.row)] = active ? pending : row.value;
         wide_wrapped[static_cast<size_t>(entry.row)] =
             WrapSettingsText(wide_source[static_cast<size_t>(entry.row)], static_cast<size_t>(wide_cols));
+        if (active) g_editor.SetOrgSettingsWideLines(wide_wrapped[static_cast<size_t>(entry.row)]);
         // label + box border + at least two lines of room, so an empty
         // prompt still reads as a box to type into rather than a gap.
         const int body = std::max(2, static_cast<int>(wide_wrapped[static_cast<size_t>(entry.row)].size()));
@@ -66063,6 +66532,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgBib);
     lua->DoString(kBuiltinMathSnippets);
     lua->DoString(kBuiltinOrgSnippets);
+    lua->DoString(kBuiltinMathLint);
     lua->DoString(kBuiltinOrgNotes);
     lua->DoString(kBuiltinMepml);
     lua->DoString(kBuiltinA11y);

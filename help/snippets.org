@@ -6,40 +6,45 @@
 * Expanding one
 
 Type a trigger and press =Tab=. Triggers also appear in the [[file:completion.html][completion]]
-popup, so you do not have to remember them -- start typing and look.
+popup, so you do not have to remember them -- start typing and look. In an
+Org, LaTeX or Markdown note, =Tab= never expands a word; accept the trigger
+from the popup instead (=Ctrl-Y=), see [[file:org-notes.html][Note-taking]].
 
 =<leader>yy= (=:MepSnippets=) opens a picker of every snippet available for
 the current filetype.
 
-* Tabstops
+* Fields
 
-A snippet can place the cursor in several spots in turn.
+A snippet can place the cursor in several spots in turn. The cursor lands
+on the first field with its default text selected: typing replaces it,
+=Backspace= clears it, and moving on without typing keeps it.
 
-| Command            | Does                        |
-|--------------------+-----------------------------|
-| =:MepSnippetNext=  | jump to the next tabstop    |
-| =:MepSnippetPrev=  | jump to the previous one    |
+| Key                    | Does                                          |
+|------------------------+-----------------------------------------------|
+| =Tab=                  | next field; from the last, past the snippet   |
+| =Shift-Tab=            | previous field                                |
+| =Ctrl-J= / =Ctrl-K=    | cycle a choice field                          |
+| =:MepSnippetNext=      | jump to the next field                        |
+| =:MepSnippetPrev=      | jump to the previous one                      |
+
+Fields follow the text: type as much as you like in one and the next is
+still where it belongs. A snippet expanded inside another one's field is
+walked first, and its end leads back to the outer field. =Tab= works only
+while the cursor is inside a snippet; elsewhere it indents as usual.
 
 Syntax inside a snippet body:
 
-| Form            | Means                                       |
-|-----------------+---------------------------------------------|
-| =$1=, =$2=      | tabstops, visited in order                  |
-| =${1:default}=  | a tabstop pre-filled with text              |
-| =$0=            | where the cursor finishes                   |
-| =\$=            | a literal dollar sign                       |
+| Form            | Means                                                  |
+|-----------------+--------------------------------------------------------|
+| =$1=, =$2=      | fields, visited in order                               |
+| =${1:default}=  | a field pre-filled with text (braces may nest inside)  |
+| =$1= again      | a mirror: copies field 1 as it is typed                |
+| =$0=            | where the cursor finishes (default: the very end)      |
+| =\$=            | a literal dollar sign                                  |
 
-With =${1:default}= the cursor lands at the *start* of the default text, so
-typing replaces it.
-
-* A limitation worth knowing
-
-Tabstop positions are computed once, at expansion time, as fixed offsets --
-they are not tracked through later edits.
-
-In practice: jumping between tabstops immediately after expanding works
-correctly. Editing heavily *before* jumping to a later tabstop can leave
-that tabstop stale. Expand, fill in, then move on.
+A choice field is written =${1|a,b,c|}=: it starts as =a=, and =Ctrl-J= /
+=Ctrl-K= cycle it. Lines after the first are indented like the line the
+trigger was on.
 
 * What ships
 

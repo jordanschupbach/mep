@@ -46,7 +46,7 @@ entry like any other big jump.</p>
 and typing any capital makes the whole query case-sensitive.</p>
 <h1>Rebinding it</h1>
 <p>Quick jump is bound in ordinary Lua, not hardcoded:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.map(<span class="tok-green">'n'</span>, <span class="tok-green">'s'</span>, mep.quick_jump)</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.<span class="tok-blue">map</span>(<span class="tok-green">'n'</span>, <span class="tok-green">'s'</span>, <span class="tok-cyan">mep</span>.quick_jump)</code></pre></div>
 <p>So <code>mep.map('n', 's', ...)</code> in <code>init.lua</code> replaces it, and binding it to
 another key is the same one-liner. Nothing is shadowed by the default: Vim's
 own <code>s</code> (substitute character) was never implemented, and <code>cl</code> does that job.</p>

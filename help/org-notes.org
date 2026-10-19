@@ -6,10 +6,12 @@
 * Math autosnippets
 
 Inside a math zone (=$...$=, =\(...\)=, =\[...\]=, or a math environment),
-LaTeX shortcuts expand the instant they are typed -- no Tab needed. In
-ordinary prose they stay plain text, so typing "sum" in a sentence is safe.
-Toggle them with =:MepAutosnippetsToggle=; one expansion is one undo step,
-so =u= restores exactly what you typed.
+LaTeX shortcuts expand the instant they are typed -- no key needed. In
+ordinary prose they stay plain text, so typing "sum" in a sentence is safe;
+a blank line or a heading ends any =$= or =\(= left open, so one stray
+dollar can't turn the rest of the file into math. Toggle them with
+=:MepAutosnippetsToggle=; one expansion is one undo step, so =u= restores
+exactly what you typed.
 
 Openers work from prose and create the math zone itself:
 
@@ -26,40 +28,75 @@ A sample of the in-math triggers (the full set of ~160 lives in
 #+begin_src text
 //  frac   \frac{num}{den}          sq       \sqrt{x}
 ^^         ^{exp}                   __       _{idx}
-x1 x2 ...  auto-subscript x_{1}     sum prod \sum / \prod with limits
+x1 x12     auto-subscript x_{12}    sum prod \sum / \prod with limits
 int        \int_{a}^{b} f(x) dx     lim      \lim_{n \to \infty}
 bar hat vec  accents                tt txt   \text{...}
 cal bf rm bb mathcal/bf/rm/bb       ->  =>   \to  \implies
-RR ZZ NN QQ CC  blackboard sets     ;a ;b ;g ...    Greek letters
+RR ZZ NN QQ CC  blackboard sets     ;a ;b ;g ;ph ;ps  Greek letters
 Ev Var Cov norm  statistics         Pois Bin Unif Bern  distributions
 ali aeq cases bmat pmat cvec        environments
-beg        prompts for an environment name
+beg        \begin{env} ... \end{env}, the end name copied as you type
 #+end_src
 
-* Org snippets (Tab-expanded)
+Triggers fire only at the start of a word (=nsum= is not =n= + =sum=),
+except the symbolic ones (=//=, =->=, =;a=), which fire after anything.
+A trigger that starts with another one still works: =in= becomes =\in=
+as you type it, and the =t= of =int= turns that into the integral --
+with one backslash. =:MepAutosnippetAudit= lists every such pair.
 
-Structural templates never expand on their own: type the trigger and press
-=Tab= (or pick one with =<leader>yy=). =Tab= then jumps between the
-template's fields; =Shift-Tab= jumps back.
+* Fields and Tab
+
+An expansion puts the cursor on its first field with the placeholder
+selected: type to replace it, or press =Tab= to keep it (=lim= =Tab= =Tab=
+=Tab= keeps =n \to \infty= and =a_n=). =Tab= walks the fields, and from
+the last one jumps past the closing brace, so =//= =a= =Tab= =b= =Tab=
+leaves you after =\frac{a}{b}=, ready for the next term. =Shift-Tab= goes
+back. Snippets nest: a =//= typed in a numerator is finished first, then
+=Tab= carries on in the outer one. Outside a snippet =Tab= is two spaces.
+
+* Org snippets (from the completion menu)
+
+Structural templates never expand on their own -- =quote=, =date= and
+=title= are ordinary words. They show in the completion menu from the
+first letter; =Ctrl-N= / =Ctrl-P= move, =Ctrl-Y= (or =Enter= on an entry
+you moved onto) expands. =Tab= never touches the menu in a note, so it is
+always free for the fields. =<leader>yy= picks one from a list.
 
 #+begin_src text
 src nsrc pysrc rsrc javasrc cppsrc   code blocks (named / per-language)
-ex quote callout                     example, quote, labelled aside
+ex quote callout pcode pcodex        example, quote, labelled aside, pseudocode
 title date                           note header / today's date
 img pdf link cid oref sref aref      links, anchors, cross-references
 tbl cite refs                        table, citation, bibliography
 h1 h2 h3                             headings
-mm dm cm                             math openers (Tab twins of mk/dk/ck)
+mm dm cm                             math openers (menu twins of mk/dk/ck)
 eqn eqref                            numbered equation and its reference
-cbl                                  orange COME BACK LATER marker
+cbl                                  orange COME BACK LATER marker (prose only)
 #+end_src
 
-* Mermaid graphs
+=src=, =nsrc= and =callout= start on a choice: =Ctrl-J= / =Ctrl-K= cycle
+the language or the label in place.
 
-=graph=, =gex=, =gnode=, =gedge= and =gwedge= insert auto-laid-out
-node/edge diagrams in a mermaid source block. HTML export renders them
-with mermaid.js in the browser; PDF export keeps the diagram source as a
-code box.
+Typing =\= plus two letters offers LaTeX commands, matched fuzzily
+(=\lra= finds =\leftrightarrow=); right after a =\\= row break the list
+stays shut.
+
+* Graphs
+
+=graph=, =gex=, =gnode=, =gedge= and =gwedge= insert TikZ graphs laid out
+by pgf's graphdrawing engine (in org and =.tex= buffers; the PDF needs
+LuaLaTeX). =mgraph=, =mgex=, =mgnode=, =mgedge= and =mgwedge= are the same
+diagrams as mermaid source blocks: HTML export renders them with
+mermaid.js, PDF export keeps the source as a code box.
+
+* Checking delimiters
+
+A math zone left open only shows up later, as a PDF that will not build.
+Org and LaTeX buffers are checked when you save, leave Insert mode, or
+pause after an edit: an unclosed or mismatched =$=, =$$=, =\(=, =\[= or
+math environment is marked with a warning at the delimiter itself.
+=:MepMathLint= lists them. Source blocks, =#+= lines and comments are
+skipped; parentheses are not checked.
 
 * The cheatsheet popup
 
@@ -96,7 +133,6 @@ highlights may span lines.
   that preview is open, saving the buffer re-exports in the background and
   the pane refreshes itself; close the pane to stop.
 - =:MepOrgExportPdf= still exports without opening a viewer.
-- Typing =\= plus a few letters completes LaTeX commands in org buffers.
 
 * Spelling
 

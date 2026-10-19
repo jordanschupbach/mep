@@ -119,7 +119,7 @@ characters, 40 by default, so a lone symbol or a bare term -- the rest of
 the page goes along as background so the model has something to go on.
 Above that a quoted passage stands on its own. Raise the threshold if you
 want more context, or set it to <code>0</code> to never send the page:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.pdf_ask_context_under = <span class="tok-cyan">0</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.pdf_ask_context_under = <span class="tok-cyan">0</span></code></pre></div>
 <p>A word of warning about raising it: the page is quoted as background only,
 and the prompt says so, but a one-line passage followed by a few thousand
 characters of page does not reliably hold the model's attention -- you get

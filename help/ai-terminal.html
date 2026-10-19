@@ -31,7 +31,7 @@ several mep instances open.</p>
 <pre>claude mcp add mep-agent -- /path/to/mep/build/native/mep-mcp</pre>
 <p>Alternatively, point mep at it and it will be passed inline with
 <code>--mcp-config</code>:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.ai_terminal_mcp_server = <span class="tok-green">'/path/to/mep-mcp'</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.ai_terminal_mcp_server = <span class="tok-green">'/path/to/mep-mcp'</span></code></pre></div>
 <h1>Highlight something, press C</h1>
 <p>Anything you highlight can become the agent's prompt without copying,
 pasting or retyping it:</p>
@@ -52,9 +52,9 @@ a sidebar; it billed like <code>K</code>, kept no history, and has been removed.
 <p>A passage is sent as one line, because the agent's prompt treats a newline
 as submit.</p>
 <h1>Options</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.ai_terminal_cmd = <span class="tok-blue">{</span><span class="tok-green">'claude'</span>, <span class="tok-green">'--model'</span>, <span class="tok-green">'opus'</span>}  <span class="tok-comment">-- default {'claude'}</span>
-mep.opt.ai_terminal_share = <span class="tok-cyan">0.4</span>        <span class="tok-comment">-- the terminal's height fraction</span>
-mep.opt.ai_terminal_instructions = <span class="tok-green">''</span>  <span class="tok-comment">-- '' sends no appended prompt</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.ai_terminal_cmd = <span class="tok-blue">{</span><span class="tok-green">'claude'</span>, <span class="tok-green">'--model'</span>, <span class="tok-green">'opus'</span>}  <span class="tok-comment">-- default {'claude'}</span>
+<span class="tok-cyan">mep</span>.opt.ai_terminal_share = <span class="tok-cyan">0.4</span>        <span class="tok-comment">-- the terminal's height fraction</span>
+<span class="tok-cyan">mep</span>.opt.ai_terminal_instructions = <span class="tok-green">''</span>  <span class="tok-comment">-- '' sends no appended prompt</span></code></pre></div>
 <h1>See also</h1>
 <ul>
 <li><a href="ai-agents.html">The AI Agents sidebar</a> -- keeping track of several at once.</li>

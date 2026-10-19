@@ -664,6 +664,13 @@ test-gui: build-native
     # like the session-restore test it cannot live in `just test`.
     echo "== fold live check"
     python3 tools/fold_live_check.py --build-dir {{native_build_dir}}
+    # Hand-typed LaTeX in an org note (plans/LATEX_IN_ORG_TYPING_SPEC.md):
+    # math autosnippets, tab stops, nesting, mirrors, choice fields, the
+    # Tab/completion-menu split and the delimiter linter, all typed as real
+    # keystrokes -- the autosnippet poller only sees what the frame loop
+    # sees, so nothing short of a real window exercises it.
+    echo "== latex typing live check"
+    python3 tools/latex_typing_live_check.py --build-dir {{native_build_dir}}
     # The spreadsheet pane's view layer end to end: zoom, Alt+arrow sizing,
     # sort and filter display order, freeze, autofit, stats, find-in-grid,
     # and the mouse (edge drag, double-click autofit, click-to-select, the

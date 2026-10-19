@@ -23631,6 +23631,19 @@ void Editor::HandleNormalInput() {
         return;
     }
     if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        // A model reply still streaming into the buffer (mep.ai_send_text
+        // marks it with the 'ai-stream' participant) is stopped by the
+        // first "nothing pending" Escape, ahead of every other use below:
+        // it is typing at the cursor, so it is the thing in the way.
+        if (!IsMidNormalCommand() && !insert_one_shot_normal_) {
+            bool streaming = std::any_of(local_participants_.begin(), local_participants_.end(),
+                                         [](const ParticipantInfo &p) { return p.id == "ai-stream"; });
+            auto cancel = lua_commands_.find("MepAiCancel");
+            if (streaming && cancel != lua_commands_.end() && lua_) {
+                lua_->CallRef(cancel->second);
+                return;
+            }
+        }
         // A "nothing pending" Escape is offered to the buffer's
         // SetBufferOnKey hook as "\x1b" first (the file tree closes its `?`
         // help view with it); a hook that doesn't want it returns false.
@@ -25162,6 +25175,13 @@ void Editor::ProcessInsertKey(int key) {
     if (recording_macro_ && !suppress_macro) macro_recording_buffer_.push_back(key);
     if (!replaying_change_ && change_recording_active_) change_scratch_.push_back(key);
 
+    // A selected snippet placeholder: typing replaces it, Backspace/Delete
+    // remove it and nothing more.
+    if (SnippetBeforeInsertKey(key)) {
+        change_epoch_++;
+        return;
+    }
+
     // Track what's actually been typed during a block-insert session (see
     // EnterVisualBlockInsert/FinishVisualBlockInsert) -- only plain typed
     // characters and Backspace matter for replication onto the other rows;
@@ -25360,6 +25380,7 @@ void Editor::HandleInsertInput() {
     bool ctrl_y = false;
     bool ctrl_c = false;
     bool ctrl_rbracket = false;
+    bool ctrl_e = false, ctrl_j = false, ctrl_k = false, ctrl_l = false;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Escape) escape = true;
         else if (key == gfx::Key::Enter) enter = true;
@@ -25376,6 +25397,44 @@ void Editor::HandleInsertInput() {
         else if (key == gfx::Key::V && ctrl && shift_down) ctrl_shift_v = true;
         else if (key == gfx::Key::C && ctrl) ctrl_c = true;
         else if (key == gfx::Key::RightBracket && ctrl) ctrl_rbracket = true;
+        else if (key == gfx::Key::E && ctrl) ctrl_e = true;
+        else if (key == gfx::Key::J && ctrl) ctrl_j = true;
+        else if (key == gfx::Key::K && ctrl) ctrl_k = true;
+        else if (key == gfx::Key::L && ctrl) ctrl_l = true;
+    }
+    // Snippet sessions follow whatever was typed since last frame, so a
+    // Tab below sees each stop where its text actually is now.
+    SnippetSync();
+    // Note buffers (org, tex, markdown) keep snippet jumps and the
+    // completion menu on separate keys, the way fast hand-typed math needs
+    // them: Tab only ever walks a snippet's stops -- never accepts a menu
+    // item, never expands a trigger word -- and the menu is driven by
+    // Ctrl-N/Ctrl-P/Ctrl-Y, with Enter accepting only an entry the user
+    // actually moved onto. Code buffers keep Tab-accepts-the-menu.
+    const bool note_buffer = IsNoteBuffer();
+    if (tab_key && (note_buffer || !completion_open_) && SnippetTabJump(shift_down)) {
+        completion_open_ = false;
+        return;
+    }
+    // A choice stop (a snippet field with a fixed list, like a source
+    // block's language) cycles on Ctrl-J/Ctrl-K, and on Ctrl-N/Ctrl-P
+    // while no completion menu is up to claim them.
+    if ((ctrl_j || ctrl_k || (!completion_open_ && (ctrl_n || ctrl_p))) && SnippetChoiceActive()) {
+        SnippetChoiceCycle((ctrl_j || ctrl_n) ? 1 : -1);
+        return;
+    }
+    // Ctrl-E toggles the menu; Ctrl-N opens it when it is shut.
+    if (ctrl_e) {
+        if (completion_open_) {
+            DismissCompletionPopup();
+        } else {
+            ForceCompletionPopup();
+        }
+        return;
+    }
+    if (ctrl_n && !completion_open_) {
+        ForceCompletionPopup();
+        return;
     }
     // A pending Ctrl-R only survives until the next *character*; any
     // special key in between (Escape especially) cancels it, so an
@@ -25414,23 +25473,7 @@ void Editor::HandleInsertInput() {
     // re-triggers UpdateCompletionPopup() at the end of this function.
     if (completion_open_) {
         if (escape) {
-            completion_open_ = false;
-            // Remember where it was waved away, so UpdateCompletionPopup
-            // leaves it shut here even if a late async response asks for
-            // a re-query (InvalidateCompletionQuery).
-            {
-                const CursorPos &at = CurPane().cursor;
-                const std::string &text = Buf().lines[static_cast<size_t>(at.row)];
-                int from = at.col;
-                while (from > 0 && (std::isalnum(static_cast<unsigned char>(text[static_cast<size_t>(from - 1)])) ||
-                                    text[static_cast<size_t>(from - 1)] == '_')) {
-                    from--;
-                }
-                completion_dismissed_ = true;
-                completion_dismissed_row_ = at.row;
-                completion_dismissed_start_ = from;
-                completion_dismissed_prefix_ = text.substr(static_cast<size_t>(from), static_cast<size_t>(at.col - from));
-            }
+            DismissCompletionPopup();
             return;
         }
         if (ctrl_n) {
@@ -25445,7 +25488,15 @@ void Editor::HandleInsertInput() {
         // matters for LaTeX command completion specifically, where Enter
         // legitimately means "newline, keep typing" mid-paragraph and
         // Tab may be claimed by a snippet tabstop jump.
-        if (tab_key || enter || ctrl_y) {
+        if (note_buffer) {
+            // Enter: accept only an entry the user moved onto with
+            // Ctrl-N/Ctrl-P; otherwise the menu closes and Enter is a newline.
+            if (ctrl_y || (enter && completion_user_selected_)) {
+                AcceptCompletion();
+                return;
+            }
+            if (enter || tab_key) completion_open_ = false;
+        } else if (tab_key || enter || ctrl_y) {
             AcceptCompletion();
             return;
         }
@@ -25455,14 +25506,15 @@ void Editor::HandleInsertInput() {
     // block returns), so the popup's own Tab-accepts-the-selected-word
     // behavior is untouched. Alt-Right / Alt-Ctrl-Right take one word or
     // one line of it, Ctrl-] throws it away -- copilot.vim's own key set,
-    // so muscle memory carries over.
+    // so muscle memory carries over. Ctrl-L accepts it too, and is the
+    // only key that does in a note buffer, where Tab belongs to snippets.
     if (InlineSuggestionVisible()) {
         bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
         if (ctrl_rbracket) {
             ClearInlineSuggestion();
             return;
         }
-        if (tab_key) {
+        if (ctrl_l || (tab_key && !note_buffer)) {
             AcceptInlineSuggestion();
             return;
         }
@@ -25491,7 +25543,10 @@ void Editor::HandleInsertInput() {
     // draining that 0x09 (harmless -- InsertChar discards it next frame),
     // mirroring the early return of every other tab_key branch above.
     if (tab_key) {
-        for (int i = 0; i < 4; i++) ProcessInsertKey(' ');
+        // Org notes use two-space soft tabs (their lists and math bodies
+        // are indented by two); everything else keeps the four of kShift.
+        const int width = LspFiletype(Buf().filename) == "org" ? 2 : 4;
+        for (int i = 0; i < width; i++) ProcessInsertKey(' ');
         return;
     }
     if (escape) {
@@ -27328,6 +27383,16 @@ void Editor::HandleOrgBlockSettingsInput() {
         else if (key == gfx::Key::End) key_end = true;
         else if (key == gfx::Key::Delete) key_delete = true;
     }
+    // The queue above only ever sees a key's first press, never the OS's
+    // auto-repeat of a held one, so holding Backspace or an arrow did one
+    // step and stopped -- no way to clear a paragraph of prompt but one
+    // tap per character. The repeat signal is read separately.
+    if (gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) backspace = true;
+    if (gfx::IsKeyPressedRepeat(gfx::Key::Delete)) key_delete = true;
+    if (gfx::IsKeyPressedRepeat(gfx::Key::Left)) key_left = true;
+    if (gfx::IsKeyPressedRepeat(gfx::Key::Right)) key_right = true;
+    if (gfx::IsKeyPressedRepeat(gfx::Key::Up)) key_up = true;
+    if (gfx::IsKeyPressedRepeat(gfx::Key::Down)) key_down = true;
     // Ctrl-held letters produce no character event at all, so they're
     // read as keys -- and can't then be seen twice by the char loops
     // below. Ctrl-N/Ctrl-P are the dropdown keys wherever they're
@@ -27433,6 +27498,8 @@ void Editor::HandleOrgBlockSettingsInput() {
         }
         const OrgHeaderArgKind kind = org_settings_rows_[static_cast<size_t>(org_settings_index_)].spec.kind;
         const bool typed_field = kind == OrgHeaderArgKind::kText || kind == OrgHeaderArgKind::kNumber;
+        const bool wide_field = kind == OrgHeaderArgKind::kText &&
+                                org_settings_rows_[static_cast<size_t>(org_settings_index_)].spec.wide_text;
         if (org_settings_pending_cursor_ > org_settings_pending_.size()) {
             org_settings_pending_cursor_ = org_settings_pending_.size();
         }
@@ -27462,6 +27529,44 @@ void Editor::HandleOrgBlockSettingsInput() {
             if (key_right) org_settings_pending_cursor_ = next_cp(org_settings_pending_cursor_);
             if (key_home) org_settings_pending_cursor_ = 0;
             if (key_end) org_settings_pending_cursor_ = org_settings_pending_.size();
+            // A wide field is a wrapped paragraph, so Up/Down move the caret
+            // a line, keeping its column, as in any text area. The lines are
+            // the ones the panel last drew (SetOrgSettingsWideLines): only
+            // the renderer knows the box's width.
+            if (wide_field && (key_up || key_down)) {
+                const auto &lines = org_settings_wide_lines_;
+                const size_t n = org_settings_pending_.size();
+                const size_t caret = org_settings_pending_cursor_;
+                bool valid = !lines.empty() && lines.back().first + lines.back().second == n;
+                int at = -1;
+                // The last line that holds the caret, the rule the drawing
+                // uses: an offset on a wrap point belongs to the next line.
+                for (size_t w = 0; valid && w < lines.size(); w++) {
+                    if (caret >= lines[w].first && caret <= lines[w].first + lines[w].second) at = static_cast<int>(w);
+                }
+                if (at >= 0) {
+                    const int to = at + (key_down ? 1 : -1);
+                    if (to < 0) {
+                        org_settings_pending_cursor_ = 0;
+                    } else if (to >= static_cast<int>(lines.size())) {
+                        org_settings_pending_cursor_ = n;
+                    } else {
+                        size_t col = 0;
+                        for (size_t i = lines[static_cast<size_t>(at)].first; i < caret; i = next_cp(i)) col++;
+                        const auto [start, len] = lines[static_cast<size_t>(to)];
+                        // Stop short of a non-last line's end: that offset is
+                        // the next line's start, and would draw down there.
+                        size_t end = start + len;
+                        if (to + 1 < static_cast<int>(lines.size())) end = prev_cp(end);
+                        size_t pos = start;
+                        while (col > 0 && pos < end) {
+                            pos = next_cp(pos);
+                            col--;
+                        }
+                        org_settings_pending_cursor_ = std::min(pos, end);
+                    }
+                }
+            }
             if (backspace && org_settings_pending_cursor_ > 0) {
                 const size_t from = prev_cp(org_settings_pending_cursor_);
                 org_settings_pending_.erase(from, org_settings_pending_cursor_ - from);
@@ -27472,8 +27577,8 @@ void Editor::HandleOrgBlockSettingsInput() {
                 org_settings_pending_.erase(org_settings_pending_cursor_, to - org_settings_pending_cursor_);
             }
         }
-        if (ctrl_next || key_down) step_value(1, true);
-        if (ctrl_prev || key_up) step_value(-1, true);
+        if (ctrl_next || (key_down && !wide_field)) step_value(1, true);
+        if (ctrl_prev || (key_up && !wide_field)) step_value(-1, true);
         for (int cp = gfx::GetCharPressed(); cp != 0; cp = gfx::GetCharPressed()) {
             if (kind == OrgHeaderArgKind::kChoice || kind == OrgHeaderArgKind::kSwitch) {
                 // A dropdown's field has nothing to type into, so its
@@ -30964,7 +31069,14 @@ void Editor::UpdateCompletionPopup() {
     // this looks at the line's first word, and kBuiltinCompletion
     // (main.cpp) for which filetypes register what.
     bool keyword_trigger = CompletionKeywordTriggerActive(line);
-    if (prefix.size() < 2 && !dot_trigger && !backslash_trigger && !keyword_trigger) {
+    // Ctrl-N/Ctrl-E opened the menu by hand: it stays up at that word, at
+    // any prefix length, until the cursor leaves it.
+    const bool forced = completion_force_row_ == cursor.row && completion_force_start_ == start;
+    if (!forced) completion_force_row_ = -1;
+    // Note buffers offer snippets from the first letter (the Lua source
+    // keeps the other sources at their own longer minimums there).
+    const size_t min_prefix = IsNoteBuffer() ? 1 : 2;
+    if (prefix.size() < min_prefix && !dot_trigger && !backslash_trigger && !keyword_trigger && !forced) {
         completion_open_ = false;
         completion_last_query_prefix_ = "\x01";
         return;
@@ -31017,16 +31129,59 @@ void Editor::UpdateCompletionPopup() {
     completion_items_.clear();
     for (size_t i = 0; i < texts.size(); i++) completion_items_.push_back({texts[i], kinds[i], details[i], docs[i]});
     completion_selected_ = 0;
+    completion_user_selected_ = false;
     completion_word_start_col_ = start;
     completion_open_ = true;
 }
 
 void Editor::CompletionNext() {
     if (completion_selected_ + 1 < static_cast<int>(completion_items_.size())) completion_selected_++;
+    completion_user_selected_ = true;
 }
 
 void Editor::CompletionPrev() {
     if (completion_selected_ > 0) completion_selected_--;
+    completion_user_selected_ = true;
+}
+
+void Editor::DismissCompletionPopup() {
+    completion_open_ = false;
+    completion_force_row_ = -1;
+    // Remember where it was waved away, so UpdateCompletionPopup leaves it
+    // shut here even if a late async response asks for a re-query
+    // (InvalidateCompletionQuery).
+    const CursorPos &at = CurPane().cursor;
+    const std::string &text = Buf().lines[static_cast<size_t>(at.row)];
+    int from = at.col;
+    while (from > 0 && (std::isalnum(static_cast<unsigned char>(text[static_cast<size_t>(from - 1)])) ||
+                        text[static_cast<size_t>(from - 1)] == '_')) {
+        from--;
+    }
+    completion_dismissed_ = true;
+    completion_dismissed_row_ = at.row;
+    completion_dismissed_start_ = from;
+    completion_dismissed_prefix_ = text.substr(static_cast<size_t>(from), static_cast<size_t>(at.col - from));
+}
+
+void Editor::ForceCompletionPopup() {
+    const CursorPos &at = CurPane().cursor;
+    const std::string &text = Buf().lines[static_cast<size_t>(at.row)];
+    int from = at.col;
+    while (from > 0 && (std::isalnum(static_cast<unsigned char>(text[static_cast<size_t>(from - 1)])) ||
+                        text[static_cast<size_t>(from - 1)] == '_')) {
+        from--;
+    }
+    completion_force_row_ = at.row;
+    completion_force_start_ = from;
+    completion_dismissed_ = false;
+    completion_last_query_prefix_ = "\x01";
+    completion_last_query_time_ = 0;
+    UpdateCompletionPopup();
+}
+
+bool Editor::IsNoteBuffer() const {
+    const std::string ft = LspFiletype(Buf().filename);
+    return ft == "org" || ft == "tex" || ft == "md" || ft == "markdown" || ft == "Rmd" || ft == "rmd";
 }
 
 void Editor::AcceptCompletion() {
@@ -36373,108 +36528,683 @@ Editor::CompletionPathPrefix Editor::CompletionPathPrefixFor(const std::string &
 }
 
 namespace {
-// A snippet template line's tabstop, positioned in the *cleaned* (marker
-// syntax stripped) output text -- mep_snippet_scan_line's own port.
-struct SnippetLineTabstop {
-    int col = 0;  // 1-indexed, within the cleaned line
+// One piece of a snippet template line: literal text, or a `$N` /
+// `${N:default}` / `${N|a,b|}` field.
+struct SnipSeg {
+    bool field = false;
+    std::string text;  // literal text, or the field's default
     int num = 0;
+    bool has_default = false;
+    std::vector<std::string> choices;
 };
 
 /**
- * @brief Strips snippet tabstop markers ($1, ${1:default}, \$) from a template line and records their positions.
- * @param tmpl The raw snippet template line, containing tabstop markers.
- * @return A pair of the cleaned line text (markers replaced by their default text, if any) and the list of tabstops found, each with its column in the cleaned text and its tabstop number.
+ * @brief Splits one snippet template line into literal text and tabstop fields.
+ * @param tmpl The raw template line.
+ * @return The line's segments in order; adjacent literal characters are merged.
  */
-std::pair<std::string, std::vector<SnippetLineTabstop>> ScanSnippetLine(const std::string &tmpl) {
-    std::string out;
-    std::vector<SnippetLineTabstop> tabstops;
+std::vector<SnipSeg> SplitSnippetLine(const std::string &tmpl) {
+    std::vector<SnipSeg> segs;
+    auto lit = [&segs](const std::string &t) {
+        if (segs.empty() || segs.back().field) segs.push_back({});
+        segs.back().text += t;
+    };
     size_t i = 0;
     const size_t n = tmpl.size();
     while (i < n) {
         char c = tmpl[i];
         if (c == '\\' && i + 1 < n && tmpl[i + 1] == '$') {
-            out += '$';
+            lit("$");
             i += 2;
-        } else if (c == '$' && i + 1 < n) {
-            size_t numstart = i + 1;
-            size_t j = numstart;
-            while (j < n && std::isdigit(static_cast<unsigned char>(tmpl[j]))) j++;
-            if (j > numstart) {
-                int num = std::stoi(tmpl.substr(numstart, j - numstart));
-                tabstops.push_back({static_cast<int>(out.size()) + 1, num});
-                i = j;
-            } else if (tmpl[i + 1] == '{') {
-                size_t close = tmpl.find('}', i + 2);
-                bool matched = false;
-                if (close != std::string::npos) {
-                    std::string inner = tmpl.substr(i + 2, close - (i + 2));
-                    size_t k = 0;
-                    while (k < inner.size() && std::isdigit(static_cast<unsigned char>(inner[k]))) k++;
-                    if (k > 0 && (k == inner.size() || inner[k] == ':')) {
-                        int idx = std::stoi(inner.substr(0, k));
-                        tabstops.push_back({static_cast<int>(out.size()) + 1, idx});
-                        if (k < inner.size()) out += inner.substr(k + 1);
-                        i = close + 1;
-                        matched = true;
-                    }
-                }
-                if (!matched) {
-                    out += c;
-                    i++;
-                }
-            } else {
-                out += c;
-                i++;
-            }
-        } else {
-            out += c;
-            i++;
+            continue;
         }
+        if (c != '$' || i + 1 >= n) {
+            lit(std::string(1, c));
+            i++;
+            continue;
+        }
+        size_t j = i + 1;
+        if (std::isdigit(static_cast<unsigned char>(tmpl[j]))) {
+            while (j < n && std::isdigit(static_cast<unsigned char>(tmpl[j]))) j++;
+            SnipSeg f;
+            f.field = true;
+            f.num = std::stoi(tmpl.substr(i + 1, j - i - 1));
+            segs.push_back(std::move(f));
+            i = j;
+            continue;
+        }
+        if (tmpl[j] != '{') {
+            lit("$");
+            i++;
+            continue;
+        }
+        size_t k = j + 1;
+        while (k < n && std::isdigit(static_cast<unsigned char>(tmpl[k]))) k++;
+        if (k == j + 1 || k >= n || (tmpl[k] != '}' && tmpl[k] != ':' && tmpl[k] != '|')) {
+            lit("$");
+            i++;
+            continue;
+        }
+        SnipSeg f;
+        f.field = true;
+        f.num = std::stoi(tmpl.substr(j + 1, k - j - 1));
+        if (tmpl[k] == '}') {
+            segs.push_back(std::move(f));
+            i = k + 1;
+            continue;
+        }
+        if (tmpl[k] == '|') {
+            // ${N|a,b,c|}: the list ends at the first "|}".
+            size_t close = tmpl.find("|}", k + 1);
+            if (close == std::string::npos) {
+                lit("$");
+                i++;
+                continue;
+            }
+            std::string list = tmpl.substr(k + 1, close - k - 1);
+            size_t from = 0;
+            while (true) {
+                size_t comma = list.find(',', from);
+                f.choices.push_back(list.substr(from, comma == std::string::npos ? std::string::npos : comma - from));
+                if (comma == std::string::npos) break;
+                from = comma + 1;
+            }
+            f.text = f.choices.front();
+            f.has_default = true;
+            segs.push_back(std::move(f));
+            i = close + 2;
+            continue;
+        }
+        // ${N:default}: braces inside the default nest (`${4:\text{otherwise}}`).
+        size_t m = k + 1;
+        int depth = 1;
+        std::string def;
+        while (m < n) {
+            if (tmpl[m] == '\\' && m + 1 < n && tmpl[m + 1] == '$') {
+                def += '$';
+                m += 2;
+                continue;
+            }
+            if (tmpl[m] == '{') depth++;
+            if (tmpl[m] == '}' && --depth == 0) break;
+            def += tmpl[m];
+            m++;
+        }
+        if (m >= n) {
+            lit("$");
+            i++;
+            continue;
+        }
+        f.text = def;
+        f.has_default = true;
+        segs.push_back(std::move(f));
+        i = m + 1;
     }
-    return {out, tabstops};
+    return segs;
 }
 }  // namespace
 
+void Editor::SnippetParse(const std::vector<std::string> &body, std::vector<std::string> *lines_out,
+                          std::vector<SnippetStop> *stops_out, std::vector<SnippetMirror> *mirrors_out) {
+    std::vector<std::vector<SnipSeg>> all;
+    all.reserve(body.size());
+    for (const std::string &l : body) all.push_back(SplitSnippetLine(l));
+    // The primary occurrence of each number: the first one that carries a
+    // default or a choice list, else simply the first. Every other
+    // occurrence of that number mirrors it.
+    std::map<int, std::pair<size_t, size_t>> primary;
+    for (size_t li = 0; li < all.size(); li++) {
+        for (size_t si = 0; si < all[li].size(); si++) {
+            const SnipSeg &g = all[li][si];
+            if (!g.field) continue;
+            auto it = primary.find(g.num);
+            if (it == primary.end()) {
+                primary[g.num] = {li, si};
+            } else if (!all[it->second.first][it->second.second].has_default && g.has_default) {
+                it->second = {li, si};
+            }
+        }
+    }
+    lines_out->clear();
+    stops_out->clear();
+    mirrors_out->clear();
+    for (size_t li = 0; li < all.size(); li++) {
+        std::string out;
+        for (size_t si = 0; si < all[li].size(); si++) {
+            const SnipSeg &g = all[li][si];
+            if (!g.field) {
+                out += g.text;
+                continue;
+            }
+            const auto &pk = primary[g.num];
+            const SnipSeg &p = all[pk.first][pk.second];
+            SnipPos s{static_cast<int>(li), static_cast<int>(out.size())};
+            out += p.text;
+            SnipPos e{static_cast<int>(li), static_cast<int>(out.size())};
+            if (pk.first == li && pk.second == si) {
+                SnippetStop st;
+                st.num = g.num;
+                st.s = s;
+                st.e = e;
+                st.choices = g.choices;
+                stops_out->push_back(std::move(st));
+            } else if (g.num != 0) {
+                mirrors_out->push_back({g.num, s, e});
+            }
+        }
+        lines_out->push_back(std::move(out));
+    }
+    // Field order: 1, 2, ..., with the exit (0) last.
+    std::stable_sort(stops_out->begin(), stops_out->end(), [](const SnippetStop &a, const SnippetStop &b) {
+        int an = a.num == 0 ? INT_MAX : a.num;
+        int bn = b.num == 0 ? INT_MAX : b.num;
+        return an < bn;
+    });
+}
+
+Editor::SnipPos Editor::SnippetMapPos(SnipPos p, const SnipEdit &ed, bool right_gravity) {
+    if (p < ed.start) return p;
+    if (ed.old_end < p) {
+        if (p.row == ed.old_end.row) return {ed.new_end.row, ed.new_end.col + (p.col - ed.old_end.col)};
+        return {p.row + (ed.new_end.row - ed.old_end.row), p.col};
+    }
+    const bool at_start = p == ed.start;
+    const bool at_end = p == ed.old_end;
+    if (at_start && at_end) return right_gravity ? ed.new_end : ed.start;
+    if (at_start) return ed.start;
+    if (at_end) return ed.new_end;
+    return right_gravity ? ed.new_end : ed.start;
+}
+
+bool Editor::SnippetDiff(const std::vector<std::string> &a, const std::vector<std::string> &b,
+                         const SnipPos *cursor_hint, SnipEdit *out) {
+    const size_t na = a.size(), nb = b.size();
+    size_t pre = 0;
+    while (pre < na && pre < nb && a[pre] == b[pre]) pre++;
+    if (pre == na && na == nb) return false;
+    size_t suf = 0;
+    while (suf < na - pre && suf < nb - pre && a[na - 1 - suf] == b[nb - 1 - suf]) suf++;
+    // Both windows need at least one row, so a whole-line insert or delete
+    // still reads as a character-level edit of a neighbouring row.
+    while (na - suf - pre == 0 || nb - suf - pre == 0) {
+        if (pre > 0) {
+            pre--;
+        } else if (suf > 0) {
+            suf--;
+        } else {
+            break;
+        }
+    }
+    auto join = [](const std::vector<std::string> &v, size_t from, size_t to) {
+        std::string t;
+        for (size_t r = from; r < to; r++) {
+            if (r > from) t += '\n';
+            t += v[r];
+        }
+        return t;
+    };
+    const std::string ot = join(a, pre, na - suf);
+    const std::string nt = join(b, pre, nb - suf);
+    // The cursor, as an offset into the new window: the edit most likely
+    // ends there, which settles which of two equal characters was typed.
+    size_t cs_max = std::min(ot.size(), nt.size());
+    if (cursor_hint && cursor_hint->row >= static_cast<int>(pre) && cursor_hint->row < static_cast<int>(nb - suf)) {
+        size_t k = 0;
+        for (size_t r = pre; r < static_cast<size_t>(cursor_hint->row); r++) k += b[r].size() + 1;
+        k += static_cast<size_t>(std::max(0, cursor_hint->col));
+        if (k <= nt.size()) cs_max = std::min(cs_max, nt.size() - k);
+    }
+    size_t cs = 0;
+    while (cs < cs_max && ot[ot.size() - 1 - cs] == nt[nt.size() - 1 - cs]) cs++;
+    size_t cp_max = std::min(ot.size(), nt.size()) - cs;
+    size_t cp = 0;
+    while (cp < cp_max && ot[cp] == nt[cp]) cp++;
+    auto to_pos = [pre](const std::vector<std::string> &v, size_t off) {
+        size_t r = pre;
+        while (r < v.size() && off > v[r].size()) {
+            off -= v[r].size() + 1;
+            r++;
+        }
+        return SnipPos{static_cast<int>(r), static_cast<int>(off)};
+    };
+    out->start = to_pos(a, cp);
+    out->old_end = to_pos(a, ot.size() - cs);
+    out->new_end = to_pos(b, nt.size() - cs);
+    return true;
+}
+
+bool Editor::SnippetPosValid(SnipPos p) const {
+    if (snip_stack_.empty()) return false;
+    const int bid = snip_stack_.back().buffer_id;
+    if (bid < 0 || bid >= static_cast<int>(buffers_.size())) return false;
+    const Buffer &buf = buffers_[static_cast<size_t>(bid)];
+    return p.row >= 0 && p.row < buf.LineCount() && p.col >= 0 &&
+           p.col <= static_cast<int>(buf.lines[static_cast<size_t>(p.row)].size());
+}
+
+void Editor::SnippetTakeSnapshot() {
+    if (snip_stack_.empty()) {
+        snip_snapshot_.clear();
+        return;
+    }
+    const int bid = snip_stack_.back().buffer_id;
+    if (bid < 0 || bid >= static_cast<int>(buffers_.size())) return;
+    snip_snapshot_ = buffers_[static_cast<size_t>(bid)].lines;
+}
+
+// Moves every open session through one edit. Each session's current stop
+// is the one being typed into: its start stays put and its end grows with
+// an insertion at either edge. Every other stop and mirror moves as a
+// whole past text inserted at its start (an empty one stays empty), and a
+// session's region is anchored the same way as a current stop.
+void Editor::SnippetApplyEdit(const SnipEdit &ed) {
+    for (SnippetSession &ss : snip_stack_) {
+        for (size_t i = 0; i < ss.stops.size(); i++) {
+            SnippetStop &st = ss.stops[i];
+            const bool current = static_cast<int>(i) == ss.index;
+            const bool empty = st.s == st.e;
+            st.s = SnippetMapPos(st.s, ed, !current);
+            st.e = SnippetMapPos(st.e, ed, current || empty);
+        }
+        for (SnippetMirror &m : ss.mirrors) {
+            const bool empty = m.s == m.e;
+            m.s = SnippetMapPos(m.s, ed, true);
+            m.e = SnippetMapPos(m.e, ed, empty);
+        }
+        ss.region_s = SnippetMapPos(ss.region_s, ed, false);
+        ss.region_e = SnippetMapPos(ss.region_e, ed, true);
+    }
+}
+
+void Editor::SnippetClear() {
+    if (snip_ns_ >= 0) {
+        for (const SnippetSession &ss : snip_stack_) ClearNamespaceInBuffer(ss.buffer_id, snip_ns_);
+    }
+    snip_stack_.clear();
+    snip_snapshot_.clear();
+    snip_select_pending_ = false;
+}
+
+void Editor::SnippetSync() {
+    if (snip_stack_.empty()) return;
+    const int bid = snip_stack_.back().buffer_id;
+    if (bid < 0 || bid >= static_cast<int>(buffers_.size()) || buffers_[static_cast<size_t>(bid)].deleted) {
+        SnippetClear();
+        return;
+    }
+    const Buffer &buf = buffers_[static_cast<size_t>(bid)];
+    SnipEdit ed;
+    const bool here = CurPane().buffer_id == bid;
+    SnipPos hint{CurPane().cursor.row, CurPane().cursor.col};
+    bool changed = SnippetDiff(snip_snapshot_, buf.lines, here ? &hint : nullptr, &ed);
+    if (changed) {
+        // An edit that reaches across a snippet's edge, or replaces all of
+        // it (undo, `dd`, the buffer rewritten wholesale), ends that
+        // session and every one nested in it. Typing inside, or right at
+        // an edge, does not.
+        for (size_t i = 0; i < snip_stack_.size(); i++) {
+            const SnippetSession &ss = snip_stack_[i];
+            const bool crosses_start = ed.start < ss.region_s && ss.region_s < ed.old_end;
+            const bool crosses_end = ed.start < ss.region_e && ss.region_e < ed.old_end;
+            const bool covers = ed.start <= ss.region_s && ss.region_e <= ed.old_end && ed.start < ed.old_end;
+            if (crosses_start || crosses_end || covers) {
+                for (size_t j = i; j < snip_stack_.size(); j++) ClearNamespaceInBuffer(snip_stack_[j].buffer_id, snip_ns_);
+                snip_stack_.resize(i);
+                snip_select_pending_ = false;
+                break;
+            }
+        }
+        if (snip_stack_.empty()) {
+            snip_snapshot_.clear();
+            return;
+        }
+        SnippetApplyEdit(ed);
+        SnippetTakeSnapshot();
+        // A session whose text is gone entirely (undone, deleted) is over;
+        // so is any session a stray edit left pointing outside the buffer.
+        while (!snip_stack_.empty()) {
+            const SnippetSession &top = snip_stack_.back();
+            bool ok = top.region_s < top.region_e && SnippetPosValid(top.region_s) && SnippetPosValid(top.region_e);
+            for (const SnippetStop &st : top.stops) ok = ok && SnippetPosValid(st.s) && SnippetPosValid(st.e);
+            if (ok) break;
+            ClearNamespaceInBuffer(top.buffer_id, snip_ns_);
+            snip_stack_.pop_back();
+            snip_select_pending_ = false;
+        }
+        if (snip_stack_.empty()) {
+            snip_snapshot_.clear();
+            return;
+        }
+        SnippetUpdateMirrors();
+    }
+    if (snip_select_pending_) {
+        const SnippetSession &top = snip_stack_.back();
+        const SnippetStop &st = top.stops[static_cast<size_t>(top.index)];
+        if (!here || !(hint == st.e) || st.s == st.e || mode_ != Mode::Insert) {
+            snip_select_pending_ = false;
+            changed = true;
+        }
+    }
+    if (changed) SnippetRefreshDecorations();
+}
+
+std::string Editor::SnippetRangeText(SnipPos s, SnipPos e) const {
+    if (snip_stack_.empty() || e < s) return {};
+    const Buffer &buf = buffers_[static_cast<size_t>(snip_stack_.back().buffer_id)];
+    if (s.row == e.row) return buf.lines[static_cast<size_t>(s.row)].substr(
+        static_cast<size_t>(s.col), static_cast<size_t>(e.col - s.col));
+    std::string t = buf.lines[static_cast<size_t>(s.row)].substr(static_cast<size_t>(s.col));
+    for (int r = s.row + 1; r < e.row; r++) t += "\n" + buf.lines[static_cast<size_t>(r)];
+    t += "\n" + buf.lines[static_cast<size_t>(e.row)].substr(0, static_cast<size_t>(e.col));
+    return t;
+}
+
+// Replaces [s, e) of the session buffer with `text` -- the engine's own
+// edits (placeholder removal, mirror copies, choice cycling). They go
+// straight into the line vector, without an undo step of their own: they
+// happen mid-Insert, and the Insert session's undo entry already covers
+// them. `target`, if given, is the stop or mirror being rewritten: it takes
+// the new text exactly rather than the default gravity.
+void Editor::SnippetReplaceRange(SnipPos s, SnipPos e, const std::string &text, SnippetStop *target,
+                                 SnippetMirror *mirror_target) {
+    Buffer &buf = buffers_[static_cast<size_t>(snip_stack_.back().buffer_id)];
+    std::vector<std::string> pieces;
+    size_t from = 0;
+    while (true) {
+        size_t nl = text.find('\n', from);
+        pieces.push_back(text.substr(from, nl == std::string::npos ? std::string::npos : nl - from));
+        if (nl == std::string::npos) break;
+        from = nl + 1;
+    }
+    const std::string head = buf.lines[static_cast<size_t>(s.row)].substr(0, static_cast<size_t>(s.col));
+    const std::string tail = buf.lines[static_cast<size_t>(e.row)].substr(static_cast<size_t>(e.col));
+    std::vector<std::string> repl;
+    for (size_t i = 0; i < pieces.size(); i++) {
+        std::string l = (i == 0 ? head : "") + pieces[i];
+        if (i + 1 == pieces.size()) l += tail;
+        repl.push_back(std::move(l));
+    }
+    SnipEdit ed;
+    ed.start = s;
+    ed.old_end = e;
+    ed.new_end = {s.row + static_cast<int>(pieces.size()) - 1,
+                  static_cast<int>(repl.back().size() - tail.size())};
+    const int old_rows = e.row - s.row + 1;
+    buf.lines.erase(buf.lines.begin() + s.row, buf.lines.begin() + s.row + old_rows);
+    buf.lines.insert(buf.lines.begin() + s.row, repl.begin(), repl.end());
+    const int delta = static_cast<int>(repl.size()) - old_rows;
+    if (delta != 0 && CurPane().buffer_id == snip_stack_.back().buffer_id) {
+        ShiftMarksForLineEdit(s.row + 1, delta);
+        ShiftFoldsForLineEdit(s.row + 1, delta);
+        ShiftDecorationsForLineEdit(s.row + 1, delta);
+    }
+    buf.modified = true;
+    change_epoch_++;
+    SnippetApplyEdit(ed);
+    if (target) {
+        target->s = ed.start;
+        target->e = ed.new_end;
+    }
+    if (mirror_target) {
+        mirror_target->s = ed.start;
+        mirror_target->e = ed.new_end;
+    }
+    // The cursor rides the same edit when it sits in this buffer.
+    if (CurPane().buffer_id == snip_stack_.back().buffer_id) {
+        CursorPos &c = CurPane().cursor;
+        SnipPos cp = SnippetMapPos({c.row, c.col}, ed, true);
+        c.row = cp.row;
+        c.col = cp.col;
+    }
+    SnippetTakeSnapshot();
+}
+
+void Editor::SnippetUpdateMirrors() {
+    for (size_t si = 0; si < snip_stack_.size(); si++) {
+        for (size_t mi = 0; mi < snip_stack_[si].mirrors.size(); mi++) {
+            SnippetSession &ss = snip_stack_[si];
+            SnippetMirror &m = ss.mirrors[mi];
+            const SnippetStop *src = nullptr;
+            for (const SnippetStop &st : ss.stops) {
+                if (st.num == m.num) src = &st;
+            }
+            if (!src) continue;
+            std::string want = SnippetRangeText(src->s, src->e);
+            if (SnippetRangeText(m.s, m.e) == want) continue;
+            SnippetReplaceRange(m.s, m.e, want, nullptr, &m);
+        }
+    }
+}
+
+void Editor::SnippetRefreshDecorations() {
+    if (snip_ns_ < 0) snip_ns_ = CreateNamespace("mep_snippet");
+    for (const SnippetSession &ss : snip_stack_) ClearNamespaceInBuffer(ss.buffer_id, snip_ns_);
+    if (snip_stack_.empty()) return;
+    const SnippetSession &top = snip_stack_.back();
+    const SnippetStop &st = top.stops[static_cast<size_t>(top.index)];
+    if (snip_select_pending_ && st.s < st.e) {
+        const Buffer &buf = buffers_[static_cast<size_t>(top.buffer_id)];
+        for (int r = st.s.row; r <= st.e.row; r++) {
+            Decoration d;
+            d.row = r;
+            d.col_start = r == st.s.row ? st.s.col : 0;
+            d.col_end = r == st.e.row ? st.e.col : static_cast<int>(buf.lines[static_cast<size_t>(r)].size());
+            d.hl_group = "Visual";
+            d.bg_fill = true;
+            AddDecorationToBuffer(top.buffer_id, snip_ns_, d);
+        }
+    }
+    if (!st.choices.empty()) {
+        std::string hint = "  choice:";
+        for (size_t i = 0; i < st.choices.size(); i++) {
+            const std::string &c = st.choices[i].empty() ? std::string("(none)") : st.choices[i];
+            hint += static_cast<int>(i) == st.choice ? " [" + c + "]" : " " + c;
+        }
+        hint += "  (C-j/C-k)";
+        Decoration d;
+        d.row = st.e.row;
+        d.col_start = d.col_end = st.e.col;
+        d.virt_text = hint;
+        d.virt_text_hl = "Comment";
+        d.virt_text_eol = true;
+        AddDecorationToBuffer(top.buffer_id, snip_ns_, d);
+    }
+}
+
+void Editor::SnippetGoToStop(int index) {
+    SnippetSession &ss = snip_stack_.back();
+    index = std::max(0, std::min(index, static_cast<int>(ss.stops.size()) - 1));
+    ss.index = index;
+    const SnippetStop &st = ss.stops[static_cast<size_t>(index)];
+    if (CurPane().buffer_id == ss.buffer_id) {
+        CurPane().cursor.row = st.e.row;
+        CurPane().cursor.col = st.e.col;
+    }
+    if (st.num == 0) {
+        // The exit point: this session is over. A parent, if any, stays on
+        // the stop the child was expanded in.
+        ClearNamespaceInBuffer(ss.buffer_id, snip_ns_);
+        snip_stack_.pop_back();
+        snip_select_pending_ = false;
+        if (snip_stack_.empty()) snip_snapshot_.clear();
+        SnippetRefreshDecorations();
+        return;
+    }
+    snip_select_pending_ = st.s < st.e;
+    SnippetRefreshDecorations();
+}
+
 void Editor::SnippetSplice(int row, const std::string &before, const std::string &after,
                             const std::vector<std::string> &body) {
+    if (row < 0 || row >= Buf().LineCount()) return;
+    SnippetSync();
+    if (!snip_stack_.empty() && snip_stack_.back().buffer_id != CurPane().buffer_id) SnippetClear();
+    std::vector<std::string> text;
+    std::vector<SnippetStop> stops;
+    std::vector<SnippetMirror> mirrors;
+    SnippetParse(body, &text, &stops, &mirrors);
+    if (text.empty()) text.emplace_back();
+    size_t ws = 0;
+    while (ws < before.size() && (before[ws] == ' ' || before[ws] == '\t')) ws++;
+    const std::string indent = before.substr(0, ws);
     std::vector<std::string> out_lines;
-    std::vector<SnippetTabstop> all_tabstops;
-    for (size_t li = 0; li < body.size(); li++) {
-        auto [cleaned, stops] = ScanSnippetLine(body[li]);
-        int col_offset = (li == 0) ? static_cast<int>(before.size()) : 0;
-        for (const auto &s : stops) {
-            all_tabstops.push_back({static_cast<int>(li) + 1, s.col + col_offset, s.num});
-        }
-        std::string line = (li == 0 ? before : "") + cleaned + (li == body.size() - 1 ? after : "");
+    for (size_t li = 0; li < text.size(); li++) {
+        std::string line = (li == 0 ? before : indent) + text[li];
+        if (li + 1 == text.size()) line += after;
         out_lines.push_back(std::move(line));
     }
+    // The exact edit, for the sessions already open around this one: the
+    // text between `before` and `after` on `row` became the expansion.
+    const std::string old_line = Buf().lines[static_cast<size_t>(row)];
+    SnipEdit ed;
+    const bool exact = old_line.size() >= before.size() + after.size() &&
+                       old_line.compare(0, before.size(), before) == 0 &&
+                       old_line.compare(old_line.size() - after.size(), after.size(), after) == 0;
+    ed.start = {row, exact ? static_cast<int>(before.size()) : 0};
+    ed.old_end = {row, static_cast<int>(old_line.size() - (exact ? after.size() : 0))};
+    ed.new_end = {row + static_cast<int>(out_lines.size()) - 1,
+                  static_cast<int>(out_lines.back().size() - (exact ? after.size() : 0))};
     if (out_lines.size() == 1) {
         SetLineForLua(row, out_lines[0]);
     } else {
         ReplaceLinesForLua(row, row + 1, out_lines);
     }
-    // Orders tabstops by number, treating an unnumbered tabstop (0, the final-cursor "$0") as sorting last.
-    std::stable_sort(all_tabstops.begin(), all_tabstops.end(), [](const SnippetTabstop &a, const SnippetTabstop &b) {
-        int an = (a.num == 0) ? 999 : a.num;
-        int bn = (b.num == 0) ? 999 : b.num;
-        return an < bn;
-    });
-    snippet_tabstops_ = std::move(all_tabstops);
-    snippet_index_ = 0;
-    snippet_base_row_ = row;
-    has_snippet_state_ = true;
-    SnippetJump(1);
+    if (!snip_stack_.empty()) {
+        // Anything still pending from before this splice was synced above,
+        // so the splice itself is the only change since the snapshot.
+        SnippetApplyEdit(ed);
+    }
+    auto place = [&](SnipPos p) {
+        int col = p.col + static_cast<int>(p.row == 0 ? before.size() : indent.size());
+        return SnipPos{row + p.row, col};
+    };
+    SnippetSession ss;
+    ss.buffer_id = CurPane().buffer_id;
+    for (SnippetStop &st : stops) {
+        st.s = place(st.s);
+        st.e = place(st.e);
+        ss.stops.push_back(std::move(st));
+    }
+    for (SnippetMirror &m : mirrors) {
+        m.s = place(m.s);
+        m.e = place(m.e);
+        ss.mirrors.push_back(m);
+    }
+    if (ss.stops.empty() || ss.stops.back().num != 0) {
+        SnippetStop exit_stop;
+        exit_stop.s = exit_stop.e = ed.new_end;
+        ss.stops.push_back(exit_stop);
+    }
+    ss.region_s = ed.start;
+    ss.region_e = ed.new_end;
+    snip_select_pending_ = false;
+    snip_stack_.push_back(std::move(ss));
+    SnippetTakeSnapshot();
+    SnippetGoToStop(0);
 }
 
 void Editor::SnippetJump(int delta) {
-    if (!has_snippet_state_) return;
-    snippet_index_ += delta;
-    if (snippet_index_ < 1 || snippet_index_ > static_cast<int>(snippet_tabstops_.size())) {
-        has_snippet_state_ = false;
-        return;
+    SnippetSync();
+    if (snip_stack_.empty()) return;
+    SnippetSession &ss = snip_stack_.back();
+    int n = ss.index + delta;
+    if (n < 0) {
+        if (snip_stack_.size() > 1) {
+            // Back past a nested snippet's first stop: leave it for the
+            // stop before the one it was expanded in.
+            ClearNamespaceInBuffer(ss.buffer_id, snip_ns_);
+            snip_stack_.pop_back();
+            SnippetSession &parent = snip_stack_.back();
+            SnippetGoToStop(std::max(0, parent.index - 1));
+            return;
+        }
+        n = 0;
     }
-    const SnippetTabstop &ts = snippet_tabstops_[static_cast<size_t>(snippet_index_ - 1)];
-    SetCursorForLua(snippet_base_row_ + ts.line_idx - 1, ts.col - 1);
+    SnippetGoToStop(n);
+}
+
+bool Editor::SnippetActive() {
+    SnippetSync();
+    while (!snip_stack_.empty()) {
+        const SnippetSession &ss = snip_stack_.back();
+        SnipPos c{CurPane().cursor.row, CurPane().cursor.col};
+        if (ss.buffer_id == CurPane().buffer_id && ss.region_s <= c && c <= ss.region_e) return true;
+        ClearNamespaceInBuffer(ss.buffer_id, snip_ns_);
+        snip_stack_.pop_back();
+        snip_select_pending_ = false;
+    }
+    snip_snapshot_.clear();
+    return false;
+}
+
+bool Editor::SnippetTabJump(bool back) {
+    if (!SnippetActive()) return false;
+    SnippetJump(back ? -1 : 1);
+    return true;
+}
+
+bool Editor::SnippetChoiceActive() {
+    SnippetSync();
+    if (snip_stack_.empty() || snip_stack_.back().buffer_id != CurPane().buffer_id) return false;
+    const SnippetSession &ss = snip_stack_.back();
+    return !ss.stops[static_cast<size_t>(ss.index)].choices.empty();
+}
+
+bool Editor::SnippetChoiceCycle(int dir) {
+    if (!SnippetChoiceActive()) return false;
+    SnippetSession &ss = snip_stack_.back();
+    SnippetStop &st = ss.stops[static_cast<size_t>(ss.index)];
+    const int n = static_cast<int>(st.choices.size());
+    st.choice = ((st.choice + dir) % n + n) % n;
+    SnippetReplaceRange(st.s, st.e, st.choices[static_cast<size_t>(st.choice)], &st, nullptr);
+    CurPane().cursor.row = st.e.row;
+    CurPane().cursor.col = st.e.col;
+    SnippetUpdateMirrors();
+    snip_select_pending_ = st.s < st.e;
+    SnippetRefreshDecorations();
+    return true;
+}
+
+Editor::SnippetInfo Editor::SnippetInfoNow() {
+    SnippetSync();
+    SnippetInfo info;
+    info.depth = static_cast<int>(snip_stack_.size());
+    if (snip_stack_.empty()) return info;
+    const SnippetSession &ss = snip_stack_.back();
+    const SnippetStop &st = ss.stops[static_cast<size_t>(ss.index)];
+    info.num = st.num;
+    info.s = st.s;
+    info.e = st.e;
+    info.selected = snip_select_pending_;
+    info.choice = !st.choices.empty();
+    return info;
+}
+
+bool Editor::SnippetBeforeInsertKey(int key) {
+    // A raw control character (the 0x09 a Tab also queues as a char event)
+    // inserts nothing -- InsertChar drops it -- so it must not count as
+    // typing or deselect the placeholder the Tab just selected.
+    if (key > 0 && key < 32) return false;
+    if (key > 0) insert_typed_count_++;
+    if (!snip_select_pending_) return false;
+    SnippetSync();
+    if (!snip_select_pending_ || snip_stack_.empty()) return false;
+    const bool printable = key >= 32;
+    const bool erase = key == kReplayBackspace || key == kReplayDelete;
+    if (!printable && !erase) {
+        snip_select_pending_ = false;
+        SnippetRefreshDecorations();
+        return false;
+    }
+    SnippetSession &ss = snip_stack_.back();
+    SnippetStop &st = ss.stops[static_cast<size_t>(ss.index)];
+    snip_select_pending_ = false;
+    SnippetReplaceRange(st.s, st.e, "", &st, nullptr);
+    CurPane().cursor.row = st.s.row;
+    CurPane().cursor.col = st.s.col;
+    SnippetUpdateMirrors();
+    SnippetRefreshDecorations();
+    return erase;
 }
 
 void Editor::PreviewFile(const std::string &path, int max_lines) {

@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (60)</h1>
+<h1>The bindings (67)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -29,6 +29,7 @@ that it does nothing.</p>
 <tr><td><code>mep.completion_path_prefix</code></td><td>detects a path fragment ending at the cursor for path completion</td></tr>
 <tr><td><code>mep.completion_rank</code></td><td>sorts completion items by text length then alphabetically, capped to a maximum count</td></tr>
 <tr><td><code>mep.completion_scan_buffer_words</code></td><td>scans the current buffer for words starting with a prefix</td></tr>
+<tr><td><code>mep.completion_state</code></td><td>reports whether the completion menu is open and what it lists</td></tr>
 <tr><td><code>mep.dap_breakpoint_lines</code></td><td>lists the breakpoint line numbers set for a file</td></tr>
 <tr><td><code>mep.dap_toggle_breakpoint</code></td><td>toggles a debugger breakpoint at the cursor's current line</td></tr>
 <tr><td><code>mep.diff_lines</code></td><td>--</td></tr>
@@ -58,6 +59,7 @@ that it does nothing.</p>
 <tr><td><code>mep.lsp_stop</code></td><td>kills an LSP server process and removes its tracked client state</td></tr>
 <tr><td><code>mep.lsp_symbols_flatten</code></td><td>flattens a nested LSP DocumentSymbol/SymbolInformation tree into a flat list of display rows</td></tr>
 <tr><td><code>mep.lsp_word_at_cursor</code></td><td>--</td></tr>
+<tr><td><code>mep.lsp_write_pending</code></td><td>bytes: what mep has written to the</td></tr>
 <tr><td><code>mep.set_completion_accept_hook</code></td><td>registers fn as the hook invoked when a completion item is accepted (used for LSP insertTextFormatSnippet expansion)</td></tr>
 <tr><td><code>mep.set_completion_keyword_triggers</code></td><td>registers the statement keywords that trigger completion with no prefix</td></tr>
 <tr><td><code>mep.set_completion_resolve_hook</code></td><td>see SetCompletionResolveHookRef's</td></tr>
@@ -66,6 +68,8 @@ that it does nothing.</p>
 <tr><td><code>mep.set_inline_suggestion_accept_hook</code></td><td>fn(accepted_length) -- 0 for a</td></tr>
 <tr><td><code>mep.set_insert_tab_hook</code></td><td>fn(shift) -&gt; bool</td></tr>
 <tr><td><code>mep.snippet_active</code></td><td>returns whether a snippet's tabstop state is live</td></tr>
+<tr><td><code>mep.snippet_choice_cycle</code></td><td>cycles the active choice stop</td></tr>
+<tr><td><code>mep.snippet_info</code></td><td>describes the innermost snippet session's current stop</td></tr>
 <tr><td><code>mep.snippet_jump</code></td><td>moves to the next/previous snippet tab-stop</td></tr>
 <tr><td><code>mep.snippet_splice</code></td><td>splices a multi-line snippet body into the buffer at a row</td></tr>
 <tr><td><code>mep.spell_add</code></td><td>add to the personal "good" dictionary (nvim zg)</td></tr>
@@ -81,6 +85,9 @@ that it does nothing.</p>
 <tr><td><code>mep.ts_captures</code></td><td>runs the vendored Treesitter grammar (if any) for a filetype over source text</td></tr>
 <tr><td><code>mep.ts_fold_ranges</code></td><td>runs the vendored Treesitter fold query (if any) over source text</td></tr>
 <tr><td><code>mep.ts_highlight</code></td><td>highlights text with its Treesitter grammar straight into decorations in `ns`</td></tr>
+<tr><td><code>mep.ts_highlight_async_ready</code></td><td>true once since the last call if a</td></tr>
+<tr><td><code>mep.ts_highlight_buffer</code></td><td>true, or nil</td></tr>
+<tr><td><code>mep.ts_highlight_mepml_buffer</code></td><td>true, or</td></tr>
 <tr><td><code>mep.ts_structure</code></td><td>runs the vendored Treesitter structure query (if any) over source text to build a document outline</td></tr>
 </table>
 <h1>See also</h1>

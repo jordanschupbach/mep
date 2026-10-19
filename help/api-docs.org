@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (216)
+* The bindings (217)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -182,6 +182,7 @@ that it does nothing.
 | =mep.org_property_remove= | removes a property from a headline's property drawer |
 | =mep.org_property_set= | writes an org property drawer value on a headline |
 | =mep.org_refile_move= | moves the current subtree under a target headline |
+| =mep.org_rescan_rows= | true, or false when |
 | =mep.org_results_handling= | reads the `:results` handling facet |
 | =mep.org_results_is_raw= | reports whether a block's results body is unquoted org markup |
 | =mep.org_roam_ensure_id= | ensures the current org-roam note has an :ID:, generating one if missing |

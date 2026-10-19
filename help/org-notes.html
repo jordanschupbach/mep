@@ -14,10 +14,12 @@
 <h1>Note-taking: snippets and highlights</h1>
 <h1>Math autosnippets</h1>
 <p>Inside a math zone (<code>$...$</code>, <code>\(...\)</code>, <code>\[...\]</code>, or a math environment),
-LaTeX shortcuts expand the instant they are typed -- no Tab needed. In
-ordinary prose they stay plain text, so typing "sum" in a sentence is safe.
-Toggle them with <code>:MepAutosnippetsToggle</code>; one expansion is one undo step,
-so <code>u</code> restores exactly what you typed.</p>
+LaTeX shortcuts expand the instant they are typed -- no key needed. In
+ordinary prose they stay plain text, so typing "sum" in a sentence is safe;
+a blank line or a heading ends any <code>$</code> or <code>\(</code> left open, so one stray
+dollar can't turn the rest of the file into math. Toggle them with
+<code>:MepAutosnippetsToggle</code>; one expansion is one undo step, so <code>u</code> restores
+exactly what you typed.</p>
 <p>Openers work from prose and create the math zone itself:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">text</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="text">mk       $...$ inline math
 dk       \( ... \) on its own lines (inline on export)
@@ -27,32 +29,60 @@ flalign  full-width two-row flalign* scaffold</code></pre></div>
 <code>mep.autosnippets</code>, and the <code>&lt;leader&gt;?</code> cheatsheet lists every one):</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">text</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="text">//  frac   \frac{num}{den}          sq       \sqrt{x}
 ^^         ^{exp}                   __       _{idx}
-x1 x2 ...  auto-subscript x_{1}     sum prod \sum / \prod with limits
+x1 x12     auto-subscript x_{12}    sum prod \sum / \prod with limits
 int        \int_{a}^{b} f(x) dx     lim      \lim_{n \to \infty}
 bar hat vec  accents                tt txt   \text{...}
 cal bf rm bb mathcal/bf/rm/bb       -&gt;  =&gt;   \to  \implies
-RR ZZ NN QQ CC  blackboard sets     ;a ;b ;g ...    Greek letters
+RR ZZ NN QQ CC  blackboard sets     ;a ;b ;g ;ph ;ps  Greek letters
 Ev Var Cov norm  statistics         Pois Bin Unif Bern  distributions
 ali aeq cases bmat pmat cvec        environments
-beg        prompts for an environment name</code></pre></div>
-<h1>Org snippets (Tab-expanded)</h1>
-<p>Structural templates never expand on their own: type the trigger and press
-<code>Tab</code> (or pick one with <code>&lt;leader&gt;yy</code>). <code>Tab</code> then jumps between the
-template's fields; <code>Shift-Tab</code> jumps back.</p>
+beg        \begin{env} ... \end{env}, the end name copied as you type</code></pre></div>
+<p>Triggers fire only at the start of a word (<code>nsum</code> is not <code>n</code> + <code>sum</code>),
+except the symbolic ones (<code>//</code>, <code>-&gt;</code>, <code>;a</code>), which fire after anything.
+A trigger that starts with another one still works: <code>in</code> becomes <code>\in</code>
+as you type it, and the <code>t</code> of <code>int</code> turns that into the integral --
+with one backslash. <code>:MepAutosnippetAudit</code> lists every such pair.</p>
+<h1>Fields and Tab</h1>
+<p>An expansion puts the cursor on its first field with the placeholder
+selected: type to replace it, or press <code>Tab</code> to keep it (<code>lim</code> <code>Tab</code> <code>Tab</code>
+<code>Tab</code> keeps <code>n \to \infty</code> and <code>a_n</code>). <code>Tab</code> walks the fields, and from
+the last one jumps past the closing brace, so <code>//</code> <code>a</code> <code>Tab</code> <code>b</code> <code>Tab</code>
+leaves you after <code>\frac{a}{b}</code>, ready for the next term. <code>Shift-Tab</code> goes
+back. Snippets nest: a <code>//</code> typed in a numerator is finished first, then
+<code>Tab</code> carries on in the outer one. Outside a snippet <code>Tab</code> is two spaces.</p>
+<h1>Org snippets (from the completion menu)</h1>
+<p>Structural templates never expand on their own -- <code>quote</code>, <code>date</code> and
+<code>title</code> are ordinary words. They show in the completion menu from the
+first letter; <code>Ctrl-N</code> / <code>Ctrl-P</code> move, <code>Ctrl-Y</code> (or <code>Enter</code> on an entry
+you moved onto) expands. <code>Tab</code> never touches the menu in a note, so it is
+always free for the fields. <code>&lt;leader&gt;yy</code> picks one from a list.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">text</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="text">src nsrc pysrc rsrc javasrc cppsrc   code blocks (named / per-language)
-ex quote callout                     example, quote, labelled aside
+ex quote callout pcode pcodex        example, quote, labelled aside, pseudocode
 title date                           note header / today's date
 img pdf link cid oref sref aref      links, anchors, cross-references
 tbl cite refs                        table, citation, bibliography
 h1 h2 h3                             headings
-mm dm cm                             math openers (Tab twins of mk/dk/ck)
+mm dm cm                             math openers (menu twins of mk/dk/ck)
 eqn eqref                            numbered equation and its reference
-cbl                                  orange COME BACK LATER marker</code></pre></div>
-<h1>Mermaid graphs</h1>
-<p><code>graph</code>, <code>gex</code>, <code>gnode</code>, <code>gedge</code> and <code>gwedge</code> insert auto-laid-out
-node/edge diagrams in a mermaid source block. HTML export renders them
-with mermaid.js in the browser; PDF export keeps the diagram source as a
-code box.</p>
+cbl                                  orange COME BACK LATER marker (prose only)</code></pre></div>
+<p><code>src</code>, <code>nsrc</code> and <code>callout</code> start on a choice: <code>Ctrl-J</code> / <code>Ctrl-K</code> cycle
+the language or the label in place.</p>
+<p>Typing <code>\</code> plus two letters offers LaTeX commands, matched fuzzily
+(<code>\lra</code> finds <code>\leftrightarrow</code>); right after a <code>\\</code> row break the list
+stays shut.</p>
+<h1>Graphs</h1>
+<p><code>graph</code>, <code>gex</code>, <code>gnode</code>, <code>gedge</code> and <code>gwedge</code> insert TikZ graphs laid out
+by pgf's graphdrawing engine (in org and <code>.tex</code> buffers; the PDF needs
+LuaLaTeX). <code>mgraph</code>, <code>mgex</code>, <code>mgnode</code>, <code>mgedge</code> and <code>mgwedge</code> are the same
+diagrams as mermaid source blocks: HTML export renders them with
+mermaid.js, PDF export keeps the source as a code box.</p>
+<h1>Checking delimiters</h1>
+<p>A math zone left open only shows up later, as a PDF that will not build.
+Org and LaTeX buffers are checked when you save, leave Insert mode, or
+pause after an edit: an unclosed or mismatched <code>$</code>, <code>$$</code>, <code>\(</code>, <code>\[</code> or
+math environment is marked with a warning at the delimiter itself.
+<code>:MepMathLint</code> lists them. Source blocks, <code>#+</code> lines and comments are
+skipped; parentheses are not checked.</p>
 <h1>The cheatsheet popup</h1>
 <p><code>&lt;leader&gt;?</code> (or <code>:MepSnippetHelp</code>) opens a tabbed popup documenting every
 trigger, symbol and note-taking key: press <code>1</code>-=9=, <code>h=/=l</code> or <code>Tab</code> to
@@ -76,7 +106,6 @@ highlights may span lines.</p>
 <ul>
 <li><code>&lt;leader&gt;oep</code> -- export the buffer to PDF and open it in a split. While that preview is open, saving the buffer re-exports in the background and the pane refreshes itself; close the pane to stop.</li>
 <li><code>:MepOrgExportPdf</code> still exports without opening a viewer.</li>
-<li>Typing <code>\</code> plus a few letters completes LaTeX commands in org buffers.</li>
 </ul>
 <h1>Spelling</h1>
 <p>The spell tools live under <code>&lt;leader&gt;z</code> (fix, suggestions, add word, jump).

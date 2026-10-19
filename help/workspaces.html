@@ -84,11 +84,11 @@ workspace, just not separate checkouts.</p>
 <h1>Options</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-comment">-- Where new worktrees go. Absolute, or relative to the project root.</span>
 <span class="tok-comment">-- Default: &lt;parent-of-repo&gt;/&lt;repo&gt;.worktrees/&lt;name&gt;</span>
-mep.opt.worktree_dir = <span class="tok-green">'~/worktrees'</span>
+<span class="tok-cyan">mep</span>.opt.worktree_dir = <span class="tok-green">'~/worktrees'</span>
 
 <span class="tok-comment">-- Add a '+' to the label of a workspace with uncommitted changes,</span>
 <span class="tok-comment">-- from a 5-second `git status` poll. Off by default.</span>
-mep.opt.workspace_git_dirty = <span class="tok-cyan">true</span></code></pre></div>
+<span class="tok-cyan">mep</span>.opt.workspace_git_dirty = <span class="tok-cyan">true</span></code></pre></div>
 <p>From Lua: <code>mep.workspace_list</code>, <code>current</code>, <code>root</code>, <code>new</code>, <code>switch</code>,
 <code>delete</code>, <code>rename</code>, <code>next</code>, <code>previous</code>, <code>adopt</code>, <code>prune</code>, and
 <code>mep.on_workspace_changed(fn)</code>.</p>

@@ -20,7 +20,7 @@ worktrees and which one was active -- come back from the last session.</p>
 <h1>Getting your layout back</h1>
 <p>The layout you leave is still saved (see below). <code>:wsrestore</code> rebuilds it on
 demand, and setting</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.restore_layouts = <span class="tok-cyan">true</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.restore_layouts = <span class="tok-cyan">true</span></code></pre></div>
 <p>in <code>init.lua</code> makes opening a project restore it automatically: the same
 tabs, the same split arrangement at the same sizes, the same files open at the
 same cursor positions, your file tree, your terminals. With that on, the

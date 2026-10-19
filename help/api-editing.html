@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (250)</h1>
+<h1>The bindings (256)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -59,6 +59,7 @@ that it does nothing.</p>
 <tr><td><code>mep.buffer_set_unlisted</code></td><td>hides a buffer from the Buffers sidebar and the buffer picker</td></tr>
 <tr><td><code>mep.buffer_set_wrap</code></td><td>opts a buffer out of :set wrap's soft-wrap</td></tr>
 <tr><td><code>mep.buffer_switch</code></td><td>switches the focused pane to show a given buffer</td></tr>
+<tr><td><code>mep.buffer_text</code></td><td>the current buffer as one string (see CurrentBufferText)</td></tr>
 <tr><td><code>mep.buffer_text_cols</code></td><td>returns the text column budget of the pane showing a buffer</td></tr>
 <tr><td><code>mep.buffer_valid</code></td><td>whether a buffer id still names an open (not deleted) buffer</td></tr>
 <tr><td><code>mep.buffer_workspace</code></td><td>the stable id of the workspace a buffer belongs to</td></tr>
@@ -104,8 +105,13 @@ that it does nothing.</p>
 <tr><td><code>mep.format_maxima</code></td><td>the text formatted as Maxima, or nil plus an error message</td></tr>
 <tr><td><code>mep.format_python</code></td><td>formats Python with mep's own in-house formatter, or returns nil plus a reason</td></tr>
 <tr><td><code>mep.format_r</code></td><td>the text formatted as R, or nil plus an error message</td></tr>
+<tr><td><code>mep.frame_stats</code></td><td>{work, hooks, draw, swap, frames} for the last</td></tr>
 <tr><td><code>mep.get_line</code></td><td>returns the text of a 1-indexed line</td></tr>
+<tr><td><code>mep.get_lines</code></td><td>array of the current buffer's lines</td></tr>
+<tr><td><code>mep.hook_profile</code></td><td>start (true; resets) or stop timing every frame hook</td></tr>
+<tr><td><code>mep.hook_stats</code></td><td>array of {where, calls, total_ms, max_ms}, the</td></tr>
 <tr><td><code>mep.insert_text</code></td><td>inserts text at the cursor position</td></tr>
+<tr><td><code>mep.insert_typed_count</code></td><td>the Insert-mode typed-character counter</td></tr>
 <tr><td><code>mep.jump_to_buffer</code></td><td>switches workspace/tab/pane to land on a buffer wherever it lives</td></tr>
 <tr><td><code>mep.line_count</code></td><td>returns the number of lines in the current buffer</td></tr>
 <tr><td><code>mep.math_render_fast</code></td><td>renders a math fragment in-process to a PNG</td></tr>

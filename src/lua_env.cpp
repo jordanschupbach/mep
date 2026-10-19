@@ -5232,25 +5232,39 @@ int l_completion_rank(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     lua_Integer max_items = luaL_optinteger(L, 2, -1);
     lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
-    std::vector<std::pair<std::string, lua_Integer>> keys;
+    struct Key {
+        std::string text;
+        lua_Integer priority = 0;
+        lua_Integer index = 0;
+    };
+    std::vector<Key> keys;
     keys.reserve(static_cast<size_t>(n));
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, 1, i);
         lua_getfield(L, -1, "text");
-        keys.emplace_back(lua_isstring(L, -1) ? lua_tostring(L, -1) : "", i);
+        Key k;
+        k.text = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+        k.index = i;
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "priority");
+        k.priority = lua_isinteger(L, -1) ? lua_tointeger(L, -1) : 0;
         lua_pop(L, 2);
+        keys.push_back(std::move(k));
     }
-    // Orders shorter completion text first, then alphabetically among equal lengths.
-    std::stable_sort(keys.begin(), keys.end(), [](const auto &a, const auto &b) {
-        if (a.first.size() != b.first.size()) return a.first.size() < b.first.size();
-        return a.first < b.first;
+    // Orders by an item's optional `priority` (lower first -- note buffers
+    // put snippets, then LaTeX commands, ahead of buffer words), then
+    // shorter completion text first, then alphabetically among equal lengths.
+    std::stable_sort(keys.begin(), keys.end(), [](const Key &a, const Key &b) {
+        if (a.priority != b.priority) return a.priority < b.priority;
+        if (a.text.size() != b.text.size()) return a.text.size() < b.text.size();
+        return a.text < b.text;
     });
     lua_Integer out_n = (max_items >= 0 && static_cast<lua_Integer>(keys.size()) > max_items)
                             ? max_items
                             : static_cast<lua_Integer>(keys.size());
     lua_createtable(L, static_cast<int>(out_n), 0);
     for (lua_Integer i = 0; i < out_n; i++) {
-        lua_rawgeti(L, 1, keys[static_cast<size_t>(i)].second);
+        lua_rawgeti(L, 1, keys[static_cast<size_t>(i)].index);
         lua_rawseti(L, -2, static_cast<int>(i + 1));
     }
     return 1;
@@ -5343,6 +5357,85 @@ int l_snippet_jump(lua_State *L) {
  */
 int l_snippet_active(lua_State *L) {
     lua_pushboolean(L, GetEditor(L)->SnippetActive());
+    return 1;
+}
+
+// mep.snippet_choice_cycle(dir) -> bool: see Editor::SnippetChoiceCycle.
+/**
+ * @brief Implements mep.snippet_choice_cycle(dir): cycles the active choice stop.
+ * @param L Lua state; arg 1 is the direction (1 or -1, default 1).
+ * @return Number of values pushed (1: whether a choice stop was active).
+ */
+int l_snippet_choice_cycle(lua_State *L) {
+    int dir = static_cast<int>(luaL_optinteger(L, 1, 1));
+    lua_pushboolean(L, GetEditor(L)->SnippetChoiceCycle(dir < 0 ? -1 : 1));
+    return 1;
+}
+
+// mep.snippet_info() -> {depth=, num=, s_row=, s_col=, e_row=, e_col=,
+// selected=, choice=}: the innermost snippet session's current stop
+// (rows/cols 1-indexed, e exclusive); depth 0 when none is open.
+/**
+ * @brief Implements mep.snippet_info(): describes the innermost snippet session's current stop.
+ * @param L Lua state.
+ * @return Number of values pushed (1: table).
+ */
+int l_snippet_info(lua_State *L) {
+    const Editor::SnippetInfo info = GetEditor(L)->SnippetInfoNow();
+    lua_createtable(L, 0, 8);
+    lua_pushinteger(L, info.depth);
+    lua_setfield(L, -2, "depth");
+    lua_pushinteger(L, info.num);
+    lua_setfield(L, -2, "num");
+    lua_pushinteger(L, info.s.row + 1);
+    lua_setfield(L, -2, "s_row");
+    lua_pushinteger(L, info.s.col + 1);
+    lua_setfield(L, -2, "s_col");
+    lua_pushinteger(L, info.e.row + 1);
+    lua_setfield(L, -2, "e_row");
+    lua_pushinteger(L, info.e.col + 1);
+    lua_setfield(L, -2, "e_col");
+    lua_pushboolean(L, info.selected);
+    lua_setfield(L, -2, "selected");
+    lua_pushboolean(L, info.choice);
+    lua_setfield(L, -2, "choice");
+    return 1;
+}
+
+// mep.completion_state() -> {open=, selected=, items={text...}}: the
+// Insert-mode completion menu as it stands (selected is 1-indexed).
+/**
+ * @brief Implements mep.completion_state(): reports whether the completion menu is open and what it lists.
+ * @param L Lua state.
+ * @return Number of values pushed (1: table).
+ */
+int l_completion_state(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    lua_createtable(L, 0, 3);
+    lua_pushboolean(L, ed->IsCompletionOpen());
+    lua_setfield(L, -2, "open");
+    lua_pushinteger(L, ed->CompletionSelected() + 1);
+    lua_setfield(L, -2, "selected");
+    const auto &items = ed->CompletionItems();
+    lua_createtable(L, static_cast<int>(items.size()), 0);
+    for (size_t i = 0; i < items.size(); i++) {
+        lua_pushstring(L, items[i].text.c_str());
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    lua_setfield(L, -2, "items");
+    return 1;
+}
+
+// mep.insert_typed_count() -> integer: printable keys typed in Insert mode
+// so far. The autosnippet poller watches it, since a keystroke that
+// replaced a selected placeholder shrinks the line instead of growing it.
+/**
+ * @brief Implements mep.insert_typed_count(): the Insert-mode typed-character counter.
+ * @param L Lua state.
+ * @return Number of values pushed (1: integer).
+ */
+int l_insert_typed_count(lua_State *L) {
+    lua_pushinteger(L, static_cast<lua_Integer>(GetEditor(L)->InsertTypedCount()));
     return 1;
 }
 
@@ -16335,6 +16428,10 @@ const luaL_Reg kMepFuncs[] = {
     {"snippet_splice", l_snippet_splice},
     {"snippet_jump", l_snippet_jump},
     {"snippet_active", l_snippet_active},
+    {"snippet_choice_cycle", l_snippet_choice_cycle},
+    {"insert_typed_count", l_insert_typed_count},
+    {"snippet_info", l_snippet_info},
+    {"completion_state", l_completion_state},
     {"docs_signature_info", l_docs_signature_info},
     {"picker_preview_file", l_picker_preview_file},
     {"tree_build_rows", l_tree_build_rows},

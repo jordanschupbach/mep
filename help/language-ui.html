@@ -57,7 +57,7 @@ was, so a lookup never interrupts what you were typing.</p>
 tracks the open one, and <code>mep.language_ui_layout</code> is the shared layout
 helper the built-in modes use, so a new mode can match their shape without
 rebuilding it.</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.language_ui_poll_interval = <span class="tok-cyan">0.5</span>   <span class="tok-comment">-- how often panels refresh</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.language_ui_poll_interval = <span class="tok-cyan">0.5</span>   <span class="tok-comment">-- how often panels refresh</span></code></pre></div>
 <h1>See also</h1>
 <ul>
 <li><a href="repl.html">REPL and send-to-terminal</a> -- the lighter-weight alternative.</li>

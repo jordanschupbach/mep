@@ -27,8 +27,8 @@ feedback when the terminal is off screen.</p>
 <tr><td><code>.c</code>, <code>.cpp</code>, headers</td><td>the project's build-directory test target</td></tr>
 <tr><td><code>.rs</code></td><td>Cargo's test runner</td></tr>
 </table>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.lang_test_python = {<span class="tok-green">'pytest'</span>, <span class="tok-green">'-q'</span>}
-mep.opt.lang_test_build_dirs = {<span class="tok-green">'build'</span>, <span class="tok-green">'build/native'</span>}</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.lang_test_python = <span class="tok-blue">{</span><span class="tok-green">'pytest'</span>, <span class="tok-green">'-q'</span>}
+mep.opt.lang_test_build_dirs = <span class="tok-blue">{</span><span class="tok-green">'build'</span>, <span class="tok-green">'build/native'</span>}</code></pre></div>
 <p>If mep cannot work out a runner for the filetype, it says so in one line
 rather than guessing.</p>
 <h1>The Tests panel</h1>
@@ -110,10 +110,10 @@ reads results from the runner itself rather than from its console output.
 pytest still reads the project's own configuration (<code>addopts</code> included).
 When a runner is not installed, its tests are marked <i>could not start</i>.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.lang_test_python = <span class="tok-green">'unittest'</span>      <span class="tok-comment">-- 'auto' (default), 'pytest', 'unittest'</span>
-mep.opt.activity_test_python_bin = <span class="tok-green">'/opt/py/bin/python3'</span>
-mep.opt.activity_test_rscript = <span class="tok-green">'/usr/local/bin/Rscript'</span>
-mep.opt.activity_test_node = <span class="tok-green">'node'</span>
-mep.opt.activity_test_scan_depth = <span class="tok-cyan">2</span></code></pre></div>
+<span class="tok-cyan">mep</span>.opt.activity_test_python_bin = <span class="tok-green">'/opt/py/bin/python3'</span>
+<span class="tok-cyan">mep</span>.opt.activity_test_rscript = <span class="tok-green">'/usr/local/bin/Rscript'</span>
+<span class="tok-cyan">mep</span>.opt.activity_test_node = <span class="tok-green">'node'</span>
+<span class="tok-cyan">mep</span>.opt.activity_test_scan_depth = <span class="tok-cyan">2</span></code></pre></div>
 <h2>ctest</h2>
 <p>The CMake build directory is the first entry of
 <code>mep.opt.lang_test_build_dirs</code> that holds a configured ctest tree, looked
@@ -126,7 +126,7 @@ levels down and lists each one it finds as its own suite
 <code>mep.activity_test_build_dir</code> to pick one yourself, and
 <code>mep.opt.activity_test_jobs</code> to run tests in parallel:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.activity_test_build_dir = <span class="tok-green">'build/native-dev'</span>
-mep.opt.activity_test_jobs = <span class="tok-cyan">8</span></code></pre></div>
+<span class="tok-cyan">mep</span>.opt.activity_test_jobs = <span class="tok-cyan">8</span></code></pre></div>
 <p>Tests come from ordinary CMake: <code>enable_testing()</code> and one <code>add_test()</code>
 per test. A test's group is its first label that not every test carries:
 mep's own tests are all labelled <code>unit</code>, plus the area they cover (<code>cad</code>,
@@ -142,7 +142,7 @@ test. mep's own windowless test binaries are registered this way, so
 to run them. Register one from <code>init.lua</code> and it is searched for alongside
 the built-in ones. One registered under an existing <code>id</code> replaces it, and
 <code>enabled = false</code> turns one off:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.<span class="tok-blue">test_provider_register</span>({
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.test_provider_register({
   id = <span class="tok-green">'cargo'</span>, name = <span class="tok-green">'cargo'</span>,
   <span class="tok-comment">-- Called for each directory searched; entries maps name -&gt; 'file' | 'dir'.</span>
   <span class="tok-blue">detect</span> = <span class="tok-purple">function</span>(<span class="tok-red">dir</span>, entries, <span class="tok-red">depth</span>)

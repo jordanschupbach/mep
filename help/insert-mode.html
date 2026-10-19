@@ -44,16 +44,22 @@ search prompt, where the inserted text is kept to one printable line.</p>
 <h1>Completion</h1>
 <p>A completion popup appears as you type, merging buffer words, snippet
 triggers, filesystem paths and -- when a language server is attached --
-its suggestions, into one list with duplicates collapsed.</p>
-<p>While the popup is open <code>Tab</code> belongs to it. Inline AI suggestions (the
-dimmed text that appears ahead of the cursor) also use <code>Tab</code>, but only when
-the popup is closed, so the two never compete for the key.</p>
-<h1>Indentation and snippets</h1>
-<p>A snippet trigger followed by <code>Tab</code> expands it. After expanding, <code>:MepSnippetNext</code>
-and <code>:MepSnippetPrev</code> move between its tabstops. Jumping between tabstops
-immediately after expansion is reliable; editing heavily before jumping to a
-later tabstop can leave it stale, because positions are computed once at
-expansion time.</p>
+its suggestions, into one list with duplicates collapsed. <code>Ctrl-N</code> /
+<code>Ctrl-P</code> move through it (<code>Ctrl-N</code> also opens it when it is shut),
+<code>Ctrl-Y</code> accepts, <code>Ctrl-E</code> opens or closes it.</p>
+<p>In a code buffer, while the popup is open <code>Tab</code> belongs to it. Inline AI
+suggestions (the dimmed text that appears ahead of the cursor) also use
+<code>Tab</code>, but only when the popup is closed, so the two never compete for the
+key; <code>Ctrl-L</code> accepts one too.</p>
+<p>Org, LaTeX and Markdown notes keep the popup off <code>Tab</code> altogether -- see
+<a href="org-notes.html">Note-taking</a>. There <code>Enter</code> accepts only an entry
+you moved onto with <code>Ctrl-N</code> / <code>Ctrl-P</code>; otherwise it is a newline.</p>
+<h1>Snippets</h1>
+<p>A snippet trigger followed by <code>Tab</code> expands it in a code buffer (in a note,
+accept it from the popup instead). <code>Tab</code> / <code>Shift-Tab</code> then move between
+its fields, typing replaces a field's placeholder, and <code>Tab</code> from the last
+field jumps past the end. Outside a snippet, <code>Tab</code> indents. See
+<a href="snippets.html">Snippets</a>.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="modes.html">Modes</a> -- how Insert relates to everything else.</li>

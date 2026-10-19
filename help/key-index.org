@@ -89,7 +89,7 @@ the features live.
 | =<leader>gt= | Git status (paneable, stacks with the file tree) | [[file:git-panel.html][The git panel]] |
 | =<leader>gv= | Git preview hunk at cursor | [[file:git-hunks.html][Working with hunks]] |
 | =<leader>gw= | Git workspaces | [[file:git-workspaces.html][Branch-per-workspace]] |
-| =<leader>hS= | Settings | [[file:config.html][Configuration]] |
+| =<leader>hS= | Settings | [[file:ai-commands.html][Ask the model]] |
 | =<leader>hf= | Help: search the manual | [[file:intro.html][mep Help]] |
 | =<leader>hh= | Open help | [[file:intro.html][mep Help]] |
 | =<leader>hk= | Help: keymaps | [[file:command-line.html][The command line]] |

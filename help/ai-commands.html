@@ -20,10 +20,19 @@
 <tr><td><code>:MepAiSendSelection</code></td><td>the Visual selection</td></tr>
 <tr><td><code>:MepAiReplaceSelection</code></td><td>the selection, replacing it with the reply</td></tr>
 <tr><td><code>:MepAiCancel</code></td><td>cancel a request in flight</td></tr>
+<tr><td><code>&lt;Esc&gt;</code> (Normal mode)</td><td>stop a reply that is still typing</td></tr>
 <tr><td><code>gl</code></td><td>send the buffer</td></tr>
 </table>
 <p><code>:MepAiReplaceSelection</code> is the one that edits your file: select, ask for a
 rewrite, and the reply takes the selection's place.</p>
+<p><code>K</code> on a Visual selection sends it with the Settings panel's /Visual K
+prompt/ (<code>&lt;leader&gt;hS</code>, under Quick ask) as the system prompt, so a
+highlighted term gets a short answer under it, not an essay. It is a row of
+its own, separate from the <i>Default prompt</i> <code>K</code> uses on a PDF passage;
+change the wording there to change how terse it is, or <code>d</code> to restore
+mep's own.</p>
+<p>A reply streams in at the cursor. <code>&lt;Esc&gt;</code> in Normal mode stops it where it
+is; whatever has already arrived stays in the buffer.</p>
 <h1>Context</h1>
 <p><code>&lt;leader&gt;ai</code> (<code>:MepAiContextPicker</code>) chooses what to include alongside your
 prompt -- other buffers, files, selections -- so a question about one
@@ -73,13 +82,13 @@ server and job mep starts -- and by anything else of yours that can read
 <code>/proc/&lt;pid&gt;/environ</code>. A command keeps the key wherever you already store
 secrets and out of the environment entirely.</p>
 <h1>Which model</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.ai_provider = <span class="tok-green">'anthropic'</span>            <span class="tok-comment">-- default 'openai'</span>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.ai_provider = <span class="tok-green">'anthropic'</span>            <span class="tok-comment">-- default 'openai'</span>
 mep.ai_anthropic_model = <span class="tok-green">'claude-opus-5'</span> <span class="tok-comment">-- the default</span>
 mep.ai_model = <span class="tok-green">'gpt-4o-mini'</span>             <span class="tok-comment">-- the OpenAI-side default</span></code></pre></div>
 <p><code>mep.ai_base_url</code> points the OpenAI path somewhere else, which is how you
 run this against a local model -- anything speaking the OpenAI chat
 completions API will do, and the key can be any non-empty string:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.ai_base_url = <span class="tok-green">'http://localhost:11434/v1'</span>  <span class="tok-comment">-- ollama</span>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.ai_base_url = <span class="tok-green">'http://localhost:11434/v1'</span>  <span class="tok-comment">-- ollama</span>
 mep.ai_api_key = <span class="tok-green">'local'</span></code></pre></div>
 <h1>See also</h1>
 <ul>

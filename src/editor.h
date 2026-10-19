@@ -8444,59 +8444,154 @@ public:
      */
     CompletionPathPrefix CompletionPathPrefixFor(const std::string &prefix, int col, const std::string &line) const;
     // Snippet expansion + tabstop jumping (kBuiltinSnippets, main.cpp) --
-    // the tabstop parser (`$N`/`${N}`/`${N:default}`/`\$`), the splice
-    // (write the parsed body into the buffer, single-line via SetLineForLua
-    // or multi-line via ReplaceLinesForLua) and the jump-between-tabstops
-    // state machine all moved to C++; the snippet *bodies themselves*
-    // (mep.snippets, a big per-filetype template registry) stay Lua data,
-    // and mep.snippet_expand/mep.set_completion_accept_hook's callback
-    // (main.cpp) stay Lua glue -- both just look up/derive a body and
-    // before/after text, then call SnippetSplice.
+    // the template parser, the splice and the tabstop session state machine
+    // live here in C++; the snippet *bodies themselves* (mep.snippets,
+    // mep.autosnippets) stay Lua data, and mep.snippet_expand / the
+    // autosnippet poller / the completion-accept hook (main.cpp) only
+    // derive a body and the before/after text, then call SnippetSplice.
     //
-    // One tabstop's resolved position in an expanded snippet: `line_idx`
-    // is 1-indexed *within the snippet body* (not the buffer), `col` is
-    // the 1-indexed column on that expanded line, `num` is the tabstop's
-    // own `$N` number (0 = the final/last-stop position, sorted after
-    // every positive N per real snippet-engine convention).
-    struct SnippetTabstop {
-        int line_idx = 0;
-        int col = 0;
-        int num = 0;
+    // Template syntax (one string per line): `$N`, `${N}`, `${N:default}`
+    // (braces inside the default may nest, `\$` is a literal dollar),
+    // `${N|a,b,c|}` a choice stop whose text cycles through a fixed list,
+    // and `$0`/`${0}` the exit point. A number used twice makes the later
+    // occurrences *mirrors* of the first: they copy its text live as it is
+    // typed (`\begin{${1:env}}` ... `\end{$1}`). Without an explicit `$0`
+    // the exit is just past the last character of the expansion.
+    //
+    // A position is tracked as live text, not a snapshot: every edit made
+    // while a session is open (typing, Backspace, undo, a nested
+    // expansion) is recovered by diffing the buffer against the copy taken
+    // at the previous sync (SnippetSync), and each stop is moved through
+    // that edit -- see SnippetMapPos for the gravity rules.
+    struct SnipPos {
+        int row = 0;  // 0-indexed buffer row
+        int col = 0;  // byte column
+        bool operator==(const SnipPos &o) const { return row == o.row && col == o.col; }
+        bool operator<(const SnipPos &o) const { return row < o.row || (row == o.row && col < o.col); }
+        bool operator<=(const SnipPos &o) const { return !(o < *this); }
     };
-    // Splices `body` (template lines, 0-indexed `row` is where body[0]
-    // lands) into the buffer, `before`/`after` wrapping the first/last
-    // line (the text surrounding whatever triggered the expansion),
-    // computes every tabstop, and jumps to the first one -- mirrors the
-    // original's own mep_snippet_splice + immediate SnippetJump(1) call.
+    // One contiguous replacement: [start, old_end) became [start, new_end).
+    struct SnipEdit {
+        SnipPos start, old_end, new_end;
+    };
+    struct SnippetStop {
+        int num = 0;  // 0 = the exit point, always the session's last stop
+        SnipPos s, e;
+        std::vector<std::string> choices;  // non-empty = a choice stop
+        int choice = 0;
+    };
+    struct SnippetMirror {
+        int num = 0;
+        SnipPos s, e;
+    };
+    // One expanded snippet. Sessions nest: expanding inside a stop pushes a
+    // child whose exit leads back into that stop.
+    struct SnippetSession {
+        int buffer_id = -1;
+        std::vector<SnippetStop> stops;  // ordered by num, the exit (num 0) last
+        std::vector<SnippetMirror> mirrors;
+        int index = 0;                   // into stops
+        SnipPos region_s, region_e;      // the whole expansion
+    };
     /**
      * @brief Splices an expanded snippet body into the buffer and jumps to its first tabstop.
      * @param row The 0-indexed row where body[0] lands.
      * @param before The text surrounding the trigger, to prepend before the first body line.
      * @param after The text surrounding the trigger, to append after the last body line.
-     * @param body The snippet's template lines to splice in.
+     * @param body The snippet's template lines to splice in. Continuation lines get the
+     *             leading whitespace of `before` prepended, so a multi-line body keeps the
+     *             trigger line's indentation.
      */
     void SnippetSplice(int row, const std::string &before, const std::string &after,
                         const std::vector<std::string> &body);
-    // Moves to the tabstop `delta` positions from the current one (1 =
-    // next, -1 = previous); a no-op if no snippet is active, clears the
-    // active state once moved past either end. Bound directly as
-    // mep.snippet_jump (no wrapper -- MepSnippetNext/Prev call it with a
-    // literal 1/-1 same as before).
     /**
-     * @brief Moves to the tabstop `delta` positions from the current one in the active snippet.
-     * @param delta The number of tabstops to move (1 = next, -1 = previous).
+     * @brief Moves to the tabstop `delta` positions from the current one in the innermost snippet.
+     * @param delta The number of tabstops to move (1 = next, -1 = previous). Moving onto the
+     *              exit point ends that session; moving back past a nested snippet's first
+     *              stop returns to its parent.
      */
     void SnippetJump(int delta);
-    // Whether a spliced snippet's tabstop state is still live (a
-    // SnippetJump would actually move somewhere). Bound as
-    // mep.snippet_active so the insert-mode Tab hook (kBuiltinOrgSnippets,
-    // main.cpp) can pick between "jump to the next tabstop" and "try to
-    // expand the word before the cursor as a trigger".
     /**
-     * @brief Returns whether a snippet's tabstop state is currently active.
-     * @return True if a spliced snippet still has live tabstop state.
+     * @brief Returns whether the cursor is inside a live snippet session (so Tab would jump).
+     * @return True if a session's region contains the cursor; sessions the cursor has left are dropped.
      */
-    bool SnippetActive() const { return has_snippet_state_; }
+    bool SnippetActive();
+    /**
+     * @brief Tab/Shift-Tab inside a snippet: jumps if the cursor is in a live session.
+     * @param back True for Shift-Tab (previous stop).
+     * @return True if the key was consumed by a jump.
+     */
+    bool SnippetTabJump(bool back);
+    /**
+     * @brief Cycles the active choice stop's text through its list.
+     * @param dir 1 for the next choice, -1 for the previous.
+     * @return True if a choice stop was active and its text changed.
+     */
+    bool SnippetChoiceCycle(int dir);
+    /**
+     * @brief Returns whether the innermost session's current stop is a choice stop.
+     * @return True while a choice stop is active.
+     */
+    bool SnippetChoiceActive();
+    /**
+     * @brief Re-derives every open session's stop positions from the edits made since the last sync.
+     */
+    void SnippetSync();
+    /**
+     * @brief Drops every snippet session and its decorations.
+     */
+    void SnippetClear();
+    /**
+     * @brief Maps a position through a replacement edit.
+     * @param p The position before the edit.
+     * @param ed The edit.
+     * @param right_gravity Whether a position at an insertion point moves past the inserted text.
+     * @return The position after the edit.
+     */
+    static SnipPos SnippetMapPos(SnipPos p, const SnipEdit &ed, bool right_gravity);
+    /**
+     * @brief Finds the single contiguous edit that turns `a` into `b`.
+     * @param a The text before.
+     * @param b The text after.
+     * @param cursor_hint If non-null, the cursor in `b`; the edit is assumed to end there when ambiguous.
+     * @param out The edit found.
+     * @return False if `a` and `b` are identical.
+     */
+    static bool SnippetDiff(const std::vector<std::string> &a, const std::vector<std::string> &b,
+                            const SnipPos *cursor_hint, SnipEdit *out);
+    /**
+     * @brief Parses snippet template lines into plain text plus stop/mirror positions.
+     * @param body The template lines.
+     * @param lines_out The expanded text, one string per template line.
+     * @param stops_out The stops, positions relative to the body (row = template line).
+     * @param mirrors_out The mirrors, positions relative to the body.
+     */
+    static void SnippetParse(const std::vector<std::string> &body, std::vector<std::string> *lines_out,
+                             std::vector<SnippetStop> *stops_out, std::vector<SnippetMirror> *mirrors_out);
+    /**
+     * @brief Called before an Insert-mode key is processed: a selected placeholder is replaced by typing.
+     * @param key The ProcessInsertKey key code.
+     * @return True if the key was consumed (Backspace/Delete on a selected placeholder).
+     */
+    bool SnippetBeforeInsertKey(int key);
+    /**
+     * @brief Number of printable characters typed in Insert mode since startup.
+     * @return The counter; the autosnippet poller watches it to see a keystroke that shrank the line.
+     */
+    long long InsertTypedCount() const { return insert_typed_count_; }
+    // What mep.snippet_info() reports: the innermost session's current stop.
+    struct SnippetInfo {
+        int depth = 0;  // open sessions, 0 = none
+        int num = 0;    // the current stop's $N
+        SnipPos s, e;
+        bool selected = false;  // its placeholder is selected (typing replaces it)
+        bool choice = false;
+    };
+    /**
+     * @brief Describes the innermost snippet session's current stop (after a sync).
+     * @return The session depth and current stop; depth 0 when no snippet is open.
+     */
+    SnippetInfo SnippetInfoNow();
     // Picker file preview (kBuiltinPickerSources, main.cpp): reads up to
     // `max_lines` of `path` and sets it as the picker's preview pane text
     // (SetPickerPreview) -- mep_picker_preview_file's own port, including
@@ -11964,6 +12059,16 @@ public:
      */
     size_t OrgSettingsPendingCursor() const { return org_settings_pending_cursor_; }
     /**
+     * @brief Records how the wide text field being edited is wrapped, as the panel just drew it.
+     * @param lines (start, length) byte ranges of OrgSettingsPending(), one per drawn line.
+     *
+     * Up/Down in that field move the caret between these lines; only the renderer knows the
+     * box's width, so it hands its wrap back each frame.
+     */
+    void SetOrgSettingsWideLines(std::vector<std::pair<size_t, size_t>> lines) {
+        org_settings_wide_lines_ = std::move(lines);
+    }
+    /**
      * @brief Which choice the open drop-down's highlight is on.
      * @return The index into the focused row's `choices`; -1 when no list is open, and also
      *         when one is open but its filter matches nothing.
@@ -15312,6 +15417,19 @@ private:
     std::unique_ptr<SplitNode> BuildSpiralLayout(const std::vector<Pane> &panes, bool horizontal_next) const;
     void UpdateCompletionPopup();
     void CompletionNext();
+    /**
+     * @brief Closes the completion menu and keeps it shut at the current word.
+     */
+    void DismissCompletionPopup();
+    /**
+     * @brief Opens the completion menu at the cursor regardless of how much has been typed.
+     */
+    void ForceCompletionPopup();
+    /**
+     * @brief Whether the current buffer is a prose/math note (org, tex, markdown).
+     * @return True for those filetypes, which use the separate snippet/menu key model.
+     */
+    bool IsNoteBuffer() const;
     void CompletionPrev();
     void AcceptCompletion();
 
@@ -15903,6 +16021,7 @@ private:
     // Text rows used to only append and backspace from the end, which a
     // one-word filename survives and a paragraph of prompt does not.
     size_t org_settings_pending_cursor_ = 0;
+    std::vector<std::pair<size_t, size_t>> org_settings_wide_lines_;  // see SetOrgSettingsWideLines
     // The block's whole `:results` value as last read, which the four
     // facet rows share: each of them owns one word of it, so writing one
     // means recomposing the value the other three are still reading
@@ -16110,6 +16229,12 @@ private:
     bool completion_open_ = false;
     std::vector<CompletionCandidate> completion_items_;
     int completion_selected_ = 0;
+    // The user moved through the menu (Ctrl-N/Ctrl-P) since it opened: in
+    // a note buffer Enter accepts only then.
+    bool completion_user_selected_ = false;
+    // Ctrl-N/Ctrl-E opened the menu at this row/word start (-1 = not forced).
+    int completion_force_row_ = -1;
+    int completion_force_start_ = 0;
     int completion_word_start_col_ = 0;
     // UpdateCompletionPopup's own throttle state -- see its definition
     // (editor.cpp) for why: without this, it re-runs the completion
@@ -16768,11 +16893,26 @@ private:
     // Pointer into the current buffer's hunks, valid only until the next
     // refresh of that buffer -- every caller uses it immediately.
     const DiffHunk *GitHunkAtCursor() const;
-    // SnippetSplice/SnippetJump state -- see SnippetTabstop's own comment.
-    bool has_snippet_state_ = false;
-    std::vector<SnippetTabstop> snippet_tabstops_;
-    int snippet_index_ = 0;
-    int snippet_base_row_ = 0;  // 0-indexed
+    // Snippet sessions, innermost last -- see SnippetSession's own comment.
+    std::vector<SnippetSession> snip_stack_;
+    // The session buffer's text as of the last SnippetSync: the next sync
+    // diffs against it to find what changed.
+    std::vector<std::string> snip_snapshot_;
+    // The current stop's placeholder is "selected": the next typed
+    // character replaces it, Backspace/Delete remove it (SnippetBeforeInsertKey).
+    bool snip_select_pending_ = false;
+    int snip_ns_ = -1;  // decoration namespace: placeholder highlight + choice hint
+    long long insert_typed_count_ = 0;
+    // Private helpers for the session engine above.
+    void SnippetApplyEdit(const SnipEdit &ed);
+    void SnippetReplaceRange(SnipPos s, SnipPos e, const std::string &text, SnippetStop *target,
+                             SnippetMirror *mirror_target);
+    std::string SnippetRangeText(SnipPos s, SnipPos e) const;
+    void SnippetGoToStop(int index);
+    void SnippetUpdateMirrors();
+    void SnippetRefreshDecorations();
+    void SnippetTakeSnapshot();
+    bool SnippetPosValid(SnipPos p) const;
     std::unordered_map<std::string, int> normal_mappings_;      // key -> lua ref
     std::unordered_map<std::string, int> visual_mappings_;      // key -> lua ref
     // repeat: see RegisterMod1Mapping's own doc -- whether HandleMod1Shortcuts

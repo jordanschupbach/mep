@@ -194,6 +194,10 @@ nafems:
 mepml-grammar:
     cd grammars/tree-sitter-mepml && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
 
+# The same for mep's Nix grammar (grammars/tree-sitter-nix).
+nix-grammar:
+    cd grammars/tree-sitter-nix && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+
 # mep-tex's TeX bundle (nix/tex-bundle.nix, tools/tex_bundle.py): the TeX
 # Live packages mep's own engine reads, so builtin TeX compiles need no TeX
 # installation. Built by nix and linked beside the dev build's mep-tex,

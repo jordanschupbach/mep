@@ -379,6 +379,85 @@ void TestPythonLiteralsAndComments() {
 }
 
 // ---------------------------------------------------------------------------
+// Nix: mep's own grammar (grammars/tree-sitter-nix), compiled in
+// ---------------------------------------------------------------------------
+
+void TestNix() {
+    CHECK(TreesitterHasGrammar("nix"));
+    CHECK(TreesitterHasFoldQuery("nix"));
+    const std::string src =
+        "{ lib, stdenv ? null, ... }:\n"
+        "let\n"
+        "  # a comment\n"
+        "  name = \"x-${lib.version} \\n $HOME\";\n"
+        "  path = ./pkgs/${name}.nix;\n"
+        "in\n"
+        "stdenv.mkDerivation rec {\n"
+        "  inherit name;\n"
+        "  src = builtins.fetchurl https://example.org/a.tar.gz;\n"
+        "  doCheck = if true then null else 1.5;\n"
+        "  installPhase = ''\n"
+        "    cp ''${out} ${lib.getBin stdenv}\n"
+        "  '';\n"
+        "  meta = map (x: x + 1) [ 2 ];\n"
+        "}\n";
+    ExpectCaptures("nix", src, "lib,", "variable.parameter");
+    ExpectCaptures("nix", src, "?", "operator");
+    ExpectCaptures("nix", src, "...", "punctuation.special");
+    ExpectCaptures("nix", src, "let", "keyword");
+    ExpectCaptures("nix", src, "# a comment", "comment");
+    ExpectCaptures("nix", src, "name =", "property");
+    // A string's text is @string, but the code in a ${...} is code again.
+    ExpectCaptures("nix", src, "\"x-", "string");
+    ExpectCaptures("nix", src, "x-", "string");
+    ExpectCaptures("nix", src, "${lib", "punctuation.interpolation");
+    ExpectCaptures("nix", src, "lib.version", "variable");
+    ExpectCaptures("nix", src, "version", "property");
+    ExpectCaptures("nix", src, "\\n", "string.escape");
+    ExpectCaptures("nix", src, "$HOME", "string");
+    // A path, with an interpolation in the middle of it.
+    ExpectCaptures("nix", src, "./pkgs", "string.special.path");
+    ExpectCaptures("nix", src, "name}.nix", "variable");
+    ExpectCaptures("nix", src, ".nix;", "string.special.path");
+    ExpectCaptures("nix", src, "mkDerivation", "property function.call");
+    ExpectCaptures("nix", src, "rec", "keyword");
+    ExpectCaptures("nix", src, "inherit", "keyword");
+    ExpectCaptures("nix", src, "name;", "property");
+    ExpectCaptures("nix", src, "builtins", "variable variable.builtin");
+    ExpectCaptures("nix", src, "fetchurl", "property function.call function.builtin");
+    ExpectCaptures("nix", src, "https:", "string.special.uri");
+    ExpectCaptures("nix", src, "if", "conditional");
+    ExpectCaptures("nix", src, "true", "variable boolean");
+    ExpectCaptures("nix", src, "null else", "variable constant.builtin");
+    ExpectCaptures("nix", src, "1.5", "float");
+    // An indented string: its escapes, and an interpolation inside it.
+    ExpectCaptures("nix", src, "''\n", "string");
+    ExpectCaptures("nix", src, "cp", "string");
+    ExpectCaptures("nix", src, "''${out}", "string.escape");
+    ExpectCaptures("nix", src, "getBin", "property function.call");
+    ExpectCaptures("nix", src, "map", "variable function.call function.builtin");
+    ExpectCaptures("nix", src, "x:", "variable.parameter");
+    ExpectCaptures("nix", src, "2 ]", "number");
+
+    // `a/b` is a path in Nix, `a / b` and `a // b` are operators.
+    const std::string ops = "[ (a/b) (a / b) (a //b) ]\n";
+    ExpectCaptures("nix", ops, "a/b", "string.special.path");
+    ExpectCaptures("nix", ops, "/ b", "operator");
+    ExpectCaptures("nix", ops, "//b", "operator");
+
+    // The attrset and the indented string fold; one-line ones do not.
+    const std::vector<TSFoldRange> folds = TreesitterFoldRanges("nix", src);
+    bool attrset = false;
+    bool indented = false;
+    for (const TSFoldRange &f : folds) {
+        if (f.start_row == 6 && f.end_row == 14) attrset = true;
+        if (f.start_row == 10 && f.end_row == 12) indented = true;
+    }
+    CHECK(attrset);
+    CHECK(indented);
+}
+
+// ---------------------------------------------------------------------------
 // The span pipeline itself
 // ---------------------------------------------------------------------------
 
@@ -542,6 +621,7 @@ int main() {
     TestPythonCalls();
     TestPythonAnnotations();
     TestPythonLiteralsAndComments();
+    TestNix();
     TestSpanOrderAndClipping();
     TestGrammarAvailability();
     TestTiebreakAcrossLanguages();

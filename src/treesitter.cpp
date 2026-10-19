@@ -27,9 +27,10 @@
 #endif
 #include "treesitter_queries.h"
 #include "treesitter_structure_queries.h"
-// mepml's own grammar ships its queries as .scm files
-// (grammars/tree-sitter-mepml/queries); CMake embeds them here.
+// mep's own grammars ship their queries as .scm files
+// (grammars/tree-sitter-<name>/queries); CMake embeds them here.
 #include "mepml_queries.h"
+#include "nix_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -49,6 +50,7 @@ const TSLanguage *tree_sitter_markdown_inline(void);
 const TSLanguage *tree_sitter_org(void);
 const TSLanguage *tree_sitter_r(void);
 const TSLanguage *tree_sitter_mepml(void);  // mep's own: grammars/tree-sitter-mepml
+const TSLanguage *tree_sitter_nix(void);    // mep's own: grammars/tree-sitter-nix
 }
 
 // The process-wide caches below -- parse trees and row answers per key,
@@ -133,6 +135,7 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"r", {tree_sitter_r, kHighlightsR}},
         {"R", {tree_sitter_r, kHighlightsR}},
         {"mepml", {tree_sitter_mepml, kHighlightsMepml}},
+        {"nix", {tree_sitter_nix, kHighlightsNix}},
     };
     return table;
 }
@@ -166,6 +169,7 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"R", {tree_sitter_r, kFoldsR}},
         {"org", {tree_sitter_org, kFoldsOrg}},
         {"mepml", {tree_sitter_mepml, kFoldsMepml}},
+        {"nix", {tree_sitter_nix, kFoldsNix}},
     };
     return table;
 }
@@ -289,7 +293,6 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"yaml", {"yaml", kHighlightsYaml}},
         {"yml", {"yaml", kHighlightsYaml}},
         {"toml", {"toml", kHighlightsToml}},
-        {"nix", {"nix", kHighlightsNix}},
         {"zig", {"zig", kHighlightsZig}},
         {"elm", {"elm", kHighlightsElm}},
         {"kt", {"kotlin", kHighlightsKotlin}},

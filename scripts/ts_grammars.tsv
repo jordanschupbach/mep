@@ -66,7 +66,6 @@ tsx	tree-sitter/tree-sitter-typescript	v0.23.2	tsx
 verilog	tree-sitter/tree-sitter-verilog	v1.0.3
 yaml	tree-sitter-grammars/tree-sitter-yaml	v0.7.2
 toml	tree-sitter-grammars/tree-sitter-toml	342d9be207c2dba869b9967124c679b5e6fd0ebe
-nix	nix-community/tree-sitter-nix	eabf96807ea4ab6d6c7f09b671a88cd483542840
 zig	tree-sitter-grammars/tree-sitter-zig	6479aa13f32f701c383083d8b28360ebd682fb7d
 elm	elm-tooling/tree-sitter-elm	v5.9.4
 kotlin	fwcd/tree-sitter-kotlin	0.3.8

@@ -1,0 +1,21 @@
+{
+  "grammars": [
+    {
+      "name": "nix",
+      "camelcase": "Nix",
+      "scope": "source.nix",
+      "path": ".",
+      "file-types": ["nix"],
+      "highlights": "queries/highlights.scm",
+      "injections": "queries/injections.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "The Nix expression language, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

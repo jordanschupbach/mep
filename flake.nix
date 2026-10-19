@@ -189,7 +189,6 @@
             tree-sitter-tsx
             tree-sitter-yaml
             tree-sitter-toml
-            tree-sitter-nix
             tree-sitter-zig
             tree-sitter-elm
             tree-sitter-kotlin

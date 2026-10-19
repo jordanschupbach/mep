@@ -1,0 +1,171 @@
+==================
+function with formals and let
+==================
+
+{ lib, stdenv ? null, ... }@args:
+let
+  x = 1;
+  inherit (lib) mkIf;
+in
+  x
+
+---
+
+(source_code
+  (function_expression
+    (formals
+      (formal (identifier))
+      (formal (identifier) (variable_expression (identifier)))
+      (ellipses))
+    (identifier)
+    (let_expression
+      (binding_set
+        (binding (attrpath (identifier)) (integer_expression))
+        (inherit_from (variable_expression (identifier)) (inherited_attrs (identifier))))
+      (variable_expression (identifier)))))
+
+==================
+operators and application
+==================
+
+f a.b.c or 2 (x: x + 1) [ 1 ./a ] // { } -> !c || d && e == -1
+
+---
+
+(source_code
+  (binary_expression
+    (binary_expression
+      (apply_expression
+        (apply_expression
+          (apply_expression
+            (variable_expression (identifier))
+            (select_expression
+              (variable_expression (identifier))
+              (attrpath (identifier) (identifier))
+              (integer_expression)))
+          (parenthesized_expression
+            (function_expression
+              (identifier)
+              (binary_expression (variable_expression (identifier)) (integer_expression)))))
+        (list_expression (integer_expression) (path_expression (path_fragment))))
+      (attrset_expression))
+    (binary_expression
+      (unary_expression (variable_expression (identifier)))
+      (binary_expression
+        (variable_expression (identifier))
+        (binary_expression
+          (variable_expression (identifier))
+          (unary_expression (integer_expression)))))))
+
+==================
+strings and interpolation
+==================
+
+[ "a ${b} \n $c $${d}" ''
+  x ''${y} ''' ${z}
+'' ]
+
+---
+
+(source_code
+  (list_expression
+    (string_expression
+      (string_fragment)
+      (interpolation (variable_expression (identifier)))
+      (string_fragment)
+      (escape_sequence)
+      (string_fragment))
+    (indented_string_expression
+      (indented_string_fragment)
+      (escape_sequence)
+      (indented_string_fragment)
+      (escape_sequence)
+      (indented_string_fragment)
+      (interpolation (variable_expression (identifier)))
+      (indented_string_fragment))))
+
+==================
+paths, uris and attrsets
+==================
+
+rec {
+  a = ./foo/bar.nix;
+  b = /abs/path;
+  c = ~/home;
+  d = <nixpkgs/lib>;
+  e = https://example.org/x.tar.gz;
+  f = ./${name}.nix;
+  g = a/b;
+  "h i".${j} = a //b;
+  k = a ? b.c;
+}
+
+---
+
+(source_code
+  (rec_attrset_expression
+    (binding_set
+      (binding (attrpath (identifier)) (path_expression (path_fragment)))
+      (binding (attrpath (identifier)) (path_expression (path_fragment)))
+      (binding (attrpath (identifier)) (hpath_expression (path_fragment)))
+      (binding (attrpath (identifier)) (spath_expression))
+      (binding (attrpath (identifier)) (uri_expression))
+      (binding (attrpath (identifier))
+        (path_expression (path_fragment) (interpolation (variable_expression (identifier))) (path_fragment)))
+      (binding (attrpath (identifier)) (path_expression (path_fragment)))
+      (binding
+        (attrpath (string_expression (string_fragment)) (interpolation (variable_expression (identifier))))
+        (binary_expression (variable_expression (identifier)) (variable_expression (identifier))))
+      (binding (attrpath (identifier))
+        (has_attr_expression (variable_expression (identifier)) (attrpath (identifier) (identifier)))))))
+
+==================
+if, with, assert, comments, numbers
+==================
+
+# line
+/* block
+   comment */
+assert x; with pkgs; if a then 1.5 else .5e3
+
+---
+
+(source_code
+  (comment)
+  (comment)
+  (assert_expression
+    (variable_expression (identifier))
+    (with_expression
+      (variable_expression (identifier))
+      (if_expression
+        (variable_expression (identifier))
+        (float_expression)
+        (float_expression)))))
+
+==================
+or as an identifier
+==================
+
+[ or a.or ]
+
+---
+
+(source_code
+  (list_expression
+    (variable_expression (identifier))
+    (select_expression (variable_expression (identifier)) (attrpath (identifier)))))
+
+==================
+pipes
+==================
+
+x |> f |> g
+
+---
+
+(source_code
+  (binary_expression
+    (binary_expression
+      (variable_expression (identifier))
+      (variable_expression (identifier)))
+    (variable_expression (identifier))))

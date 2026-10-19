@@ -18,8 +18,10 @@
 #include "gfx/backend_native_internal.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_map>
 #include <vector>
 
 #include "gfx/gl_loader.h"
@@ -196,8 +198,11 @@ gfx::Image NativeTextBackend::GenImageFontAtlas(const gfx::GlyphInfo *glyphs, gf
     int atlas_w = 0, atlas_h = 0;
     PackShelf(baked, padding, &atlas_w, &atlas_h);
 
+    // One coverage byte per pixel (kPixelFormatAlphaWhite): the glyphs are
+    // white, so RGBA spent three of every four bytes on 255s -- 59 of the
+    // emoji atlas's 79 MB.
     auto *pixels = static_cast<unsigned char *>(
-        std::calloc(static_cast<size_t>(atlas_w) * static_cast<size_t>(atlas_h) * 4, 1));
+        std::calloc(static_cast<size_t>(atlas_w) * static_cast<size_t>(atlas_h), 1));
     auto *recs = new gfx::Rectangle[static_cast<size_t>(glyph_count)];
     for (int i = 0; i < glyph_count; i++) {
         const BakedGlyph &g = baked[static_cast<size_t>(i)];
@@ -205,20 +210,16 @@ gfx::Image NativeTextBackend::GenImageFontAtlas(const gfx::GlyphInfo *glyphs, gf
             for (int x = 0; x < g.width; x++) {
                 unsigned char coverage = g.bitmap[static_cast<size_t>(y) * static_cast<size_t>(g.width) +
                                                    static_cast<size_t>(x)];
-                size_t px = (static_cast<size_t>(g.atlas_y + y) * static_cast<size_t>(atlas_w) +
-                             static_cast<size_t>(g.atlas_x + x)) *
-                            4;
-                pixels[px + 0] = 255;
-                pixels[px + 1] = 255;
-                pixels[px + 2] = 255;
-                pixels[px + 3] = coverage;
+                const size_t px = static_cast<size_t>(g.atlas_y + y) * static_cast<size_t>(atlas_w) +
+                                  static_cast<size_t>(g.atlas_x + x);
+                pixels[px] = coverage;
             }
         }
         recs[i] = gfx::Rectangle{static_cast<float>(g.atlas_x), static_cast<float>(g.atlas_y),
                                   static_cast<float>(g.width), static_cast<float>(g.height)};
     }
     *glyph_recs = recs;
-    return gfx::Image{pixels, atlas_w, atlas_h, 1, gfx::kPixelFormatR8G8B8A8};
+    return gfx::Image{pixels, atlas_w, atlas_h, 1, gfx::kPixelFormatAlphaWhite};
 }
 
 void NativeTextBackend::UnloadFontData(gfx::GlyphInfo *glyphs, int glyph_count) {
@@ -248,7 +249,74 @@ gfx::Font NativeTextBackend::LoadFontFromMemory(const char * /*file_type*/, cons
     return font;
 }
 
+namespace {
+
+// GetGlyphIndex was two linear scans of the font's glyph array per glyph
+// drawn or measured -- and DrawTextEx asked twice per glyph -- so a missing
+// codepoint cost two full passes over a ~650-glyph font (plans/
+// PERFORMANCE_PLAN.md R4). A table per glyph array instead: direct for
+// ASCII, hashed for the rest, the '?' fallback found once. Per thread (fonts
+// are also baked and measured off the main thread), and self-checking: a
+// hit is verified against the glyph it names, and a changed glyph count
+// rebuilds, so a font whose array was replaced or regrown in place can
+// never be answered from a stale table.
+struct GlyphLookup {
+    int count = -1;
+    int fallback = 0;
+    std::array<int, 128> ascii{};
+    std::unordered_map<int, int> rest;
+};
+
+std::unordered_map<const gfx::GlyphInfo *, GlyphLookup> &GlyphLookups() {
+    thread_local std::unordered_map<const gfx::GlyphInfo *, GlyphLookup> table;
+    return table;
+}
+
+GlyphLookup &BuildGlyphLookup(const gfx::Font &font) {
+    GlyphLookup &g = GlyphLookups()[font.glyphs];
+    g.count = font.glyphCount;
+    g.rest.clear();
+    g.fallback = -1;
+    g.ascii.fill(-1);
+    // First occurrence wins, matching the linear scan this replaces.
+    for (int i = 0; i < font.glyphCount; i++) {
+        const int v = font.glyphs[i].value;
+        if (v >= 0 && v < 128) {
+            if (g.ascii[static_cast<size_t>(v)] < 0) g.ascii[static_cast<size_t>(v)] = i;
+        } else {
+            g.rest.emplace(v, i);
+        }
+    }
+    g.fallback = g.ascii['?'] >= 0 ? g.ascii['?'] : 0;
+    for (int &a : g.ascii)
+        if (a < 0) a = g.fallback;
+    return g;
+}
+
+int LookupGlyph(const gfx::Font &font, int codepoint) {
+    if (!font.glyphs || font.glyphCount <= 0) return 0;
+    auto &table = GlyphLookups();
+    auto it = table.find(font.glyphs);
+    GlyphLookup *g = it != table.end() && it->second.count == font.glyphCount ? &it->second : &BuildGlyphLookup(font);
+    for (int attempt = 0; attempt < 2; attempt++) {
+        int idx = g->fallback;
+        if (codepoint >= 0 && codepoint < 128) {
+            idx = g->ascii[static_cast<size_t>(codepoint)];
+        } else if (auto r = g->rest.find(codepoint); r != g->rest.end()) {
+            idx = r->second;
+        }
+        // A found glyph must still be that codepoint; a fallback must still be '?' (or index 0 when the font has none).
+        const int want = idx == g->fallback && font.glyphs[idx].value != codepoint ? '?' : codepoint;
+        if (font.glyphs[idx].value == want || (idx == 0 && want == '?')) return idx;
+        g = &BuildGlyphLookup(font);
+    }
+    return g->fallback;
+}
+
+}  // namespace
+
 void NativeTextBackend::UnloadFont(gfx::Font font) {
+    GlyphLookups().erase(font.glyphs);
     impl_->renderer2d->UnloadTexture(font.texture);
     UnloadFontData(font.glyphs, font.glyphCount);
     FreeGlyphRects(font.recs);
@@ -263,15 +331,7 @@ void NativeTextBackend::SetTextureFilter(gfx::Texture2D texture, gfx::TextureFil
     gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, f);
 }
 
-int NativeTextBackend::GetGlyphIndex(gfx::Font font, int codepoint) {
-    for (int i = 0; i < font.glyphCount; i++) {
-        if (font.glyphs[i].value == codepoint) return i;
-    }
-    for (int i = 0; i < font.glyphCount; i++) {
-        if (font.glyphs[i].value == '?') return i;
-    }
-    return 0;
-}
+int NativeTextBackend::GetGlyphIndex(gfx::Font font, int codepoint) { return LookupGlyph(font, codepoint); }
 
 int NativeTextBackend::GetCodepointNext(const char *text, int *codepoint_size) {
     const auto *bytes = reinterpret_cast<const unsigned char *>(text);
@@ -340,8 +400,13 @@ void NativeTextBackend::DrawTextEx(gfx::Font font, const char *text, gfx::Vector
         int size = 0;
         int cp = GetCodepointNext(text + i, &size);
         i += size;
-        int idx = GetGlyphIndex(font, cp);
-        DrawTextCodepoint(font, cp, {x, position.y}, font_size, tint);
+        // One lookup per glyph (DrawTextCodepoint would look it up again).
+        const int idx = LookupGlyph(font, cp);
+        const gfx::Rectangle src = font.recs[idx];
+        const gfx::Rectangle dst{x + static_cast<float>(font.glyphs[idx].offsetX) * scale,
+                                 position.y + static_cast<float>(font.glyphs[idx].offsetY) * scale, src.width * scale,
+                                 src.height * scale};
+        impl_->renderer2d->DrawTexturePro(font.texture, src, dst, {0, 0}, 0.0f, tint);
         x += static_cast<float>(font.glyphs[idx].advanceX) * scale + spacing;
     }
 }

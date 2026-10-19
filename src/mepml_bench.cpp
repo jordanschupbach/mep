@@ -43,20 +43,14 @@
 
 extern "C" const TSLanguage *tree_sitter_mepml(void);
 
-using mep::bench::RecordResult;
 using mep::bench::Timer;
 
 namespace {
 
-constexpr const char *kHistoryPath = "bench_results/history.jsonl";
 constexpr const char *kBinary = "mepml_bench";
 
-bool g_record = true;
-bool g_quick = false;
 std::string g_only;
 std::string g_dump;
-// Scenarios slower than this per run are measured fewer times.
-constexpr double kSlowMs = 250.0;
 
 std::vector<std::string> SplitLines(const std::string &text) {
     std::vector<std::string> lines;
@@ -90,25 +84,7 @@ std::string Join(const std::vector<std::string> &lines) {
  */
 void Measure(const std::string &scenario, size_t lines, const std::function<void()> &fn) {
     if (!g_only.empty() && scenario.find(g_only) == std::string::npos) return;
-    Timer first;
-    fn();  // warm-up, and a first estimate of the cost
-    const double est = first.ElapsedMs();
-    int reps = est > 2000.0 ? 1 : est > kSlowMs ? 3 : est > 20.0 ? 7 : 15;
-    if (g_quick) reps = std::min(reps, 3);
-    std::vector<double> ms;
-    for (int i = 0; i < reps; i++) {
-        Timer t;
-        fn();
-        ms.push_back(t.ElapsedMs());
-    }
-    std::sort(ms.begin(), ms.end());
-    const double median = ms[ms.size() / 2];
-    const mep::bench::Result r{scenario, static_cast<long long>(lines), median};
-    if (g_record) {
-        RecordResult(kBinary, kHistoryPath, r);
-    } else {
-        std::printf("%-52s n=%-8lld %10.3f ms  %14.1f lines/sec\n", r.scenario.c_str(), r.n, r.ms, r.OpsPerSec());
-    }
+    mep::bench::Measure(scenario, static_cast<long long>(lines), fn);
 }
 
 // --- Corpora ---------------------------------------------------------------
@@ -438,12 +414,13 @@ void BenchTreeSitter(const Corpus &c) {
 }  // namespace
 
 int main(int argc, char **argv) {
-    for (int i = 1; i < argc; i++) {
-        if (std::strcmp(argv[i], "--no-record") == 0) g_record = false;
-        else if (std::strcmp(argv[i], "--quick") == 0) g_quick = true;
-        else if (std::strcmp(argv[i], "--only") == 0 && i + 1 < argc) g_only = argv[++i];
-        else if (std::strcmp(argv[i], "--dump") == 0 && i + 1 < argc) g_dump = argv[++i];
+    mep::bench::Session session(argc, argv, kBinary);
+    const std::vector<std::string> &rest = session.Rest();
+    for (size_t i = 0; i < rest.size(); i++) {
+        if (rest[i] == "--only" && i + 1 < rest.size()) g_only = rest[++i];
+        else if (rest[i] == "--dump" && i + 1 < rest.size()) g_dump = rest[++i];
     }
+    const bool quick = mep::bench::Opts().quick;
     std::error_code ec;
     g_tmp = std::filesystem::temp_directory_path(ec) / "mep-mepml-bench";
     std::filesystem::create_directories(g_tmp / "media", ec);
@@ -454,7 +431,7 @@ int main(int argc, char **argv) {
         std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         if (!text.empty()) scaling.push_back({"test_mepml", SplitLines(text)});
     }
-    const std::vector<size_t> sizes = g_quick ? std::vector<size_t>{1000, 4000} : std::vector<size_t>{1000, 4000, 16000};
+    const std::vector<size_t> sizes = quick ? std::vector<size_t>{1000, 4000} : std::vector<size_t>{1000, 4000, 16000};
     for (size_t s : sizes) scaling.push_back({"synth_" + std::to_string(s), Synth(s)});
 
     // Pathological shapes, each at two sizes so the growth shows.
@@ -481,20 +458,26 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "no corpus named %s\n", g_dump.c_str());
         return 1;
     }
+    // Entry ids are mepml/<corpus>; the recorded scenario names stay
+    // <corpus>/<path> as they always were, so history keeps comparing.
     for (const Corpus &c : scaling) {
-        BenchCore(c);
-        BenchTreeSitter(c);
-        BenchLsp(c);
-        BenchExport(c);
-        BenchImport(c);
+        session.Add("mepml/" + c.name, [&c] {
+            BenchCore(c);
+            BenchTreeSitter(c);
+            BenchLsp(c);
+            BenchExport(c);
+            BenchImport(c);
+        });
     }
-
     for (const Corpus &c : patho) {
-        BenchCore(c);
-        BenchTreeSitter(c);
-        BenchLsp(c);
-        BenchExport(c);
+        session.Add("mepml/" + c.name, [&c] {
+            BenchCore(c);
+            BenchTreeSitter(c);
+            BenchLsp(c);
+            BenchExport(c);
+        });
     }
+    const int status = session.Run();
     std::filesystem::remove_all(g_tmp, ec);
-    return 0;
+    return status;
 }

@@ -152,6 +152,11 @@ constexpr int kMaxMaterialMaps = 12;
 // match whatever the active backend's ExportImage expects for "8-bit
 // RGBA, no compression".
 constexpr int kPixelFormatR8G8B8A8 = 7;
+// One byte per pixel: alpha (coverage) over white -- a font atlas. Uploaded
+// as a single-channel texture that samples as (1, 1, 1, coverage), a
+// quarter of RGBA's GPU memory (plans/PERFORMANCE_PLAN.md 3.5). Only
+// GenImageFontAtlas produces it, and only LoadTextureFromImage reads it.
+constexpr int kPixelFormatAlphaWhite = 1001;
 
 struct MaterialMap {
     Texture2D texture;

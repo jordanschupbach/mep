@@ -15,6 +15,7 @@
 #include "bench_util.h"
 #include "vterm.h"
 
+#include <functional>
 #include <string>
 
 namespace {
@@ -55,29 +56,35 @@ std::string Repeat(const std::string &line, size_t bytes) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char **argv) {
+    mep::bench::Session s(argc, argv, "vterm_bench");
     const std::string history = "bench_results/history.jsonl";
     const char *kBinary = "vterm_bench";
+    auto feed = [&](const char *id, std::function<mep::bench::Result()> fn) {
+        s.Add(std::string("vterm/") + id, [=] { mep::bench::RecordResult(kBinary, history, fn()); });
+    };
 
     // The reported case: `yes` -- two bytes per line, so almost all of the
     // work is the scroll and the scrollback push, with no text to parse.
-    mep::bench::RecordResult(kBinary, history, FeedBytes("vterm_scroll_flood_yes", Repeat("y\n", 4u << 20)));
+    feed("scroll_flood_yes", [] { return FeedBytes("vterm_scroll_flood_yes", Repeat("y\n", 4u << 20)); });
 
     // Full-width lines: the same scrolling, with a screenful of cells
     // actually written between each one.
-    mep::bench::RecordResult(kBinary, history,
-                             FeedBytes("vterm_scroll_flood_full_lines",
-                                       Repeat(std::string(static_cast<size_t>(kCols), 'x') + "\n", 4u << 20)));
+    feed("scroll_flood_full_lines", [] {
+        return FeedBytes("vterm_scroll_flood_full_lines",
+                         Repeat(std::string(static_cast<size_t>(kCols), 'x') + "\n", 4u << 20));
+    });
 
     // A build log's shape: moderate lines, every one of them scrolling.
-    mep::bench::RecordResult(
-        kBinary, history,
-        FeedBytes("vterm_scroll_log_lines", Repeat("[12:34:56] compiling src/some/module/file.cpp ... ok\n", 4u << 20)));
+    feed("scroll_log_lines", [] {
+        return FeedBytes("vterm_scroll_log_lines",
+                         Repeat("[12:34:56] compiling src/some/module/file.cpp ... ok\n", 4u << 20));
+    });
 
     // No scrolling at all: a TUI repainting in place (home, write a row,
     // move on) -- the common interactive case, and the one an
     // optimization of the scrolling path must not slow down.
-    {
+    feed("tui_repaint_no_scroll", [] {
         std::string repaint;
         for (int r = 1; r <= kRows; r++) {
             repaint += "\x1b[" + std::to_string(r) + ";1H";
@@ -85,11 +92,11 @@ int main() {
             repaint += std::string(static_cast<size_t>(kCols) - 10, 'o');
             repaint += "\x1b[0m";
         }
-        mep::bench::RecordResult(kBinary, history, FeedBytes("vterm_tui_repaint_no_scroll", Repeat(repaint, 4u << 20)));
-    }
+        return FeedBytes("vterm_tui_repaint_no_scroll", Repeat(repaint, 4u << 20));
+    });
 
     // Plain printable bytes with wrapping but no escape parsing, to keep
     // an eye on the per-byte path itself.
-    mep::bench::RecordResult(kBinary, history, FeedBytes("vterm_plain_wrapped_text", Repeat("the quick brown fox ", 4u << 20)));
-    return 0;
+    feed("plain_wrapped_text", [] { return FeedBytes("vterm_plain_wrapped_text", Repeat("the quick brown fox ", 4u << 20)); });
+    return s.Run();
 }

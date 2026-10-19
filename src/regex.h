@@ -204,6 +204,16 @@ private:
     bool ignore_case_ = false;
     bool ok_ = false;
     std::string error_;
+    // Prefilters read off the AST at compile time (plans/PERFORMANCE_PLAN.md
+    // E7): ASCII literals (already case-folded when ignore_case_) that let
+    // Search skip the backtracker where it cannot match. `required_`: every
+    // match contains it, so a subject without it fails in one find.
+    // `prefix_`: every match starts with it, so only its occurrences are
+    // tried as start positions. `literal_only_`: the pattern *is* prefix_
+    // (no groups, nothing else), so a find is the whole search.
+    std::string required_;
+    std::string prefix_;
+    bool literal_only_ = false;
 };
 
 }  // namespace mep_regex

@@ -758,8 +758,7 @@ struct MailUi {
         Buffer &b = e.buffers_[static_cast<size_t>(s.buffer_id)];
         b.lines = o.lines.empty() ? std::vector<std::string>{""} : o.lines;
         b.modified = false;
-        b.undo_stack.clear();
-        b.redo_stack.clear();
+        b.ResetUndo();
         b.folds.clear();
         b.hide_line_numbers = true;
         const bool message = s.view == MailSession::View::Message;

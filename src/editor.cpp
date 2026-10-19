@@ -2107,7 +2107,42 @@ int DisplayColumnsOf(const std::string &line) {
 }
 }  // namespace
 
+Editor::BufferContentKey Editor::ContentKeyOf(const Buffer &buf) const {
+    BufferContentKey k;
+    k.epoch = change_epoch_;
+    k.lines = buf.lines.size();
+    for (const std::string &l : buf.lines) k.bytes += l.size();
+    k.filetype = LspFiletype(buf.filename);
+    return k;
+}
+
 const std::vector<OrgBlockCard> &Editor::OrgBlockCards(int buffer_id) {
+    static const std::vector<OrgBlockCard> kNone;
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return kNone;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    BufferContentKey key = ContentKeyOf(buf);
+    if (key.filetype == "mepml") {
+        // Built by the mepml scan (Editor::MepmlScan), not re-parsed per
+        // frame -- and handed out as is, not copied per call.
+        auto it = mepml_block_cards_.find(buffer_id);
+        return it != mepml_block_cards_.end() ? it->second : kNone;
+    }
+    RefreshDocSheets();
+    const bool rmd = IsMarkdownFiletype(key.filetype) && IsRmdNotebook(buffer_id);
+    OrgCardsCache &c = org_cards_cache_[buffer_id];
+    if (c.key == key && c.sheets == doc_sheet_styles_signature_ && c.theme == theme_epoch_ && c.rmd_notebook == rmd)
+        return c.cards;
+    c.cards = ScanOrgBlockCards(buffer_id);
+    // (The scan resolved card looks through DocSheetStyle: take the
+    // signature it saw, which is the one now current.)
+    c.key = std::move(key);
+    c.sheets = doc_sheet_styles_signature_;
+    c.theme = theme_epoch_;
+    c.rmd_notebook = rmd;
+    return c.cards;
+}
+
+const std::vector<OrgBlockCard> &Editor::ScanOrgBlockCards(int buffer_id) {
     org_block_cards_.clear();
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return org_block_cards_;
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
@@ -19307,8 +19342,7 @@ void Editor::EnterTerminalNormalMode(TerminalSession &sess) {
     sess.sel_active = false;  // the snapshot path has its own Normal-mode selection
     Buffer &buf = Buf();
     buf.lines.clear();
-    buf.undo_stack.clear();
-    buf.redo_stack.clear();
+    buf.ResetUndo();
     buf.marks.clear();
     buf.modified = false;
 
@@ -27541,6 +27575,56 @@ const std::unordered_map<int, std::vector<Decoration>> &Editor::CurrentBufferDec
     return Buf().decorations;
 }
 
+int Editor::ReconcileNamespaceRows(int ns, const std::vector<RowSpanDeco> &spans,
+                                   const std::vector<uint32_t> &row_start) {
+    if (row_start.empty()) return 0;
+    Buffer &buf = Buf();
+    std::vector<Decoration> &have = buf.decorations[ns];
+    const size_t rows = row_start.size() - 1;
+    thread_local std::vector<uint32_t> seen;
+    thread_local std::vector<unsigned char> bad;
+    seen.assign(rows, 0);
+    bad.assign(rows, 0);
+    bool stray = false;  // a decoration on a row the text no longer has
+    for (const Decoration &d : have) {
+        if (d.row < 0 || static_cast<size_t>(d.row) >= rows) {
+            stray = true;
+            continue;
+        }
+        const size_t r = static_cast<size_t>(d.row);
+        if (bad[r]) continue;
+        const size_t k = row_start[r] + seen[r]++;
+        if (k >= row_start[r + 1] || d.col_start != spans[k].col_start || d.col_end != spans[k].col_end ||
+            d.whole_line || d.hl_group != *spans[k].hl_group)
+            bad[r] = 1;
+    }
+    int changed = 0;
+    for (size_t r = 0; r < rows; r++) {
+        if (!bad[r] && seen[r] != row_start[r + 1] - row_start[r]) bad[r] = 1;
+        changed += bad[r];
+    }
+    if (changed == 0 && !stray) return 0;
+    have.erase(std::remove_if(have.begin(), have.end(),
+                              [&](const Decoration &d) {
+                                  return d.row < 0 || static_cast<size_t>(d.row) >= rows ||
+                                         bad[static_cast<size_t>(d.row)];
+                              }),
+               have.end());
+    for (size_t r = 0; r < rows; r++) {
+        if (!bad[r]) continue;
+        for (uint32_t k = row_start[r]; k < row_start[r + 1]; k++) {
+            Decoration d;
+            d.id = buf.next_decoration_id++;
+            d.row = static_cast<int>(r);
+            d.col_start = spans[k].col_start;
+            d.col_end = spans[k].col_end;
+            d.hl_group = *spans[k].hl_group;
+            have.push_back(std::move(d));
+        }
+    }
+    return changed;
+}
+
 // Buffer-by-id variants (Part VI Phase 27): terminal/Run/REPL output
 // streams into a background buffer that isn't necessarily the active
 // pane's, so it needs to add decorations (ANSI-color spans) without
@@ -33383,52 +33467,143 @@ void Editor::PasteBefore(int count, char reg_name) {
 
 // --- Undo/redo ---------------------------------------------------------
 
-void Editor::PushUndo() {
-    Buf().undo_stack.push_back({Buf().lines, Buf().folds});
-    if (Buf().undo_stack.size() > kMaxUndo) Buf().undo_stack.erase(Buf().undo_stack.begin());
-    Buf().redo_stack.clear();
+namespace {
+
+// The rows two texts differ in: everything before `start` and the last
+// `size - start - count` rows of each are equal (common prefix and suffix).
+struct LineDiff {
+    size_t start = 0;
+    size_t a_count = 0;  // differing rows in the first text
+    size_t b_count = 0;  // ...and in the second
+};
+
+LineDiff DiffLineVectors(const std::vector<std::string> &a, const std::vector<std::string> &b) {
+    size_t p = 0;
+    const size_t n = std::min(a.size(), b.size());
+    while (p < n && a[p] == b[p]) p++;
+    size_t s = 0;
+    while (s < n - p && a[a.size() - 1 - s] == b[b.size() - 1 - s]) s++;
+    return {p, a.size() - p - s, b.size() - p - s};
+}
+
+// Makes `dst` equal `src` by replacing only the rows they differ in; the
+// rows taken out of `dst` go to `*removed` (if given).
+LineDiff SyncLineVectors(std::vector<std::string> &dst, const std::vector<std::string> &src,
+                         std::vector<std::string> *removed) {
+    const LineDiff d = DiffLineVectors(dst, src);
+    const auto at = dst.begin() + static_cast<long>(d.start);
+    if (removed) {
+        removed->assign(std::make_move_iterator(at), std::make_move_iterator(at + static_cast<long>(d.a_count)));
+    }
+    dst.erase(at, at + static_cast<long>(d.a_count));
+    dst.insert(dst.begin() + static_cast<long>(d.start), src.begin() + static_cast<long>(d.start),
+               src.begin() + static_cast<long>(d.start + d.b_count));
+    return d;
+}
+
+// Undoes one delta on `lines` (see Buffer::UndoState).
+void ApplyUndoDelta(std::vector<std::string> &lines, Buffer::UndoState &e) {
+    const auto at = lines.begin() + e.start;
+    lines.erase(at, at + e.count);
+    lines.insert(lines.begin() + e.start, std::make_move_iterator(e.lines.begin()),
+                 std::make_move_iterator(e.lines.end()));
+}
+
+// Closes an open undo checkpoint into an undo_stack entry: what changed
+// between undo_base (the text when it was opened) and now.
+void CaptureUndo(Buffer &buf, size_t max_undo) {
+    if (!buf.undo_pending) return;
+    Buffer::UndoState e;
+    const LineDiff d = SyncLineVectors(buf.undo_base, buf.lines, &e.lines);
+    e.start = static_cast<int>(d.start);
+    e.count = static_cast<int>(d.b_count);
+    e.folds = std::move(buf.undo_pending_folds);
+    buf.undo_pending_folds.clear();
+    buf.undo_pending = false;
+    buf.undo_stack.push_back(std::move(e));
+    if (buf.undo_stack.size() > max_undo) buf.undo_stack.erase(buf.undo_stack.begin());
+}
+
+}  // namespace
+
+void Editor::PushUndo() { PushUndoIn(Buf()); }
+
+void Editor::PushUndoIn(Buffer &buf) {
+    CaptureUndo(buf, kMaxUndo);
+    // Anything changed since the last checkpoint without one (an edit that
+    // pushes no undo step) is simply part of the text this one starts from.
+    SyncLineVectors(buf.undo_base, buf.lines, nullptr);
+    buf.undo_pending = true;
+    buf.undo_pending_folds = buf.folds;
+    buf.redo_stack.clear();
     change_epoch_++;
 }
 
 void Editor::Undo() {
-    if (Buf().undo_stack.empty()) {
+    Buffer &buf = Buf();
+    CaptureUndo(buf, kMaxUndo);
+    if (buf.undo_stack.empty()) {
         status_message_ = "Already at oldest version of the file";
         return;
     }
-    Buf().redo_stack.push_back({Buf().lines, Buf().folds});
-    Buf().lines = Buf().undo_stack.back().lines;
+    // The older text is built on undo_base (the text of the newest
+    // checkpoint, which the entry is relative to), then the buffer is
+    // brought to it -- touching only the rows that differ, and keeping what
+    // it replaced as the redo step. Built this way, an edit made since the
+    // checkpoint without an undo step of its own is undone with it, as it
+    // was when entries were whole-buffer snapshots.
+    Buffer::UndoState e = std::move(buf.undo_stack.back());
+    buf.undo_stack.pop_back();
+    ApplyUndoDelta(buf.undo_base, e);
+    Buffer::UndoState redo;
+    const LineDiff d = SyncLineVectors(buf.lines, buf.undo_base, &redo.lines);
+    redo.start = static_cast<int>(d.start);
+    redo.count = static_cast<int>(d.b_count);
+    redo.folds = std::move(buf.folds);
+    buf.redo_stack.push_back(std::move(redo));
     // Exact, not reconstructed -- see Buffer::UndoState for why a diff
     // cannot recover a fold boundary the undone deletion had destroyed.
-    Buf().folds = Buf().undo_stack.back().folds;
-    Buf().undo_stack.pop_back();
-    Buf().modified = true;
-    // The line vector is swapped wholesale here, so nothing told the
-    // folds about it: recover the edit from the difference between the
-    // two versions and move them by it. Ahead of ClampCursor (which is
-    // fold-aware), or it clamps against ranges that still describe the
-    // text this undo just replaced.
-    ShiftMarksForTextSwap(Buf(), Buf().redo_stack.back().lines);
-    NormalizeFoldsIfStale(Buf());
+    buf.folds = std::move(e.folds);
+    buf.modified = true;
+    // Nothing told the marks about the swap: move them by the edit, which
+    // the diff above already found (the first differing row and the change
+    // in line count -- what ShiftMarksForTextSwap would recover). Ahead of
+    // ClampCursor (which is fold-aware), or it clamps against ranges that
+    // still describe the text this undo just replaced.
+    if (d.b_count != d.a_count)
+        ShiftMarksForLineEdit(buf, static_cast<int>(d.start), static_cast<int>(d.b_count) - static_cast<int>(d.a_count));
+    NormalizeFoldsIfStale(buf);
     ClampCursor();
     // Let the user know when this undo lands them on the oldest change.
-    status_message_ = Buf().undo_stack.empty() ? "Reached oldest version of the file" : "";
+    status_message_ = buf.undo_stack.empty() ? "Reached oldest version of the file" : "";
 }
 
 void Editor::Redo() {
-    if (Buf().redo_stack.empty()) {
+    Buffer &buf = Buf();
+    CaptureUndo(buf, kMaxUndo);
+    if (buf.redo_stack.empty()) {
         status_message_ = "Already at newest version of the file";
         return;
     }
-    Buf().undo_stack.push_back({Buf().lines, Buf().folds});
-    Buf().lines = Buf().redo_stack.back().lines;
-    Buf().folds = Buf().redo_stack.back().folds;  // see Undo
-    Buf().redo_stack.pop_back();
-    Buf().modified = true;
-    ShiftMarksForTextSwap(Buf(), Buf().undo_stack.back().lines);  // see Undo
-    NormalizeFoldsIfStale(Buf());
+    // Undo's mirror image (see there).
+    Buffer::UndoState r = std::move(buf.redo_stack.back());
+    buf.redo_stack.pop_back();
+    ApplyUndoDelta(buf.undo_base, r);
+    Buffer::UndoState undo;
+    const LineDiff d = SyncLineVectors(buf.lines, buf.undo_base, &undo.lines);
+    undo.start = static_cast<int>(d.start);
+    undo.count = static_cast<int>(d.b_count);
+    undo.folds = std::move(buf.folds);
+    buf.undo_stack.push_back(std::move(undo));
+    if (buf.undo_stack.size() > kMaxUndo) buf.undo_stack.erase(buf.undo_stack.begin());
+    buf.folds = std::move(r.folds);  // see Undo
+    buf.modified = true;
+    if (d.b_count != d.a_count)
+        ShiftMarksForLineEdit(buf, static_cast<int>(d.start), static_cast<int>(d.b_count) - static_cast<int>(d.a_count));
+    NormalizeFoldsIfStale(buf);
     ClampCursor();
     // Let the user know when this redo lands them on the most recent change.
-    status_message_ = Buf().redo_stack.empty() ? "Reached newest version of the file" : "";
+    status_message_ = buf.redo_stack.empty() ? "Reached newest version of the file" : "";
 }
 
 // --- Command line ------------------------------------------------------
@@ -35211,8 +35386,8 @@ void Editor::DocHeadingStyle(Buffer &buf, int row, int level, const std::string 
         buf.mepml_heading_look[row] = look;
 }
 
-void Editor::OrgHighlightEmphasis(int ns) {
-    if (LspFiletype(Buf().filename) != "org") return;
+bool Editor::OrgHighlightEmphasis(int ns, const std::vector<int> *only_rows) {
+    if (LspFiletype(Buf().filename) != "org") return false;
     // Org's markers, as mepml's elements: `*bold*`, `/italic/`,
     // `_underline_`, `+strike+`; `=verbatim=` is what mep's Org export
     // writes `|mono|` as and `~code~` what it writes `` `verbatim` `` as,
@@ -35244,32 +35419,11 @@ void Editor::OrgHighlightEmphasis(int ns) {
     const bool conceal_on = org_conceal_visible_ || buf.mepml_view;
     const std::string media = "org";
     const mepml::Element paragraph("paragraph");
-    // Headings: their size and look are the sheet's (Buffer::mepml_heading_scale,
-    // mepml_heading_look, read back through Editor::HeadingStyleForRow and
-    // DrawPane). Rebuilt here, with the rest of the document's rendering.
-    buf.mepml_heading_scale.clear();
-    buf.mepml_heading_look.clear();
-    bool in_block = false, in_box = false;
     const int n = buf.LineCount();
-    for (int row = 0; row < n; row++) {
+    // One row's rendering; `in_box` is the block state the full pass below
+    // carries from row to row (and records, for the rows-only form).
+    auto process_row = [&](int row, bool in_box) {
         const std::string &line = buf.lines[static_cast<size_t>(row)];
-        if (in_block) {
-            if (MatchesOrgBlockMarker(line, "end_")) in_block = false;
-            continue;
-        }
-        {
-            bool is_begin = false;
-            std::string word, rest;
-            if (ParseOrgBlockMarker(line, &is_begin, &word, &rest)) {
-                // A box's block (`#+begin_definition`, `#+begin_box_axiom`)
-                // holds prose, scanned like any other; every other block's
-                // interior is literal.
-                const bool box = mepml::FindBoxKind(word) || word.rfind("box_", 0) == 0;
-                if (is_begin && !box) in_block = true;
-                if (box) in_box = is_begin;
-                continue;
-            }
-        }
         if (in_box) {
             // (In the text's own colour: the org grammar paints a special
             // block's lines as a block, a mepml box's text is prose.)
@@ -35300,7 +35454,7 @@ void Editor::OrgHighlightEmphasis(int ns) {
             while (dashes < line.size() && line[dashes] == '-') ++dashes;
             if (dashes - i >= 5 && line.find_first_not_of(" \t", dashes) == std::string::npos) {
                 DocRuleDecorations(ns, row, static_cast<int>(i), static_cast<int>(dashes), conceal_row, media);
-                continue;
+                return;
             }
         }
         if (!is_headline) {
@@ -35370,9 +35524,66 @@ void Editor::OrgHighlightEmphasis(int ns) {
             }
             i = found_end + 1;
         }
+    };
+    if (only_rows) {
+        const OrgRowScanState &st = org_row_scan_;
+        if (!st.emphasis_valid || st.buffer_id != CurrentBufferId() || st.key != ContentKeyOf(buf) ||
+            st.emphasis.size() != static_cast<size_t>(n))
+            return false;
+        std::vector<int> rows;
+        for (int r : *only_rows)
+            if (r >= 0 && r < n) rows.push_back(r);
+        auto &have = buf.decorations[ns];
+        have.erase(std::remove_if(have.begin(), have.end(),
+                                  [&](const Decoration &d) { return std::find(rows.begin(), rows.end(), d.row) != rows.end(); }),
+                   have.end());
+        for (int r : rows)
+            if (st.emphasis[static_cast<size_t>(r)] != 1) process_row(r, st.emphasis[static_cast<size_t>(r)] == 2);
+        doc_conceal_namespaces_[0] = ns;
+        DocConcealRunsRebuildRows(rows);
+        return true;
     }
+    // Headings: their size and look are the sheet's (Buffer::mepml_heading_scale,
+    // mepml_heading_look, read back through Editor::HeadingStyleForRow and
+    // DrawPane). Rebuilt here, with the rest of the document's rendering.
+    buf.mepml_heading_scale.clear();
+    buf.mepml_heading_look.clear();
+    std::vector<unsigned char> state(static_cast<size_t>(n), 0);
+    bool in_block = false, in_box = false;
+    for (int row = 0; row < n; row++) {
+        const std::string &line = buf.lines[static_cast<size_t>(row)];
+        if (in_block) {
+            if (MatchesOrgBlockMarker(line, "end_")) in_block = false;
+            state[static_cast<size_t>(row)] = 1;
+            continue;
+        }
+        {
+            bool is_begin = false;
+            std::string word, rest;
+            if (ParseOrgBlockMarker(line, &is_begin, &word, &rest)) {
+                // A box's block (`#+begin_definition`, `#+begin_box_axiom`)
+                // holds prose, scanned like any other; every other block's
+                // interior is literal.
+                const bool box = mepml::FindBoxKind(word) || word.rfind("box_", 0) == 0;
+                if (is_begin && !box) in_block = true;
+                if (box) in_box = is_begin;
+                state[static_cast<size_t>(row)] = 1;
+                continue;
+            }
+        }
+        state[static_cast<size_t>(row)] = in_box ? 2 : 0;
+        process_row(row, in_box);
+    }
+    if (org_row_scan_.buffer_id != CurrentBufferId() || org_row_scan_.key != ContentKeyOf(buf)) {
+        org_row_scan_.links_valid = false;
+        org_row_scan_.buffer_id = CurrentBufferId();
+        org_row_scan_.key = ContentKeyOf(buf);
+    }
+    org_row_scan_.emphasis = std::move(state);
+    org_row_scan_.emphasis_valid = true;
     doc_conceal_namespaces_[0] = ns;
     DocConcealRunsRebuild();
+    return true;
 }
 
 void Editor::MdToggleCheckbox() {
@@ -36021,6 +36232,29 @@ void Editor::DocConcealRunsRebuild() {
     for (auto &kv : buf.mepml_row_conceal) std::sort(kv.second.begin(), kv.second.end());
 }
 
+void Editor::DocConcealRunsRebuildRows(const std::vector<int> &rows) {
+    Buffer &buf = Buf();
+    if (LspFiletype(buf.filename) == "mepml") return;
+    for (int r : rows) buf.mepml_row_conceal.erase(r);
+    for (int ns : doc_conceal_namespaces_) {
+        if (ns < 0) continue;
+        const auto found = buf.decorations.find(ns);
+        if (found == buf.decorations.end()) continue;
+        for (const Decoration &d : found->second) {
+            if (std::find(rows.begin(), rows.end(), d.row) == rows.end()) continue;
+            if (d.whole_line || !d.virt_overlay || (d.virt_text.empty() && !d.conceal) || d.virt_text_eol) continue;
+            if (d.col_end <= d.col_start) continue;
+            int cp = 0;
+            for (char c : d.virt_text) cp += (static_cast<unsigned char>(c) & 0xC0) != 0x80;
+            buf.mepml_row_conceal[d.row].push_back({d.col_start, d.col_end, cp});
+        }
+    }
+    for (int r : rows) {
+        auto it = buf.mepml_row_conceal.find(r);
+        if (it != buf.mepml_row_conceal.end()) std::sort(it->second.begin(), it->second.end());
+    }
+}
+
 std::vector<std::string> Editor::CompletionScanBufferWords(const std::string &prefix) const {
     std::unordered_set<std::string> seen;
     std::vector<std::string> words;
@@ -36655,9 +36889,9 @@ int Editor::OrgHeadingExtraSlotsFor(const std::string &line) {
     return kOrgHeadingStyles[std::min(level, kCount) - 1].slots - 1;
 }
 
-void Editor::OrgLinkScan(int ns) {
-    Buf().org_link_spans.clear();
-    if (LspFiletype(CurrentBuffer().filename) != "org") return;
+bool Editor::OrgLinkScan(int ns, const std::vector<int> *only_rows) {
+    if (!only_rows) Buf().org_link_spans.clear();
+    if (LspFiletype(CurrentBuffer().filename) != "org") return false;
     int cur_row = 0, cur_col = 0;
     GetCursorForLua(&cur_row, &cur_col);
     // View mode (Buffer::mepml_view, :OrgViewToggle): no row is the
@@ -36674,19 +36908,13 @@ void Editor::OrgLinkScan(int ns) {
     // by writing it out, and concealing those would hide the very thing
     // the example is showing. Same skip Editor::OrgHighlightEmphasis
     // makes, for the same reason.
-    bool in_block = false;
-    for (int row = 0; row < n; row++) {
+    auto process_row = [&](int row) {
         const std::string &line = Buf().lines[static_cast<size_t>(row)];
-        if (in_block) {
-            if (MatchesOrgBlockMarker(line, "end_")) in_block = false;
-            continue;
-        }
-        if (MatchesOrgBlockMarker(line, "begin_")) {
-            in_block = true;
-            continue;
-        }
         std::vector<OrgLinkSpanInfo> found = ScanOrgLinkSpans(line);
-        if (found.empty()) continue;
+        if (found.empty()) {
+            Buf().org_link_spans.erase(row);
+            return;
+        }
         std::vector<Buffer::OrgLinkSpan> spans;
         spans.reserve(found.size());
         for (OrgLinkSpanInfo &f : found) {
@@ -36724,9 +36952,52 @@ void Editor::OrgLinkScan(int ns) {
             }
         }
         Buf().org_link_spans[row] = std::move(spans);
+    };
+    Buffer &buf = Buf();
+    if (only_rows) {
+        const OrgRowScanState &st = org_row_scan_;
+        if (!st.links_valid || st.buffer_id != CurrentBufferId() || st.key != ContentKeyOf(buf) ||
+            st.links.size() != static_cast<size_t>(n))
+            return false;
+        std::vector<int> rows;
+        for (int r : *only_rows)
+            if (r >= 0 && r < n) rows.push_back(r);
+        auto &have = buf.decorations[ns];
+        have.erase(std::remove_if(have.begin(), have.end(),
+                                  [&](const Decoration &d) { return std::find(rows.begin(), rows.end(), d.row) != rows.end(); }),
+                   have.end());
+        for (int r : rows)
+            if (st.links[static_cast<size_t>(r)] == 0) process_row(r);
+        doc_conceal_namespaces_[1] = ns;
+        DocConcealRunsRebuildRows(rows);
+        return true;
     }
+    std::vector<unsigned char> state(static_cast<size_t>(n), 0);
+    bool in_block = false;
+    for (int row = 0; row < n; row++) {
+        const std::string &line = Buf().lines[static_cast<size_t>(row)];
+        if (in_block) {
+            if (MatchesOrgBlockMarker(line, "end_")) in_block = false;
+            state[static_cast<size_t>(row)] = 1;
+            continue;
+        }
+        if (MatchesOrgBlockMarker(line, "begin_")) {
+            in_block = true;
+            state[static_cast<size_t>(row)] = 1;
+            continue;
+        }
+        process_row(row);
+    }
+    if (org_row_scan_.buffer_id != CurrentBufferId() || org_row_scan_.key != ContentKeyOf(buf)) {
+        org_row_scan_.emphasis_valid = false;
+        org_row_scan_.buffer_id = CurrentBufferId();
+        org_row_scan_.key = ContentKeyOf(buf);
+    }
+    org_row_scan_.links = std::move(state);
+    org_row_scan_.links_valid = true;
     doc_conceal_namespaces_[1] = ns;
     DocConcealRunsRebuild();
+    return true;
 }
 
 bool Editor::OrgFollowLinkTargetOn(int row, const std::string &target) {
@@ -36777,6 +37048,31 @@ bool Editor::OrgFollowLinkAt(int row, int col) {
 }
 
 const std::vector<Editor::OrgTableGrid> &Editor::OrgTables(int buffer_id) {
+    static const std::vector<OrgTableGrid> kNone;
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return kNone;
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    BufferContentKey key = ContentKeyOf(buf);
+    if (key.filetype == "mepml") {
+        auto it = mepml_table_grids_.find(buffer_id);
+        return it != mepml_table_grids_.end() ? it->second : kNone;
+    }
+    if (key.filetype != "org" && !IsMarkdownFiletype(key.filetype)) return kNone;
+    // The wrapped rows' rendered lines are what grids are measured against.
+    size_t wrap = buf.org_table_wrap_rows.size();
+    for (const auto &[row, w] : buf.org_table_wrap_rows) {
+        wrap = wrap * 1000003u + static_cast<size_t>(row);
+        wrap = wrap * 1000003u + w.lines.size();
+        if (!w.lines.empty()) wrap ^= std::hash<std::string>{}(w.lines.front().text) + 0x9e3779b97f4a7c15ull + (wrap << 6);
+    }
+    OrgTablesCache &c = org_tables_cache_[buffer_id];
+    if (c.key == key && c.wrap_signature == wrap) return c.tables;
+    c.tables = ScanOrgTables(buffer_id);
+    c.key = std::move(key);
+    c.wrap_signature = wrap;
+    return c.tables;
+}
+
+const std::vector<Editor::OrgTableGrid> &Editor::ScanOrgTables(int buffer_id) {
     org_tables_.clear();
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return org_tables_;
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
@@ -37041,7 +37337,7 @@ void Editor::OrgTableAutoAlign() {
     // this, merely scrolling the cursor through a ragged table in a file
     // you only opened to read would silently mark it modified.
     if (now_in_table && !is_table_row(prev)) {
-        org_table_entry_undo_depth_ = static_cast<int>(Buf().undo_stack.size());
+        org_table_entry_undo_depth_ = static_cast<int>(Buf().UndoDepth());
         return;
     }
     if (prev < 0 || prev == row || !is_table_row(prev)) return;
@@ -37059,9 +37355,9 @@ void Editor::OrgTableAutoAlign() {
         if (same_table) return;
         // Stepped straight from one table into another: the one just left
         // gets aligned, and the one just entered starts its own watch.
-        org_table_entry_undo_depth_ = static_cast<int>(Buf().undo_stack.size());
+        org_table_entry_undo_depth_ = static_cast<int>(Buf().UndoDepth());
     }
-    if (static_cast<int>(Buf().undo_stack.size()) == org_table_entry_undo_depth_) return;  // read-only visit
+    if (static_cast<int>(Buf().UndoDepth()) == org_table_entry_undo_depth_) return;  // read-only visit
     OrgTableAlignAt(prev);
 }
 
@@ -37920,11 +38216,7 @@ void Editor::SetBufferLinesForLua(int buffer_id, const std::vector<std::string> 
 
 void Editor::PushUndoForBuffer(int buffer_id) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
-    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
-    buf.undo_stack.push_back({buf.lines, buf.folds});
-    if (buf.undo_stack.size() > kMaxUndo) buf.undo_stack.erase(buf.undo_stack.begin());
-    buf.redo_stack.clear();
-    change_epoch_++;
+    PushUndoIn(buffers_[static_cast<size_t>(buffer_id)]);
 }
 
 CursorPos Editor::ClampPositionInBuffer(int buffer_id, CursorPos pos) const {

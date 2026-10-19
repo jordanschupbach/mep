@@ -456,7 +456,84 @@ void TestTiebreakAcrossLanguages() {
 
 }  // namespace
 
+// TreesitterHighlightRows keeps a per-row answer up to date incrementally
+// (only rows an edit or a syntax change touched are re-queried; for
+// Markdown, only the touched paragraphs' inline layer is re-parsed). After
+// every edit it must say exactly what a fresh whole-text pass says, row by
+// row and in the same order (plans/PERFORMANCE_PLAN.md 2.6).
+void CheckRowsMatchWholeText(const std::string &ft, const std::string &key, const std::string &text) {
+    const auto &rows = TreesitterHighlightRows(ft, text, key);
+    static int fresh = 0;
+    const std::vector<TSHighlightSpan> whole = TreesitterHighlight(ft, text, "whole-" + std::to_string(fresh++));
+    std::vector<std::vector<TSHighlightSpan>> want(rows.size());
+    for (const TSHighlightSpan &sp : whole)
+        if (sp.row >= 0 && static_cast<size_t>(sp.row) < want.size()) want[static_cast<size_t>(sp.row)].push_back(sp);
+    bool same = rows.size() == want.size();
+    for (size_t r = 0; same && r < rows.size(); r++) {
+        same = rows[r].size() == want[r].size();
+        for (size_t k = 0; same && k < rows[r].size(); k++)
+            same = rows[r][k].row == want[r][k].row && rows[r][k].col_start == want[r][k].col_start &&
+                   rows[r][k].col_end == want[r][k].col_end && rows[r][k].capture == want[r][k].capture;
+        if (!same) std::fprintf(stderr, "  %s: row %zu differs\n", ft.c_str(), r);
+    }
+    CHECK(same);
+}
+
+void TestIncrementalRowsMatchWholeText() {
+    struct Case {
+        std::string ft;
+        std::string text;
+        // (find, replace) edits applied in order, each followed by a check.
+        std::vector<std::pair<std::string, std::string>> edits;
+    };
+    std::string md;
+    for (int i = 0; i < 40; i++) {
+        md += "# Heading " + std::to_string(i) + "\n\nA paragraph with *emphasis* and `code` and a\n";
+        md += "[link](http://example.com/" + std::to_string(i) + ") that runs on\nto a third line **strong**.\n\n";
+        md += "- item one\n- item _two_\n\n```python\nx = " + std::to_string(i) + "\n```\n\n";
+    }
+    std::string cpp;
+    for (int i = 0; i < 60; i++)
+        cpp += "int f" + std::to_string(i) + "(int a) {\n    // comment\n    return a * " + std::to_string(i) +
+               "; /* block */\n}\n\n";
+    std::string py;
+    for (int i = 0; i < 60; i++)
+        py += "def f" + std::to_string(i) + "(a):\n    \"\"\"doc\"\"\"\n    return a + " + std::to_string(i) + "  # note\n\n";
+    const std::vector<Case> cases = {
+        {"md", md,
+         {{"A paragraph with *emphasis*", "A paragraph with *emph"},          // opens emphasis across lines
+          {"to a third line **strong**.", "to a third line* **strong**."},  // ...and closes it two lines on
+          {"# Heading 7", "Heading 7"},                                        // a heading stops being one
+          {"```python\nx = 3", "```python\nx = 3\n```\n\n```"},           // fences re-pair
+          {"- item _two_", "- item _two"},
+          {"\n\n# Heading 20", "\n\nPlain text joining\n# Heading 20"}}},
+        {"cpp", cpp,
+         {{"// comment", "/* opens a block comment"},
+          {"/* block */", "*/ /* block */"},
+          {"return a * 5;", "return \"unterminated;"},
+          {"int f9(int a) {", "int f9(int a) {\n    int added = 1;"}}},
+        {"py", py,
+         {{"\"\"\"doc\"\"\"", "\"\"\"doc"},
+          {"return a + 3", "return a + 3  \"\"\""},
+          {"def f10(a):", "class C10:"}}},
+    };
+    for (const Case &c : cases) {
+        if (!TreesitterHasGrammar(c.ft)) continue;
+        const std::string key = "incr-test-" + c.ft;
+        std::string text = c.text;
+        CheckRowsMatchWholeText(c.ft, key, text);
+        for (const auto &[find, repl] : c.edits) {
+            const size_t at = text.find(find);
+            CHECK(at != std::string::npos);
+            if (at == std::string::npos) continue;
+            text.replace(at, find.size(), repl);
+            CheckRowsMatchWholeText(c.ft, key, text);
+        }
+    }
+}
+
 int main() {
+    TestIncrementalRowsMatchWholeText();
     TestPythonFStrings();
     TestPythonKeywords();
     TestPythonSoftKeywords();

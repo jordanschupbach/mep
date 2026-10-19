@@ -50,13 +50,16 @@ Vtx MakeVtx(float x, float y, float u, float v, gfx::Color c) {
             static_cast<float>(c.b) / 255.0f, static_cast<float>(c.a) / 255.0f};
 }
 
-void AppendSolidQuad(std::vector<Vtx> &out, float x, float y, float w, float h, gfx::Color c) {
-    out.push_back(MakeVtx(x, y, 0, 0, c));
-    out.push_back(MakeVtx(x + w, y, 0, 0, c));
-    out.push_back(MakeVtx(x, y + h, 0, 0, c));
-    out.push_back(MakeVtx(x + w, y, 0, 0, c));
-    out.push_back(MakeVtx(x + w, y + h, 0, 0, c));
-    out.push_back(MakeVtx(x, y + h, 0, 0, c));
+// The same quad into a caller's fixed array: the per-frame primitives (every
+// glyph, every rectangle -- thousands a frame) build their six vertices on
+// the stack instead of in a heap-allocated vector (plans/PERFORMANCE_PLAN.md R5).
+void FillSolidQuad(Vtx (&out)[6], float x, float y, float w, float h, gfx::Color c) {
+    out[0] = MakeVtx(x, y, 0, 0, c);
+    out[1] = MakeVtx(x + w, y, 0, 0, c);
+    out[2] = MakeVtx(x, y + h, 0, 0, c);
+    out[3] = MakeVtx(x + w, y, 0, 0, c);
+    out[4] = MakeVtx(x + w, y + h, 0, 0, c);
+    out[5] = MakeVtx(x, y + h, 0, 0, c);
 }
 
 // Non-mitered thick polyline: one independent quad per segment. Corners
@@ -236,6 +239,10 @@ struct NativeRenderer2DBackend::Impl {
     void FlushTextured(gl::GLuint texture, const std::vector<Vtx> &verts, gl::GLenum mode = gl::GL_TRIANGLES) {
         Flush(solid_program, solid_proj_loc, texture, verts.data(), static_cast<int>(verts.size()), mode);
     }
+
+    void FlushQuad(gl::GLuint texture, const Vtx (&verts)[6]) {
+        Flush(solid_program, solid_proj_loc, texture, verts, 6, gl::GL_TRIANGLES);
+    }
 };
 
 NativeRenderer2DBackend::NativeRenderer2DBackend(NativeContext *ctx) : impl_(new Impl()) {
@@ -339,16 +346,16 @@ void NativeRenderer2DBackend::EndScissorMode() {
 }
 
 void NativeRenderer2DBackend::DrawRectangle(int x, int y, int width, int height, gfx::Color color) {
-    std::vector<Vtx> v;
-    AppendSolidQuad(v, static_cast<float>(x), static_cast<float>(y), static_cast<float>(width),
-                    static_cast<float>(height), color);
-    impl_->FlushSolid(v);
+    Vtx v[6];
+    FillSolidQuad(v, static_cast<float>(x), static_cast<float>(y), static_cast<float>(width),
+                  static_cast<float>(height), color);
+    impl_->FlushQuad(impl_->white_texture, v);
 }
 
 void NativeRenderer2DBackend::DrawRectangleRec(gfx::Rectangle rec, gfx::Color color) {
-    std::vector<Vtx> v;
-    AppendSolidQuad(v, rec.x, rec.y, rec.width, rec.height, color);
-    impl_->FlushSolid(v);
+    Vtx v[6];
+    FillSolidQuad(v, rec.x, rec.y, rec.width, rec.height, color);
+    impl_->FlushQuad(impl_->white_texture, v);
 }
 
 void NativeRenderer2DBackend::DrawRectangleGradientEx(gfx::Rectangle rec, gfx::Color top_left,
@@ -533,6 +540,18 @@ gfx::Image NativeRenderer2DBackend::ImageFromImage(gfx::Image image, gfx::Rectan
     int rw = static_cast<int>(rec.width), rh = static_cast<int>(rec.height);
     auto *out = static_cast<unsigned char *>(std::malloc(static_cast<size_t>(rw) * static_cast<size_t>(rh) * 4));
     const auto *src = static_cast<const unsigned char *>(image.data);
+    if (image.format == gfx::kPixelFormatAlphaWhite) {
+        // A font atlas (one coverage byte per pixel): the crop comes out as
+        // the white-over-alpha RGBA it was before atlases went single-channel.
+        for (int y = 0; y < rh; y++) {
+            for (int x = 0; x < rw; x++) {
+                unsigned char *o = out + (static_cast<size_t>(y) * static_cast<size_t>(rw) + static_cast<size_t>(x)) * 4;
+                o[0] = o[1] = o[2] = 255;
+                o[3] = src[static_cast<size_t>(ry + y) * static_cast<size_t>(image.width) + static_cast<size_t>(rx + x)];
+            }
+        }
+        return gfx::Image{out, rw, rh, 1, gfx::kPixelFormatR8G8B8A8};
+    }
     for (int y = 0; y < rh; y++) {
         std::memcpy(out + static_cast<size_t>(y) * static_cast<size_t>(rw) * 4,
                     src + (static_cast<size_t>(ry + y) * static_cast<size_t>(image.width) +
@@ -631,11 +650,46 @@ gfx::Color NativeRenderer2DBackend::ColorFromHSV(float hue, float saturation, fl
 // -- Textures -------------------------------------------------------------
 
 gfx::Texture2D NativeRenderer2DBackend::LoadTextureFromImage(gfx::Image image) {
+    // MEP_GFX_TEX_LOG=1: every upload's size, and the running total, on
+    // stderr -- what the GPU half of mep's memory footprint is made of.
+    static const bool kTexLog = std::getenv("MEP_GFX_TEX_LOG") != nullptr;
+    if (kTexLog) {
+        static double total_mb = 0;
+        const double bpp = image.format == gfx::kPixelFormatAlphaWhite ? 1.0 : 4.0;
+        const double mb = static_cast<double>(image.width) * image.height * bpp / (1024.0 * 1024.0);
+        total_mb += mb;
+        std::fprintf(stderr, "[tex] %dx%d %.2f MB (total uploaded %.1f MB)\n", image.width, image.height, mb, total_mb);
+    }
     gl::GLuint id = 0;
     gl::GenTextures(1, &id);
     gl::BindTexture(gl::GL_TEXTURE_2D, id);
-    gl::TexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_RGBA8), image.width, image.height, 0,
-                   gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, image.data);
+    if (image.format == gfx::kPixelFormatAlphaWhite) {
+#if defined(__EMSCRIPTEN__)
+        // WebGL2 has no texture swizzle: widen to white RGBA here instead.
+        std::vector<unsigned char> rgba(static_cast<size_t>(image.width) * static_cast<size_t>(image.height) * 4);
+        const auto *a = static_cast<const unsigned char *>(image.data);
+        for (size_t i = 0, n = static_cast<size_t>(image.width) * static_cast<size_t>(image.height); i < n; i++) {
+            rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
+            rgba[i * 4 + 3] = a[i];
+        }
+        gl::TexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_RGBA8), image.width, image.height, 0,
+                       gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, rgba.data());
+#else
+        // One channel, sampled as (1, 1, 1, coverage): the shader sees
+        // exactly what the RGBA atlas gave it.
+        gl::PixelStorei(gl::GL_UNPACK_ALIGNMENT, 1);
+        gl::TexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_R8), image.width, image.height, 0,
+                       gl::GL_RED, gl::GL_UNSIGNED_BYTE, image.data);
+        gl::PixelStorei(gl::GL_UNPACK_ALIGNMENT, 4);
+        gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_SWIZZLE_R, static_cast<gl::GLint>(gl::GL_ONE_SWIZZLE));
+        gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_SWIZZLE_G, static_cast<gl::GLint>(gl::GL_ONE_SWIZZLE));
+        gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_SWIZZLE_B, static_cast<gl::GLint>(gl::GL_ONE_SWIZZLE));
+        gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_SWIZZLE_A, static_cast<gl::GLint>(gl::GL_RED));
+#endif
+    } else {
+        gl::TexImage2D(gl::GL_TEXTURE_2D, 0, static_cast<gl::GLint>(gl::GL_RGBA8), image.width, image.height, 0,
+                       gl::GL_RGBA, gl::GL_UNSIGNED_BYTE, image.data);
+    }
     gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MIN_FILTER, static_cast<gl::GLint>(gl::GL_LINEAR));
     gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_MAG_FILTER, static_cast<gl::GLint>(gl::GL_LINEAR));
     gl::TexParameteri(gl::GL_TEXTURE_2D, gl::GL_TEXTURE_WRAP_S, static_cast<gl::GLint>(gl::GL_CLAMP_TO_EDGE));
@@ -663,18 +717,23 @@ void NativeRenderer2DBackend::DrawTexturePro(gfx::Texture2D texture, gfx::Rectan
 
     float x0 = -origin.x, y0 = -origin.y;
     float x1 = dest.width - origin.x, y1 = dest.height - origin.y;
-    float rad = rotation * gfx::kDeg2Rad;
-    float c = std::cos(rad), s = std::sin(rad);
+    // (Unrotated -- every glyph -- needs no sin/cos: cos 0 = 1, sin 0 = 0.)
+    float c = 1.0f, s = 0.0f;
+    if (rotation != 0.0f) {
+        const float rad = rotation * gfx::kDeg2Rad;
+        c = std::cos(rad);
+        s = std::sin(rad);
+    }
     auto rot = [&](float x, float y) -> gfx::Vector2 {
         return {dest.x + x * c - y * s, dest.y + x * s + y * c};
     };
     gfx::Vector2 p0 = rot(x0, y0), p1 = rot(x1, y0), p2 = rot(x1, y1), p3 = rot(x0, y1);
 
-    std::vector<Vtx> v = {
+    const Vtx v[6] = {
         MakeVtx(p0.x, p0.y, u0, v0, tint), MakeVtx(p1.x, p1.y, u1, v0, tint), MakeVtx(p2.x, p2.y, u1, v1, tint),
         MakeVtx(p0.x, p0.y, u0, v0, tint), MakeVtx(p2.x, p2.y, u1, v1, tint), MakeVtx(p3.x, p3.y, u0, v1, tint),
     };
-    impl_->FlushTextured(texture.id, v);
+    impl_->FlushQuad(texture.id, v);
 }
 
 void NativeRenderer2DBackend::DrawTextureEx(gfx::Texture2D texture, gfx::Vector2 position, float rotation,

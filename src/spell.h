@@ -17,6 +17,7 @@
 // (nvim's spellfile model) lives in plaintext files the caller supplies, so a
 // word the user "adds" passes immediately and persists across sessions.
 
+#include <array>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -78,6 +79,14 @@ class SpellChecker {
    private:
     // Original-case words in file order (order = frequency proxy for ranking).
     std::vector<std::string> words_;
+    // Per word, computed once at load for Suggest (plans/PERFORMANCE_PLAN.md
+    // S7): its lowercase form, and its a-z letter counts -- a substitution
+    // moves the counts' L1 distance by at most 2, an insertion or deletion
+    // by 1, a transposition not at all, so a candidate more than 2 x
+    // max_dist away in counts cannot be within max_dist edits and is
+    // skipped without running the edit-distance DP.
+    std::vector<std::string> words_lower_;
+    std::vector<std::array<unsigned char, 26>> letter_counts_;
     // Lowercased membership set over words_ + personal good, for O(1) checking.
     std::unordered_set<std::string> lower_set_;
     // Lowercased personal overrides.

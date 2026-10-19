@@ -3,6 +3,7 @@
 
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 struct lua_State;
@@ -303,6 +304,24 @@ private:
     lua_State *L_ = nullptr;
     Editor *editor_ = nullptr;
     std::vector<int> frame_hook_refs_;
+
+public:
+    // Per-hook frame-time profile (plans/PERFORMANCE_PLAN.md Phase 3):
+    // mep.hook_profile(true) starts timing every frame hook, keyed by where
+    // it was defined; mep.hook_stats() reads the totals.
+    struct HookStat {
+        long long calls = 0;
+        double total_ms = 0;
+        double max_ms = 0;
+    };
+    void SetHookProfiling(bool on);
+    const std::unordered_map<std::string, HookStat> &HookStats() const { return hook_stats_; }
+
+private:
+    bool hook_profiling_ = false;
+    std::unordered_map<std::string, HookStat> hook_stats_;
+    std::unordered_map<int, std::string> hook_where_;  // ref -> where it was defined
+    std::string HookWhere(int ref);
 
     /**
      * @brief Calls a frame hook ref with 0 args, 1 result. Returns whether it asked to be dropped

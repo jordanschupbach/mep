@@ -203,11 +203,19 @@ public:
     void ResizePty(int cols, int rows);
 
     /**
-     * @brief Writes to the child's stdin (e.g. `git apply --cached -`, a REPL).
-     * @param data Bytes to write; written in full via a blocking write loop.
+     * @brief Writes to the child's stdin (e.g. `git apply --cached -`, a REPL, a language server).
+     * @param data Bytes to write. A pipe stdin never blocks the caller: what the pipe cannot take now is
+     * queued, in order, and written by FlushStdin (JobManager::PollAll, every frame) as the child reads.
+     * A PTY is written with a blocking loop, as before.
      * @return False once the pipe is closed/gone (or this isn't a POSIX build).
      */
     bool WriteStdin(const std::string &data);
+    /**
+     * @brief Writes as much queued stdin as the pipe takes now, without blocking.
+     */
+    void FlushStdin();
+    /** @brief Bytes WriteStdin has queued that the child has not taken yet. */
+    size_t StdinPending();
     /**
      * @brief Sends SIGINT to the child's process group (a REPL/kernel's
      * "interrupt the current computation" signal -- unlike Kill's SIGTERM
@@ -277,6 +285,11 @@ private:
      */
     void RunTask(TaskEx task);
     int stdout_fd_ = -1, stderr_fd_ = -1, stdin_fd_ = -1;
+    // WriteStdin's queue for a non-blocking pipe stdin (plans/PERFORMANCE_PLAN.md
+    // E1: a blocking write to a busy language server froze the UI thread).
+    std::mutex stdin_mu_;
+    std::string stdin_queue_;
+    bool stdin_nonblocking_ = false;
     bool raw_stdout_ = false;
     bool use_pty_ = false;
     std::vector<std::pair<std::string, std::string>> extra_env_;
@@ -434,6 +447,11 @@ public:
      * @return False if the job doesn't exist or its stdin pipe is closed/gone.
      */
     bool WriteStdin(int id, const std::string &data);
+    /**
+     * @brief Bytes queued for the given job's stdin and not yet taken by it (0 if none or no such job).
+     * @param id Id of the target job, as returned by Spawn().
+     */
+    size_t StdinPending(int id);
     /**
      * @brief Closes the write end of the given job's stdin, signalling EOF to it.
      * @param id Id of the target job, as returned by Spawn().

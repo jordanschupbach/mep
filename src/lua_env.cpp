@@ -3841,6 +3841,24 @@ int l_org_link_scan(lua_State *L) {
     return 0;
 }
 
+// mep.org_rescan_rows(link_ns, emphasis_ns, row, ...) -> true, or false when
+// a full rescan is needed: re-renders the Org links and emphasis of just
+// the given rows (1-indexed) -- what a cursor move changes, since only the
+// cursor's row is shown unconcealed. Rescanning all of a 20k-line file on
+// every cursor move was most of an Org frame (plans/PERFORMANCE_PLAN.md
+// Phase 3). False when the text changed since the last full scans.
+int l_org_rescan_rows(lua_State *L) {
+    const int link_ns = static_cast<int>(luaL_checkinteger(L, 1));
+    const int emphasis_ns = static_cast<int>(luaL_checkinteger(L, 2));
+    std::vector<int> rows;
+    for (int i = 3; i <= lua_gettop(L); i++)
+        if (lua_isinteger(L, i)) rows.push_back(static_cast<int>(lua_tointeger(L, i)) - 1);
+    Editor *ed = GetEditor(L);
+    const bool ok = ed->OrgLinkScan(link_ns, &rows) && ed->OrgHighlightEmphasis(emphasis_ns, &rows);
+    lua_pushboolean(L, ok ? 1 : 0);
+    return 1;
+}
+
 // --- mepml (src/mepml_doc.h, Editor::Mepml*; driven by kBuiltinMepml) ---
 
 /**
@@ -5460,6 +5478,293 @@ int l_ts_highlight(lua_State *L) {
         }
     }
     lua_pushboolean(L, 1);
+    return 1;
+}
+
+// The current buffer's text, lines joined by '\n' with no trailing
+// newline -- exactly what `table.concat(lines, '\n')` over mep.get_line
+// produced, built in one allocation instead of a Lua string per line plus
+// a concat (plans/PERFORMANCE_PLAN.md 2.3).
+std::string CurrentBufferText(const Editor *ed) {
+    const std::vector<std::string> &lines = ed->CurrentBuffer().lines;
+    size_t total = lines.empty() ? 0 : lines.size() - 1;
+    for (const std::string &l : lines) total += l.size();
+    std::string text;
+    text.reserve(total);
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (i) text += '\n';
+        text += lines[i];
+    }
+    return text;
+}
+
+// mep.buffer_text() -> the current buffer as one string (see CurrentBufferText).
+int l_buffer_text(lua_State *L) {
+    const std::string text = CurrentBufferText(GetEditor(L));
+    lua_pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
+// mep.get_lines([first[, last]]) -> array of the current buffer's lines
+// first..last (1-indexed, inclusive, clamped; default the whole buffer) --
+// one call where a loop of mep.get_line made a C call per line.
+int l_get_lines(lua_State *L) {
+    const std::vector<std::string> &lines = GetEditor(L)->CurrentBuffer().lines;
+    const lua_Integer n = static_cast<lua_Integer>(lines.size());
+    lua_Integer first = std::max<lua_Integer>(1, luaL_optinteger(L, 1, 1));
+    lua_Integer last = std::min<lua_Integer>(n, luaL_optinteger(L, 2, n));
+    lua_createtable(L, static_cast<int>(std::max<lua_Integer>(0, last - first + 1)), 0);
+    for (lua_Integer i = first; i <= last; i++) {
+        const std::string &l = lines[static_cast<size_t>(i - 1)];
+        lua_pushlstring(L, l.data(), l.size());
+        lua_rawseti(L, -2, i - first + 1);
+    }
+    return 1;
+}
+
+// mep.ts_highlight_buffer(ns, filetype, hl_map, cache_key) -> true, or nil
+// without a grammar: mep.ts_highlight over the *whole current buffer*, read
+// here rather than handed over from Lua, and written into `ns` by row
+// reconciliation (Editor::ReconcileNamespaceRows) instead of clearing the
+// namespace and re-adding every span -- after a keystroke only the rows
+// whose highlighting actually changed are touched. `ns` must be used for
+// nothing else (mep.syntax_highlight's plain-filetype path).
+int l_ts_highlight_buffer(lua_State *L) {
+    const int ns = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *filetype = luaL_checkstring(L, 2);
+    luaL_checktype(L, 3, LUA_TTABLE);
+    const char *cache_key = luaL_optstring(L, 4, "");
+    if (!TreesitterHasGrammar(filetype)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    std::unordered_map<std::string, std::string> hl_map;
+    lua_pushnil(L);
+    while (lua_next(L, 3) != 0) {
+        if (lua_type(L, -2) == LUA_TSTRING && lua_isstring(L, -1)) hl_map[lua_tostring(L, -2)] = lua_tostring(L, -1);
+        lua_pop(L, 1);
+    }
+    Editor *ed = GetEditor(L);
+    const std::string key = *cache_key ? cache_key : filetype;
+    // A large buffer whose passes are slow is parsed off this thread
+    // (TreesitterHighlightRowsMaybeAsync); until its answer for this text
+    // arrives there may be nothing to apply yet, and the namespace keeps
+    // what it has (its decorations follow line edits on their own).
+    const TSRowsAnswer answer = TreesitterHighlightRowsMaybeAsync(filetype, CurrentBufferText(ed), cache_key);
+    if (!answer.rows) {
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    const std::vector<std::vector<TSHighlightSpan>> &rows = *answer.rows;
+    // Nothing to do when the rows are the ones last reconciled into `ns` and
+    // `ns` is still exactly as that left it (same buffer, decoration count
+    // and storage -- a clear or anyone else's write changes one of those):
+    // the common case of a hook re-running on text it has already coloured.
+    struct Applied {
+        std::string key;
+        uint64_t generation = 0;
+        int buffer = -1;
+        size_t count = 0;
+        const Decoration *data = nullptr;
+    };
+    static std::unordered_map<int, Applied> applied;
+    auto ns_state = [&](size_t *count, const Decoration **data) {
+        const auto &all = ed->CurrentBufferDecorations();
+        auto it = all.find(ns);
+        *count = it == all.end() ? 0 : it->second.size();
+        *data = it == all.end() ? nullptr : it->second.data();
+    };
+    const uint64_t generation = answer.generation;
+    {
+        size_t count = 0;
+        const Decoration *data = nullptr;
+        ns_state(&count, &data);
+        auto it = applied.find(ns);
+        if (it != applied.end() && it->second.key == key && it->second.generation == generation &&
+            it->second.buffer == ed->CurrentBufferId() && it->second.count == count && it->second.data == data) {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+    std::unordered_map<std::string, const std::string *> resolved;
+    thread_local std::vector<Editor::RowSpanDeco> spans;
+    thread_local std::vector<uint32_t> row_start;
+    spans.clear();
+    row_start.assign(1, 0);
+    for (const auto &row : rows) {
+        for (const TSHighlightSpan &sp : row) {
+            auto r = resolved.find(sp.capture);
+            if (r == resolved.end()) {
+                auto it = hl_map.find(sp.capture);
+                if (it == hl_map.end()) {
+                    const size_t dot = sp.capture.find('.');
+                    it = hl_map.find(dot == std::string::npos ? sp.capture : sp.capture.substr(0, dot));
+                }
+                r = resolved.emplace(sp.capture, it == hl_map.end() ? nullptr : &it->second).first;
+            }
+            if (r->second) spans.push_back({sp.col_start, sp.col_end, r->second});
+        }
+        row_start.push_back(static_cast<uint32_t>(spans.size()));
+    }
+    ed->ReconcileNamespaceRows(ns, spans, row_start);
+    Applied &a = applied[ns];
+    a.key = key;
+    a.generation = generation;
+    a.buffer = ed->CurrentBufferId();
+    ns_state(&a.count, &a.data);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// mep.ts_highlight_mepml_buffer(ns, mepml_hl, code_hl, lang_ft) -> true, or
+// nil without the mepml grammar: mep.syntax_highlight's mepml pass, the way
+// ts_highlight_buffer does plain files -- the buffer read here, its grammar's
+// spans and then each ``` code block's own language's spans (lang_ft maps a
+// block's language to a filetype, else its lowercased name), written into
+// `ns` by row reconciliation instead of a clear and a re-add of every span.
+// `ns` must be used for nothing else.
+int l_ts_highlight_mepml_buffer(lua_State *L) {
+    const int ns = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    luaL_checktype(L, 3, LUA_TTABLE);
+    const bool has_lang_map = lua_istable(L, 4);
+    if (!TreesitterHasGrammar("mepml")) {
+        lua_pushnil(L);
+        return 1;
+    }
+    Editor *ed = GetEditor(L);
+    const int buffer = ed->CurrentBufferId();
+    // Per buffer: two open documents no longer evict each other's tree.
+    const std::string key = "buf:" + std::to_string(buffer) + ":mepml";
+    const std::string text = CurrentBufferText(ed);
+    const std::vector<std::vector<TSHighlightSpan>> &rows = TreesitterHighlightRows("mepml", text, key);
+    const uint64_t generation = TreesitterRowsGeneration(key);
+
+    // Unchanged text and an untouched namespace: nothing to do (the code
+    // blocks' spans come from the same text, so they are unchanged too).
+    struct Applied {
+        uint64_t generation = 0;
+        int buffer = -1;
+        size_t count = 0;
+        const Decoration *data = nullptr;
+    };
+    static std::unordered_map<int, Applied> applied;
+    auto ns_state = [&](size_t *count, const Decoration **data) {
+        const auto &all = ed->CurrentBufferDecorations();
+        auto it = all.find(ns);
+        *count = it == all.end() ? 0 : it->second.size();
+        *data = it == all.end() ? nullptr : it->second.data();
+    };
+    {
+        size_t count = 0;
+        const Decoration *data = nullptr;
+        ns_state(&count, &data);
+        auto it = applied.find(ns);
+        if (it != applied.end() && it->second.generation == generation && it->second.buffer == buffer &&
+            it->second.count == count && it->second.data == data) {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+
+    auto read_map = [L](int idx) {
+        std::unordered_map<std::string, std::string> m;
+        lua_pushnil(L);
+        while (lua_next(L, idx) != 0) {
+            if (lua_type(L, -2) == LUA_TSTRING && lua_isstring(L, -1)) m[lua_tostring(L, -2)] = lua_tostring(L, -1);
+            lua_pop(L, 1);
+        }
+        return m;
+    };
+    const std::unordered_map<std::string, std::string> mepml_hl = read_map(2), code_hl = read_map(3);
+    auto resolver = [](const std::unordered_map<std::string, std::string> &hl,
+                       std::unordered_map<std::string, const std::string *> &cache,
+                       const std::string &capture) -> const std::string * {
+        auto r = cache.find(capture);
+        if (r != cache.end()) return r->second;
+        auto it = hl.find(capture);
+        if (it == hl.end()) {
+            const size_t dot = capture.find('.');
+            it = hl.find(dot == std::string::npos ? capture : capture.substr(0, dot));
+        }
+        return cache.emplace(capture, it == hl.end() ? nullptr : &it->second).first->second;
+    };
+
+    // The document's own spans, copied out first: `rows` lives in the
+    // tree-sitter module's cache, which the code blocks' passes below use.
+    std::unordered_map<std::string, const std::string *> mepml_resolved, code_resolved;
+    std::vector<Editor::RowSpanDeco> doc_spans;
+    std::vector<uint32_t> doc_start(1, 0);
+    for (const auto &row : rows) {
+        for (const TSHighlightSpan &sp : row)
+            if (const std::string *hl = resolver(mepml_hl, mepml_resolved, sp.capture))
+                doc_spans.push_back({sp.col_start, sp.col_end, hl});
+        doc_start.push_back(static_cast<uint32_t>(doc_spans.size()));
+    }
+    const size_t n_rows = rows.size();
+
+    // Each code block in its own language, with its own incremental tree
+    // (keyed by the block's ordinal among blocks of that language).
+    struct BlockSpan {
+        size_t row;
+        Editor::RowSpanDeco deco;
+    };
+    std::vector<BlockSpan> block_spans;
+    const std::vector<std::string> &lines = ed->CurrentBuffer().lines;
+    std::unordered_map<std::string, int> nth;
+    for (const TSCodeBlockRange &cb : TreesitterMepmlCodeBlocks(text, key)) {
+        std::string lang = cb.lang;
+        for (char &c : lang) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        std::string ft = lang;
+        if (has_lang_map) {
+            lua_getfield(L, 4, lang.c_str());
+            if (lua_isstring(L, -1)) ft = lua_tostring(L, -1);
+            lua_pop(L, 1);
+        }
+        if (ft.empty()) continue;
+        const int ordinal = ++nth[ft];
+        if (!TreesitterHasGrammar(ft)) continue;
+        if (cb.first_row < 0 || static_cast<size_t>(cb.last_row) >= lines.size()) continue;
+        std::string body;
+        for (int r = cb.first_row; r <= cb.last_row; ++r) {
+            if (r > cb.first_row) body += '\n';
+            body += lines[static_cast<size_t>(r)];
+        }
+        const std::string block_key = "mepml-block:" + std::to_string(buffer) + ":" + ft + ":" + std::to_string(ordinal);
+        for (const auto &row : TreesitterHighlightRows(ft, body, block_key))
+            for (const TSHighlightSpan &sp : row)
+                if (const std::string *hl = resolver(code_hl, code_resolved, sp.capture))
+                    block_spans.push_back({static_cast<size_t>(sp.row + cb.first_row), {sp.col_start, sp.col_end, hl}});
+    }
+
+    // Row by row: the document's spans, then the block's on top (drawn
+    // later, so they win, as when they were added after).
+    std::vector<Editor::RowSpanDeco> spans;
+    std::vector<uint32_t> row_start;
+    spans.reserve(doc_spans.size() + block_spans.size());
+    row_start.reserve(n_rows + 1);
+    row_start.push_back(0);
+    size_t b = 0;
+    for (size_t r = 0; r < n_rows; ++r) {
+        spans.insert(spans.end(), doc_spans.begin() + doc_start[r], doc_spans.begin() + doc_start[r + 1]);
+        while (b < block_spans.size() && block_spans[b].row < r) ++b;
+        for (; b < block_spans.size() && block_spans[b].row == r; ++b) spans.push_back(block_spans[b].deco);
+        row_start.push_back(static_cast<uint32_t>(spans.size()));
+    }
+    ed->ReconcileNamespaceRows(ns, spans, row_start);
+    Applied &a = applied[ns];
+    a.generation = generation;
+    a.buffer = buffer;
+    ns_state(&a.count, &a.data);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+// mep.ts_highlight_async_ready() -> true once since the last call if a
+// background highlight pass (see l_ts_highlight_buffer) has finished --
+// mep.syntax_highlight's frame hook re-runs the highlight to apply it.
+int l_ts_highlight_async_ready(lua_State *L) {
+    lua_pushboolean(L, TreesitterAsyncResultWaiting() ? 1 : 0);
     return 1;
 }
 
@@ -11897,6 +12202,17 @@ int l_lsp_notify(lua_State *L) {
     return 0;
 }
 
+// mep.lsp_write_pending(client_id) -> bytes: what mep has written to the
+// server that the server has not read yet (its stdin pipe is full, so the
+// rest waits in Job's queue rather than blocking the UI). mep.lsp_did_change
+// holds the next full-text change back while this is non-zero, so a busy
+// server is sent only the latest text (plans/PERFORMANCE_PLAN.md E1).
+int l_lsp_write_pending(lua_State *L) {
+    const int client_id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushinteger(L, static_cast<lua_Integer>(JobManager::Instance().StdinPending(client_id)));
+    return 1;
+}
+
 // mep.lsp_on_request(client_id, method, fn): like mep.lsp_on_notification,
 // but for a server-initiated *request* (has both "id" and "method") --
 // DAP's runInTerminal is the motivating case. fn(params) is called and
@@ -13851,6 +14167,53 @@ int l_cpu_count(lua_State *L) {
 int l_clock(lua_State *L) {
     const auto t = std::chrono::steady_clock::now().time_since_epoch();
     lua_pushnumber(L, std::chrono::duration<double>(t).count());
+    return 1;
+}
+
+// mep.hook_profile(on): start (true; resets) or stop timing every frame hook.
+// mep.hook_stats() -> array of {where=, calls=, total_ms=, max_ms=}, the
+// costliest first (LuaEnv::HookWhere says what `where` names).
+int l_hook_profile(lua_State *L) {
+    GetLuaEnv(L)->SetHookProfiling(lua_toboolean(L, 1) != 0);
+    return 0;
+}
+
+int l_hook_stats(lua_State *L) {
+    std::vector<std::pair<std::string, LuaEnv::HookStat>> rows(GetLuaEnv(L)->HookStats().begin(),
+                                                               GetLuaEnv(L)->HookStats().end());
+    std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) { return a.second.total_ms > b.second.total_ms; });
+    lua_createtable(L, static_cast<int>(rows.size()), 0);
+    for (size_t i = 0; i < rows.size(); i++) {
+        lua_createtable(L, 0, 4);
+        lua_pushlstring(L, rows[i].first.data(), rows[i].first.size());
+        lua_setfield(L, -2, "where");
+        lua_pushinteger(L, static_cast<lua_Integer>(rows[i].second.calls));
+        lua_setfield(L, -2, "calls");
+        lua_pushnumber(L, rows[i].second.total_ms);
+        lua_setfield(L, -2, "total_ms");
+        lua_pushnumber(L, rows[i].second.max_ms);
+        lua_setfield(L, -2, "max_ms");
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+
+// mep.frame_stats(): {work=, hooks=, draw=, swap=, frames=} for the last
+// complete frame, in ms (Editor::FrameStats) -- the benchmark harness's view
+// of what a frame cost, independent of vsync and idle throttling.
+int l_frame_stats(lua_State *L) {
+    const Editor::FrameStats &s = GetEditor(L)->LastFrameStats();
+    lua_createtable(L, 0, 5);
+    lua_pushnumber(L, s.work_ms);
+    lua_setfield(L, -2, "work");
+    lua_pushnumber(L, s.hooks_ms);
+    lua_setfield(L, -2, "hooks");
+    lua_pushnumber(L, s.draw_ms);
+    lua_setfield(L, -2, "draw");
+    lua_pushnumber(L, s.swap_ms);
+    lua_setfield(L, -2, "swap");
+    lua_pushinteger(L, static_cast<lua_Integer>(s.frames));
+    lua_setfield(L, -2, "frames");
     return 1;
 }
 
@@ -15993,6 +16356,11 @@ const luaL_Reg kMepFuncs[] = {
     {"git_stage_hunk", l_git_stage_hunk},
     {"ts_apply_captures", l_ts_apply_captures},
     {"ts_highlight", l_ts_highlight},
+    {"ts_highlight_buffer", l_ts_highlight_buffer},
+    {"ts_highlight_mepml_buffer", l_ts_highlight_mepml_buffer},
+    {"ts_highlight_async_ready", l_ts_highlight_async_ready},
+    {"buffer_text", l_buffer_text},
+    {"get_lines", l_get_lines},
     {"buffer_set_lines", l_buffer_set_lines},
     {"buffer_delete", l_buffer_delete},
     {"buffer_set_drag_resolver", l_buffer_set_drag_resolver},
@@ -16088,6 +16456,7 @@ const luaL_Reg kMepFuncs[] = {
     {"buf_clear_org_lsp_status", l_buf_clear_org_lsp_status},
     {"org_latex_visible", l_org_latex_visible},
     {"org_link_scan", l_org_link_scan},
+    {"org_rescan_rows", l_org_rescan_rows},
     {"mepml_scan", l_mepml_scan},
     {"mepml_folds", l_mepml_folds},
     {"mepml_block_at", l_mepml_block_at},
@@ -16289,6 +16658,9 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_save_epoch", l_buffer_save_epoch},
     {"now", l_now},
     {"clock", l_clock},
+    {"frame_stats", l_frame_stats},
+    {"hook_profile", l_hook_profile},
+    {"hook_stats", l_hook_stats},
     {"cpu_count", l_cpu_count},
     {"list_dir", l_list_dir},
     {"is_image_path", l_is_image_path},
@@ -16402,6 +16774,7 @@ const luaL_Reg kMepFuncs[] = {
     {"lsp_request", l_lsp_request},
     {"lsp_symbols_flatten", l_lsp_symbols_flatten},
     {"lsp_notify", l_lsp_notify},
+    {"lsp_write_pending", l_lsp_write_pending},
     {"lsp_on_notification", l_lsp_on_notification},
     {"lsp_on_request", l_lsp_on_request},
     {"lsp_connect", l_lsp_connect},
@@ -17041,6 +17414,39 @@ bool LuaEnv::CallFrameHookRef(int ref) {
     return done;
 }
 
+void LuaEnv::SetHookProfiling(bool on) {
+    hook_profiling_ = on;
+    hook_stats_.clear();
+    hook_where_.clear();
+}
+
+// Where a frame hook was defined, as "chunk:line". A hook that only wraps
+// another function (mep.on_buffer_changed's per-hook poller, say -- every
+// one of them is the same closure) is reported as the function it wraps:
+// its upvalue `fn`.
+std::string LuaEnv::HookWhere(int ref) {
+    auto cached = hook_where_.find(ref);
+    if (cached != hook_where_.end()) return cached->second;
+    lua_rawgeti(L_, LUA_REGISTRYINDEX, ref);
+    for (int i = 1;; i++) {
+        const char *name = lua_getupvalue(L_, -1, i);
+        if (!name) break;
+        if (std::strcmp(name, "fn") == 0 && lua_isfunction(L_, -1)) {
+            lua_remove(L_, -2);  // keep the wrapped function in the hook's place
+            break;
+        }
+        lua_pop(L_, 1);
+    }
+    lua_Debug ar{};
+    lua_getinfo(L_, ">S", &ar);  // pops the function
+    std::string src = ar.short_src;
+    // A builtin chunk's name is its opening text; keep it short but telling.
+    if (src.size() > 48) src = src.substr(0, 48) + "...";
+    std::string where = src + ":" + std::to_string(ar.linedefined);
+    hook_where_[ref] = where;
+    return where;
+}
+
 void LuaEnv::RunFrameHooks() {
     // Index-based, bounded to this frame's starting count, and re-reading
     // frame_hook_refs_[i] fresh each iteration rather than caching an
@@ -17055,7 +17461,21 @@ void LuaEnv::RunFrameHooks() {
     size_t write = 0;
     for (size_t i = 0; i < count; i++) {
         int ref = frame_hook_refs_[i];
-        if (CallFrameHookRef(ref)) {
+        bool done;
+        if (hook_profiling_) {
+            const std::string where = HookWhere(ref);
+            const auto t0 = std::chrono::steady_clock::now();
+            done = CallFrameHookRef(ref);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            HookStat &s = hook_stats_[where];
+            s.calls++;
+            s.total_ms += ms;
+            s.max_ms = std::max(s.max_ms, ms);
+        } else {
+            done = CallFrameHookRef(ref);
+        }
+        if (done) {
+            hook_where_.erase(ref);  // (the ref number is reused for the next hook registered)
             luaL_unref(L_, LUA_REGISTRYINDEX, ref);
         } else {
             frame_hook_refs_[write++] = ref;

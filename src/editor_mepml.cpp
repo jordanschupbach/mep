@@ -342,13 +342,22 @@ int Editor::HeadingIndentColsForRow(const Buffer &buf, int row) {
     return 0;
 }
 
-const mepml::style::Computed &Editor::DocSheetStyle(const std::vector<mepml::Element> &chain, const std::string &media) const {
+void Editor::RefreshDocSheets() const {
+    // Once per frame and buffer (frame 0, a windowless editor, never reuses).
+    const unsigned long frame = frame_stats_.frames;
+    if (frame != 0 && frame == doc_sheets_frame_ && CurrentBufferId() == doc_sheets_buffer_) return;
     std::string signature;
-    std::vector<std::shared_ptr<const mepml::style::Sheet>> sheets = MepmlSheets(&signature);
+    doc_sheets_ = MepmlSheets(&signature);
+    doc_sheets_frame_ = frame;
+    doc_sheets_buffer_ = CurrentBufferId();
     if (signature != doc_sheet_styles_signature_) {
         doc_sheet_styles_.clear();
         doc_sheet_styles_signature_ = signature;
     }
+}
+
+const mepml::style::Computed &Editor::DocSheetStyle(const std::vector<mepml::Element> &chain, const std::string &media) const {
+    RefreshDocSheets();
     std::string key = media + "|";
     for (const mepml::Element &e : chain) {
         key += e.name + ":" + e.part;
@@ -358,7 +367,7 @@ const mepml::style::Computed &Editor::DocSheetStyle(const std::vector<mepml::Ele
     auto it = doc_sheet_styles_.find(key);
     if (it != doc_sheet_styles_.end()) return it->second;
     mepml::style::Cascade cascade;
-    cascade.sheets = std::move(sheets);
+    cascade.sheets = doc_sheets_;
     cascade.media = {"editor", "screen"};
     // (`media` is one tag, or several joined by commas: "md,source".)
     for (size_t at = 0; at < media.size();) {
@@ -753,6 +762,21 @@ long long FileMtime(const std::string &path) {
 }  // namespace
 
 Editor::MepmlParseCache &Editor::MepmlCacheEntry(bool with_imports) const {
+    const int id = CurrentBufferId();
+    if (mepml_memo_depth_ > 0) {
+        if (mepml_memo_buffer_ != id) {
+            MepmlMemoReset();
+            mepml_memo_buffer_ = id;
+        }
+        if (MepmlParseCache *m = mepml_memo_entry_[with_imports ? 1 : 0]) return *m;
+        MepmlParseCache *found = &MepmlCacheEntryValidate(with_imports);
+        mepml_memo_entry_[with_imports ? 1 : 0] = found;
+        return *found;
+    }
+    return MepmlCacheEntryValidate(with_imports);
+}
+
+Editor::MepmlParseCache &Editor::MepmlCacheEntryValidate(bool with_imports) const {
     const Buffer &buf = Buf();
     const int id = CurrentBufferId();
     MepmlParseCache &plain = mepml_parse_cache_[0][id];
@@ -784,7 +808,10 @@ Editor::MepmlParseCache &Editor::MepmlCacheEntry(bool with_imports) const {
     }
     c.reads.clear();
     c.doc = mepml::ParseWithImports(file, buf.lines, [&c](const std::string &path, std::vector<std::string> *out) {
-        c.reads.emplace_back(path, FileMtime(path));
+        // Once per file: a document importing one file in many places
+        // would otherwise stat it that many times on every freshness check.
+        if (std::none_of(c.reads.begin(), c.reads.end(), [&](const auto &r) { return r.first == path; }))
+            c.reads.emplace_back(path, FileMtime(path));
         return ReadFileLines(path, out);
     });
     c.file = file;
@@ -840,8 +867,11 @@ std::shared_ptr<const mepml::style::Sheet> Editor::MepmlSheetFile(const std::str
     const long long mtime = FileMtime(path);
     *signature += path + "@" + std::to_string(mtime) + ";";
     MepmlSheetFileEntry &e = mepml_sheet_files_[path];
-    if (e.sheet && e.mtime == mtime) return e.sheet;
+    // (A missing file is cached too: retrying the open on every call cost
+    // Org/Markdown a stat + fopen per styled span, plans/PERFORMANCE_PLAN.md R3.)
+    if (e.loaded && e.mtime == mtime) return e.sheet;
     e.mtime = mtime;
+    e.loaded = true;
     std::vector<std::string> lines;
     // (Not `mtime < 0`: file times count from an epoch in the future.)
     if (!ReadFileLines(path, &lines)) {
@@ -855,6 +885,23 @@ std::shared_ptr<const mepml::style::Sheet> Editor::MepmlSheetFile(const std::str
 }
 
 std::vector<std::shared_ptr<const mepml::style::Sheet>> Editor::MepmlSheets(std::string *signature) const {
+    if (mepml_memo_depth_ > 0) {
+        const int id = CurrentBufferId();
+        if (mepml_memo_buffer_ != id) {
+            MepmlMemoReset();
+            mepml_memo_buffer_ = id;
+        }
+        if (!mepml_memo_sheets_valid_) {
+            mepml_memo_sheets_ = MepmlSheetsCollect(&mepml_memo_sheet_sig_);
+            mepml_memo_sheets_valid_ = true;
+        }
+        if (signature) *signature = mepml_memo_sheet_sig_;
+        return mepml_memo_sheets_;
+    }
+    return MepmlSheetsCollect(signature);
+}
+
+std::vector<std::shared_ptr<const mepml::style::Sheet>> Editor::MepmlSheetsCollect(std::string *signature) const {
     // The built-in sheet is mep's default look (assets/mepml/default.mepss).
     static const std::shared_ptr<const mepml::style::Sheet> builtin(&mepml::style::DefaultSheet(), [](const mepml::style::Sheet *) {});
     std::vector<std::shared_ptr<const mepml::style::Sheet>> out = {builtin};
@@ -1103,7 +1150,8 @@ bool Editor::MepmlParseReady() {
             r.plain_spans = mepml::Highlight(r.plain, &r.plain_paths, &r.plain_block_nodes);
             if (r.has_imports) {
                 r.imports = mepml::ParseWithImports(file, r.lines, [&r](const std::string &path, std::vector<std::string> *out) {
-                    r.reads.emplace_back(path, FileMtime(path));
+                    if (std::none_of(r.reads.begin(), r.reads.end(), [&](const auto &e) { return e.first == path; }))
+                        r.reads.emplace_back(path, FileMtime(path));
                     return ReadFileLines(path, out);
                 });
                 r.imports_spans = mepml::Highlight(r.imports, &r.imports_paths, &r.imports_block_nodes);
@@ -1197,6 +1245,7 @@ size_t MepmlTabsSig(const std::vector<MepmlTabSet> &sets) {
 }  // namespace
 
 void Editor::MepmlScan(int ns, bool own_diagnostics) {
+    const MepmlScanMemo memo(*this);
     Buffer &buf = Buf();
     // A document just opened: its folds are built now, rather than lazily
     // by the first fold command, so the code its exports leave out starts
@@ -4594,8 +4643,7 @@ void Editor::MepmlPresentShowPage(bool keep_cursor) {
     Buffer &vb = buffers_[static_cast<size_t>(present_.view_buffer)];
     vb.lines = std::move(lines);
     vb.modified = false;
-    vb.undo_stack.clear();
-    vb.redo_stack.clear();
+    vb.ResetUndo();
     vb.folds.clear();
     // Tells the buffer-change hooks (the mepml render, highlighting).
     change_epoch_++;

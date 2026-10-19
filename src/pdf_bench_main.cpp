@@ -211,17 +211,9 @@ mep::bench::Result SearchDoc(Doc &d, int max_pages) {
 }  // namespace
 
 int main(int argc, char **argv) {
+    mep::bench::Session session(argc, argv, "pdf_bench");
     const std::string history = "bench_results/history.jsonl";
-    bool record = true;
-    std::vector<std::string> paths;
-    for (int i = 1; i < argc; ++i) {
-        const std::string a = argv[i];
-        if (a == "--no-record") {
-            record = false;
-        } else {
-            paths.push_back(a);
-        }
-    }
+    std::vector<std::string> paths = session.Rest();
     // Default corpus: whatever tools/pdf_make_fixtures.sh built. Each one
     // targets a different font and layout shape, which is what makes the
     // spread of these numbers meaningful rather than one page measured
@@ -235,42 +227,38 @@ int main(int argc, char **argv) {
         if (paths.empty()) {
             std::fprintf(stderr,
                          "no fixtures in %s and no files given.\n"
-                         "Run tools/pdf_make_fixtures.sh first, or pass PDF paths.\n",
+                         "Run tools/pdf_make_fixtures.sh first (just pdf-fixtures), or pass PDF paths.\n",
                          dir.c_str());
-            return 2;
         }
     }
 
-    std::vector<mep::bench::Result> results;
+    // One entry per document, loaded only when that entry runs (so --list is free).
     for (const std::string &path : paths) {
-        Doc d;
-        d.name = std::filesystem::path(path).stem().string();
-        if (!ReadFile(path, &d.data)) {
-            std::fprintf(stderr, "cannot read %s\n", path.c_str());
-            continue;
-        }
-        d.doc.Load(B(d.data), d.data.size());
-        if (d.doc.PageCount() == 0) {
-            std::fprintf(stderr, "cannot parse %s\n", path.c_str());
-            continue;
-        }
-        const std::vector<int> pages = SamplePages(d.doc.PageCount(), 4);
-        std::printf("== %s (%d pages, timing %zu)\n", d.name.c_str(), d.doc.PageCount(), pages.size());
-        results.push_back(RenderPages(d, pages, 2.0, "2x"));
-        results.push_back(RenderPages(d, pages, 4.0, "4x"));
-        results.push_back(ReRenderAtNewScale(d, pages, 2.0, 2.5));
-        results.push_back(ReRenderNoCache(d, pages, 2.5));
-        results.push_back(ExtractGlyphs(d, pages));
-        results.push_back(RowsAndJoin(d, pages));
-        results.push_back(SearchDoc(d, 8));
-        for (size_t i = results.size() - 7; i < results.size(); ++i) {
-            if (record) {
-                mep::bench::RecordResult("pdf_bench", history, results[i]);
-            } else {
-                std::printf("%-40s n=%-10lld %10.3f ms\n", results[i].scenario.c_str(), results[i].n,
-                            results[i].ms);
+        const std::string name = std::filesystem::path(path).stem().string();
+        session.Add("pdf/" + name, [path, name, history] {
+            Doc d;
+            d.name = name;
+            if (!ReadFile(path, &d.data)) {
+                std::fprintf(stderr, "cannot read %s\n", path.c_str());
+                return;
             }
-        }
+            d.doc.Load(B(d.data), d.data.size());
+            if (d.doc.PageCount() == 0) {
+                std::fprintf(stderr, "cannot parse %s\n", path.c_str());
+                return;
+            }
+            const std::vector<int> pages = SamplePages(d.doc.PageCount(), 4);
+            std::printf("== %s (%d pages, timing %zu)\n", d.name.c_str(), d.doc.PageCount(), pages.size());
+            std::vector<mep::bench::Result> results;
+            results.push_back(RenderPages(d, pages, 2.0, "2x"));
+            results.push_back(RenderPages(d, pages, 4.0, "4x"));
+            results.push_back(ReRenderAtNewScale(d, pages, 2.0, 2.5));
+            results.push_back(ReRenderNoCache(d, pages, 2.5));
+            results.push_back(ExtractGlyphs(d, pages));
+            results.push_back(RowsAndJoin(d, pages));
+            results.push_back(SearchDoc(d, 8));
+            for (const mep::bench::Result &r : results) mep::bench::RecordResult("pdf_bench", history, r);
+        });
     }
-    return 0;
+    return session.Run();
 }

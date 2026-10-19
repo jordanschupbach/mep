@@ -526,7 +526,7 @@ two things that have none of their own: a box of a kind of this document's
 own, and text with a class.
 
 \raw(style,
-box[kind=axiom] { --accent: theme(Orange, #b35900); }
+box[kind=axiom] { --accent: theme(Orange, #b3f900); }
 .term { color: theme(Green, #2f7d32); font-weight: bold; }
 )
 

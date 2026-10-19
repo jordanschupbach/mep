@@ -3232,6 +3232,13 @@ gfx::Vector2 WrapPos(int col, int wrap_cols, float text_x, float base_ly, int li
  * @param line_height Pixel height of one visual line, used to offset wrapped sub-rows downward.
  * @param draw Callback invoked as draw(y, x0, x1, piece_col_start, piece_col_end) for each wrap piece.
  */
+// The screen band a pane's rows are being drawn into (DrawPane sets it
+// around its row loop): wrap pieces wholly outside it are skipped, so a
+// 1 MB soft-wrapped line no longer draws its ~9k off-screen slices every
+// frame (plans/PERFORMANCE_PLAN.md 3.4). Unbounded outside a pane's rows.
+float g_wrap_cull_top = -1e30f;
+float g_wrap_cull_bottom = 1e30f;
+
 template <typename Fn>
 void ForEachWrapPiece(int col_a, int col_b, int wrap_cols, float text_x, float base_ly, int line_height, Fn &&draw) {
     if (col_b <= col_a) return;
@@ -3240,8 +3247,14 @@ void ForEachWrapPiece(int col_a, int col_b, int wrap_cols, float text_x, float b
         return;
     }
     int c = col_a;
+    // Straight to the first sub-row that reaches the visible band.
+    if (line_height > 0 && base_ly + static_cast<float>((c / wrap_cols + 1) * line_height) < g_wrap_cull_top) {
+        const int first_sub = static_cast<int>((g_wrap_cull_top - base_ly) / static_cast<float>(line_height));
+        c = std::max(c, first_sub * wrap_cols);
+    }
     while (c < col_b) {
         int sub = c / wrap_cols;
+        if (base_ly + static_cast<float>(sub * line_height) > g_wrap_cull_bottom) break;
         int piece_end = std::min(col_b, (sub + 1) * wrap_cols);
         float x0 = text_x + static_cast<float>(c - sub * wrap_cols) * g_char_width;
         float x1 = text_x + static_cast<float>(piece_end - sub * wrap_cols) * g_char_width;
@@ -3410,6 +3423,35 @@ std::vector<ScopeGuide> FindScopeGuides(const std::vector<std::string> &lines, c
         if (quote != 0 && quote != '`') { quote = 0; escaped = false; }
     }
     return guides;
+}
+
+// FindScopeGuides, cached per buffer: it lexes every byte of the buffer, and
+// DrawPane used to call it every frame for every pane -- the top self-time
+// function in an idle or scrolling 60k-line C++ file, and why an idle frame
+// grew with the document (plans/PERFORMANCE_PLAN.md R1). Reused while the
+// buffer's edit epoch, line count, byte total and filetype all agree; the
+// byte total is one pass over the line *sizes*, a small fraction of a lex.
+const std::vector<ScopeGuide> &ScopeGuidesCached(int buffer_id, const std::vector<std::string> &lines,
+                                                 const std::string &filetype, int change_epoch) {
+    struct Entry {
+        int epoch = -1;
+        size_t line_count = 0;
+        size_t bytes = 0;
+        std::string filetype;
+        std::vector<ScopeGuide> guides;
+    };
+    static std::unordered_map<int, Entry> cache;
+    size_t bytes = 0;
+    for (const std::string &l : lines) bytes += l.size();
+    Entry &e = cache[buffer_id];
+    if (e.epoch == change_epoch && e.line_count == lines.size() && e.bytes == bytes && e.filetype == filetype)
+        return e.guides;
+    e.epoch = change_epoch;
+    e.line_count = lines.size();
+    e.bytes = bytes;
+    e.filetype = filetype;
+    e.guides = FindScopeGuides(lines, filetype);
+    return e.guides;
 }
 
 // Converts a character-column index into a byte offset within `line`,
@@ -7894,12 +7936,10 @@ const char *kBuiltinLsp =
     "  local id = mep.lsp_client_for()\n"
     "  if not id then return end\n"
     "  local fname = mep.filename()\n"
-    "  local text = {}\n"
-    "  for i = 1, mep.line_count() do text[i] = mep.get_line(i) end\n"
     "  mep_lsp_doc_versions[fname] = 1\n"
     "  mep.lsp_notify(id, 'textDocument/didOpen', {\n"
     "    textDocument = {uri = mep_lsp_uri(fname), languageId = mep_lsp_filetype(fname) or '',\n"
-    "                    version = 1, text = table.concat(text, '\\n')},\n"
+    "                    version = 1, text = mep.buffer_text()},\n"
     "  })\n"
     // The server now has the document, which is the earliest point a
     // semantic-token request can be answered for it -- and the only hook
@@ -7908,17 +7948,28 @@ const char *kBuiltinLsp =
     // client). Self-gating: a no-op when the server has no such provider.
     "  if mep.lsp_semantic_auto then mep.lsp_semantic_tokens() end\n"
     "end\n"
-    "function mep.lsp_did_change()\n"
+    // A server still reading the previous change (its stdin pipe full, the
+    // rest queued in mep): don't build and queue another whole copy of the
+    // document behind it -- remember that this file changed, and send its
+    // latest text once the queue drains (the frame hook below). Typing in
+    // a large file used to block the UI on the pipe here instead.
+    "mep_lsp_change_deferred = mep_lsp_change_deferred or {}\n"
+    // (`force`: send now regardless, queued behind the rest -- a request
+    // about to follow, such as completion, must not overtake the text.)
+    "function mep.lsp_did_change(force)\n"
     "  local id = mep.lsp_client_for()\n"
     "  if not id then return end\n"
     "  local fname = mep.filename()\n"
+    "  if force ~= true and mep.lsp_write_pending(id) > 0 then\n"
+    "    mep_lsp_change_deferred[fname] = id\n"
+    "    return\n"
+    "  end\n"
+    "  mep_lsp_change_deferred[fname] = nil\n"
     "  local v = (mep_lsp_doc_versions[fname] or 1) + 1\n"
     "  mep_lsp_doc_versions[fname] = v\n"
-    "  local text = {}\n"
-    "  for i = 1, mep.line_count() do text[i] = mep.get_line(i) end\n"
     "  mep.lsp_notify(id, 'textDocument/didChange', {\n"
     "    textDocument = {uri = mep_lsp_uri(fname), version = v},\n"
-    "    contentChanges = {{text = table.concat(text, '\\n')}},\n"
+    "    contentChanges = {{text = mep.buffer_text()}},\n"
     "  })\n"
     // Semantic tokens ride this notification rather than a debounce of
     // their own, and deliberately: a token is a byte offset into one
@@ -7940,6 +7991,14 @@ const char *kBuiltinLsp =
     // symptom was a hint that never appeared at all.
     "  if mep.lsp_signature_help_auto and mep_lsp_in_call_args() then mep.lsp_signature_help(true) end\n"
     "end\n"
+    // A change held back above goes out as soon as the server has read
+    // what was ahead of it (for the file on screen; another one's waits
+    // until it is back on screen).
+    "mep.on_frame(function()\n"
+    "  if next(mep_lsp_change_deferred) == nil then return end\n"
+    "  local id = mep_lsp_change_deferred[mep.filename()]\n"
+    "  if id and mep.lsp_write_pending(id) == 0 then mep.lsp_did_change() end\n"
+    "end)\n"
     "function mep.lsp_did_save()\n"
     "  local id = mep.lsp_client_for()\n"
     "  if id then mep.lsp_notify(id, 'textDocument/didSave', {textDocument = {uri = mep_lsp_uri(mep.filename())}}) end\n"
@@ -11433,7 +11492,7 @@ const char *kBuiltinCompletion =
     // Skipped for the polyglot path (uri_override set): that request is
     // about a shadow file whose own contents kBuiltinOrgPolyglot syncs,
     // not about the buffer mep.lsp_did_change would send.
-    "  if not uri_override then mep.lsp_did_change() end\n"
+    "  if not uri_override then mep.lsp_did_change(true) end\n"
     "  local context = trigger_char and {triggerKind = 2, triggerCharacter = trigger_char} or {triggerKind = 1}\n"
     "  mep.lsp_request(client, 'textDocument/completion', {\n"
     "    textDocument = {uri = uri_override or mep_lsp_uri(mep.filename())},\n"
@@ -14073,43 +14132,43 @@ const char *kBuiltinSyntax =
     "end\n"
     "function mep.syntax_highlight()\n"
     "  if not mep_syntax_ns then mep_syntax_ns = mep.ns_create('syntax') end\n"
-    "  mep.ns_clear(mep_syntax_ns)\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
-    "  if not ft then return end\n"
-    "  local lines = {}\n"
-    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
-    "  if ft == 'ipynb' and mep.notebook_is_buffer() then\n"
-    "    mep_syntax_highlight_notebook(mep_syntax_ns, lines)\n"
-    "    return\n"
-    "  end\n"
+    "  if not ft then mep.ns_clear(mep_syntax_ns) return end\n"
     // mepml: its own grammar (grammars/tree-sitter-mepml) colours the
     // markup's structure -- the delimiters, directives, metadata, callout
-    // kinds -- and each ``` code block is then highlighted in its own
-    // language, the way org's src blocks are. The styling proper (bold,
-    // sizes, concealment) is Editor::MepmlScan's, in its own namespace.
-    "  if ft == 'mepml' then\n"
-    "    local text = table.concat(lines, '\\n')\n"
-    "    mep.ts_highlight(mep_syntax_ns, 'mepml', text, mep_mepml_capture_hl, 0)\n"
-    // Each block keeps its own incremental tree (the cache key: buffer and
-    // the block's ordinal among blocks of its language), so a document's
-    // many python blocks stop evicting one another's.
-    "    local nth = {}\n"
-    "    local bufid = mep.current_buffer()\n"
-    // The blocks as the grammar just parsed them (same tree, no second
-    // parse): after an edit, mep.mepml_code_blocks() ran a whole
-    // mepml::Parse only to find them. The two agree on any well-formed
-    // document; on a broken one (an unclosed fence) this follows the
-    // grammar that colours everything around the blocks.
-    "    for _, cb in ipairs(mep.mepml_ts_code_blocks(text)) do\n"
-    "      local embed_ft = mep_org_babel_lang_ts_ft and mep_org_babel_lang_ts_ft[cb.lang:lower()] or cb.lang:lower()\n"
-    "      if embed_ft ~= '' then\n"
-    "        nth[embed_ft] = (nth[embed_ft] or 0) + 1\n"
-    "        local body = {}\n"
-    "        for k = cb.first, cb.last do body[#body + 1] = lines[k] end\n"
-    "        mep.ts_highlight(mep_syntax_ns, embed_ft, table.concat(body, '\\n'), mep.ts_capture_hl, cb.first - 1,\n"
-    "                         'mepml-block:' .. bufid .. ':' .. embed_ft .. ':' .. nth[embed_ft])\n"
-    "      end\n"
+    // kinds -- and each ``` code block is highlighted in its own language
+    // over it, the way org's src blocks are; all in C++ and reconciled by
+    // row like a plain file (lua_env.cpp's l_ts_highlight_mepml_buffer).
+    // The styling proper (bold, sizes, concealment) is Editor::MepmlScan's,
+    // in its own namespace.
+    "  if ft == 'mepml' and mep.ts_highlight_mepml_buffer(mep_syntax_ns, mep_mepml_capture_hl, mep.ts_capture_hl,\n"
+    "      mep_org_babel_lang_ts_ft) then\n"
+    "    return\n"
+    "  end\n"
+    // A plain source file (one grammar, nothing layered into the same
+    // namespace): the buffer is read and the decorations reconciled in
+    // C++ (lua_env.cpp's l_ts_highlight_buffer) -- no Lua copy of every
+    // line, and after a keystroke only the rows whose colours changed are
+    // rewritten, where this used to clear the namespace and re-add every
+    // span in the file (plans/PERFORMANCE_PLAN.md 2.2/2.3). Keyed per
+    // buffer: treesitter.cpp keeps the most recently used few trees.
+    "  local layered = (ft == 'ipynb' and mep.notebook_is_buffer()) or ft == 'org'\n"
+    "    or ft:lower() == 'rmd'\n"
+    "  if not layered then\n"
+    "    if mep.ts_highlight_buffer(mep_syntax_ns, ft, mep.ts_capture_hl, 'buf:' .. mep.current_buffer() .. ':' .. ft) then\n"
+    "      return\n"
     "    end\n"
+    "    mep.ns_clear(mep_syntax_ns)\n"
+    // No grammar vendored for this filetype: the hand-rolled per-line lexer.
+    "    local keywords = mep.syntax_keywords[ft]\n"
+    "    if not keywords then return end\n"
+    "    mep.syntax_highlight_fallback(mep_syntax_ns, keywords, mep.syntax_comment_prefix[ft])\n"
+    "    return\n"
+    "  end\n"
+    "  mep.ns_clear(mep_syntax_ns)\n"
+    "  local lines = mep.get_lines()\n"
+    "  if ft == 'ipynb' and mep.notebook_is_buffer() then\n"
+    "    mep_syntax_highlight_notebook(mep_syntax_ns, lines)\n"
     "    return\n"
     "  end\n"
     // R Markdown: the document is Markdown, and each knitr chunk body is
@@ -14137,7 +14196,11 @@ const char *kBuiltinSyntax =
     // Real grammar available: parse + run its highlights.scm query
     // (mep.ts_captures, backed by src/treesitter.cpp) and stop -- this
     // *is* Treesitter syntax highlighting, not a fallback path.
-    "  if mep.ts_highlight(mep_syntax_ns, ft, table.concat(lines, '\\n'), mep.ts_capture_hl, 0) then\n"
+    // Keyed per buffer (treesitter.cpp keeps the most recent few): with
+    // the bare filetype as the key, two open files of one language kept
+    // evicting each other's tree, so every switch reparsed from scratch.
+    "  if mep.ts_highlight(mep_syntax_ns, ft, table.concat(lines, '\\n'), mep.ts_capture_hl, 0,\n"
+    "                      'buf:' .. mep.current_buffer() .. ':' .. ft) then\n"
     "    if ft == 'org' then\n"
     "      mep_syntax_highlight_org_src_blocks(mep_syntax_ns, lines)\n"
     "    end\n"
@@ -14166,9 +14229,7 @@ const char *kBuiltinSyntax =
     "function mep.syntax_fold()\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
     "  if not ft then return end\n"
-    "  local lines = {}\n"
-    "  for i = 1, mep.line_count() do lines[i] = mep.get_line(i) end\n"
-    "  local ranges = mep.ts_fold_ranges(ft, table.concat(lines, '\\n'))\n"
+    "  local ranges = mep.ts_fold_ranges(ft, mep.buffer_text())\n"
     "  if not ranges then return end\n"
     "  mep.fold_clear_provider('treesitter')\n"
     "  for _, r in ipairs(ranges) do\n"
@@ -14212,6 +14273,9 @@ const char *kBuiltinSyntax =
     "local mep_syntax_last_file = nil\n"
     "mep.on_frame(function()\n"
     "  if not mep.syntax_auto then return end\n"
+    // A background highlight pass (a large buffer's, see
+    // l_ts_highlight_buffer) finished: apply it now.
+    "  if mep.ts_highlight_async_ready() then mep.syntax_highlight() return end\n"
     "  local fname = mep.filename()\n"
     "  if fname ~= mep_syntax_last_file then\n"
     "    mep_syntax_last_file = fname\n"
@@ -16364,9 +16428,18 @@ const char *kBuiltinOrgLinks =
     "  mep.org_table_auto_align()\n"
     "  local row = mep.cursor()\n"
     "  if fname ~= mep_org_link_last_file or row ~= mep_org_link_last_row then\n"
+    "    local prev_file, prev_row = mep_org_link_last_file, mep_org_link_last_row\n"
     "    mep_org_link_last_file, mep_org_link_last_row = fname, row\n"
-    "    mep.org_link_highlight()\n"
-    "    mep.org_emphasis_highlight()\n"
+    // The cursor moved within the same, unchanged text: only the row it
+    // left and the row it entered render differently (the cursor's row is
+    // the unconcealed one), so only those two are redone -- the whole-file
+    // scans are for a new file or new text (mep.org_rescan_rows says false
+    // when the state it works from is stale).
+    "    if not (fname == prev_file and prev_row and mep_org_link_ns and mep_org_emphasis_ns\n"
+    "            and mep.org_rescan_rows(mep_org_link_ns, mep_org_emphasis_ns, prev_row, row)) then\n"
+    "      mep.org_link_highlight()\n"
+    "      mep.org_emphasis_highlight()\n"
+    "    end\n"
     // Cursor-driven for the same reason the link scan is: the table the
     // cursor is inside renders at its real stored widths, so entering or
     // leaving one has to re-plan. Gated on the row actually having
@@ -19527,7 +19600,10 @@ const char *kBuiltinOrgPolyglot =
     // has no registered server says so even though mep's own org server
     // is attached to the file as a whole, because "can I get completion
     // in this block" is the question the line exists to answer.
-    "local function mep_org_lsp_status_for_block(blk, org_abspath, diags)\n"
+    // (`by_line`, optional: the same diagnostics bucketed by line -- see
+    // mep.org_lsp_status_scan -- so a block sums its own rows instead of
+    // walking every diagnostic in the document.)
+    "local function mep_org_lsp_status_for_block(blk, org_abspath, diags, by_line)\n"
     "  local st = {state = 'unsupported', lang = blk.lang or '', server = '',\n"
     "              errors = 0, warnings = 0, hints = 0}\n"
     "  local lang_def = blk.lang and blk.lang ~= '' and mep.org_babel_langs[blk.lang] or nil\n"
@@ -19558,6 +19634,13 @@ const char *kBuiltinOrgPolyglot =
     // argument reported on the `#+begin_src` line is org's own lint, not
     // this block's language server's finding, and the card already hangs
     // that one off its title bar.
+    "  if by_line then\n"
+    "    for line = blk.start_row + 1, blk.end_row - 1 do\n"
+    "      local c = by_line[line]\n"
+    "      if c then st.errors, st.warnings, st.hints = st.errors + c[1], st.warnings + c[2], st.hints + c[3] end\n"
+    "    end\n"
+    "    return st\n"
+    "  end\n"
     "  for _, d in ipairs(diags) do\n"
     "    local line = (d.range and d.range.start and d.range.start.line or 0) + 1\n"
     "    if line > blk.start_row and line < blk.end_row then\n"
@@ -19577,14 +19660,34 @@ const char *kBuiltinOrgPolyglot =
     "  local ft = mep_lsp_filetype(mep.filename() or '')\n"
     "  return ft == 'org' or ft == 'mepml'\n"
     "end\n"
+    // The blocks are found once per text: the frame hook below re-runs
+    // this every 2 s to pick up server state (attached, exited) that bumps
+    // no epoch, and re-finding every block of a 20k-line document each
+    // time was a 55 ms stall every 2 s (plans/PERFORMANCE_PLAN.md Phase 3).
+    "local mep_org_lsp_status_blocks_key, mep_org_lsp_status_blocks = nil, nil\n"
     "function mep.org_lsp_status_scan()\n"
     "  mep.buf_clear_org_lsp_status()\n"
     "  if not mep.org_lsp_status_visible() then return end\n"
     "  if not mep_org_lsp_status_doc() then return end\n"
     "  local org_abspath = mep_lsp_abspath(mep.filename())\n"
     "  local diags = mep_lsp_diagnostics[org_abspath] or {}\n"
-    "  for _, blk in ipairs(mep_polyglot_blocks_all()) do\n"
-    "    mep.buf_set_org_lsp_status(blk.start_row, mep_org_lsp_status_for_block(blk, org_abspath, diags))\n"
+    "  local key = mep.filename() .. '|' .. tostring(mep.buffer_change_epoch()) .. '|' .. mep.line_count()\n"
+    "    .. '|' .. tostring(mep_polyglot_epoch)\n"
+    "  if key ~= mep_org_lsp_status_blocks_key then\n"
+    "    mep_org_lsp_status_blocks_key, mep_org_lsp_status_blocks = key, mep_polyglot_blocks_all()\n"
+    "  end\n"
+    // Diagnostics by line, once: every block walking the whole list was
+    // O(blocks x diagnostics) -- a 20k-line document has hundreds of each.
+    "  local by_line = {}\n"
+    "  for _, d in ipairs(diags) do\n"
+    "    local line = (d.range and d.range.start and d.range.start.line or 0) + 1\n"
+    "    local c = by_line[line]\n"
+    "    if not c then c = {0, 0, 0} by_line[line] = c end\n"
+    "    local sev = d.severity or 1\n"
+    "    if sev == 1 then c[1] = c[1] + 1 elseif sev == 2 then c[2] = c[2] + 1 else c[3] = c[3] + 1 end\n"
+    "  end\n"
+    "  for _, blk in ipairs(mep_org_lsp_status_blocks) do\n"
+    "    mep.buf_set_org_lsp_status(blk.start_row, mep_org_lsp_status_for_block(blk, org_abspath, diags, by_line))\n"
     "  end\n"
     "end\n"
     "mep.command('MepOrgLspStatusScan', mep.org_lsp_status_scan)\n"
@@ -27167,6 +27270,11 @@ const char *kBuiltinOrgNotes =
     // head/tail decorations and interior rows a whole-span color (one
     // decoration per row -- Decoration has no end_row). <leader>mht flips
     // mep_orghl_raw to show the buffer as-is.
+    // Pass 1's parse, kept for the text it was made from: a cursor move
+    // changes only which row is drawn raw (pass 2), and re-reading every
+    // line of a 20k-line file through mep.get_line on each move was most
+    // of an Org cursor move's cost (plans/PERFORMANCE_PLAN.md Phase 3).
+    "local mep_orghl_parse_key, mep_orghl_parse_parts = nil, nil\n"
     "local function mep_orghl_render()\n"
     "  if not mep_orghl_ns then mep_orghl_ns = mep.ns_create('orghl') end\n"
     "  mep.ns_clear(mep_orghl_ns)\n"
@@ -27178,12 +27286,16 @@ const char *kBuiltinOrgNotes =
     // macro on one row; multi-line macros contribute 'open' (opener row),
     // 'mid' (fully-covered interior rows), 'close' (closer row). A 'mid'
     // row never co-exists with other parts (the macro owns the row).
-    "  local parts = {}\n"
+    "  local parse_key = (mep.filename() or '') .. '|' .. tostring(mep.buffer_change_epoch()) .. '|' .. n\n"
+    "  local cached = parse_key == mep_orghl_parse_key\n"
+    "  local parts = cached and mep_orghl_parse_parts or {}\n"
     "  local function add(r, p)\n"
     "    parts[r] = parts[r] or {}\n"
     "    parts[r][#parts[r] + 1] = p\n"
     "  end\n"
-    "  local row, col = 1, 1\n"
+    "  local row, col = cached and n + 1 or 1, 1\n"
+    // (Most documents have no macro at all: one search of the whole text.)
+    "  if not cached and not mep.buffer_text():find('{{{hl(', 1, true) then row = n + 1 end\n"
     "  while row <= n do\n"
     "    local line = mep.get_line(row) or ''\n"
     "    if col > #line then\n"
@@ -27235,6 +27347,7 @@ const char *kBuiltinOrgNotes =
     // wrappers that still occupy their columns read as broken spacing,
     // so on the one line being edited the syntax shows (unobtrusively)
     // instead. Every other row is fully compressed with ZERO spacing.
+    "  mep_orghl_parse_key, mep_orghl_parse_parts = parse_key, parts\n"
     "  for r, ps in pairs(parts) do\n"
     "    local line = mep.get_line(r) or ''\n"
     "    if r == crow then\n"
@@ -53601,6 +53714,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
 
     float content_y = y + static_cast<float>(header_h);
     float content_h = h - static_cast<float>(header_h);
+    // Wrap-piece culling band for this pane's rows (ForEachWrapPiece),
+    // reset when the pane is done; a row's first slice can start above it.
+    struct WrapCullScope {
+        WrapCullScope(float top, float bottom) {
+            g_wrap_cull_top = top;
+            g_wrap_cull_bottom = bottom;
+        }
+        ~WrapCullScope() {
+            g_wrap_cull_top = -1e30f;
+            g_wrap_cull_bottom = 1e30f;
+        }
+    } wrap_cull_scope(y, y + h);
 
     // Jupyter notebook toolbar: a within-pane button strip reserved from
     // the top of the content area (offsetting content_y/content_h the same
@@ -56353,7 +56478,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // which has no tree-sitter query).  They are painted with row
     // backgrounds, before text/selection, and their x position stays at
     // the closing delimiter's column for the full multi-line scope.
-    const std::vector<ScopeGuide> scope_guides = FindScopeGuides(buf.lines, LspFiletype(buf.filename));
+    const std::vector<ScopeGuide> &all_scope_guides =
+        ScopeGuidesCached(pane.buffer_id, buf.lines, LspFiletype(buf.filename), g_editor.ChangeEpoch());
 
     // Jupyter notebook cell cards: a rounded box behind each cell so code
     // and markdown blocks read as distinct blocks (markdown tinted apart
@@ -56697,6 +56823,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // count, a soft-wrapped row claims one per visual piece) so a
         // card's edges land on the rows they actually belong to.
         std::unordered_map<int, int> slot_start, slot_count;
+        int walk_last_row = draw_first_row - 1;  // the last row the walk reached (a fold's whole range)
         {
             int vslot = draw_first_slot;
             for (int r = draw_first_row; r < buf.LineCount() && (vslot < visible_lines || in_placed_column(r));) {
@@ -56744,6 +56871,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 }
                 slot_count[r] = slots;
                 vslot += slots;
+                walk_last_row = next - 1;
                 r = next;
             }
         }
@@ -56825,6 +56953,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                        card_color(card.look.wash, default_slide_wash)});
         const float slide_nest = std::max(3.0f, std::round(card_inset * 0.5f));
         for (const OrgBlockCard &card : g_editor.OrgBlockCards(pane.buffer_id)) {
+            // Only the cards on screen: nothing below draws above a card's
+            // first row, and checking every card of a long document against
+            // every slide and fold was most of a mepml frame's cost (4 ms
+            // of an idle 20k-line document's 5).
+            if (card.meta_row > walk_last_row || (card.end_row >= 0 && card.end_row < draw_first_row)) continue;
             const bool is_slide = card.kind == "slide";
             // The slide's paper: this card's own if it is one, else that of
             // the slide it is on.
@@ -57133,6 +57266,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             if (blk.start_row < deco_row_end && blk.end_row >= draw_first_row && in_placed_column(blk.start_row + 1))
                 deco_row_end = std::min(line_count, std::max(deco_row_end, blk.end_row + 1) + (blk.end_row - blk.start_row));
     }
+    // Only the guides that can reach a drawn row: the row loop checks every
+    // guide for every row, which over a whole 60k-line file's guides was
+    // hundreds of thousands of comparisons a frame.
+    std::vector<ScopeGuide> scope_guides;
+    for (const ScopeGuide &g : all_scope_guides)
+        if (g.close_row > draw_first_row && g.open_row < deco_row_end) scope_guides.push_back(g);
     std::unordered_map<int, std::vector<const Decoration *>> decos_by_row;
     for (const auto &ns_decos : buf.decorations) {
         for (const Decoration &d : ns_decos.second) {
@@ -58546,8 +58685,42 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
          * @return Its codepoint column. A row with concealed markup keeps the byte-as-column equivalence the
          * concealment tables are built on (see the comment above), which is exact for its ASCII markup.
          */
+        // ByteOffsetToColumn walks from the start of the line on every call,
+        // and this is asked for both ends of every decoration on the row:
+        // a 1 MB minified line carries ~100k syntax spans, which made one
+        // frame ~10^11 steps -- mep never drew it (plans/PERFORMANCE_PLAN.md
+        // 3.4). Answered from the row's own table instead, built on first
+        // use: identity for an all-ASCII row, else a byte -> column array
+        // with ByteOffsetToColumn's exact rule (a codepoint counts once any
+        // of its bytes is before the offset).
+        int raw_ascii = -1;  // unknown / no / yes
+        std::vector<int> raw_byte_col;
         auto SpanCol = [&](int byte) -> int {
-            return conceal_runs.empty() ? ByteOffsetToColumn(raw_line, byte) : byte;
+            if (!conceal_runs.empty()) return byte;
+            if (byte <= 0) return 0;
+            const int len = static_cast<int>(raw_line.size());
+            if (raw_ascii < 0) {
+                raw_ascii = 1;
+                for (char ch : raw_line)
+                    if (static_cast<unsigned char>(ch) >= 0x80) {
+                        raw_ascii = 0;
+                        break;
+                    }
+            }
+            if (raw_ascii == 1) return std::min(byte, len);
+            if (raw_byte_col.empty()) {
+                raw_byte_col.assign(static_cast<size_t>(len) + 1, 0);
+                int col = 0;
+                for (int i = 0; i < len;) {
+                    int cp_size = 0;
+                    gfx::GetCodepointNext(&raw_line[static_cast<size_t>(i)], &cp_size);
+                    cp_size = std::max(1, cp_size);
+                    for (int p = i + 1; p <= std::min(i + cp_size, len); p++) raw_byte_col[static_cast<size_t>(p)] = col + 1;
+                    col++;
+                    i += cp_size;
+                }
+            }
+            return raw_byte_col[static_cast<size_t>(std::min(byte, len))];
         };
         // draw_line's byte offset for each column (ColumnToByteOffset,
         // answered from a table), built the first time a decoration asks.
@@ -59251,7 +59424,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             DrawLineFast(draw_line, text_x, ly, g_font_size, ResolveHlGroup("Normal"));
         } else {
             const std::string &wline = draw_line;
-            for (int s = 0; s < row_wrap_slots; s++) {
+            // Only the slices that land in the pane (see g_wrap_cull_top).
+            int first_slot = 0;
+            if (row_pitch > 0 && ly + static_cast<float>(row_pitch) < g_wrap_cull_top)
+                first_slot = std::min(row_wrap_slots, static_cast<int>((g_wrap_cull_top - ly) / static_cast<float>(row_pitch)));
+            for (int s = first_slot; s < row_wrap_slots; s++) {
+                if (ly + static_cast<float>(s * row_pitch) > g_wrap_cull_bottom) break;
                 // Split by column (codepoint), as the recolor passes'
                 // ForEachWrapPiece and the cursor's WrapPos do: a byte
                 // split put a row's continuation a character early after
@@ -62172,6 +62350,10 @@ void DrawPanePickOverlay();
  * @brief Draws one full editor frame: chrome (menu/tab/status/command bars), the
  *        pane tree or dashboard, sidebars, and every active modal overlay/toast.
  */
+// The buffer-swap part of the last DrawEditor (EndDrawing, which blocks on
+// vsync), so the frame stats can report CPU work without it.
+static double g_frame_swap_ms = 0;
+
 void DrawEditor() {
     // Rebuilt fresh this frame by DrawTabBar/DrawPane below -- see the
     // g_click_regions declaration for why clearing here (rather than after
@@ -62718,7 +62900,9 @@ void DrawEditor() {
     if (g_hint_mode_active) DrawHintOverlay();
     if (g_pane_pick_active) DrawPanePickOverlay();
 
+    const auto swap_start = std::chrono::steady_clock::now();
     gfx::EndDrawing();
+    g_frame_swap_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - swap_start).count();
 }
 
 // Shared by DispatchChromeClicks and UpdatePaneMouseInteraction: any of
@@ -64636,6 +64820,19 @@ void UpdateDrawFrame() {
             double _ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t).count(); \
             if (_ms > 500.0) std::fprintf(stderr, "[PDFPROF] %s: %.0f ms\n", label, _ms); } \
         else { stmt; } } while (0)
+    // mep.frame_stats() (plans/PERFORMANCE_PLAN.md): published when the frame ends.
+    const auto frame_start = std::chrono::steady_clock::now();
+    Editor::FrameStats frame_stats;
+    struct PublishFrameStats {
+        Editor::FrameStats &s;
+        std::chrono::steady_clock::time_point start;
+        ~PublishFrameStats() {
+            s.work_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() -
+                        s.swap_ms;
+            s.frames = g_editor.LastFrameStats().frames + 1;
+            g_editor.SetLastFrameStats(s);
+        }
+    } publish_frame_stats{frame_stats, frame_start};
     try {
         UDF_TIME("JobManager::PollAll", JobManager::Instance().PollAll());
         // YouTube players no pane is drawing (hidden with <leader>yt, or in
@@ -64679,7 +64876,12 @@ void UpdateDrawFrame() {
         UDF_TIME("ReapExitedTerminals", g_editor.ReapExitedTerminals());
         g_editor.PruneExpiredToasts(gfx::GetTime());
         g_editor.SetNow(gfx::GetTime());
-        if (g_editor.Lua()) UDF_TIME("Lua::RunFrameHooks", g_editor.Lua()->RunFrameHooks());
+        if (g_editor.Lua()) {
+            const auto hooks_start = std::chrono::steady_clock::now();
+            UDF_TIME("Lua::RunFrameHooks", g_editor.Lua()->RunFrameHooks());
+            frame_stats.hooks_ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hooks_start).count();
+        }
         UDF_TIME("HandleFontSizeShortcuts", HandleFontSizeShortcuts());
         // Tapping mod1 (Alt) on its own shows/hides the top menu bar --
         // the gesture Windows and GTK apps use to summon a hidden menu bar,
@@ -64814,7 +65016,15 @@ void UpdateDrawFrame() {
                 }
             }
         }
-        UDF_TIME("DrawEditor", DrawEditor());
+        {
+            const auto draw_start = std::chrono::steady_clock::now();
+            g_frame_swap_ms = 0;
+            UDF_TIME("DrawEditor", DrawEditor());
+            frame_stats.swap_ms = g_frame_swap_ms;
+            frame_stats.draw_ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - draw_start).count() -
+                g_frame_swap_ms;
+        }
         // Program windows shown in mepml results: hide the ones this frame
         // did not draw (scrolled away, buffer switched).
         g_editor.MepmlGuisEndFrame();

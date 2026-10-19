@@ -117,8 +117,9 @@ void BenchOneShotSelfRemovingHooks() {
 
 }  // namespace
 
-int main() {
-    BenchSteadyStateNoOpHooks();
-    BenchOneShotSelfRemovingHooks();
-    return 0;
+int main(int argc, char **argv) {
+    mep::bench::Session s(argc, argv, kBinary);
+    s.Add("luahook/steady_state_noop", BenchSteadyStateNoOpHooks);
+    s.Add("luahook/one_shot_self_removing", BenchOneShotSelfRemovingHooks);
+    return s.Run();
 }

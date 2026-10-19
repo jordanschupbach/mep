@@ -197,10 +197,14 @@ mepml-grammar:
 # mep-tex's TeX bundle (nix/tex-bundle.nix, tools/tex_bundle.py): the TeX
 # Live packages mep's own engine reads, so builtin TeX compiles need no TeX
 # installation. Built by nix and linked beside the dev build's mep-tex,
-# where it looks for it (an installed mep has it in share/mep/tex).
+# where it looks for it (an installed mep has it in share/mep/tex: `just
+# install` runs this first). A copy, not a symlink: cmake --install copies
+# a symlink as a symlink, which would dangle under PREFIX.
 tex-bundle:
     nix build .#tex-bundle -o {{native_build_dir}}/tex-bundle-out
-    ln -sf tex-bundle-out/tex-bundle.mtb {{native_build_dir}}/tex-bundle.mtb
+    rm -f {{native_build_dir}}/tex-bundle.mtb
+    cp {{native_build_dir}}/tex-bundle-out/tex-bundle.mtb {{native_build_dir}}/tex-bundle.mtb
+    chmod 644 {{native_build_dir}}/tex-bundle.mtb
     @echo "  {{native_build_dir}}/tex-bundle.mtb"
 
 # Re-render the built-in help workspace: every help/*.org through mep's own
@@ -278,6 +282,14 @@ update-shell:
 install prefix=(env("HOME") / ".local"): build-native
     #!/usr/bin/env bash
     set -euo pipefail
+    # mep-tex's TeX bundle, so builtin TeX compiles (mepml maths, exports)
+    # work without a system TeX. Built by nix; without nix the install
+    # goes on and mep-tex falls back to a system TeX Live.
+    if command -v nix >/dev/null 2>&1; then
+        just tex-bundle
+    elif [ ! -f "{{native_build_dir}}/tex-bundle.mtb" ]; then
+        echo "note: nix not found -- the TeX bundle is not installed; mep-tex will need a system TeX Live"
+    fi
     manifest="{{native_build_dir}}/install_manifest.txt"
     if [ -f "$manifest" ]; then
         while IFS= read -r f; do
@@ -452,31 +464,52 @@ test: build-native
         fi
     done
 
-# CRDT_PERFORMANCE_PLAN.md Phase 1: run the persistent text-editing
-# benchmarks (mep-crdt-bench, mep-buffer-bench, mep-lua-frame-hook-bench)
-# and print a latest-vs-previous-run comparison. Results accumulate in
-# bench_results/history.jsonl (git-tracked) across every invocation --
-# this never resets/rotates it, so history builds up over time as the
-# user asked. Run from the repo root (bench_results/ is a relative
-# path both the bench binaries and the report script resolve against
-# the cwd). Builds its own EXCLUDE_FROM_ALL targets explicitly, same
-# reasoning as `test` above.
-bench: build-native
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cmake --build {{native_build_dir}} -j --target mep-crdt-bench mep-buffer-bench mep-lua-frame-hook-bench mep-vterm-bench mep-pdf-bench
-    mkdir -p bench_results
-    for t in mep-crdt-bench mep-buffer-bench mep-lua-frame-hook-bench mep-vterm-bench; do
-        echo "== $t"
-        "./{{native_build_dir}}/$t"
-    done
-    # mep-pdf-bench needs the generated fixtures, which are gitignored
-    # (see pdf-fixtures below). Without them it exits 2 and says so,
-    # which must not take the rest of the bench run down with it.
-    echo "== mep-pdf-bench"
-    "./{{native_build_dir}}/mep-pdf-bench" || echo "   (skipped: run 'just pdf-fixtures' first)"
-    echo
-    python3 tools/bench_report.py
+# The benchmark suite (plans/PERFORMANCE_PLAN.md): every bench binary
+# (mep-bench's editor/syntax/core/project/docs groups, plus the older
+# buffer/crdt/luahook/vterm/pdf/mepml ones) and the live-editor tier
+# (tools/bench_live.py: a throwaway mep -- startup, open, hooks, per-frame
+# CPU cost, memory; on macOS it briefly opens a window) as one suite.
+# With no arguments it runs everything; otherwise the arguments are
+# benchmark ids or globs, plus tools/bench.py run's options:
+#
+#   just bench                          everything
+#   just bench editor/cpp_60k           one entry
+#   just bench 'syntax/*/highlight*'    a glob across entries
+#   just bench core --quick --no-record a fast look, nothing recorded
+#   just bench --no-live                skip the windowed tier
+#
+# Results append to bench_results/history.jsonl (git-tracked, never
+# rotated) and each run prints a comparison with the previous one.
+#
+# Run the benchmark suite: all of it, or the benchmarks matching ARGS.
+bench *args: build-native
+    python3 tools/bench.py run {{args}}
+
+# Every benchmark id (optionally only those matching the given patterns).
+bench-list *args:
+    python3 tools/bench.py list {{args}}
+
+# The "before" of a performance change: `just bench-save before editor`.
+# Run (a subset of) the suite and save it as a named baseline.
+bench-save name *args: build-native
+    python3 tools/bench.py run --save {{name}} {{args}}
+
+# The "after": `just bench-compare before editor`.
+# Run (a subset of) the suite and compare it against a saved baseline.
+bench-compare name *args: build-native
+    python3 tools/bench.py run --compare {{name}} {{args}}
+
+# A/B on a busy machine: the same benchmarks from two builds, interleaved
+# round by round so load hits both alike -- `just bench-ab HEAD editor`
+# compares the working tree against HEAD (built in a git worktree under
+# build/bench-ab/); `--before-dir DIR` uses an existing build instead.
+# Compare the working tree's benchmarks against another revision's.
+bench-ab ref *args: build-native
+    python3 tools/bench.py ab --ref {{ref}} {{args}}
+
+# Latest vs previous record of every benchmark in the history file.
+bench-report *args:
+    python3 tools/bench.py report {{args}}
 
 # Generate the real-world PDF fixtures the PDF tests and benches use.
 # They are deliberately not committed: .gitignore ignores both `test/`

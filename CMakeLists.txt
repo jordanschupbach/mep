@@ -2793,6 +2793,27 @@ if(NOT EMSCRIPTEN)
     add_dependencies(tests mep-editor-fold-test)
 endif()
 
+# mep-bench (plans/PERFORMANCE_PLAN.md): the headless benchmark suite for
+# mep's own libraries -- editor core, syntax, codecs, regex, search, git,
+# documents. Each src/bench/*.cpp registers its benchmarks with MEP_BENCH;
+# links mep_core like mep-editor-fold-test, since the editor benchmarks
+# drive a real windowless Editor. Run through tools/bench.py / `just bench`.
+if(NOT EMSCRIPTEN AND NOT WIN32)
+    add_executable(mep-bench EXCLUDE_FROM_ALL src/bench/mep_bench_main.cpp src/bench/bench_core.cpp
+        src/bench/bench_syntax.cpp src/bench/bench_editor.cpp src/bench/bench_project.cpp src/bench/bench_docs.cpp
+        src/collab_crdt.cpp src/collab_session.cpp ${MEP_COLLAB_WEBSOCKET_SOURCE})
+    target_link_libraries(mep-bench PRIVATE mep_core Threads::Threads)
+    target_include_directories(mep-bench PRIVATE src)
+    target_compile_definitions(mep-bench PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    target_compile_options(mep-bench PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-bench PRIVATE ${MEP_SANITIZE_FLAGS})
+    target_precompile_headers(mep-bench PRIVATE ${MEP_PCH_HEADERS})
+    if(OpenSSL_FOUND)
+        target_link_libraries(mep-bench PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    add_dependencies(tests mep-bench)
+endif()
+
 # "I pulled and my changes vanished": the regression test for a save
 # overwriting a file that a `git pull` (or a rebase, a checkout, another
 # editor) had rewritten under an open buffer, and for the buffer never

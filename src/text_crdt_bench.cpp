@@ -159,12 +159,12 @@ void BenchSnapshotRestore() {
 
 }  // namespace
 
-int main() {
-    BenchSequentialTyping();
-    BenchLargePaste();
-    BenchRandomEdits();
-    BenchManySiteConvergence();
-    BenchSnapshotRestore();
-    std::printf("text_crdt_bench done\n");
-    return 0;
+int main(int argc, char **argv) {
+    mep::bench::Session s(argc, argv, kBinary);
+    s.Add("crdt/sequential_typing", BenchSequentialTyping);
+    s.Add("crdt/large_paste", BenchLargePaste);
+    s.Add("crdt/random_edits", BenchRandomEdits);
+    s.Add("crdt/many_site_convergence", BenchManySiteConvergence);
+    s.Add("crdt/snapshot_restore", BenchSnapshotRestore);
+    return s.Run();
 }

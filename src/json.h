@@ -15,6 +15,7 @@
 // Content-Length-framed message body).
 
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -242,10 +243,16 @@ private:
             case Type::Number: {
                 if (num_ == static_cast<double>(static_cast<long long>(num_)) && std::fabs(num_) < 1e15) {
                     out += std::to_string(static_cast<long long>(num_));
+                } else if (!std::isfinite(num_)) {
+                    // JSON has no NaN or infinity; "%g" used to write `nan`/`inf`, which no parser accepts.
+                    out += "null";
                 } else {
+                    // The shortest text that reads back as exactly this double.
+                    // "%g" kept 6 significant digits, so a saved coordinate or
+                    // FEM result came back changed (plans/PERFORMANCE_PLAN.md S11).
                     char buf[64];
-                    std::snprintf(buf, sizeof(buf), "%g", num_);
-                    out += buf;
+                    const auto res = std::to_chars(buf, buf + sizeof(buf), num_);
+                    out.append(buf, res.ptr);
                 }
                 break;
             }

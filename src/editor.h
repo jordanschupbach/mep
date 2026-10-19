@@ -1148,12 +1148,38 @@ struct Buffer {
     // undo *does* have something better: the exact fold set from before the
     // edit. Restoring it is how `u` puts a fold back on `class Gamma` rather
     // than three rows into its body.
+    //
+    // An entry is a *reverse delta*, not a copy of the whole buffer
+    // (plans/PERFORMANCE_PLAN.md 2.5: up to kMaxUndo snapshots of a
+    // multi-megabyte file was most of a large buffer's memory, and every
+    // `x` or mep.set_line copied it again): rows [start, start + count) of
+    // the newer text are replaced by `lines` to get the older text back.
     struct UndoState {
+        int start = 0;
+        int count = 0;
         std::vector<std::string> lines;
         std::vector<Fold> folds;
     };
     std::vector<UndoState> undo_stack;
     std::vector<UndoState> redo_stack;
+    // The text as of the newest undo checkpoint -- what the deltas above
+    // are taken against -- and whether a checkpoint is open: PushUndo
+    // opens one (remembering the folds of that moment), and the next
+    // PushUndo/Undo/Redo closes it into an undo_stack entry by diffing the
+    // text now against undo_base. One copy of the buffer, not one per step.
+    std::vector<std::string> undo_base;
+    std::vector<Fold> undo_pending_folds;
+    bool undo_pending = false;
+    // Every undo step, including the one still open (what callers used to
+    // read as undo_stack.size()).
+    size_t UndoDepth() const { return undo_stack.size() + (undo_pending ? 1 : 0); }
+    void ResetUndo() {
+        undo_stack.clear();
+        redo_stack.clear();
+        undo_base.clear();
+        undo_pending_folds.clear();
+        undo_pending = false;
+    }
 
     // Marks (m{a-z}) are per-buffer in Vim, not global -- `a jumps to
     // nothing if it was set in a different buffer. Row is clamped (not
@@ -4503,6 +4529,20 @@ public:
     // input or activity mep draws this often instead of at the display's
     // refresh rate, and any input wakes it at once. 0 = never throttle.
     int IdleFps() const { return idle_fps_; }
+    // Where the last frame's time went (plans/PERFORMANCE_PLAN.md), filled
+    // in by main.cpp's frame loop and read by mep.frame_stats() -- what
+    // tools/bench_live.lua times frames with. Milliseconds; `work` is the
+    // whole frame minus the buffer swap (which waits for vsync), so it is
+    // the CPU cost of a frame rather than the display's refresh interval.
+    struct FrameStats {
+        double work_ms = 0;
+        double hooks_ms = 0;
+        double draw_ms = 0;
+        double swap_ms = 0;
+        unsigned long frames = 0;
+    };
+    const FrameStats &LastFrameStats() const { return frame_stats_; }
+    void SetLastFrameStats(const FrameStats &s) { frame_stats_ = s; }
     // Something on screen is moving on its own (a video or viewer
     // playing): no idle throttling while it is.
     bool WantsFullFrameRate() const;
@@ -8318,7 +8358,12 @@ public:
      * @brief Scans the current buffer for org emphasis markup and adds decorations for it.
      * @param ns The decoration namespace to add highlights into.
      */
-    void OrgHighlightEmphasis(int ns);
+    // With `only_rows`: re-run for just those rows (0-based), replacing
+    // their decorations in `ns` -- for a cursor move, where only the row
+    // the cursor left and the one it entered change (the cursor's row is
+    // left unconcealed). Needs the full scan's per-row state for the text
+    // as it is now; returns false (doing nothing) when that is stale.
+    bool OrgHighlightEmphasis(int ns, const std::vector<int> *only_rows = nullptr);
     // Markdown (kBuiltinMarkdown, main.cpp), directly bound as the exact
     // same mep.* names the Lua functions they replace used to have (no
     // wrapper needed -- each is now fully self-contained in C++):
@@ -8823,7 +8868,8 @@ public:
      * @brief Rebuilds the current buffer's org link registry and emits its conceal/underline decorations.
      * @param ns The decoration namespace to add this pass's decorations to.
      */
-    void OrgLinkScan(int ns);
+    // `only_rows`: as OrgHighlightEmphasis.
+    bool OrgLinkScan(int ns, const std::vector<int> *only_rows = nullptr);
     /**
      * @brief Returns the org link spans registered for a row, or nullptr when the row has none.
      * @param buffer_id The buffer to look in.
@@ -8894,6 +8940,22 @@ public:
      * @return The tables found, in buffer order (empty for a non-org or non-existent buffer).
      */
     const std::vector<OrgTableGrid> &OrgTables(int buffer_id);
+    // OrgTables' scan itself, into org_tables_ (see ScanOrgBlockCards).
+    const std::vector<OrgTableGrid> &ScanOrgTables(int buffer_id);
+    // The identity of a buffer's text, cheaply: what the per-frame scans
+    // above are cached against. Equal keys mean the text has not changed
+    // (an edit bumps change_epoch_ or moves the line count or byte total).
+    struct BufferContentKey {
+        int epoch = -1;
+        size_t lines = 0;
+        size_t bytes = 0;
+        std::string filetype;
+        bool operator==(const BufferContentKey &) const = default;
+    };
+    BufferContentKey ContentKeyOf(const Buffer &buf) const;
+    // Resolves the document sheets for this frame (DocSheetStyle's own
+    // per-frame step), so doc_sheet_styles_signature_ is current.
+    void RefreshDocSheets() const;
     // mepml tables' grids, in *display* columns (Editor::MepmlTableLayout
     // aligns them at draw time), per buffer id; OrgTables hands these out
     // for a .mepml buffer so DrawPane's org grid pass draws them too.
@@ -8949,6 +9011,33 @@ public:
         unsigned long generation = 0;  // new on every reparse (MepmlScan's patch check)
     };
     mutable std::unordered_map<int, MepmlParseCache> mepml_parse_cache_[2];
+    // While a MepmlScan runs (MepmlScanMemo), the buffer's text and files
+    // can't change, so the parse cache is validated once and the style
+    // sheets collected once, not again for every styled span: each check
+    // compares the whole buffer and stats every imported file, which made
+    // a scan quadratic in the document (a 20k-line file took ~20 s).
+    struct MepmlScanMemo {
+        const Editor &ed;
+        explicit MepmlScanMemo(const Editor &e) : ed(e) {
+            if (ed.mepml_memo_depth_++ == 0) ed.MepmlMemoReset();
+        }
+        ~MepmlScanMemo() {
+            if (--ed.mepml_memo_depth_ == 0) ed.MepmlMemoReset();
+        }
+    };
+    void MepmlMemoReset() const {
+        mepml_memo_buffer_ = -1;
+        mepml_memo_entry_[0] = mepml_memo_entry_[1] = nullptr;
+        mepml_memo_sheets_valid_ = false;
+        mepml_memo_sheets_.clear();
+        mepml_memo_sheet_sig_.clear();
+    }
+    mutable int mepml_memo_depth_ = 0;
+    mutable int mepml_memo_buffer_ = -1;
+    mutable MepmlParseCache *mepml_memo_entry_[2] = {nullptr, nullptr};
+    mutable bool mepml_memo_sheets_valid_ = false;
+    mutable std::vector<std::shared_ptr<const mepml::style::Sheet>> mepml_memo_sheets_;
+    mutable std::string mepml_memo_sheet_sig_;
     mutable unsigned long mepml_parse_generation_ = 0;
     // Bumped to have every buffer's computed styles made again.
     unsigned long mepml_sheet_generation_ = 1;
@@ -8958,6 +9047,9 @@ public:
     struct MepmlSheetFileEntry {
         long long mtime = -2;
         std::shared_ptr<const mepml::style::Sheet> sheet;
+        // Read (or found missing) at `mtime`: a missing sheet -- the usual
+        // ~/.config/mep/mepml.mepss -- is not retried until its mtime changes.
+        bool loaded = false;
     };
     mutable std::unordered_map<std::string, MepmlSheetFileEntry> mepml_sheet_files_;
     // Editor::DocSheetStyle's cache: computed styles for the element chains
@@ -8965,6 +9057,12 @@ public:
     // dropped when the sheets' signature changes.
     mutable std::unordered_map<std::string, mepml::style::Computed> doc_sheet_styles_;
     mutable std::string doc_sheet_styles_signature_;
+    // DocSheetStyle runs once per styled span; within one drawn frame the
+    // sheets cannot change, so they are resolved (stat'd) once per frame
+    // and buffer rather than per span (plans/PERFORMANCE_PLAN.md R3).
+    mutable unsigned long doc_sheets_frame_ = 0;
+    mutable int doc_sheets_buffer_ = -1;
+    mutable std::vector<std::shared_ptr<const mepml::style::Sheet>> doc_sheets_;
     // The namespaces the Org / Markdown document scans last emitted into
     // (emphasis-or-markdown, links), for DocConcealRunsRebuild.
     int doc_conceal_namespaces_[2] = {-1, -1};
@@ -8973,6 +9071,7 @@ public:
     std::shared_ptr<const mepml::style::Sheet> MepmlSheetFile(const std::string &path, std::string *signature) const;
     std::chrono::steady_clock::time_point mepml_sheets_checked_{};
     MepmlParseCache &MepmlCacheEntry(bool with_imports) const;
+    MepmlParseCache &MepmlCacheEntryValidate(bool with_imports) const;  // MepmlCacheEntry without the scan memo
     // What the last full MepmlScan of a buffer was made from, so a scan
     // that differs only in the cursor's row can re-emit just the rows that
     // depend on it (MepmlScan's patch path). Moving the cursor re-ran the
@@ -10639,6 +10738,24 @@ public:
      * @return The current buffer's decorations, keyed by namespace id.
      */
     const std::unordered_map<int, std::vector<Decoration>> &CurrentBufferDecorations() const;
+    // One highlight span a namespace should hold on some row (the row is
+    // implied by where it sits in ReconcileNamespaceRows' `spans`).
+    struct RowSpanDeco {
+        int col_start = 0;
+        int col_end = 0;
+        const std::string *hl_group = nullptr;
+    };
+    /**
+     * @brief Makes namespace `ns` of the current buffer hold exactly the given highlight spans, touching only the
+     * rows whose spans differ: one pass compares each row's decorations (in draw order) with the wanted ones, and
+     * only mismatched rows are removed and re-added. Replaces "clear the namespace, add everything" for callers that
+     * recompute a whole buffer's spans but usually change a few rows (plans/PERFORMANCE_PLAN.md 2.2).
+     * @param ns The namespace; it must hold only spans written this way (plain row/column/hl_group decorations).
+     * @param spans Every wanted span, row-major.
+     * @param row_start row_start[r]..row_start[r+1] index row r's spans; its size is the buffer's row count + 1.
+     * @return The number of rows rewritten.
+     */
+    int ReconcileNamespaceRows(int ns, const std::vector<RowSpanDeco> &spans, const std::vector<uint32_t> &row_start);
     /**
      * @brief Clears every decoration in a namespace within a specific buffer.
      * @param buffer_id The id of the buffer to clear decorations in.
@@ -11493,6 +11610,7 @@ public:
      * @brief The style sheets that apply to the current mepml buffer, in cascade order.
      */
     std::vector<std::shared_ptr<const mepml::style::Sheet>> MepmlSheets(std::string *signature = nullptr) const;
+    std::vector<std::shared_ptr<const mepml::style::Sheet>> MepmlSheetsCollect(std::string *signature) const;  // MepmlSheets without the scan memo
     /**
      * @brief Whether a style sheet of the current mepml buffer changed on disk since its last scan (checked a few times a second).
      */
@@ -11589,6 +11707,20 @@ public:
      * @brief Rebuilds Buffer::mepml_row_conceal for the current Org or Markdown buffer from the overlays its scans emitted, so Editor::WrapLenForRow wraps a row at its drawn length.
      */
     void DocConcealRunsRebuild();
+    // DocConcealRunsRebuild for some rows only (the others' runs stand).
+    void DocConcealRunsRebuildRows(const std::vector<int> &rows);
+    // The full Org scans' per-row state (OrgHighlightEmphasis/OrgLinkScan
+    // `only_rows`): whether a row is literal block text (skipped), inside a
+    // box, or prose -- valid for the text identified by `key`.
+    struct OrgRowScanState {
+        BufferContentKey key;
+        int buffer_id = -1;
+        std::vector<unsigned char> emphasis;  // 0 prose, 1 skipped, 2 inside a box
+        std::vector<unsigned char> links;     // 0 scanned, 1 skipped
+        bool emphasis_valid = false;
+        bool links_valid = false;
+    };
+    OrgRowScanState org_row_scan_;
     /**
      * @brief Flips the current .html/.htm buffer between its rendered browser view and its source text (Editor::ConvertHtmlBufferToText / ConvertTextBufferToHtml), keeping the buffer id -- :HtmlViewToggle, <leader>bv.
      * @return 1 now rendered, 0 now source text, -1 when the current buffer is not an HTML file.
@@ -11749,6 +11881,9 @@ public:
      * @return The blocks found, in buffer order (empty for a non-existent buffer).
      */
     const std::vector<OrgBlockCard> &OrgBlockCards(int buffer_id);
+    // OrgBlockCards' scan itself, into org_block_cards_ (OrgBlockCards
+    // caches its result per buffer and calls this only when stale).
+    const std::vector<OrgBlockCard> &ScanOrgBlockCards(int buffer_id);
     // <leader>otb: flips org_block_cards_visible_ and returns the new
     // state, same shape as ToggleOrgImages above.
     /**
@@ -14592,6 +14727,8 @@ private:
     void DeleteForward();
 
     void PushUndo();
+    // PushUndo for a given buffer (PushUndo is PushUndoIn(Buf())).
+    void PushUndoIn(Buffer &buf);
 
     // Notebook internals (see the public Notebook* block above).
     NotebookSession *GetNotebookMutable(int buffer_id);
@@ -16260,6 +16397,24 @@ private:
     // Scratch for OrgBlockCards() -- reused across calls (one scan per
     // pane per frame) instead of returning a fresh vector each time.
     std::vector<OrgBlockCard> org_block_cards_;
+    // OrgBlockCards / OrgTables, per buffer, across frames: DrawPane asks
+    // for both every frame (cards twice), and rescanning a 20k-line Org
+    // file each time was most of an idle frame (plans/PERFORMANCE_PLAN.md
+    // R6). Reused while the text and everything else the scan reads agree.
+    struct OrgCardsCache {
+        BufferContentKey key;
+        std::string sheets;  // doc_sheet_styles_signature_ (the cards' looks)
+        int theme = -1;
+        bool rmd_notebook = false;
+        std::vector<OrgBlockCard> cards;
+    };
+    std::unordered_map<int, OrgCardsCache> org_cards_cache_;
+    struct OrgTablesCache {
+        BufferContentKey key;
+        size_t wrap_signature = 0;  // Buffer::org_table_wrap_rows, which the grids are measured against
+        std::vector<OrgTableGrid> tables;
+    };
+    std::unordered_map<int, OrgTablesCache> org_tables_cache_;
 
     // Command-line/search history (Phase 11) -- Up/Down browse
     // command_history_/search_history_ from most-recent backward.
@@ -16549,6 +16704,7 @@ private:
     std::string block_insert_typed_;
 
     static constexpr size_t kMaxUndo = 200;
+    FrameStats frame_stats_;
     static constexpr size_t kMaxJumplist = 100;
     // ResizeActivePane's default step when the caller doesn't pass one:
     // 5% of the split's extent per call, and the floor either side of a

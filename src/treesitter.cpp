@@ -6,11 +6,17 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <regex>
 #include <stdint.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#if !defined(__EMSCRIPTEN__)
+#include <thread>
+#endif
 
 // Vendored verbatim from each grammar repo (see treesitter_queries.h's own
 // top comment) -- not hand-written, so suppress our strict warnings here
@@ -24,6 +30,7 @@
 // mepml's own grammar ships its queries as .scm files
 // (grammars/tree-sitter-mepml/queries); CMake embeds them here.
 #include "mepml_queries.h"
+#include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
@@ -43,6 +50,36 @@ const TSLanguage *tree_sitter_org(void);
 const TSLanguage *tree_sitter_r(void);
 const TSLanguage *tree_sitter_mepml(void);  // mep's own: grammars/tree-sitter-mepml
 }
+
+// The process-wide caches below -- parse trees and row answers per key,
+// compiled queries, loaded grammars, compiled predicate regexes -- are
+// shared with the background highlighter (TreesitterHighlightRowsMaybeAsync),
+// so every lookup or insertion into one of them holds this lock. Only
+// briefly: parsing and querying run outside it, on per-key state that one
+// thread at a time works on (the background thread's key is never also
+// highlighted here, and is never evicted while in use -- KeysInUse).
+// Recursive because a few of those short sections nest (eviction inside
+// the row cache's lookup).
+namespace {
+std::recursive_mutex &TreesitterMutex() {
+    static std::recursive_mutex m;
+    return m;
+}
+}  // namespace
+#define MEP_TS_LOCK() std::lock_guard<std::recursive_mutex> ts_lock_(TreesitterMutex())
+
+namespace {
+// Keys the background highlighter is working on right now: TreesitterForget
+// leaves them alone (their state is being read and written off-thread).
+std::unordered_set<std::string> &KeysInUse() {
+    static std::unordered_set<std::string> keys;
+    return keys;
+}
+// Set on the background highlighter's thread: it never evicts (see
+// TouchBufferKey), so a key the UI thread is in the middle of reading can
+// only ever be evicted by the UI thread itself, which never does that.
+thread_local bool g_ts_background_thread = false;
+}  // namespace
 
 namespace {
 
@@ -463,6 +500,7 @@ std::vector<std::string> DynamicSearchPaths() {
  * @return Pointer to the loaded language, or nullptr if no matching library/symbol was found.
  */
 const TSLanguage *LoadDynamicLanguage(const std::string &canonical_name) {
+    MEP_TS_LOCK();
     static std::unordered_map<std::string, const TSLanguage *> cache;
     auto it = cache.find(canonical_name);
     if (it != cache.end()) return it->second;
@@ -527,6 +565,7 @@ const TSLanguage *LoadDynamicLanguage(const std::string &canonical_name) {
  * @return Pointer to the cached compiled query, or nullptr if compilation failed.
  */
 TSQuery *QueryFor(const TSLanguage *language, const char *query_source) {
+    MEP_TS_LOCK();
     static std::unordered_map<const char *, TSQuery *> cache;
     auto it = cache.find(query_source);
     if (it != cache.end()) return it->second;
@@ -638,6 +677,7 @@ bool EvalPredicates(const TSQuery *query, const TSQueryMatch &match, const std::
             // from the queries, so the set is small and fixed. A pattern
             // std::regex rejects is remembered as nullptr: never matches.
             static std::unordered_map<std::string, std::unique_ptr<std::regex>> compiled;
+            std::unique_lock<std::recursive_mutex> regex_lock(TreesitterMutex());
             auto it = compiled.find(operands[1]);
             if (it == compiled.end()) {
                 std::unique_ptr<std::regex> re;
@@ -648,7 +688,9 @@ bool EvalPredicates(const TSQuery *query, const TSQueryMatch &match, const std::
                 }
                 it = compiled.emplace(operands[1], std::move(re)).first;
             }
-            const bool matched = it->second && std::regex_search(operands[0], *it->second);
+            const std::regex *re = it->second.get();
+            regex_lock.unlock();  // (a compiled regex is safe to share; the map is what needs the lock)
+            const bool matched = re && std::regex_search(operands[0], *re);
             if ((op == "match?") != matched) return false;
         } else if (op == "any-of?" || op == "not-any-of?") {
             bool any = false;
@@ -855,7 +897,10 @@ TSInputEdit ComputeEdit(const std::string &old_text, const std::string &new_text
  * @return The current tree for `cache_key`; ownership stays with the cache -- callers must not delete or retain it past their own call.
  */
 TSTree *GetTree(const std::string &cache_key, const TSLanguage *language, const std::string &text) {
-    ParseCache &cache = ParseCacheTable()[cache_key];
+    ParseCache &cache = [&]() -> ParseCache & {
+        MEP_TS_LOCK();
+        return ParseCacheTable()[cache_key];  // (a node container: the entry stays put)
+    }();
     if (cache.tree && cache.language == language && cache.text == text) {
         return cache.tree;
     }
@@ -968,13 +1013,19 @@ void ParseAndCollect(const std::string &cache_key, const TSLanguage *language, c
  * @param text The full source text (shared by both the block and inline parses).
  * @param out Vector to append every accepted inline capture's RawSpan to.
  */
-void CollectMarkdownInlineSpans(const TSNode &block_root, const std::string &text, std::vector<RawSpan> &out) {
+void CollectMarkdownInlineSpans(const TSNode &block_root, const std::string &text, std::vector<RawSpan> &out,
+                                uint32_t row_lo = 0, uint32_t row_hi = UINT32_MAX) {
     const TSQuery *finder = QueryFor(tree_sitter_markdown(), "(inline) @inline");
     if (!finder) return;
     const TSQuery *inline_query = QueryFor(tree_sitter_markdown_inline(), kHighlightsMarkdownInline);
     if (!inline_query) return;
 
     TSQueryCursor *cursor = ts_query_cursor_new();
+    // Rows [row_lo, row_hi) only: just the paragraphs (inline nodes) that
+    // touch them are parsed -- TreesitterHighlightRows' incremental path
+    // after an edit, where re-parsing every paragraph in the document was
+    // the whole cost of a keystroke in Markdown (plans/PERFORMANCE_PLAN.md 2.6).
+    if (row_lo > 0 || row_hi != UINT32_MAX) ts_query_cursor_set_point_range(cursor, TSPoint{row_lo, 0}, TSPoint{row_hi, 0});
     ts_query_cursor_exec(cursor, finder, block_root);
     TSParser *iparser = ts_parser_new();
     ts_parser_set_language(iparser, tree_sitter_markdown_inline());
@@ -1147,6 +1198,13 @@ struct RowHighlightState {
     const TSLanguage *language = nullptr;
     const TSQuery *query = nullptr;
     std::vector<std::vector<TSHighlightSpan>> rows;
+    // The whole-text fallback (Markdown, or no plain query) has no tree to
+    // ask what changed; `rows` is reused only for exactly the same text.
+    bool fallback_valid = false;
+    std::string fallback_filetype;
+    // Bumped whenever `rows` may have changed (every path below except the
+    // two "same text" early returns): TreesitterRowsGeneration.
+    uint64_t generation = 0;
     RowHighlightState() = default;
     RowHighlightState(const RowHighlightState &) = delete;
     RowHighlightState &operator=(const RowHighlightState &) = delete;
@@ -1158,13 +1216,49 @@ std::unordered_map<std::string, RowHighlightState> &RowHighlightTable() {
     static std::unordered_map<std::string, RowHighlightState> table;
     return table;
 }
+
+// Per-buffer keys ("buf:<id>:<ft>", mep.syntax_highlight) give every open
+// buffer its own incremental tree, so switching between two files of one
+// language no longer reparses each from scratch -- but a buffer's tree,
+// text and row spans are tens of MB for a large file, and nothing tells
+// this layer a buffer closed. So only the most recently highlighted few
+// keep theirs; a closed buffer's simply ages out.
+constexpr size_t kMaxBufferKeys = 8;
+
+void TouchBufferKey(const std::string &key) {
+    if (key.compare(0, 4, "buf:") != 0) return;
+    static std::unordered_map<std::string, uint64_t> last_use;
+    static uint64_t tick = 0;
+    last_use[key] = ++tick;
+    if (g_ts_background_thread) return;
+    while (last_use.size() > kMaxBufferKeys) {
+        auto oldest = last_use.begin();
+        for (auto it = last_use.begin(); it != last_use.end(); ++it)
+            if (it->second < oldest->second) oldest = it;
+        TreesitterForget(oldest->first);
+        last_use.erase(oldest);
+    }
+}
 }  // namespace
 
-std::vector<TSCodeBlockRange> TreesitterMepmlCodeBlocks(const std::string &text) {
+uint64_t TreesitterRowsGeneration(const std::string &key) {
+    MEP_TS_LOCK();
+    auto it = RowHighlightTable().find(key);
+    return it == RowHighlightTable().end() ? 0 : it->second.generation;
+}
+
+void TreesitterForget(const std::string &key) {
+    MEP_TS_LOCK();
+    if (KeysInUse().count(key)) return;  // the background highlighter is working on it
+    ParseCacheTable().erase(key);
+    RowHighlightTable().erase(key);
+}
+
+std::vector<TSCodeBlockRange> TreesitterMepmlCodeBlocks(const std::string &text, const std::string &cache_key) {
     std::vector<TSCodeBlockRange> out;
     auto it = LanguageTable().find("mepml");
     if (it == LanguageTable().end()) return out;
-    const TSTree *tree = GetTree("mepml", it->second.language(), text);
+    const TSTree *tree = GetTree(cache_key.empty() ? "mepml" : cache_key, it->second.language(), text);
     if (!tree) return out;
     // Code blocks are block-level, but may sit inside sections, slides and
     // other containers: walk the whole tree, not only the root's children.
@@ -1206,7 +1300,11 @@ const std::vector<std::vector<TSHighlightSpan>> &TreesitterHighlightRows(const s
                                                                         const std::string &text,
                                                                         const std::string &cache_key) {
     const std::string &key = cache_key.empty() ? filetype : cache_key;
-    RowHighlightState &st = RowHighlightTable()[key];
+    RowHighlightState &st = [&]() -> RowHighlightState & {
+        MEP_TS_LOCK();
+        TouchBufferKey(key);  // (before taking `st`: it may evict another key's entry)
+        return RowHighlightTable()[key];
+    }();
     const size_t n_rows = static_cast<size_t>(std::count(text.begin(), text.end(), '\n')) + 1;
     auto from_spans = [&](const std::vector<TSHighlightSpan> &spans) {
         st.rows.assign(n_rows, {});
@@ -1216,11 +1314,14 @@ const std::vector<std::vector<TSHighlightSpan>> &TreesitterHighlightRows(const s
 
     const TSLanguage *language = nullptr;
     const char *query_source = nullptr;
+    // Markdown is two grammars: the block grammar is the tree kept here, and
+    // each paragraph's inline grammar is layered on by CollectMarkdownInlineSpans
+    // -- for the changed rows' paragraphs only, on the incremental path below,
+    // where it used to be the whole-text pass on every keystroke.
+    const bool markdown = filetype == "md" || filetype == "markdown";
     if (auto it = LanguageTable().find(filetype); it != LanguageTable().end()) {
-        if (filetype != "md" && filetype != "markdown") {
-            language = it->second.language();
-            query_source = it->second.query_source;
-        }
+        language = it->second.language();
+        query_source = it->second.query_source;
     }
 #if !defined(__EMSCRIPTEN__)
     else if (auto dit = DynamicLanguageTable().find(filetype); dit != DynamicLanguageTable().end()) {
@@ -1232,22 +1333,39 @@ const std::vector<std::vector<TSHighlightSpan>> &TreesitterHighlightRows(const s
     // Markdown's second (inline) grammar, or anything without a plain
     // grammar and query: the whole-text pass, grouped by row.
     if (!query) {
+        // Unchanged text (a cursor move, a frame re-running the hook) is
+        // free here as it is on the incremental path below. Without this
+        // a 20k-line Markdown file paid ~260 ms -- a whole block parse
+        // plus an inline parse of every paragraph -- on every call
+        // (plans/PERFORMANCE_PLAN.md E4).
+        if (st.fallback_valid && st.fallback_filetype == filetype && st.text == text) return st.rows;
+        st.generation++;
         from_spans(TreesitterHighlight(filetype, text, cache_key));
         st.text = text;
+        st.fallback_valid = true;
+        st.fallback_filetype = filetype;
         if (st.tree) ts_tree_delete(st.tree);
         st.tree = nullptr;
         return st.rows;
     }
+    st.fallback_valid = false;
     const TSTree *tree = GetTree(key, language, text);
     if (!tree) {
+        st.generation++;
         st.rows.clear();
         return st.rows;
     }
     if (st.tree && st.language == language && st.query == query && st.text == text) return st.rows;
+    st.generation++;
 
+    // Every capture in rows [lo, hi): the query's, then Markdown's inline layer.
+    auto collect = [&](std::vector<RawSpan> &raw, uint32_t lo, uint32_t hi) {
+        CollectRawSpans(query, ts_tree_root_node(tree), text, raw, lo, hi);
+        if (markdown) CollectMarkdownInlineSpans(ts_tree_root_node(tree), text, raw, lo, hi);
+    };
     auto full = [&] {
         std::vector<RawSpan> raw;
-        CollectRawSpans(query, ts_tree_root_node(tree), text, raw);
+        collect(raw, 0, UINT32_MAX);
         SortRawSpans(raw);
         std::vector<TSHighlightSpan> spans;
         ClipRawSpans(raw, text, spans);
@@ -1267,6 +1385,26 @@ const std::vector<std::vector<TSHighlightSpan>> &TreesitterHighlightRows(const s
         TSRange *changed = ts_tree_get_changed_ranges(st.tree, tree, &count);
         for (uint32_t i = 0; i < count; ++i) spans_of_rows.emplace_back(changed[i].start_point.row, changed[i].end_point.row);
         free(changed);
+        // Markdown: an inline construct (emphasis, a link, a code span) can
+        // run across a paragraph's lines without the block tree changing,
+        // so a changed row's whole paragraph is re-highlighted -- every
+        // (inline) node the rows touch, start to end.
+        if (markdown) {
+            const TSQuery *finder = QueryFor(tree_sitter_markdown(), "(inline) @inline");
+            for (auto &iv : spans_of_rows) {
+                if (!finder) break;
+                TSQueryCursor *qc = ts_query_cursor_new();
+                ts_query_cursor_set_point_range(qc, TSPoint{iv.first, 0}, TSPoint{iv.second + 1, 0});
+                ts_query_cursor_exec(qc, finder, ts_tree_root_node(tree));
+                TSQueryMatch m;
+                while (ts_query_cursor_next_match(qc, &m)) {
+                    if (m.capture_count == 0) continue;
+                    iv.first = std::min(iv.first, ts_node_start_point(m.captures[0].node).row);
+                    iv.second = std::max(iv.second, ts_node_end_point(m.captures[0].node).row);
+                }
+                ts_query_cursor_delete(qc);
+            }
+        }
         std::sort(spans_of_rows.begin(), spans_of_rows.end());
         std::vector<std::pair<uint32_t, uint32_t>> merged;
         size_t affected = 0;
@@ -1295,7 +1433,7 @@ const std::vector<std::vector<TSHighlightSpan>> &TreesitterHighlightRows(const s
             for (const auto &iv : merged) {
                 for (uint32_t r = iv.first; r <= iv.second; ++r) rows[r].clear();
                 std::vector<RawSpan> raw;
-                CollectRawSpans(query, ts_tree_root_node(tree), text, raw, iv.first, iv.second + 1);
+                collect(raw, iv.first, iv.second + 1);
                 SortRawSpans(raw);
                 std::vector<TSHighlightSpan> spans;
                 ClipRawSpans(raw, text, spans);
@@ -1314,7 +1452,9 @@ const std::vector<std::vector<TSHighlightSpan>> &TreesitterHighlightRows(const s
     return st.rows;
 }
 
-bool TreesitterHasFoldQuery(const std::string &filetype) { return FoldQueryTable().count(filetype) != 0; }
+bool TreesitterHasFoldQuery(const std::string &filetype) {
+    return FoldQueryTable().count(filetype) != 0;
+}
 
 std::vector<TSFoldRange> TreesitterFoldRanges(const std::string &filetype, const std::string &text) {
     std::vector<TSFoldRange> out;
@@ -1509,3 +1649,178 @@ std::vector<TSStructureNode> TreesitterStructure(const std::string &filetype, co
     }
     return out;
 }
+
+// --- Off-thread highlighting (plans/PERFORMANCE_PLAN.md 2.7) ---------------
+//
+// Typing into a 60k-line C++ file spent ~30 ms of every highlight pass in
+// tree-sitter's incremental reparse: where the grammar meets code it cannot
+// parse (embedded JS in a macro, say), error recovery makes the reparse
+// linear in the file's size, and the UI thread waited for it. So a key
+// whose pass has been slow is highlighted on a background thread instead:
+// the newest text asked for is parsed there (a request not yet started is
+// replaced by a newer one), the finished rows are copied out, and the main
+// loop is woken to apply them. Small files never leave the UI thread.
+
+namespace {
+
+constexpr double kAsyncThresholdMs = 8.0;   // half a 60 Hz frame
+constexpr uint64_t kAsyncGenerationBase = uint64_t{1} << 40;  // apart from the row cache's own counters
+
+struct AsyncDone {
+    std::string text;
+    size_t lines = 0;
+    uint64_t generation = 0;
+    std::shared_ptr<const std::vector<std::vector<TSHighlightSpan>>> rows;
+};
+
+struct AsyncJob {
+    std::string filetype;
+    std::string key;
+    std::string text;
+};
+
+struct AsyncHighlighter {
+    std::mutex m;
+    std::condition_variable cv;
+    bool busy = false;
+    std::string busy_key;  // the key being (or about to be) highlighted off-thread
+    bool stop = false;
+    bool result_waiting = false;
+    bool has_job = false;
+    AsyncJob job;
+    std::unordered_map<std::string, double> cost_ms;  // the last pass's time, per key
+    std::unordered_map<std::string, AsyncDone> done;
+    uint64_t next_generation = kAsyncGenerationBase;
+#if !defined(__EMSCRIPTEN__)
+    std::thread worker;
+
+    void Run() {
+        g_ts_background_thread = true;
+        std::unique_lock<std::mutex> lock(m);
+        while (true) {
+            cv.wait(lock, [&] { return stop || has_job; });
+            if (stop) return;
+            AsyncJob j = std::move(job);
+            has_job = false;
+            busy = true;
+            busy_key = j.key;
+            lock.unlock();
+            AsyncDone d;
+            const auto t0 = std::chrono::steady_clock::now();
+            const uint64_t before = TreesitterRowsGeneration(j.key);
+            {
+                MEP_TS_LOCK();
+                KeysInUse().insert(j.key);
+            }
+            d.rows = std::make_shared<const std::vector<std::vector<TSHighlightSpan>>>(
+                TreesitterHighlightRows(j.filetype, j.text, j.key));
+            {
+                MEP_TS_LOCK();
+                KeysInUse().erase(j.key);
+            }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            d.lines = static_cast<size_t>(std::count(j.text.begin(), j.text.end(), '\n')) + 1;
+            d.text = std::move(j.text);
+            lock.lock();
+            d.generation = ++next_generation;
+            // (Only a pass that did the work says what it costs -- see below.)
+            if (TreesitterRowsGeneration(j.key) != before) cost_ms[j.key] = ms;
+            done[j.key] = std::move(d);
+            // (A closed buffer's result ages out with its tree; see kMaxBufferKeys.)
+            while (done.size() > 8) done.erase(done.begin());
+            busy = false;
+            busy_key.clear();
+            result_waiting = true;
+            lock.unlock();
+            mep::NoteActivity();
+            mep::WakeMainLoop();
+            lock.lock();
+        }
+    }
+
+    ~AsyncHighlighter() {
+        {
+            std::lock_guard<std::mutex> lock(m);
+            stop = true;
+        }
+        cv.notify_all();
+        if (worker.joinable()) worker.join();
+    }
+#endif
+};
+
+AsyncHighlighter &Async() {
+    static AsyncHighlighter a;
+    return a;
+}
+
+}  // namespace
+
+TSRowsAnswer TreesitterHighlightRowsMaybeAsync(const std::string &filetype, const std::string &text,
+                                               const std::string &cache_key) {
+    const std::string key = cache_key.empty() ? filetype : cache_key;
+    AsyncHighlighter &a = Async();
+    std::unique_lock<std::mutex> lock(a.m);
+    auto cost = a.cost_ms.find(key);
+#if !defined(__EMSCRIPTEN__)
+    const bool async = cost != a.cost_ms.end() && cost->second > kAsyncThresholdMs;
+#else
+    const bool async = false;
+#endif
+    const bool worker_owns = (a.busy && a.busy_key == key) || (a.has_job && a.job.key == key);
+    if (!async && !worker_owns) {
+        // Cheap enough to do now, on this thread, as it always was -- for
+        // any key but the one the background thread is working on.
+        lock.unlock();
+        const auto t0 = std::chrono::steady_clock::now();
+        const uint64_t before = TreesitterRowsGeneration(key);
+        const auto &rows = TreesitterHighlightRows(filetype, text, cache_key);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        lock.lock();
+        // Only an incremental pass that did the work says what typing costs:
+        // a call on unchanged text returns at once (counting it flipped a
+        // slow key back to this thread for its next real pass), and the
+        // first, from-scratch parse of a file is a one-off.
+        if (before != 0 && TreesitterRowsGeneration(key) != before) a.cost_ms[key] = ms;
+        // (Not owned: the row cache's own vector, read before the next call.)
+        return {std::shared_ptr<const std::vector<std::vector<TSHighlightSpan>>>(&rows, [](const void *) {}),
+                TreesitterRowsGeneration(key), false};
+    }
+#if !defined(__EMSCRIPTEN__)
+    auto d = a.done.find(key);
+    if (d != a.done.end() && d->second.text == text) return {d->second.rows, d->second.generation, false};
+    // The row cache may already describe exactly this text (the same edit
+    // seen again by another hook): answer from it, no job.
+    if (!worker_owns) {
+        MEP_TS_LOCK();
+        auto it = RowHighlightTable().find(key);
+        if (it != RowHighlightTable().end() && it->second.text == text && it->second.generation != 0) {
+            const auto *rows = &it->second.rows;
+            return {std::shared_ptr<const std::vector<std::vector<TSHighlightSpan>>>(rows, [](const void *) {}),
+                    it->second.generation, false};
+        }
+    }
+    // Ask for this text (replacing a request not yet started).
+    a.job = {filetype, key, text};
+    a.has_job = true;
+    if (!a.worker.joinable()) a.worker = std::thread([&a] { a.Run(); });
+    a.cv.notify_one();
+    // Meanwhile, the newest finished rows -- if they still line up with the
+    // text row for row (no line added or removed since), at worst an edited
+    // line's colours trail by one pass; otherwise nothing, and the current
+    // decorations (which follow line edits on their own) stay until the
+    // answer for this text arrives.
+    if (d != a.done.end() && d->second.lines == static_cast<size_t>(std::count(text.begin(), text.end(), '\n')) + 1)
+        return {d->second.rows, d->second.generation, true};
+#endif
+    return {nullptr, 0, true};
+}
+
+bool TreesitterAsyncResultWaiting() {
+    AsyncHighlighter &a = Async();
+    std::lock_guard<std::mutex> lock(a.m);
+    const bool waiting = a.result_waiting;
+    a.result_waiting = false;
+    return waiting;
+}
+

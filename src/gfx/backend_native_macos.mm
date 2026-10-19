@@ -17,11 +17,13 @@
 //     factor anywhere, so a Retina-resolution surface would render
 //     everything at half size. 1x keeps sizes right (the window server
 //     upscales); proper HiDPI support is future work.
-//   - WaitEvents with an extra_fd polls in short slices rather than
-//     sleeping on a single select(): there is no selectable fd for the
-//     Cocoa event queue, so the wait blocks on the event queue in ~10ms
-//     slices and checks the fd between slices. UI events still wake it
-//     immediately; fd readability is seen at worst one slice later.
+//   - WaitEvents with an extra_fd (mep's wake pipe) blocks on the Cocoa
+//     event queue alone: there is no selectable fd for that queue, so a
+//     GCD read source watches the pipe on a background queue and, when it
+//     becomes readable, posts an application-defined NSEvent that wakes
+//     the wait. It used to wait in 10 ms slices, polling the pipe between
+//     them -- 100 wake-ups a second for an editor doing nothing
+//     (plans/PERFORMANCE_PLAN.md 3.3).
 //   - OpenGL is deprecated on macOS but fully functional (GL 4.1 core
 //     via NSOpenGLProfileVersion3_2Core, a superset of the 3.3 core
 //     feature set the renderers use); GL_SILENCE_DEPRECATION below keeps
@@ -38,6 +40,8 @@
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 #import <Cocoa/Cocoa.h>
+#include <atomic>
+#include <dispatch/dispatch.h>
 
 #include <dlfcn.h>
 
@@ -220,7 +224,15 @@ struct NativeContext {
 // lets a titled window become key/main unless the subclass says
 // otherwise, and mep's window is borderless whenever its title bar is
 // hidden (the default -- ApplyTitleBarStyle).
-@interface MepWindow : NSWindow
+@interface MepWindow : NSWindow {
+  @public
+    // Set around a programmatic resize (MaximizeWindow) to skip AppKit's
+    // resize animation: restoring a maximized window at startup animated
+    // the zoom for ~260 ms before mep could draw its first frame
+    // (plans/PERFORMANCE_PLAN.md 3.5). The title bar's own zoom button
+    // still animates as usual.
+    BOOL noResizeAnimation;
+}
 @end
 
 @interface MepWindowDelegate : NSObject <NSWindowDelegate> {
@@ -506,6 +518,9 @@ void HandleMouseMove(NativeContext *ctx, NSEvent *event) {
 @end
 
 @implementation MepWindow
+- (NSTimeInterval)animationResizeTime:(NSRect)newFrame {
+    return noResizeAnimation ? 0.0 : [super animationResizeTime:newFrame];
+}
 - (BOOL)canBecomeKeyWindow {
     return YES;
 }
@@ -554,6 +569,62 @@ void HandleMouseMove(NativeContext *ctx, NSEvent *event) {
 
 namespace gfx {
 
+// -- Wake pipe -> Cocoa event queue ------------------------------------------
+
+// The NSEvent subtype WaitEvents' pipe watcher posts. The event pump drops
+// these unsent and does not count them as input (they would otherwise hold
+// mep at full frame rate as if someone were typing).
+constexpr short kWakeEventSubtype = 0x6d65;  // "me"
+
+// Watches `fd` (the main loop's wake pipe) and posts one wake event the
+// next time it becomes readable after ArmWakeWatcher. The source suspends
+// itself after firing (the pipe stays readable until the main loop drains
+// it, and a level-triggered source would otherwise post an event per run).
+struct WakeWatcher {
+    dispatch_source_t source = nullptr;
+    int fd = -1;
+    std::atomic<bool> armed{false};
+};
+
+WakeWatcher &TheWakeWatcher() {
+    static WakeWatcher w;
+    return w;
+}
+
+void ArmWakeWatcher(int fd) {
+    WakeWatcher &w = TheWakeWatcher();
+    if (w.fd != fd) {
+        if (w.source) return;  // (one pipe per process; never a different fd)
+        w.fd = fd;
+        w.source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, static_cast<uintptr_t>(fd), 0,
+                                          dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
+        if (!w.source) return;
+        dispatch_source_t src = w.source;
+        dispatch_source_set_event_handler(src, ^{
+          if (!TheWakeWatcher().armed.exchange(false)) return;
+          dispatch_suspend(src);
+          NSEvent *wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                             location:NSZeroPoint
+                                        modifierFlags:0
+                                            timestamp:0
+                                         windowNumber:0
+                                              context:nil
+                                              subtype:kWakeEventSubtype
+                                                data1:0
+                                                data2:0];
+          [NSApp postEvent:wake atStart:NO];
+        });
+        w.armed = true;
+        dispatch_resume(src);  // (a new source starts suspended)
+        return;
+    }
+    if (w.source && !w.armed.exchange(true)) dispatch_resume(w.source);
+}
+
+bool IsWakeEvent(NSEvent *event) {
+    return [event type] == NSEventTypeApplicationDefined && [event subtype] == kWakeEventSubtype;
+}
+
 // -- Platform ---------------------------------------------------------------
 
 class NativePlatformBackend : public IPlatformBackend {
@@ -564,6 +635,17 @@ public:
         @autoreleasepool {
             [NSApplication sharedApplication];
             [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+            // tools/bench_live.py (plans/PERFORMANCE_PLAN.md): a benchmark
+            // window sits unfocused behind the terminal, where App Nap and
+            // background QoS would move it to efficiency cores and coalesce
+            // its timers -- 20-500% swings between identical runs. Opted
+            // out for the life of the process, only when asked to.
+            if (std::getenv("MEP_BENCH_NO_THROTTLE")) {
+                static const void *bench_activity = CFBridgingRetain([[NSProcessInfo processInfo]
+                    beginActivityWithOptions:(NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical)
+                                      reason:@"mep benchmark run"]);
+                (void)bench_activity;
+            }
             // Not a bundle's own process (started from a terminal, or as
             // the child of mep.app's launcher): no icon of its own, so the
             // Dock tile takes the installed logo.
@@ -705,26 +787,22 @@ public:
                                      dequeue:NO];
                 return;
             }
-            // No selectable fd exists for the Cocoa event queue, so wait
-            // in short slices: block on the queue for a slice (an event
-            // wakes it immediately), then poll extra_fd between slices --
-            // see this file's top comment.
-            const double deadline = MonotonicSeconds() + timeout_sec;
-            for (;;) {
-                const double remaining = deadline - MonotonicSeconds();
-                if (remaining <= 0.0) return;
-                const double slice = std::min(remaining, 0.01);
-                NSEvent *event = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                                    untilDate:[NSDate dateWithTimeIntervalSinceNow:slice]
-                                                       inMode:NSDefaultRunLoopMode
-                                                      dequeue:NO];
-                if (event != nil) return;
+            // Already readable: nothing to wait for.
+            {
                 fd_set fds;
                 FD_ZERO(&fds);
                 FD_SET(extra_fd, &fds);
                 timeval tv{0, 0};
                 if (select(extra_fd + 1, &fds, nullptr, nullptr, &tv) > 0) return;
             }
+            // One blocking wait on the event queue; the pipe's watcher posts
+            // a wake event into it when the pipe becomes readable (see this
+            // file's top comment).
+            ArmWakeWatcher(extra_fd);
+            [NSApp nextEventMatchingMask:NSEventMaskAny
+                               untilDate:[NSDate dateWithTimeIntervalSinceNow:timeout_sec]
+                                  inMode:NSDefaultRunLoopMode
+                                 dequeue:NO];
         }
     }
     bool WindowShouldClose() override {
@@ -744,6 +822,7 @@ public:
                                                        inMode:NSDefaultRunLoopMode
                                                       dequeue:YES];
                 if (event == nil) break;
+                if (IsWakeEvent(event)) continue;  // (only ever meant to end a wait)
                 ctx_->events_this_frame = true;
                 // sendEvent routes to MepGLView's responder methods (keys,
                 // mouse) and to the window/system for everything else.
@@ -757,7 +836,11 @@ public:
         // nothing to configure, same as the X11 backend.
     }
     void MaximizeWindow() override {
-        if (ctx_->window != nil && ![ctx_->window isZoomed]) [ctx_->window zoom:nil];
+        if (ctx_->window == nil || [ctx_->window isZoomed]) return;
+        MepWindow *w = [ctx_->window isKindOfClass:[MepWindow class]] ? static_cast<MepWindow *>(ctx_->window) : nil;
+        if (w) w->noResizeAnimation = YES;
+        [ctx_->window zoom:nil];
+        if (w) w->noResizeAnimation = NO;
     }
     bool IsWindowMaximized() override {
         if (ctx_->window == nil) return false;

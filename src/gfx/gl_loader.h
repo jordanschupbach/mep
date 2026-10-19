@@ -69,6 +69,11 @@ inline constexpr GLenum GL_RGB = 0x1907;
 inline constexpr GLenum GL_RGBA = 0x1908;
 inline constexpr GLenum GL_RGBA8 = 0x8058;
 inline constexpr GLenum GL_R8 = 0x8229;
+inline constexpr GLenum GL_TEXTURE_SWIZZLE_R = 0x8E42;
+inline constexpr GLenum GL_TEXTURE_SWIZZLE_G = 0x8E43;
+inline constexpr GLenum GL_TEXTURE_SWIZZLE_B = 0x8E44;
+inline constexpr GLenum GL_TEXTURE_SWIZZLE_A = 0x8E45;
+inline constexpr GLenum GL_ONE_SWIZZLE = 1;  // GL_ONE, as a swizzle source
 
 inline constexpr GLenum GL_NEAREST = 0x2600;
 inline constexpr GLenum GL_LINEAR = 0x2601;

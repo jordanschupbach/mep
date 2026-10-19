@@ -122,11 +122,11 @@ void BenchRandomEdits() {
 
 }  // namespace
 
-int main() {
-    BenchSequentialTyping();
-    BenchLargePaste();
-    BenchUndoPush();
-    BenchRandomEdits();
-    std::printf("text_buffer_bench done\n");
-    return 0;
+int main(int argc, char **argv) {
+    mep::bench::Session s(argc, argv, kBinary);
+    s.Add("buffer/sequential_typing", BenchSequentialTyping);
+    s.Add("buffer/large_paste", BenchLargePaste);
+    s.Add("buffer/undo_push", BenchUndoPush);
+    s.Add("buffer/random_edits", BenchRandomEdits);
+    return s.Run();
 }

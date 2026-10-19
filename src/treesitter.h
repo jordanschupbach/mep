@@ -11,6 +11,8 @@
 // only -- see LoadDynamicLanguage in treesitter.cpp for the search
 // path, which includes a Nix devShell's exported MEP_TS_PARSER_PATH).
 
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -73,6 +75,48 @@ std::vector<TSHighlightSpan> TreesitterHighlight(const std::string &filetype, co
  * @param cache_key Parse and row-cache key; empty means `filetype`.
  * @return One vector of spans per row of `text` (valid until the next call with this key).
  */
+/**
+ * @brief Drops the incremental parse tree and row cache kept under `key` (a cache_key, or a bare filetype).
+ * @param key The cache key to forget; the next highlight under it parses from scratch.
+ */
+void TreesitterForget(const std::string &key);
+
+/**
+ * @brief A counter that changes whenever TreesitterHighlightRows' answer under `key` may have changed (0 if unknown).
+ * @param key The cache key (or bare filetype) the rows are kept under.
+ * @return The generation; equal values from two calls mean the same rows (the text did not change in between).
+ */
+uint64_t TreesitterRowsGeneration(const std::string &key);
+
+// TreesitterHighlightRowsMaybeAsync's answer.
+struct TSRowsAnswer {
+    // The rows to show now, or null when there is nothing usable yet. Held
+    // by the answer: a background pass replacing them cannot free them
+    // while the caller reads (a synchronous answer points into the row
+    // cache instead, valid until the next call into this module).
+    std::shared_ptr<const std::vector<std::vector<TSHighlightSpan>>> rows;
+    uint64_t generation = 0;  // as TreesitterRowsGeneration: equal means the same rows
+    bool pending = false;     // a background pass for this text is still to come
+};
+
+/**
+ * @brief TreesitterHighlightRows that moves off the calling (UI) thread once a key's pass has been slow (> 8 ms):
+ * the newest requested text is then parsed on a background thread, and until it is done this answers with the
+ * last finished rows when they still line up row for row with `text`. Cheap keys are answered synchronously.
+ * @param filetype Bare file extension identifying the language.
+ * @param text The full text to highlight.
+ * @param cache_key Parse and row-cache key; empty means `filetype`.
+ * @return The rows to apply now (possibly none) and whether a newer answer is coming.
+ */
+TSRowsAnswer TreesitterHighlightRowsMaybeAsync(const std::string &filetype, const std::string &text,
+                                               const std::string &cache_key);
+
+/**
+ * @brief Whether a background highlight pass has finished since the last call (and clears that state) -- the
+ * editor's cue to re-run its highlight so the new rows are applied.
+ */
+bool TreesitterAsyncResultWaiting();
+
 const std::vector<std::vector<TSHighlightSpan>> &TreesitterHighlightRows(const std::string &filetype,
                                                                         const std::string &text,
                                                                         const std::string &cache_key = "");
@@ -91,9 +135,10 @@ struct TSCodeBlockRange {
 /**
  * @brief Every code block's body rows and language in a mepml text, from its tree-sitter tree.
  * @param text The mepml text.
+ * @param cache_key The parse-tree cache key: pass the one the text was just highlighted under to reuse its tree.
  * @return The blocks with a body, in document order.
  */
-std::vector<TSCodeBlockRange> TreesitterMepmlCodeBlocks(const std::string &text);
+std::vector<TSCodeBlockRange> TreesitterMepmlCodeBlocks(const std::string &text, const std::string &cache_key = "mepml");
 
 // One foldable range, 0-indexed rows, both inclusive (mep's own Fold
 // struct convention -- see main.cpp's Fold).

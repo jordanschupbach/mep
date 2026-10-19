@@ -778,10 +778,78 @@ private:
 
 }  // namespace
 
+namespace {
+
+// The top-level sequence a match is made of: the root's children if it is a
+// Concat (looking through non-capturing groups around the whole pattern),
+// else the root alone.
+std::vector<const Node *> TopSequence(const Node *root) {
+    while (root && root->kind == Kind::Group && root->group_index == 0 && root->child) root = root->child.get();
+    std::vector<const Node *> seq;
+    if (!root) return seq;
+    if (root->kind == Kind::Concat) {
+        for (const auto &c : root->children) seq.push_back(c.get());
+    } else {
+        seq.push_back(root);
+    }
+    return seq;
+}
+
+bool IsAsciiLiteral(const Node *n) { return n->kind == Kind::Literal && n->literal > 0 && n->literal < 0x80; }
+
+bool IsZeroWidth(const Node *n) {
+    return n->kind == Kind::StartAnchor || n->kind == Kind::WordBoundary || n->kind == Kind::NotWordBoundary;
+}
+
+// First occurrence of `needle` in `hay` at or after `from`; `folded` means
+// needle is lowercase and hay's ASCII letters compare case-insensitively
+// (Matcher's own FoldCase rule).
+size_t FindLiteral(const std::string &hay, const std::string &needle, size_t from, bool folded) {
+    if (!folded) return hay.find(needle, from);
+    if (needle.empty()) return from <= hay.size() ? from : std::string::npos;
+    const size_t n = needle.size();
+    if (hay.size() < n) return std::string::npos;
+    const char first = needle[0];
+    const char first_upper = (first >= 'a' && first <= 'z') ? static_cast<char>(first - 'a' + 'A') : first;
+    for (size_t i = from; i + n <= hay.size(); i++) {
+        const char c = hay[i];
+        if (c != first && c != first_upper) continue;
+        size_t k = 1;
+        for (; k < n; k++) {
+            char h = hay[i + k];
+            if (h >= 'A' && h <= 'Z') h = static_cast<char>(h - 'A' + 'a');
+            if (h != needle[k]) break;
+        }
+        if (k == n) return i;
+    }
+    return std::string::npos;
+}
+
+}  // namespace
+
 Regex::Regex(const std::string &pattern, bool ignore_case) : ignore_case_(ignore_case) {
     Parser parser(pattern, ignore_case);
     root_ = parser.Parse(&group_count_, &error_);
     ok_ = (root_ != nullptr) && error_.empty();
+    if (!ok_) return;
+    const std::vector<const Node *> seq = TopSequence(root_.get());
+    // prefix_: the literals right at the start (past zero-width assertions,
+    // which consume nothing, so the match still starts on the literal).
+    size_t i = 0;
+    while (i < seq.size() && IsZeroWidth(seq[i])) i++;
+    const bool anchored_start = i > 0;
+    for (size_t k = i; k < seq.size() && IsAsciiLiteral(seq[k]); k++) prefix_ += static_cast<char>(seq[k]->literal);
+    literal_only_ = !anchored_start && group_count_ == 0 && !prefix_.empty() && prefix_.size() == seq.size();
+    // required_: the longest run of consecutive literals anywhere in the sequence.
+    std::string run;
+    for (const Node *n : seq) {
+        if (IsAsciiLiteral(n)) {
+            run += static_cast<char>(n->literal);
+            if (run.size() > required_.size()) required_ = run;
+        } else {
+            run.clear();
+        }
+    }
 }
 
 Regex::~Regex() = default;
@@ -800,8 +868,30 @@ Match Regex::SearchBounded(const std::string &text, size_t max_steps, bool *exha
 Match Regex::SearchImpl(const std::string &text, int from, size_t *steps_left) const {
     Match result;
     if (!ok_ || !root_) return result;
-    for (int start = std::max(0, from); start <= static_cast<int>(text.size()); start++) {
+    const size_t first = static_cast<size_t>(std::max(0, from));
+    if (first > text.size()) return result;
+    // No match can lack the required literal (a miss -- the common case
+    // over a buffer's lines -- costs one find instead of a backtracking
+    // attempt at every byte).
+    if (!required_.empty() && FindLiteral(text, required_, first, ignore_case_) == std::string::npos) return result;
+    if (literal_only_) {
+        const size_t at = FindLiteral(text, prefix_, first, ignore_case_);
+        if (at == std::string::npos) return result;
+        result.start = static_cast<int>(at);
+        result.end = static_cast<int>(at + prefix_.size());
+        result.groups.assign(1, {result.start, result.end});
+        return result;
+    }
+    for (int start = static_cast<int>(first); start <= static_cast<int>(text.size()); start++) {
         if (steps_left && *steps_left == 0) break;
+        // Only where the leading literal occurs can a match start (an ASCII
+        // literal never lands mid-codepoint, so the UTF-8 stepping below
+        // stays aligned).
+        if (!prefix_.empty()) {
+            const size_t at = FindLiteral(text, prefix_, static_cast<size_t>(start), ignore_case_);
+            if (at == std::string::npos) break;
+            start = static_cast<int>(at);
+        }
         Matcher m(text, ignore_case_, group_count_, steps_left);
         int end = m.MatchAt(root_.get(), start);
         if (end >= 0) {

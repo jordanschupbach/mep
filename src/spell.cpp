@@ -1,10 +1,12 @@
 #include "spell.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <utility>
 
 namespace spell {
 
@@ -51,7 +53,23 @@ int EditDistance(std::string_view a, std::string_view b, int max_dist) {
     // Levenshtein but an adjacent transposition (the single most common typo,
     // e.g. "teh"->"the", "recieve"->"receive") costs 1 rather than 2. Needs
     // three rolling rows so cur[j] can reach two back via prevprev[j-2].
-    std::vector<int> prevprev(m + 1, 0), prev(m + 1), cur(m + 1);
+    // Three rolling rows; on the stack for any ordinary word (called once
+    // per suggestion candidate, so a heap allocation each added up).
+    constexpr size_t kStackCols = 64;
+    std::array<int, kStackCols * 3> stack_rows{};
+    std::vector<int> heap_rows;
+    int *rows = stack_rows.data();
+    if (m + 1 > kStackCols) {
+        heap_rows.assign((m + 1) * 3, 0);
+        rows = heap_rows.data();
+    }
+    const size_t stride = m + 1 > kStackCols ? m + 1 : kStackCols;
+    struct Row {
+        int *p;
+        int &operator[](size_t i) { return p[i]; }
+    };
+    Row prevprev{rows}, prev{rows + stride}, cur{rows + 2 * stride};
+    for (size_t j = 0; j <= m; ++j) prevprev[j] = 0;
     for (size_t j = 0; j <= m; ++j) prev[j] = static_cast<int>(j);
     for (size_t i = 1; i <= n; ++i) {
         cur[0] = static_cast<int>(i);
@@ -65,8 +83,8 @@ int EditDistance(std::string_view a, std::string_view b, int max_dist) {
             row_min = std::min(row_min, v);
         }
         if (row_min > max_dist) return max_dist + 1;  // whole row too far -> prune
-        prevprev.swap(prev);
-        prev.swap(cur);
+        std::swap(prevprev.p, prev.p);
+        std::swap(prev.p, cur.p);
     }
     return prev[m];
 }
@@ -162,11 +180,31 @@ int LookupCommonRank(const std::unordered_map<std::string, int> &m, const std::s
 }
 }  // namespace
 
+namespace {
+
+std::array<unsigned char, 26> LetterCounts(std::string_view lower) {
+    std::array<unsigned char, 26> counts{};
+    for (char c : lower)
+        if (c >= 'a' && c <= 'z' && counts[static_cast<size_t>(c - 'a')] < 255) counts[static_cast<size_t>(c - 'a')]++;
+    return counts;
+}
+
+int LetterCountDistance(const std::array<unsigned char, 26> &a, const std::array<unsigned char, 26> &b) {
+    int d = 0;
+    for (size_t i = 0; i < 26; i++) d += std::abs(static_cast<int>(a[i]) - static_cast<int>(b[i]));
+    return d;
+}
+
+}  // namespace
+
 void SpellChecker::IndexWord(const std::string &word) {
     if (word.empty()) return;
     int idx = static_cast<int>(words_.size());
     words_.push_back(word);
-    lower_set_.insert(ToLowerAscii(word));
+    std::string lower = ToLowerAscii(word);
+    letter_counts_.push_back(LetterCounts(lower));
+    lower_set_.insert(lower);
+    words_lower_.push_back(std::move(lower));
     by_len_[static_cast<int>(word.size())].push_back(idx);
 }
 
@@ -174,6 +212,8 @@ bool SpellChecker::LoadDictionary(const std::string &path) {
     std::ifstream in(path);
     if (!in) return false;
     words_.clear();
+    words_lower_.clear();
+    letter_counts_.clear();
     lower_set_.clear();
     by_len_.clear();
     common_rank_.clear();
@@ -236,6 +276,7 @@ std::vector<std::string> SpellChecker::Suggest(std::string_view word, int max) c
     // so a two-letter typo doesn't turn into a random unrelated word.
     const int max_dist = wlen <= 4 ? 1 : 2;
     const std::string wkey = Soundex(lower);
+    const std::array<unsigned char, 26> wcounts = LetterCounts(lower);
 
     const bool input_has_upper = (lower != std::string(word));  // input carried a capital
 
@@ -253,8 +294,9 @@ std::vector<std::string> SpellChecker::Suggest(std::string_view word, int max) c
         auto it = by_len_.find(len);
         if (it == by_len_.end()) continue;
         for (int idx : it->second) {
+            if (LetterCountDistance(letter_counts_[static_cast<size_t>(idx)], wcounts) > 2 * max_dist) continue;
             const std::string &cand = words_[static_cast<size_t>(idx)];
-            std::string cand_lower = ToLowerAscii(cand);
+            const std::string &cand_lower = words_lower_[static_cast<size_t>(idx)];
             if (cand_lower == lower) continue;  // same word, not a suggestion
             int d = EditDistance(lower, cand_lower, max_dist);
             if (d > max_dist) continue;

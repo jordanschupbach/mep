@@ -2,6 +2,7 @@
 #include "frame_activity.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -180,6 +181,10 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
     close(out_pipe[1]);
     close(err_pipe[1]);
     stdin_fd_ = in_pipe[1];
+    // Our end only (the child's read end is a separate file description):
+    // WriteStdin queues what a full pipe will not take instead of blocking.
+    if (int fl = fcntl(stdin_fd_, F_GETFL); fl >= 0 && fcntl(stdin_fd_, F_SETFL, fl | O_NONBLOCK) == 0)
+        stdin_nonblocking_ = true;
     stdout_fd_ = out_pipe[0];
     stderr_fd_ = err_pipe[0];
     reader_thread_ = std::thread(&Job::ReaderLoop, this);
@@ -361,18 +366,68 @@ void Job::RequestStop() {
 
 bool Job::WriteStdin(const std::string &data) {
 #if MEP_JOB_POSIX
+    std::lock_guard<std::mutex> lock(stdin_mu_);
     if (stdin_fd_ < 0) return false;
+    if (!stdin_nonblocking_) {
+        size_t off = 0;
+        while (off < data.size()) {
+            ssize_t n = write(stdin_fd_, data.data() + off, data.size() - off);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) return false;
+            off += static_cast<size_t>(n);
+        }
+        return true;
+    }
+    // Behind earlier queued bytes: keep the order.
+    if (!stdin_queue_.empty()) {
+        stdin_queue_ += data;
+        return true;
+    }
     size_t off = 0;
     while (off < data.size()) {
         ssize_t n = write(stdin_fd_, data.data() + off, data.size() - off);
-        if (n <= 0) return false;
-        off += static_cast<size_t>(n);
+        if (n > 0) {
+            off += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            stdin_queue_.append(data, off, std::string::npos);
+            return true;
+        }
+        return false;
     }
     return true;
 #else
     (void)data;
     return false;
 #endif
+}
+
+void Job::FlushStdin() {
+#if MEP_JOB_POSIX
+    std::lock_guard<std::mutex> lock(stdin_mu_);
+    if (stdin_fd_ < 0 || stdin_queue_.empty()) return;
+    size_t off = 0;
+    while (off < stdin_queue_.size()) {
+        ssize_t n = write(stdin_fd_, stdin_queue_.data() + off, stdin_queue_.size() - off);
+        if (n > 0) {
+            off += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+        // The child closed its end: nothing queued can be delivered now.
+        stdin_queue_.clear();
+        return;
+    }
+    stdin_queue_.erase(0, off);
+#endif
+}
+
+size_t Job::StdinPending() {
+    std::lock_guard<std::mutex> lock(stdin_mu_);
+    return stdin_queue_.size();
 }
 
 void Job::CloseStdin() {
@@ -382,7 +437,21 @@ void Job::CloseStdin() {
     // a one-shot pipe job like `git apply`, nothing here ever wants to
     // signal EOF to a shell by closing its input).
     if (use_pty_) return;
+    std::lock_guard<std::mutex> lock(stdin_mu_);
     if (stdin_fd_ >= 0) {
+        // EOF comes after everything written so far (a one-shot job such
+        // as `git apply` reads to EOF): deliver the queue, blocking, first.
+        if (!stdin_queue_.empty()) {
+            if (int fl = fcntl(stdin_fd_, F_GETFL); fl >= 0) fcntl(stdin_fd_, F_SETFL, fl & ~O_NONBLOCK);
+            size_t off = 0;
+            while (off < stdin_queue_.size()) {
+                ssize_t n = write(stdin_fd_, stdin_queue_.data() + off, stdin_queue_.size() - off);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+                off += static_cast<size_t>(n);
+            }
+            stdin_queue_.clear();
+        }
         close(stdin_fd_);
         stdin_fd_ = -1;
     }
@@ -627,6 +696,11 @@ bool JobManager::WriteStdin(int id, const std::string &data) {
     return j ? j->WriteStdin(data) : false;
 }
 
+size_t JobManager::StdinPending(int id) {
+    Job *j = Find(id);
+    return j ? j->StdinPending() : 0;
+}
+
 void JobManager::CloseStdin(int id) {
     if (Job *j = Find(id)) j->CloseStdin();
 }
@@ -701,6 +775,8 @@ void JobManager::PollAll() {
         double t_raw = 0, t_lines = 0, t_exit = 0;
         size_t n_lines = 0;
         std::shared_ptr<Job> job = jobs_[i].job;
+        // Stdin a full pipe would not take when it was written (WriteStdin).
+        job->FlushStdin();
         // Read before draining, not after: the reader thread queues its
         // last lines and only then sets finished_, so a job seen finished
         // here has nothing more coming and the drains below take all of

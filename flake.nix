@@ -204,7 +204,6 @@
             tree-sitter-dockerfile
             tree-sitter-graphql
             tree-sitter-proto
-            tree-sitter-just
             tree-sitter-fish
             tree-sitter-elixir
             tree-sitter-erlang

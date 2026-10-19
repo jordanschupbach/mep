@@ -198,6 +198,14 @@ mepml-grammar:
 nix-grammar:
     cd grammars/tree-sitter-nix && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
 
+# The same for mep's justfile grammar (grammars/tree-sitter-just).
+just-grammar:
+    cd grammars/tree-sitter-just && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+
+# The same for mep's R grammar (grammars/tree-sitter-r).
+r-grammar:
+    cd grammars/tree-sitter-r && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+
 # mep-tex's TeX bundle (nix/tex-bundle.nix, tools/tex_bundle.py): the TeX
 # Live packages mep's own engine reads, so builtin TeX compiles need no TeX
 # installation. Built by nix and linked beside the dev build's mep-tex,

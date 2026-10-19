@@ -41,7 +41,9 @@ tempted to grow this list back:
 C, C++, Lua (mep's own scripting/config language — `~/.config/mep/init.lua`
 and any `.lua` file need this regardless of what else is available),
 Python, JavaScript, Markdown (+ its separate inline-formatting grammar),
-Org, and R.
+and Org. R, Nix, justfiles and mepml have grammars of mep's own instead
+(`grammars/`), and `plans/TREESITTER_GRAMMAR_PLAN.md` replaces the rest of
+this set the same way, one grammar at a time.
 
 | name | repo | tag/commit | subdir |
 |---|---|---|---|
@@ -53,7 +55,6 @@ Org, and R.
 | markdown | https://github.com/tree-sitter-grammars/tree-sitter-markdown | v0.5.3 | tree-sitter-markdown |
 | markdown_inline | https://github.com/tree-sitter-grammars/tree-sitter-markdown | v0.5.3 | tree-sitter-markdown-inline |
 | org | https://github.com/nvim-orgmode/tree-sitter-org | 2.0.4 | . |
-| r | https://github.com/r-lib/tree-sitter-r | v1.3.0 | . |
 
 To add another grammar to this compiled-in set: fetch its `src/`
 directory (dropping `grammar.json`/`node-types.json`) into

@@ -524,6 +524,8 @@ already vendored) rather than rewrite now.
   also removes the Node + tree-sitter CLI dev dependency for mepml.
   mepml itself could get a hand-written parser (`mepml_doc.cpp` already
   parses it) and drop its tree-sitter grammar.
+* The grammars themselves are being replaced one at a time by mep's own
+  (R, Nix and justfiles so far): see `TREESITTER_GRAMMAR_PLAN.md`.
 
 **TLS 1.2.** Only if Phase 2's live test list shows a server we need that
 lacks 1.3.

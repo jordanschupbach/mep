@@ -1,0 +1,108 @@
+==================
+settings, assignments, aliases
+==================
+
+set shell := ["bash", "-cu"]
+set dotenv-load
+export PATH := "a" + env("HOME") / 'bin'
+version := `git describe` # trailing
+alias b := build
+
+---
+
+(source_file
+  (setting (identifier) (setting_list (string) (string)))
+  (setting (identifier))
+  (export (identifier)
+    (binary_expression
+      (value (string))
+      (binary_expression
+        (value (function_call (identifier) (value (string))))
+        (value (raw_string)))))
+  (assignment (identifier) (value (backtick)) (comment))
+  (alias (identifier) (module_path (identifier))))
+
+==================
+recipe with parameters, dependencies and body
+==================
+
+# Build it.
+[private]
+[group('ci'), linux]
+@build target='debug' $FLAG *args: clean (compile target "x") && after
+    echo {{target}} {{{{literal}}
+    @-cargo build \
+        --release
+    {{ if target == "debug" { "-g" } else { "" } }}
+
+after:
+
+---
+
+(source_file
+  (comment)
+  (recipe
+    (attribute (attribute_item (identifier)))
+    (attribute
+      (attribute_item (identifier) (raw_string))
+      (attribute_item (identifier)))
+    (recipe_header
+      (identifier)
+      (parameters
+        (parameter (identifier) (value (raw_string)))
+        (parameter (identifier))
+        (variadic_parameter (parameter (identifier))))
+      (dependencies
+        (dependency (identifier))
+        (dependency_expression
+          (module_path (identifier))
+          (value (identifier))
+          (value (string)))
+        (dependency (identifier))))
+    (recipe_body
+      (recipe_line (text) (interpolation (value (identifier))) (text))
+      (recipe_line (line_prefix) (text))
+      (recipe_line
+        (interpolation
+          (if_expression
+            (comparison (value (identifier)) (value (string)))
+            (value (string))
+            (value (string)))))))
+  (recipe (recipe_header (identifier))))
+
+==================
+shebang recipe with blank lines and deeper indentation
+==================
+
+py:
+    #!/usr/bin/env python3
+    for i in range(3):
+
+        print(i)
+mod? tools 'tools/mod.just'
+import? "local.just"
+
+---
+
+(source_file
+  (recipe
+    (recipe_header (identifier))
+    (recipe_body
+      (recipe_line (text))
+      (recipe_line (text))
+      (recipe_line (text))))
+  (module (identifier) (raw_string))
+  (import (string)))
+
+==================
+recipe at end of file without a newline
+==================
+
+a:
+  echo a
+---
+
+(source_file
+  (recipe
+    (recipe_header (identifier))
+    (recipe_body (recipe_line (text)))))

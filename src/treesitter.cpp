@@ -31,6 +31,8 @@
 // (grammars/tree-sitter-<name>/queries); CMake embeds them here.
 #include "mepml_queries.h"
 #include "nix_queries.h"
+#include "just_queries.h"
+#include "r_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -48,9 +50,10 @@ const TSLanguage *tree_sitter_javascript(void);
 const TSLanguage *tree_sitter_markdown(void);
 const TSLanguage *tree_sitter_markdown_inline(void);
 const TSLanguage *tree_sitter_org(void);
-const TSLanguage *tree_sitter_r(void);
 const TSLanguage *tree_sitter_mepml(void);  // mep's own: grammars/tree-sitter-mepml
 const TSLanguage *tree_sitter_nix(void);    // mep's own: grammars/tree-sitter-nix
+const TSLanguage *tree_sitter_just(void);   // mep's own: grammars/tree-sitter-just
+const TSLanguage *tree_sitter_r(void);      // mep's own: grammars/tree-sitter-r
 }
 
 // The process-wide caches below -- parse trees and row answers per key,
@@ -136,6 +139,8 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"R", {tree_sitter_r, kHighlightsR}},
         {"mepml", {tree_sitter_mepml, kHighlightsMepml}},
         {"nix", {tree_sitter_nix, kHighlightsNix}},
+        // justfiles: LspFiletype maps `justfile`, `Justfile` and `.justfile` here too.
+        {"just", {tree_sitter_just, kHighlightsJust}},
     };
     return table;
 }
@@ -170,6 +175,7 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"org", {tree_sitter_org, kFoldsOrg}},
         {"mepml", {tree_sitter_mepml, kFoldsMepml}},
         {"nix", {tree_sitter_nix, kFoldsNix}},
+        {"just", {tree_sitter_just, kFoldsJust}},
     };
     return table;
 }
@@ -202,6 +208,12 @@ const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
         {"mjs", {tree_sitter_javascript, kStructureJavascript}},
         {"cjs", {tree_sitter_javascript, kStructureJavascript}},
         {"jsx", {tree_sitter_javascript, kStructureJavascript}},
+        {"r", {tree_sitter_r, kStructureR}},
+        {"R", {tree_sitter_r, kStructureR}},
+        // mep's own grammars keep theirs in grammars/tree-sitter-<name>/
+        // queries/structure.scm (embedded via <name>_queries.h).
+        {"nix", {tree_sitter_nix, kStructureNix}},
+        {"just", {tree_sitter_just, kStructureJust}},
     };
     return table;
 }
@@ -613,7 +625,7 @@ std::string CaptureText(const TSQueryCapture &cap, const std::string &text) {
 // capture-vs-a-list-of-literals), plus nvim-treesitter's own
 // #lua-match?/#not-lua-match? (used by the community queries vendored
 // for the handful of grammars that ship no highlights.scm of their own
-// -- hcl/kotlin/verilog/graphql/just) treated as #match?/#not-match?
+// -- hcl/kotlin/verilog/graphql) treated as #match?/#not-match?
 // aliases: every pattern actually seen in the vendored queries is plain
 // ASCII character-class regex, valid in both Lua patterns and
 // std::regex's ECMAScript flavor. Property-only predicates like
@@ -1540,6 +1552,9 @@ void CollectStructureEntries(const TSQuery *query, const TSNode &root, const std
     ts_query_cursor_exec(cursor, query, root);
     TSQueryMatch match;
     while (ts_query_cursor_next_match(cursor, &match)) {
+        // #eq?/#any-of? and the rest, as for highlights: R's outline tells
+        // setClass(...) from any other call by its function's name.
+        if (!EvalPredicates(query, match, text)) continue;
         TSNode def_node{};
         bool has_def = false;
         std::string kind;

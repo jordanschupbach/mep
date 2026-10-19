@@ -12275,6 +12275,14 @@ const char *kBuiltinStructure =
     "  impl = {icon = utf8.char(0xeb29), hl = 'Green'},\n"
     "  union = {icon = utf8.char(0xea91), hl = 'Purple'},\n"
     "  type = {icon = utf8.char(0xeb63), hl = 'Yellow'},\n"
+    // mep's own grammars' kinds (grammars/tree-sitter-*/queries/
+    // structure.scm): a justfile's recipes, modules and variables, and a
+    // Nix file's attrsets. Codicons' symbol-variable (0xea88) is in the
+    // baked range like every glyph above.
+    "  recipe = {icon = utf8.char(0xea8c), hl = 'Blue'},\n"
+    "  module = {icon = utf8.char(0xea8b), hl = 'Cyan'},\n"
+    "  variable = {icon = utf8.char(0xea88), hl = 'Yellow'},\n"
+    "  attrset = {icon = utf8.char(0xea8b), hl = 'Orange'},\n"
     // LaTeX sectioning commands (mep_structure_tex_items below) --
     // Codicons has no distinct glyph per heading depth (VS Code's own
     // outline draws every markdown/LaTeX heading level with the same
@@ -14351,7 +14359,9 @@ const char *kBuiltinSpell =
     "  if fn:match('%.present%.mepml$') then return false end\n"
     "  if not mep.spell_prose_only then return true end\n"
     "  local ext = fn:match('%.([%w]+)$')\n"
-    "  if not ext then return true end\n"
+    // A justfile has no extension either, but it is code
+    // (mep_lsp_filetype calls it 'just').
+    "  if not ext then return mep_lsp_filetype(fn) ~= 'just' end\n"
     "  return mep_spell_prose[ext:lower()] == true\n"
     "end\n"
     // Calls fn(word, start_col, end_col) for every word on `line`, both cols

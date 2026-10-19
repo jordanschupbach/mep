@@ -1,0 +1,21 @@
+{
+  "grammars": [
+    {
+      "name": "just",
+      "camelcase": "Just",
+      "scope": "source.just",
+      "path": ".",
+      "file-types": ["just", "justfile", "Justfile", ".justfile"],
+      "highlights": "queries/highlights.scm",
+      "injections": "queries/injections.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "justfiles, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

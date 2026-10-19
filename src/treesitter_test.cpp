@@ -94,6 +94,22 @@ void ExpectCaptures(const std::string &filetype, const std::string &src, const s
     Check(false, "captures match", __LINE__);
 }
 
+// The structure outline as "depth:kind:name@row" entries, one per line.
+std::string Outline(const std::string &filetype, const std::string &src) {
+    std::string out;
+    for (const TSStructureNode &n : TreesitterStructure(filetype, src)) {
+        out += std::to_string(n.depth) + ":" + n.kind + ":" + n.name + "@" + std::to_string(n.row) + "\n";
+    }
+    return out;
+}
+
+void ExpectOutline(const std::string &filetype, const std::string &src, const std::string &want) {
+    const std::string got = Outline(filetype, src);
+    if (got == want) return;
+    std::fprintf(stderr, "--- %s outline ---\nwant:\n%s got:\n%s", filetype.c_str(), want.c_str(), got.c_str());
+    Check(false, "outline matches", __LINE__);
+}
+
 // ---------------------------------------------------------------------------
 // Python: the f-string fields this query is built to separate from the string
 // ---------------------------------------------------------------------------
@@ -445,6 +461,27 @@ void TestNix() {
     ExpectCaptures("nix", ops, "/ b", "operator");
     ExpectCaptures("nix", ops, "//b", "operator");
 
+    // The outline: functions and attrsets, nested where they sit; plain
+    // values (`name`, `path`, `doCheck`, ...) are left out.
+    CHECK(TreesitterHasStructureQuery("nix"));
+    const std::string flake =
+        "{\n"
+        "  inputs.nixpkgs.url = \"github:NixOS/nixpkgs\";\n"
+        "  outputs = { self, nixpkgs }: {\n"
+        "    packages.x86_64-linux.default = nixpkgs.stdenv.mkDerivation {\n"
+        "      name = \"x\";\n"
+        "    };\n"
+        "    lib = rec {\n"
+        "      double = x: x * 2;\n"
+        "    };\n"
+        "  };\n"
+        "}\n";
+    ExpectOutline("nix", flake,
+                  "0:function:outputs@2\n"
+                  "1:attrset:packages.x86_64-linux.default@3\n"
+                  "1:attrset:lib@6\n"
+                  "2:function:double@7\n");
+
     // The attrset and the indented string fold; one-line ones do not.
     const std::vector<TSFoldRange> folds = TreesitterFoldRanges("nix", src);
     bool attrset = false;
@@ -455,6 +492,176 @@ void TestNix() {
     }
     CHECK(attrset);
     CHECK(indented);
+}
+
+// ---------------------------------------------------------------------------
+// justfiles: mep's own grammar (grammars/tree-sitter-just), compiled in
+// ---------------------------------------------------------------------------
+
+void TestJust() {
+    CHECK(TreesitterHasGrammar("just"));
+    CHECK(TreesitterHasFoldQuery("just"));
+    const std::string src =
+        "set shell := [\"bash\", \"-cu\"]\n"
+        "export BUILD := env(\"OUT\", 'build') / \"x\"\n"
+        "alias b := build\n"
+        "\n"
+        "# Build it.\n"
+        "[group('ci')]\n"
+        "@build mode='debug' *args: clean (compile mode)\n"
+        "    echo {{mode}} {{{{not}} $HOME\n"
+        "    -rm -rf `pwd` \\\n"
+        "        -x\n"
+        "\n"
+        "py:\n"
+        "    #!/usr/bin/env python3\n"
+        "    print({{ if mode == \"x\" { \"a\" } else { `date` } }})\n";
+    ExpectCaptures("just", src, "set", "keyword");
+    ExpectCaptures("just", src, "shell", "property");
+    ExpectCaptures("just", src, ":=", "operator");
+    ExpectCaptures("just", src, "\"bash\"", "string");
+    ExpectCaptures("just", src, "export", "keyword");
+    ExpectCaptures("just", src, "BUILD", "variable");
+    ExpectCaptures("just", src, "env(", "function.builtin");
+    ExpectCaptures("just", src, "'build'", "string");
+    ExpectCaptures("just", src, "/ \"x\"", "operator");
+    ExpectCaptures("just", src, "alias", "keyword");
+    ExpectCaptures("just", src, "b :=", "function");
+    ExpectCaptures("just", src, "build\n", "function.call");
+    ExpectCaptures("just", src, "# Build", "comment");
+    ExpectCaptures("just", src, "group", "attribute");
+    ExpectCaptures("just", src, "@build", "operator");
+    ExpectCaptures("just", src, "build mode", "function");
+    ExpectCaptures("just", src, "mode=", "variable.parameter");
+    ExpectCaptures("just", src, "*args", "operator");
+    ExpectCaptures("just", src, "args:", "variable.parameter");
+    ExpectCaptures("just", src, "clean", "function.call");
+    ExpectCaptures("just", src, "compile", "function.call");
+    // A body is the shell's: its text is left alone, an interpolation in it
+    // is code, and `{{{{` is a literal `{{`, not an interpolation.
+    ExpectCaptures("just", src, "echo", "");
+    ExpectCaptures("just", src, "{{mode", "punctuation.interpolation");
+    ExpectCaptures("just", src, "mode}}", "variable");
+    ExpectCaptures("just", src, "{{{{", "");
+    ExpectCaptures("just", src, "-rm", "operator");
+    ExpectCaptures("just", src, "rm -rf", "");
+    // After a `\` continuation, a leading `-` is text, not a prefix.
+    ExpectCaptures("just", src, "-x", "");
+    ExpectCaptures("just", src, "#!/usr", "keyword.directive");
+    ExpectCaptures("just", src, "if", "conditional");
+    ExpectCaptures("just", src, "==", "operator");
+    ExpectCaptures("just", src, "`date`", "string.special");
+
+    // The outline: variables, then each recipe, header to last body line.
+    CHECK(TreesitterHasStructureQuery("just"));
+    ExpectOutline("just", src,
+                  "0:variable:BUILD@1\n"
+                  "0:recipe:build@6\n"
+                  "0:recipe:py@11\n");
+    const std::string modules = "mod? tools 'tools.just'\nversion := `git describe`\n";
+    ExpectOutline("just", modules, "0:module:tools@0\n0:variable:version@1\n");
+
+    // Each recipe folds, from its header to its last body line -- not over
+    // the blank line after it.
+    const std::vector<TSFoldRange> folds = TreesitterFoldRanges("just", src);
+    bool build = false;
+    bool py = false;
+    for (const TSFoldRange &f : folds) {
+        if (f.start_row == 5 && f.end_row == 9) build = true;
+        if (f.start_row == 11 && f.end_row == 13) py = true;
+    }
+    CHECK(build);
+    CHECK(py);
+}
+
+// ---------------------------------------------------------------------------
+// R: mep's own grammar (grammars/tree-sitter-r), compiled in
+// ---------------------------------------------------------------------------
+
+void TestR() {
+    CHECK(TreesitterHasGrammar("r"));
+    CHECK(TreesitterHasGrammar("R"));
+    CHECK(TreesitterHasFoldQuery("r"));
+    const std::string src =
+        "library(dplyr)\n"
+        "# Square it.\n"
+        "sq <- function(x, n = 2L, ...) {\n"
+        "  if (is.null(x)) stop(\"no x\\n\")\n"
+        "  else x^n\n"
+        "}\n"
+        "out <- dplyr::filter(df, a %in% b) |> obj$run(TRUE, NA, r\"(raw)\")\n"
+        "for (i in 1:10) next\n";
+    ExpectCaptures("r", src, "library", "variable function.call include");
+    ExpectCaptures("r", src, "dplyr)", "variable");
+    ExpectCaptures("r", src, "# Square", "comment");
+    ExpectCaptures("r", src, "sq", "variable function");
+    ExpectCaptures("r", src, "<-", "operator");
+    ExpectCaptures("r", src, "function", "keyword.function");
+    ExpectCaptures("r", src, "x,", "variable variable.parameter");
+    ExpectCaptures("r", src, "2L", "number");
+    ExpectCaptures("r", src, "...", "constant.builtin");
+    ExpectCaptures("r", src, "if", "conditional");
+    ExpectCaptures("r", src, "is.null", "variable function.call");
+    ExpectCaptures("r", src, "stop", "variable function.call exception");
+    ExpectCaptures("r", src, "\"no", "string");
+    ExpectCaptures("r", src, "\\n", "string string.escape");
+    ExpectCaptures("r", src, "else", "conditional");
+    ExpectCaptures("r", src, "^", "operator");
+    ExpectCaptures("r", src, "dplyr::", "variable module");
+    ExpectCaptures("r", src, "::", "operator");
+    ExpectCaptures("r", src, "filter", "variable function.call");
+    ExpectCaptures("r", src, "%in%", "operator");
+    ExpectCaptures("r", src, "|>", "operator");
+    ExpectCaptures("r", src, "run", "variable function.method.call");
+    ExpectCaptures("r", src, "TRUE", "boolean");
+    ExpectCaptures("r", src, "NA", "constant.builtin");
+    ExpectCaptures("r", src, "r\"(", "string");
+    ExpectCaptures("r", src, "for", "repeat");
+    ExpectCaptures("r", src, "in ", "repeat");
+    ExpectCaptures("r", src, "next", "keyword");
+
+    // The function's body folds.
+    bool body = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("r", src)) body = body || (f.start_row == 2 && f.end_row == 5);
+    CHECK(body);
+}
+
+// ---------------------------------------------------------------------------
+// R: the structure outline
+// ---------------------------------------------------------------------------
+
+void TestRStructure() {
+    CHECK(TreesitterHasStructureQuery("r"));
+    CHECK(TreesitterHasStructureQuery("R"));
+    const std::string src =
+        "f <- function(x) x + 1\n"
+        "g = function(a, b = 2) {\n"
+        "  inner <- \\(y) y\n"
+        "  y\n"
+        "}\n"
+        "h <<- function() NULL\n"
+        "Person <- R6Class(\"Person\", public = list(\n"
+        "  greet = function() cat(\"hi\")\n"
+        "))\n"
+        "setClass(\"Point\", representation(x = \"numeric\"))\n"
+        "setGeneric(\"area\", function(shape) standardGeneric(\"area\"))\n"
+        "setMethod(\"area\", \"Point\", function(shape) 0)\n"
+        "obj$method <- function() 1\n"
+        "x <- 5\n"
+        "print(f(x))\n";
+    // Calls that aren't class/generic/method definitions (cat, print,
+    // representation, standardGeneric) and plain values are not entries.
+    ExpectOutline("r", src,
+                  "0:function:f@0\n"
+                  "0:function:g@1\n"
+                  "1:function:inner@2\n"
+                  "0:function:h@5\n"
+                  "0:class:Person@6\n"
+                  "1:method:greet@7\n"
+                  "0:class:Point@9\n"
+                  "0:function:area@10\n"
+                  "0:method:area@11\n"
+                  "0:function:obj$method@12\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -578,6 +785,19 @@ void TestIncrementalRowsMatchWholeText() {
     std::string py;
     for (int i = 0; i < 60; i++)
         py += "def f" + std::to_string(i) + "(a):\n    \"\"\"doc\"\"\"\n    return a + " + std::to_string(i) + "  # note\n\n";
+    // mep's own grammars, whose scanners keep state (R's raw strings) or
+    // decide from context (newlines, recipe bodies, paths).
+    std::string r;
+    for (int i = 0; i < 50; i++)
+        r += "f" + std::to_string(i) + " <- function(x) {\n  if (x) r\"(raw " + std::to_string(i) +
+             ")\"\n  else x[[1]]\n}\n\n";
+    std::string nix = "{\n";
+    for (int i = 0; i < 50; i++)
+        nix += "  a" + std::to_string(i) + " = ./p/${x}.nix;\n  s" + std::to_string(i) + " = ''\n    v ${y}\n  '';\n";
+    nix += "}\n";
+    std::string just;
+    for (int i = 0; i < 50; i++)
+        just += "r" + std::to_string(i) + " a='x':\n    echo {{a}} \\\n        -n\n\n";
     const std::vector<Case> cases = {
         {"md", md,
          {{"A paragraph with *emphasis*", "A paragraph with *emph"},          // opens emphasis across lines
@@ -595,6 +815,19 @@ void TestIncrementalRowsMatchWholeText() {
          {{"\"\"\"doc\"\"\"", "\"\"\"doc"},
           {"return a + 3", "return a + 3  \"\"\""},
           {"def f10(a):", "class C10:"}}},
+        {"r", r,
+         {{"r\"(raw 3)\"", "r\"--(raw 3)\""},  // a raw string left open runs on
+          {"r\"(raw 9)\"", "r\"(raw 9)--\""},  // ...and is closed again further down
+          {"  else x[[1]]\n}\n\nf12", "  else x[[1]\n}\n\nf12"},
+          {"f20 <- function(x) {", "f20 <- function(x)\n{"}}},
+        {"nix", nix,
+         {{"a3 = ./p/${x}.nix;", "a3 = ./p/${x.nix;"},
+          {"s7 = ''", "s7 = \""},
+          {"a20 = ./p", "a20 = p"}}},
+        {"just", just,
+         {{"r3 a='x':", "r3 a='x"},
+          {"echo {{a}} \\\n        -n\n\nr9", "echo {{a}}\n        -n\n\nr9"},
+          {"\n\nr20", "\nr20"}}},
     };
     for (const Case &c : cases) {
         if (!TreesitterHasGrammar(c.ft)) continue;
@@ -622,6 +855,9 @@ int main() {
     TestPythonAnnotations();
     TestPythonLiteralsAndComments();
     TestNix();
+    TestJust();
+    TestR();
+    TestRStructure();
     TestSpanOrderAndClipping();
     TestGrammarAvailability();
     TestTiebreakAcrossLanguages();

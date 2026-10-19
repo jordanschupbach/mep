@@ -1441,7 +1441,15 @@ bool Editor::ThemePalette(const std::string &name, Palette *out) const {
 // (any earlier dot leaves another literal '.' in its own remainder,
 // which can't match `[%w_]+$`), so a plain find_last_of already gives
 // the same leftmost-successful-match position Lua's :match would find.
+//
+// The one exception is a justfile, which has no extension: `justfile`,
+// `Justfile`, `JUSTFILE` and `.justfile` (any case, just finds them all)
+// are "just", the same filetype as a `*.just` module.
 std::string LspFiletype(const std::string &fname) {
+    const size_t slash = fname.find_last_of('/');
+    std::string base = fname.substr(slash == std::string::npos ? 0 : slash + 1);
+    for (char &c : base) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (base == "justfile" || base == ".justfile") return "just";
     size_t pos = fname.find_last_of('.');
     if (pos == std::string::npos) return "";
     size_t start = pos + 1;
@@ -33006,6 +33014,7 @@ const std::vector<std::string> &FormatCommentLeaders(const std::string &filename
         {"tex", &kPercent}, {"sty", &kPercent},  {"cls", &kPercent},  {"bib", &kPercent},  {"m", &kPercent},
         {"erl", &kPercent}, {"hrl", &kPercent},  {"vim", &kQuote},    {"md", &kNone},      {"markdown", &kNone},
         {"txt", &kNone},    {"html", &kNone},    {"htm", &kNone},     {"xml", &kNone},     {"rst", &kNone},
+        {"just", &kHash},
     };
     std::string ext = LspFiletype(filename);
     for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

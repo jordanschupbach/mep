@@ -1,0 +1,114 @@
+==================
+assignments, functions and calls
+==================
+
+f <- function(x, y = 2, ...) {
+  x + y
+}
+g = \(a) a^2
+pkg::h(a = , b)
+
+---
+
+(program
+  (binary_operator
+    (identifier)
+    (function_definition
+      (parameters
+        (parameter (identifier))
+        (comma)
+        (parameter (identifier) (float))
+        (comma)
+        (parameter (dots)))
+      (braced_expression
+        (binary_operator (identifier) (identifier)))))
+  (binary_operator
+    (identifier)
+    (function_definition
+      (parameters (parameter (identifier)))
+      (binary_operator (identifier) (float))))
+  (call
+    (namespace_operator (identifier) (identifier))
+    (arguments
+      (argument (identifier))
+      (comma)
+      (argument (identifier)))))
+
+==================
+newlines end expressions only outside brackets
+==================
+
+{
+  x <- a
+  - 1
+  y <- (a
+  - 1)
+  if (x) y
+  else z
+}
+
+---
+
+(program
+  (braced_expression
+    (binary_operator (identifier) (identifier))
+    (unary_operator (float))
+    (binary_operator
+      (identifier)
+      (parenthesized_expression
+        (binary_operator (identifier) (float))))
+    (if_statement (identifier) (identifier) (identifier))))
+
+==================
+precedence
+==================
+
+-2^2; -1:3; !a == b; a %in% b |> f(); function() 1 ? 2
+
+---
+
+(program
+  (unary_operator (binary_operator (float) (float)))
+  (binary_operator (unary_operator (float)) (float))
+  (unary_operator (binary_operator (identifier) (identifier)))
+  (binary_operator
+    (binary_operator (identifier) (identifier))
+    (call (identifier) (arguments)))
+  (binary_operator
+    (function_definition (parameters) (float))
+    (float)))
+
+==================
+literals, indexing, raw strings
+==================
+
+x[1, ][[2]]$y@z
+c(1L, 0x1Fp2, 2i, NA_integer_, TRUE, NULL, Inf, ..1, ...length())
+"a\n" ; r"-(raw ")" string)-" ; r"()" ; `odd name`
+
+---
+
+(program
+  (extract_operator
+    (extract_operator
+      (subset2
+        (subset (identifier) (arguments (argument (float)) (comma)))
+        (arguments (argument (float))))
+      (identifier))
+    (identifier))
+  (call
+    (identifier)
+    (arguments
+      (argument (integer)) (comma)
+      (argument (float)) (comma)
+      (argument (complex)) (comma)
+      (argument (na)) (comma)
+      (argument (true)) (comma)
+      (argument (null)) (comma)
+      (argument (inf)) (comma)
+      (argument (dot_dot_i)) (comma)
+      (argument (call (identifier) (arguments)))))
+  (string (string_open) (string_content (escape_sequence)) (string_close))
+  (string (string_open) (string_content) (string_close))
+  (string (string_open) (string_close))
+  (identifier))

@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "r",
+      "camelcase": "R",
+      "scope": "source.r",
+      "path": ".",
+      "file-types": ["r", "R"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "R, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

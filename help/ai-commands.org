@@ -18,10 +18,10 @@
 =:MepAiReplaceSelection= is the one that edits your file: select, ask for a
 rewrite, and the reply takes the selection's place.
 
-=K= on a Visual selection sends it with the Settings panel's /Visual K
-prompt/ (=<leader>hS=, under Quick ask) as the system prompt, so a
+=K= on a Visual selection sends it with the Settings panel's
+/Buffer K prompt/ (=<leader>hS=, under Quick ask) as the system prompt, so a
 highlighted term gets a short answer under it, not an essay. It is a row of
-its own, separate from the /Default prompt/ =K= uses on a PDF passage;
+its own, separate from the /PDF K prompt/ =K= uses on a PDF passage;
 change the wording there to change how terse it is, or =d= to restore
 mep's own.
 

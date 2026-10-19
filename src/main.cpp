@@ -31729,7 +31729,7 @@ const char *kBuiltinAi =
     // Visual-mode key below, not just left as an ex-command someone has
     // to type ':' to reach (typing ':' would already have exited Visual
     // by the time it ran).
-    // Visual K's system prompt, its own Settings row ("Visual K prompt")
+    // Visual K's system prompt, its own Settings row ("Buffer K prompt")
     // rather than the PDF popup's mep.pdf_ask_prompt: a highlight in a
     // text buffer is as often a request (a comment describing code to
     // write) as a term to explain, and its answer lands in the file, so
@@ -37292,14 +37292,14 @@ const char *kBuiltinSettings =
     // 14-character value column is not something you can read, let alone
     // edit. Clearing the row (d) restores mep's own wording -- see
     // MEP_PDF_ASK_PROMPT_DEFAULT below for why that needs capturing.
-    "  {section = '', key = 'pdf_ask_prompt', label = 'Default prompt', kind = 'text', wide = true,\n"
+    "  {section = '', key = 'pdf_ask_prompt', label = 'PDF K prompt', kind = 'text', wide = true,\n"
     "   hint = 'Sent with K on a PDF passage. d restores mep\\'s own wording.',\n"
     "   get = function() return mep.pdf_ask_prompt or '' end,\n"
     "   set = function(v)\n"
     "     mep.pdf_ask_prompt = (v ~= '' and v) or MEP_PDF_ASK_PROMPT_DEFAULT\n"
     "   end},\n"
     "\n"
-    "  {section = '', key = 'ai_selection_prompt', label = 'Visual K prompt', kind = 'text', wide = true,\n"
+    "  {section = '', key = 'ai_selection_prompt', label = 'Buffer K prompt', kind = 'text', wide = true,\n"
     "   hint = 'Sent with K on a Visual selection in a buffer. d restores mep\\'s own wording.',\n"
     "   get = function() return mep.ai_selection_prompt or '' end,\n"
     "   set = function(v)\n"

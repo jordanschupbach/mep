@@ -61,7 +61,7 @@ Choose with <code>Enter</code>; leave with <code>Esc</code>.</p>
 behind <b>OpenAI base URL</b> is reachable, since no list here could know what it
 calls its models.</p>
 <h2>The prompt box</h2>
-<p><b>Default prompt</b> under <b>Quick ask</b> is a paragraph, not a word, so it is drawn
+<p><b>PDF K prompt</b> and <b>Buffer K prompt</b> under <b>Quick ask</b> are paragraphs, not words, so each is drawn
 as a box across the panel with its label above it rather than squeezed into
 the value column. <code>Enter</code> puts a cursor in it; the arrows, <code>Home</code> and <code>End</code>
 move within the text and <code>Esc</code> is done. <code>d</code> puts mep's own wording back.</p>
@@ -120,13 +120,19 @@ model rows below applies. An OpenAI-compatible server (a local model, say) is
 because a mistyped model name does not look like a mis-set option -- it
 arrives as a 404 from a request you never see. Neither list is exhaustive;
 the OpenAI one takes a typed name for exactly that reason.</p>
-<p><b>Default prompt</b> is what mep actually asks:</p>
+<p><b>PDF K prompt</b> is what mep actually asks about a PDF passage:</p>
 <pre>Keep this short and concise. Explain this concept in simpler terms, or
 define it. Answer in at most 6 short lines of plain prose: no preamble,
 no restating the question, no headings and no bullet lists.</pre>
 <p>Your passage is quoted underneath it. Rewrite it for the kind of reading you
 do -- ask for notation expanded, or an answer in your field's terms, or more
 than six lines -- and <code>d</code> puts mep's wording back.</p>
+<p><b>Buffer K prompt</b> is its counterpart for <code>K</code> on a Visual selection in an
+ordinary buffer. There the answer is written into the file after the
+selection rather than shown in a popup, and a highlight is as often a
+request (a comment describing code to write) as a term to explain, so its
+wording asks for just the code or text when that is what was asked. See
+<a href="ai-commands.html">AI commands</a>.</p>
 <p><b>Context sent with a passage</b> is what goes alongside the passage:</p>
 <table>
 <tr><th>Mode</th><th>Sends</th></tr>

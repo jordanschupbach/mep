@@ -61,7 +61,7 @@ calls its models.
 
 ** The prompt box
 
-*Default prompt* under *Quick ask* is a paragraph, not a word, so it is drawn
+*PDF K prompt* and *Buffer K prompt* under *Quick ask* are paragraphs, not words, so each is drawn
 as a box across the panel with its label above it rather than squeezed into
 the value column. =Enter= puts a cursor in it; the arrows, =Home= and =End=
 move within the text and =Esc= is done. =d= puts mep's own wording back.
@@ -142,7 +142,7 @@ because a mistyped model name does not look like a mis-set option -- it
 arrives as a 404 from a request you never see. Neither list is exhaustive;
 the OpenAI one takes a typed name for exactly that reason.
 
-*Default prompt* is what mep actually asks:
+*PDF K prompt* is what mep actually asks about a PDF passage:
 
 #+begin_example
 Keep this short and concise. Explain this concept in simpler terms, or
@@ -153,6 +153,13 @@ no restating the question, no headings and no bullet lists.
 Your passage is quoted underneath it. Rewrite it for the kind of reading you
 do -- ask for notation expanded, or an answer in your field's terms, or more
 than six lines -- and =d= puts mep's wording back.
+
+*Buffer K prompt* is its counterpart for =K= on a Visual selection in an
+ordinary buffer. There the answer is written into the file after the
+selection rather than shown in a popup, and a highlight is as often a
+request (a comment describing code to write) as a term to explain, so its
+wording asks for just the code or text when that is what was asked. See
+[[file:ai-commands.html][AI commands]].
 
 *Context sent with a passage* is what goes alongside the passage:
 

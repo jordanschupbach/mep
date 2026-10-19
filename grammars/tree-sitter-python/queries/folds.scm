@@ -1,0 +1,31 @@
+; Compound statements and their clauses, definitions, and any bracketed
+; display or argument list (or string -- a docstring) spanning lines; mep
+; folds only the captures that span more than one row.
+[
+  (function_definition)
+  (class_definition)
+  (decorated_definition)
+  (if_statement)
+  (elif_clause)
+  (else_clause)
+  (for_statement)
+  (while_statement)
+  (try_statement)
+  (except_clause)
+  (finally_clause)
+  (with_statement)
+  (match_statement)
+  (case_clause)
+  (dictionary)
+  (list)
+  (set)
+  (tuple)
+  (list_comprehension)
+  (dictionary_comprehension)
+  (set_comprehension)
+  (generator_expression)
+  (argument_list)
+  (parameters)
+  (import_from_statement)
+  (string)
+] @fold

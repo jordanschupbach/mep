@@ -1,0 +1,38 @@
+# Corpus files whose trees differ from the vendored tree-sitter-lua 0.5's,
+# reviewed, where this grammar is right and the old one wrong. `luac -p`
+# accepts them all, so the oracle cannot tell; see README.md.
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff (grammar-diff).
+
+# `global` used as a name, as it is in Lua 5.4 (it is a keyword only where
+# it starts a Lua 5.5 declaration): the old grammar makes it an anonymous
+# keyword token in the `table:`/operand position; here it is an identifier.
+*-source/script/cli/doc/export.lua                 # global as a name
+*-source/script/core/code-action.lua               # global as a name
+*-source/script/core/diagnostics/global-element.lua    # global as a name
+*-source/script/core/diagnostics/lowercase-global.lua  # global as a name
+*-source/script/core/rename.lua                    # global as a name
+*-source/script/core/semantic-tokens.lua           # global as a name
+*-source/script/core/workspace-symbol.lua          # global as a name
+*-source/script/provider/provider.lua              # global as a name
+*-source/script/vm/compiler.lua                    # global as a name
+*-source/script/vm/doc.lua                         # global as a name
+*-source/script/vm/field.lua                       # global as a name
+*-source/script/vm/global.lua                      # global as a name
+*-source/script/vm/precompile.lua                  # global as a name
+*-source/script/vm/ref.lua                         # global as a name
+*-source/script/vm/tracer.lua                      # global as a name
+*-source/script/vm/type.lua                        # global as a name
+*-source/script/vm/visible.lua                     # global as a name
+*-source/lua/telescope/builtin/__internal.lua      # global as a name
+
+# A quoted string containing `--[[` (`' --[['`, `'--[['`): the old scanner
+# opens a block comment inside the string, and one string node swallows the
+# code after it.
+*-source/3rd/lovr-api/api/serpent.lua              # --[[ inside a quoted string
+*-source/script/parser/compile.lua                 # --[[ inside a quoted string
+
+# A comment that is only dashes: the old grammar nests the next line's
+# comment inside a bare `--`, and splits `----` into two comments; here
+# each is one comment whose content is the rest of its line.
+*-source/meta/3rd/OpenResty/library/resty/websocket/client.lua  # bare or all-dash comment
+*-source/lua/nvim-treesitter/utils.lua             # bare or all-dash comment

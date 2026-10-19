@@ -465,8 +465,8 @@ target_include_directories(lua SYSTEM PUBLIC "${lua_SOURCE_DIR}/src")
 #
 # Deliberately a *small, curated* set, not "as many as possible": C,
 # C++, Lua (mep's own scripting/config language), Python, JavaScript,
-# Markdown (+ its separate inline-formatting grammar) and Org; R, Nix,
-# justfiles and mepml are mep's own grammars (mep_grammar below), and
+# Markdown (+ its separate inline-formatting grammar) and Org; C, Lua, R,
+# Nix, justfiles and mepml are mep's own grammars (mep_grammar below), and
 # plans/TREESITTER_GRAMMAR_PLAN.md is replacing the rest the same way.
 # Every other language is loaded dynamically at runtime instead (see
 # src/treesitter.cpp's LoadDynamicLanguage/TS_DYNAMIC_LANGUAGES) from a
@@ -497,7 +497,7 @@ function(ts_build name)
     target_include_directories(ts_${name} PRIVATE "${base}")
 endfunction()
 
-set(TS_GRAMMAR_NAMES c cpp lua python javascript markdown markdown_inline org)
+set(TS_GRAMMAR_NAMES cpp javascript markdown markdown_inline org)
 set(TS_GRAMMAR_LIBS "")
 foreach(gname ${TS_GRAMMAR_NAMES})
     ts_build(${gname})
@@ -515,7 +515,12 @@ endforeach()
 # treesitter_queries.h.
 function(mep_grammar name camel)
     set(dir "${CMAKE_SOURCE_DIR}/grammars/tree-sitter-${name}")
-    add_library(ts_${name} STATIC "${dir}/src/parser.c" "${dir}/src/scanner.c")
+    set(sources "${dir}/src/parser.c")
+    # An external scanner, for a grammar that needs one (C doesn't).
+    if(EXISTS "${dir}/src/scanner.c")
+        list(APPEND sources "${dir}/src/scanner.c")
+    endif()
+    add_library(ts_${name} STATIC ${sources})
     target_include_directories(ts_${name} PRIVATE "${dir}/src")
     # Unlike the vendored grammars, the external scanner is ours: the
     # Sanitize build instruments it too (mep-mepml-ts-test's mutation run
@@ -548,6 +553,9 @@ mep_grammar(mepml Mepml)
 mep_grammar(nix Nix)
 mep_grammar(just Just)
 mep_grammar(r R)
+mep_grammar(lua Lua)
+mep_grammar(c C)
+mep_grammar(python Python)
 
 # mepml's default style sheet (assets/mepml/default.mepss: mep's whole
 # default look for mepml documents, docs/mepml-spec/style.md) embedded for

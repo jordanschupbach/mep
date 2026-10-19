@@ -1,0 +1,16 @@
+# Corpus files whose trees differ from the vendored tree-sitter-c 0.24's,
+# reviewed, where this grammar is right and the old one wrong. C has no
+# oracle here (a file's validity depends on its include path); see
+# README.md. Format: <path glob>  # why.  Read by tools/ts_grammar_diff.
+
+# An if/else chain split by the preprocessor:
+#     if (a) {...}
+#     #ifdef X
+#     else if (b) {...}
+#     #endif
+# The old grammar reads each `else if (b) {...}` arm as a function
+# definition -- a function named `if` whose return type is `else` --
+# without an error; here it is an else_clause holding an if_statement.
+*/Modules/posixmodule.c        # preprocessor-split else
+*/Objects/codeobject.c         # preprocessor-split else
+*/autosetup/jimsh0.c           # preprocessor-split else

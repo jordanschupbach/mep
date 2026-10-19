@@ -25,15 +25,15 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | mepml | (always ours) | `grammars/tree-sitter-mepml`; its outline is built from headings in Lua |
 | nix | dynamically loaded `tree-sitter-nix` | 41,317 nixpkgs files parse with no errors; agrees with upstream on 1,499/1,500 sampled files (the 1 is an upstream bug) |
 | just | dead vendored query, no grammar | all 589 justfiles from just's own test suite that `just` accepts parse, with the recipes/assignments/aliases `just --dump` reports |
-| r | vendored r-lib/tree-sitter-r v1.3.0 | identical trees on every file R accepts in R 4.5's sources + 11 CRAN packages (2,611 files, 543k lines) |
+| r | vendored r-lib/tree-sitter-r v1.3.0 | identical trees on every file R accepts in R 4.5's sources + 11 CRAN packages (2,614 files, 543k lines) |
+| lua | vendored tree-sitter-grammars/tree-sitter-lua v0.5.0 | same 47 node types / 23 fields; identical trees on 3,192 of 3,214 files, the other 22 reviewed differences where Lua agrees with us (`test/known-differences.txt`) |
+| c | vendored tree-sitter/tree-sitter-c v0.24.2 | same 125 node types / 39 fields; every top-level item both grammars parse without errors is identical (49,606 checked), except 3 files where the old grammar misread a preprocessor-split `else`; 2.7% fewer bytes in error regions |
+| python | vendored tree-sitter/tree-sitter-python v0.25.0 | same 123 node types / 32 fields; identical trees on 7,508 of 7,523 files, the other 15 an old-scanner bug (`test/known-differences.txt`); 9.6% fewer bytes in errors on damaged code |
 
 ### Still vendored (`third_party/grammars/`)
 
 | Grammar | Upstream | `parser.c` | Scanner | Queries mep uses | Hard-coded in `treesitter.cpp` |
 | --- | --- | --- | --- | --- | --- |
-| lua | tree-sitter-grammars v0.5.0 | 348K | 195 lines (long brackets) | highlights 206, folds 12, structure 9 | -- |
-| c | tree-sitter v0.24.2 | 3.7M | none | highlights 83, folds 8, structure 10 | -- |
-| python | tree-sitter v0.25.0 | 3.3M | 437 lines (indentation, strings) | highlights 278, folds 14, structure 4 | -- |
 | javascript | tree-sitter v0.25.0 | 2.7M | 364 lines (ASI, templates, regex) | highlights 206, folds 14, structure 8 | -- |
 | cpp | tree-sitter v0.23.4 | **16.9M** | 148 lines (raw strings) | highlights 154, folds 13, structure 18 | -- |
 | org | nvim-orgmode 2.0.4 | 3.3M | 422 lines | highlights 80 (`Org*` captures), folds 6 | -- |
@@ -89,6 +89,11 @@ because skipping it would have shipped a real bug in R (noted).
 4. **Fuzz the scanner under ASan + UBSan**: the corpus plus a few thousand
    randomly damaged copies (deleted runs, inserted delimiters, flipped
    bytes). Scanners only see their nastiest input during error recovery.
+   Then **compare error recovery** on the same damaged copies (`just
+   grammar-recovery <name>`): the bytes each grammar leaves in ERROR
+   nodes. Code being edited is mostly broken, and step 3 only sees valid
+   code. *Python: caught missing reserved keywords and two scanner
+   choices, which together cost 14% against the old grammar before the fix.*
 5. **Queries move beside the grammar** (`queries/highlights.scm`,
    `folds.scm`, `structure.scm`) and are rewritten in mep's convention
    (general patterns first: mep paints the later pattern on top), then
@@ -106,22 +111,38 @@ because skipping it would have shipped a real bug in R (noted).
    Build, run the related test binaries, and check it live in the editor
    (highlighting and the structure sidebar).
 
-### Phase 0: keep the harness  `[ ]`
+### Phase 0: keep the harness  `[x]`
 
-The R port's dump/diff/fuzz harness lived in a scratch directory. Commit
-it so every port reuses it:
+Done 2026-10-18: `tools/ts_grammar_diff/` (README there) and four `just`
+recipes. Step 1 is `just grammar-symbols <name>`, step 3 `just
+grammar-corpus <lang>` then `just grammar-diff <name> --oracle`, step 4
+`just grammar-fuzz <name>`.
 
-- [ ] `tools/ts_grammar_diff/dump.c` -- prints every named node of each
-      file named on stdin (depth, field, type, byte range, error count).
-- [ ] `tools/ts_grammar_diff/diff.py` -- per-file comparison, first
-      difference bucketed by kind, files with errors in either parser.
-- [ ] `tools/ts_grammar_diff/mutate.py` -- damaged copies for the fuzz run.
-- [ ] `just grammar-diff <name> <corpus-list>` -- builds the old parser
-      from the last commit that still vendored it (`git show
-      <rev>:third_party/grammars/<name>/src/parser.c`), so the oracle
-      outlives the vendored copy, and the new one from `grammars/`.
-- [ ] A short "corpus" note per language (below) with the nixpkgs
-      attributes that provide it, as `nixpkgs#R.src` did for R.
+- [x] `dump.c` -- every named node of each file (depth, field, type, byte
+      range, error count), or `--symbols` for the node types and fields.
+- [x] `grammar_diff.py diff` -- per-file comparison, first difference
+      bucketed by kind with an example and its source line, files with
+      errors in either parser; `--oracle` runs the language's own check on
+      every suspect file and fails only on files the language accepts.
+- [x] `grammar_diff.py fuzz` -- damaged copies (seeded), ASan + UBSan,
+      crashes and hangs reported with their file and saved; checked
+      against a scanner with a planted out-of-bounds write and a planted
+      infinite loop (both caught, the run carrying on past each).
+- [x] The old parser is found automatically: `third_party/grammars/<name>`
+      while vendored, then the same path from git (`HEAD`, or the commit
+      before its removal). `--old`/`--new` point anywhere else.
+- [x] Corpora: the `LANGUAGES` table in `grammar_diff.py`, every nixpkgs
+      attribute in it checked to exist: R (`R.src`, 11 `rPackages`), Nix
+      (the nixpkgs tree), just (`just.src` + its test suite), Lua
+      (luarocks, awesome, lua-language-server, 3 neovim plugins), C
+      (sqlite, Lua, CPython), C++ (fmt, abseil, nlohmann_json), Python
+      (CPython `Lib/`), JavaScript (Node `lib/`), Org (Emacs), Markdown
+      (cmark, Node's docs), plus the repository's own files in each.
+
+Baselines it produced: R identical on every file R accepts (it also caught
+the one remaining difference, `program` starting after leading whitespace,
+now fixed); the R, Nix and just scanners clean under ASan + UBSan on 5,614,
+44,317 and 3,857 files (Nix and just had never been fuzzed before).
 
 ---------------------------------------------------------------------------
 
@@ -131,45 +152,113 @@ Ordered smallest-risk first, so the harness and the method harden on the
 easy ones; C++ follows C because it extends it; markdown is last because
 its scanner is the largest and its two grammars are coupled to mep's code.
 
-### Phase 1: Lua  `[ ]`
+### Phase 1: Lua  `[x]`
 
-mep's own scripting language, so the one mep users edit most.
+Done 2026-10-18: `grammars/tree-sitter-lua` (README there), vendored copy
+removed.
 
-- Reference: the Lua 5.4 manual §9 (complete syntax) and `llex.c`.
-- Scanner: long brackets `[==[ ... ]==]` for strings and `--[==[`
-  comments (level kept as state, like R's raw strings).
-- Corpus: Lua's own test suite (`lua-5.4.x-tests`), mep's `.lua` files,
-  the Lua embedded in `src/main.cpp`'s `kBuiltin*` strings (extract them),
-  nvim plugin sources from nixpkgs (`vimPlugins.*.src`).
-- Oracle: `luac -p`.
+- Reference: the Lua 5.4 manual §9 and `llex.c`; Lua 5.5's `global`
+  declarations, which the vendored grammar already had.
+- Scanner: long brackets (level kept as state) and what follows `--`.
+- Corpus: luarocks, awesome, lua-language-server, telescope.nvim,
+  nvim-treesitter, lazy.nvim and the repository's `.lua` (3,214 files);
+  `luac -p` as oracle.
+- Result: identical trees on 3,192 files. The 22 others are recorded in
+  `test/known-differences.txt` -- `global` used as a name (18), `--[[`
+  inside a quoted string (2), all-dash comments (2) -- each a vendored bug
+  `luac` cannot arbitrate (it accepts both readings' files). Same 5 parse
+  failures as the old grammar, all rejected by `luac`. Fuzz clean on
+  6,214 files.
+- Queries rewritten: highlights add Lua 5.4's builtins, the standard
+  library tables as `@module`, and `self`/`_G`/`_ENV`/`mep` as builtins;
+  folds add block comments and long strings; the outline adds
+  `M.f = function` assignments and functions in table constructors.
+- Tooling added on the way: `known-differences.txt` support in
+  `grammar-diff` (reviewed differences are reported by reason and don't
+  fail the gate; stale entries are flagged).
 
-### Phase 2: C  `[ ]`
+### Phase 2: C  `[x]`
 
-- Reference: C23 (N3096) Annex A, plus GNU extensions the vendored
-  grammar accepts (attributes, `__asm__`, statement expressions).
-- No scanner today; keep it that way if possible. The preprocessor is the
-  hard part: `#if`/`#else` arms holding half-statements, macros used as
-  types/statements. Match the vendored grammar's error-tolerant shapes
-  (`preproc_if`, `preproc_ifdef`, ...) exactly -- C code often relies on
-  them parsing *somehow*.
-- Corpus: the tree-sitter runtime and Lua C sources, SQLite amalgamation,
-  CPython's `Objects/`/`Python/`, mep's own `.c`/`.h`.
-- Oracle: `cc -fsyntax-only` on preprocessed files (for the
-  differences that survive preprocessing).
+Done 2026-10-18: `grammars/tree-sitter-c` (README there), vendored copy
+removed.
 
-### Phase 3: Python  `[ ]`
+- Reference: C23 (N3096) Annex A, plus the GNU and Microsoft extensions
+  the vendored grammar accepts. No scanner.
+- Corpus: SQLite, Lua's C, CPython's `Objects/` `Python/` `Modules/`
+  `Include/`, and the repository's C (874 files, 2.4M lines). The repo's
+  own `src/*.h` are C++ and left out.
+- Gate: no oracle for C, so `grammar-diff --old-clean` (added for this
+  phase): every top-level item the old grammar parsed without errors must
+  be identical wherever the new grammar also parses it without errors --
+  49,606 items; differences inside error regions are reported (with error
+  bytes old vs new) but don't fail.
+- Result: 0 items parsed cleanly by both but differently, apart from 3
+  reviewed known differences. Error recovery: 2.7% fewer bytes in ERROR
+  nodes overall, better in 57 files, worse in 9. Fuzz clean on 3,870
+  files (the run first turned up a stack overflow in the harness's own
+  tree walk on 17 MB damaged files -- `dump.c` now walks iteratively).
+- One deliberate improvement: an `else_clause` may stand alone as a block
+  item, so if/else chains split by `#if`/`#ifdef` parse (the old grammar
+  failed, or read `else if (b) {...}` as a function named `if` returning
+  `else`). It is also what most of the error-byte reduction comes from.
+- Bugs the comparison caught on the way: string concatenation through
+  macros (`"%" PRId64 "\n"`), a bare `NAME;` read as a declaration, and
+  K&R vs modern parameters in `f(b) {}` -- then, from a corpus test, that
+  the K&R fix had broken real K&R definitions.
+- Queries rewritten: highlights split control flow into conditional/
+  repeat/return, colour preprocessor directives, macros, parameters,
+  labels, enumerators, attributes, escapes; folds add preprocessor arms,
+  comments and argument/parameter lists; the outline adds typedefs of
+  anonymous structs/unions/enums and `**`-returning functions.
+- Known shared limitation, for later: SQLite's 9 MB amalgamation is one
+  ERROR root in both grammars (one outer `#ifndef` and something inside it
+  neither parses); and statement macros without `;` (`Py_BEGIN_ALLOW_THREADS`)
+  are the most common error source -- worth a dedicated rule eventually.
 
-Where most of `mep-treesitter-test`'s expectations live, so the strictest
-check of all.
+### Phase 3: Python  `[x]`
 
-- Reference: the Python grammar (`Grammar/python.gram`) and tokenizer
-  docs; PEP 701 f-strings (nested quotes, `{` expressions, format specs,
-  `=` debugging), PEP 695 type parameters, `match` soft keywords.
-- Scanner: INDENT/DEDENT with a stack (stateful, serialized), line
-  joining inside brackets, string prefixes and f-string interiors.
-- Corpus: CPython's `Lib/` from `nixpkgs#python3.src` (~2,000 files),
-  plus a few large packages (numpy, django sources).
-- Oracle: `python -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())'`.
+Done 2026-10-19: `grammars/tree-sitter-python` (README there), vendored
+copy removed.
+
+- Reference: the Python 3.14 reference (lexical analysis, `python.gram`);
+  PEP 701 f-strings, PEP 750 t-strings, PEP 695 type parameters and
+  `type`, PEP 634 `match`, PEP 654 `except*`; Python 2's `print`/`exec`.
+- Scanner: an indentation stack and a string-delimiter stack, both
+  serialized (a string in an f-string's field may reuse its quotes).
+- Corpus: CPython 3.13's `Lib/`, numpy, Django, requests, SymPy and the
+  repository's Python (7,523 files, 2.6M lines); `python -m ast` as oracle.
+- Result: same 123 node types / 32 fields; identical trees on 7,508
+  files. The other 15 are one old-scanner bug (`test/known-differences.txt`):
+  a raw string ending in `\\` lost its text. Same 2 parse failures as the
+  old grammar -- one file Python rejects, and CPython's `test_compile.py`,
+  whose bracketed line indented below its block (`(bar.\n    baz)`) the
+  scanner reads as a dedent in both (it cannot see bracket depth). Fuzz
+  clean on 10,523 files (the corpus plus 3,000 damaged copies).
+- Lessons, now in the method:
+  - **Rule order is load-bearing.** When two readings of an ambiguous
+    construct (`f(*a.b)`: a splat of `a.b`, or an attribute of `*a`?)
+    survive to the same point, tree-sitter keeps the one whose node types
+    are numbered lower, and declaration order sets the numbering. The
+    first draft differed on 504 files only because of that; the fix was
+    to declare rules in the old grammar's order (compare the `enum
+    ts_symbol_identifiers` of the two `parser.c`s).
+  - **Reserved words and error recovery.** The old grammar used
+    tree-sitter 0.25's `reserved` keywords: valid code parses identically
+    with or without them, but on damaged code without them `in` and `def`
+    were read as names and recovery got worse. `diff` cannot see this;
+    the new `grammar-recovery` command (bytes left in ERROR nodes on
+    damaged copies, old vs new) can. With the keywords reserved, and two
+    scanner choices measured there, this grammar leaves 9.6% fewer bytes
+    in errors than the old one (better in 258 files, worse in 145).
+- Queries: highlights kept as they were (mep's own, already in mep's
+  convention, and most of `mep-treesitter-test`'s expectations), plus `...`
+  and line continuations; folds add each clause (elif/else/except/
+  finally/case), comprehensions, sets, tuples, argument and parameter
+  lists, parenthesized imports and multi-line strings; the outline adds
+  `type` aliases and ALL_CAPS module constants.
+- Tooling added on the way: `grammar-recovery`, and GC roots for the
+  corpus's nixpkgs sources (Nix garbage-collected numpy's and Django's
+  source directories in the middle of the phase).
 
 ### Phase 4: JavaScript  `[ ]`
 
@@ -247,7 +336,8 @@ acceptance test.
       difference listed in the grammar's README, with why).
 - [ ] Differential run: identical trees on every corpus file the
       language's own implementation accepts; remaining differences
-      explained.
+      explained in `test/known-differences.txt` (each a case where the
+      language agrees with the new grammar).
 - [ ] Scanner clean under ASan + UBSan on corpus + damaged copies.
 - [ ] `queries/highlights.scm`, `folds.scm`, `structure.scm`, with
       `mep-treesitter-test` expectations for each, and an incremental

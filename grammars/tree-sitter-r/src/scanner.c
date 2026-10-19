@@ -26,6 +26,7 @@ enum TokenType {
     RAW_STRING_OPEN,
     RAW_STRING_CONTENT,
     RAW_STRING_CLOSE,
+    PROGRAM_START,
     ERROR_SENTINEL,
 };
 
@@ -190,6 +191,11 @@ bool tree_sitter_r_external_scanner_scan(void *payload, TSLexer *lexer, const bo
     Scanner *s = (Scanner *)payload;
     if (valid_symbols[ERROR_SENTINEL]) return false;
 
+    // Valid only in the parser's first state, at byte 0.
+    if (valid_symbols[PROGRAM_START]) {
+        lexer->result_symbol = PROGRAM_START;
+        return true;
+    }
     if (s->quote) {
         if (valid_symbols[RAW_STRING_CONTENT]) return scan_raw_string_content(s, lexer, valid_symbols);
         if (valid_symbols[RAW_STRING_CLOSE]) return scan_raw_string_close(s, lexer);

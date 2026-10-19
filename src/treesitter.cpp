@@ -33,6 +33,9 @@
 #include "nix_queries.h"
 #include "just_queries.h"
 #include "r_queries.h"
+#include "lua_queries.h"
+#include "c_queries.h"
+#include "python_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -42,10 +45,7 @@
 // TS_GRAMMAR_NAMES) -- statically linked, so these symbols are always
 // resolvable at link time.
 extern "C" {
-const TSLanguage *tree_sitter_c(void);
 const TSLanguage *tree_sitter_cpp(void);
-const TSLanguage *tree_sitter_lua(void);
-const TSLanguage *tree_sitter_python(void);
 const TSLanguage *tree_sitter_javascript(void);
 const TSLanguage *tree_sitter_markdown(void);
 const TSLanguage *tree_sitter_markdown_inline(void);
@@ -54,6 +54,9 @@ const TSLanguage *tree_sitter_mepml(void);  // mep's own: grammars/tree-sitter-m
 const TSLanguage *tree_sitter_nix(void);    // mep's own: grammars/tree-sitter-nix
 const TSLanguage *tree_sitter_just(void);   // mep's own: grammars/tree-sitter-just
 const TSLanguage *tree_sitter_r(void);      // mep's own: grammars/tree-sitter-r
+const TSLanguage *tree_sitter_lua(void);    // mep's own: grammars/tree-sitter-lua
+const TSLanguage *tree_sitter_c(void);      // mep's own: grammars/tree-sitter-c
+const TSLanguage *tree_sitter_python(void); // mep's own: grammars/tree-sitter-python
 }
 
 // The process-wide caches below -- parse trees and row answers per key,

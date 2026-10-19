@@ -395,6 +395,66 @@ void TestPythonLiteralsAndComments() {
 }
 
 // ---------------------------------------------------------------------------
+// Python: mep's own grammar (grammars/tree-sitter-python) -- the newer syntax
+// its scanner and grammar handle, its folds and its outline
+// ---------------------------------------------------------------------------
+
+void TestPythonGrammar() {
+    CHECK(TreesitterHasStructureQuery("py"));
+    const std::string src =
+        "MAX_SIZE: int = 10\n"
+        "helper = 1\n"
+        "type Pair[T] = tuple[T, T]\n"
+        "class Shape[T]:\n"
+        "    \"\"\"A shape.\n"
+        "    \"\"\"\n"
+        "    def area(self, *, scale=1.0) -> float:\n"
+        "        s = f\"{self.name!r:>{width}} {'q'} {f\"{x}\"}\" + r'\\\\'\n"
+        "        return ...\n"
+        "def main():\n"
+        "    try:\n"
+        "        pass\n"
+        "    except* ValueError as e:\n"
+        "        match[0] = x \\\n"
+        "            + 1\n"
+        "    match e:\n"
+        "        case [1, *rest] if rest:\n"
+        "            pass\n";
+    // PEP 701: a string in an f-string's field may reuse the outer quotes.
+    ExpectCaptures("py", src, "'q'", "string");
+    ExpectCaptures("py", src, "f\"{x}", "string");
+    ExpectCaptures("py", src, "x}\"}\"", "variable");
+    ExpectCaptures("py", src, "width", "string.special variable");
+    // r'\\' is a backslash pair and a quote, not an escaped quote.
+    ExpectCaptures("py", src, "\\\\'", "string");
+    ExpectCaptures("py", src, "...", "constant.builtin");
+    ExpectCaptures("py", src, "except", "keyword");
+    ExpectCaptures("py", src, "ValueError", "variable constructor");
+    // `match` and `type` are names except where they start their statements.
+    ExpectCaptures("py", src, "match[0]", "variable");
+    ExpectCaptures("py", src, "match e", "keyword");
+    ExpectCaptures("py", src, "type Pair", "keyword");
+    ExpectCaptures("py", src, "\\\n", "punctuation.special");
+
+    ExpectOutline("py", src,
+                  "0:variable:MAX_SIZE@0\n"
+                  "0:type:Pair@2\n"
+                  "0:class:Shape@3\n"
+                  "1:function:area@6\n"
+                  "0:function:main@9\n");
+
+    bool docstring = false, except = false, match_case = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("py", src)) {
+        docstring = docstring || (f.start_row == 4 && f.end_row == 5);
+        except = except || (f.start_row == 12 && f.end_row == 14);
+        match_case = match_case || (f.start_row == 16 && f.end_row == 17);
+    }
+    CHECK(docstring);
+    CHECK(except);
+    CHECK(match_case);
+}
+
+// ---------------------------------------------------------------------------
 // Nix: mep's own grammar (grammars/tree-sitter-nix), compiled in
 // ---------------------------------------------------------------------------
 
@@ -575,6 +635,122 @@ void TestJust() {
 }
 
 // ---------------------------------------------------------------------------
+// C: mep's own grammar (grammars/tree-sitter-c), compiled in
+// ---------------------------------------------------------------------------
+
+void TestC() {
+    CHECK(TreesitterHasFoldQuery("c"));
+    CHECK(TreesitterHasStructureQuery("c"));
+    const std::string src =
+        "#include <stdio.h>\n"
+        "#define MAX(a, b) ((a) > (b) ? (a) : (b))\n"
+        "typedef struct point { int x; } point_t;\n"
+        "enum color { RED, GREEN };\n"
+        "static int add(int a, const char *s) {\n"
+        "  if (a) return printf(\"%d\\n\", a);\n"
+        "#ifdef DEBUG\n"
+        "  else if (s) { goto done; }\n"
+        "#endif\n"
+        "  else { a = sizeof(int) + RED; }\n"
+        "done:\n"
+        "  return p->x == NULL;\n"
+        "}\n";
+    ExpectCaptures("c", src, "#include", "include");
+    ExpectCaptures("c", src, "<stdio.h>", "string");
+    ExpectCaptures("c", src, "#define", "preproc");
+    ExpectCaptures("c", src, "MAX", "variable constant function.macro");
+    ExpectCaptures("c", src, "typedef", "keyword");
+    ExpectCaptures("c", src, "point {", "type");
+    ExpectCaptures("c", src, "x;", "property");
+    ExpectCaptures("c", src, "RED,", "variable constant constant");
+    ExpectCaptures("c", src, "static", "keyword");
+    ExpectCaptures("c", src, "int add", "type");
+    ExpectCaptures("c", src, "add", "variable function");
+    ExpectCaptures("c", src, "a, const", "variable variable.parameter");
+    ExpectCaptures("c", src, "s) {", "variable variable.parameter");
+    ExpectCaptures("c", src, "if", "conditional");
+    ExpectCaptures("c", src, "return printf", "keyword.return");
+    ExpectCaptures("c", src, "printf", "variable function.call");
+    ExpectCaptures("c", src, "\\n", "string string.escape");
+    // An `else` the preprocessor split from its `if` is still an `else`.
+    ExpectCaptures("c", src, "else if", "conditional");
+    ExpectCaptures("c", src, "goto", "keyword");
+    ExpectCaptures("c", src, "done;", "label");
+    ExpectCaptures("c", src, "sizeof", "keyword.operator");
+    ExpectCaptures("c", src, "->", "operator");
+    ExpectCaptures("c", src, "NULL", "constant.builtin");
+
+    ExpectOutline("c", src,
+                  "0:struct:point@2\n"
+                  "0:enum:color@3\n"
+                  "0:function:add@4\n");
+    ExpectOutline("c", "char **lines(void) { return 0; }\ntypedef struct { int y; } anon_t;\n",
+                  "0:function:lines@0\n0:struct:anon_t@1\n");
+
+    bool body = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("c", src)) body = body || (f.start_row == 4 && f.end_row == 12);
+    CHECK(body);
+}
+
+// ---------------------------------------------------------------------------
+// Lua: mep's own grammar (grammars/tree-sitter-lua), compiled in
+// ---------------------------------------------------------------------------
+
+void TestLua() {
+    CHECK(TreesitterHasFoldQuery("lua"));
+    CHECK(TreesitterHasStructureQuery("lua"));
+    const std::string src =
+        "#!/usr/bin/env lua\n"
+        "-- Settings.\n"
+        "local M = {}\n"
+        "local MAX <const> = 10\n"
+        "function M.setup(opts, ...)\n"
+        "  local s = [==[long]==] .. \"a\\n\"\n"
+        "  for i = 1, MAX do mep.notify(string.format('%d', i)) end\n"
+        "  return self:run(nil, true)\n"
+        "end\n"
+        "M.handlers = {\n"
+        "  on_save = function(buf) return buf end,\n"
+        "}\n"
+        "global.x = 1\n"
+        "return M\n";
+    ExpectCaptures("lua", src, "#!", "preproc");
+    ExpectCaptures("lua", src, "-- Settings", "comment");
+    ExpectCaptures("lua", src, "local M", "keyword");
+    ExpectCaptures("lua", src, "MAX <", "variable constant");
+    ExpectCaptures("lua", src, "const", "variable attribute");
+    ExpectCaptures("lua", src, "function M", "keyword.function");
+    ExpectCaptures("lua", src, "setup", "variable field function");
+    ExpectCaptures("lua", src, "opts", "variable parameter");
+    ExpectCaptures("lua", src, "...", "constant");
+    ExpectCaptures("lua", src, "[==[", "string");
+    ExpectCaptures("lua", src, "\\n\"", "string string.escape");
+    ExpectCaptures("lua", src, "for", "repeat");
+    ExpectCaptures("lua", src, "mep.", "variable variable.builtin");
+    ExpectCaptures("lua", src, "notify", "variable field function.call");
+    ExpectCaptures("lua", src, "string.", "variable module");
+    ExpectCaptures("lua", src, "self", "variable variable.builtin");
+    ExpectCaptures("lua", src, "run", "variable method.call");
+    ExpectCaptures("lua", src, "nil", "constant.builtin");
+    ExpectCaptures("lua", src, "true", "boolean");
+    ExpectCaptures("lua", src, "on_save", "variable field function");
+    // Lua 5.4's `global` is a name; 5.5's is a keyword only in declarations.
+    ExpectCaptures("lua", src, "global", "variable");
+    ExpectCaptures("lua", src, "return M", "keyword.return");
+
+    // `M.handlers = {...}` holds a function but is not one itself.
+    ExpectOutline("lua", src,
+                  "0:function:M.setup@4\n"
+                  "0:method:on_save@10\n");
+    ExpectOutline("lua", "local function f() end\nlocal g = function() end\nfunction M:m() end\n",
+                  "0:function:f@0\n0:function:g@1\n0:method:M:m@2\n");
+
+    bool body = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("lua", src)) body = body || (f.start_row == 4 && f.end_row == 8);
+    CHECK(body);
+}
+
+// ---------------------------------------------------------------------------
 // R: mep's own grammar (grammars/tree-sitter-r), compiled in
 // ---------------------------------------------------------------------------
 
@@ -714,7 +890,7 @@ void TestGrammarAvailability() {
     CHECK(TreesitterHighlight("py", "").empty());
 }
 
-// The pattern-index tiebreak is not a Python detail -- every vendored query is
+// The pattern-index tiebreak is not a Python detail -- every grammar's query is
 // written to the same "last matching pattern wins" convention, and these are
 // the cases where a catch-all ((identifier) @variable) covers the exact same
 // span as the specific pattern below it.
@@ -726,8 +902,8 @@ void TestTiebreakAcrossLanguages() {
         "    return 0;\n"
         "}\n";
     ExpectCaptures("c", c_src, "main", "variable function");
-    ExpectCaptures("c", c_src, "printf", "variable function");
-    ExpectCaptures("c", c_src, "MAXN", "variable constant", 0);
+    ExpectCaptures("c", c_src, "printf", "variable function.call");
+    ExpectCaptures("c", c_src, "MAXN", "variable constant constant.macro", 0);  // the #define's name
     ExpectCaptures("c", c_src, "MAXN", "variable constant", 1);
 
     const std::string lua_src =
@@ -784,13 +960,22 @@ void TestIncrementalRowsMatchWholeText() {
                "; /* block */\n}\n\n";
     std::string py;
     for (int i = 0; i < 60; i++)
-        py += "def f" + std::to_string(i) + "(a):\n    \"\"\"doc\"\"\"\n    return a + " + std::to_string(i) + "  # note\n\n";
+        py += "def f" + std::to_string(i) + "(a):\n    \"\"\"doc\"\"\"\n    if a:\n        s = f\"{a[\"k\"]!r:>{w}} {{x}}\"\n    return a + " +
+              std::to_string(i) + "  # note\n\n";
     // mep's own grammars, whose scanners keep state (R's raw strings) or
     // decide from context (newlines, recipe bodies, paths).
     std::string r;
     for (int i = 0; i < 50; i++)
         r += "f" + std::to_string(i) + " <- function(x) {\n  if (x) r\"(raw " + std::to_string(i) +
              ")\"\n  else x[[1]]\n}\n\n";
+    std::string c_code;
+    for (int i = 0; i < 50; i++)
+        c_code += "#ifdef F" + std::to_string(i) + "\nstatic int f" + std::to_string(i) +
+                  "(int a) {\n  if (a) return 1;\n#ifdef G\n  else if (a > 2) return 2;\n#endif\n  return 0; /* x */\n}\n#endif\n\n";
+    std::string lua;
+    for (int i = 0; i < 50; i++)
+        lua += "local function f" + std::to_string(i) + "(x)\n  --[==[ note ]==]\n  return [[s" + std::to_string(i) +
+               "]] .. x\nend\n\n";
     std::string nix = "{\n";
     for (int i = 0; i < 50; i++)
         nix += "  a" + std::to_string(i) + " = ./p/${x}.nix;\n  s" + std::to_string(i) + " = ''\n    v ${y}\n  '';\n";
@@ -814,12 +999,29 @@ void TestIncrementalRowsMatchWholeText() {
         {"py", py,
          {{"\"\"\"doc\"\"\"", "\"\"\"doc"},
           {"return a + 3", "return a + 3  \"\"\""},
-          {"def f10(a):", "class C10:"}}},
+          {"def f10(a):", "class C10:"},
+          // mep's own scanner (grammars/tree-sitter-python): its indent
+          // and string-delimiter stacks are what a reparse restores.
+          {"s = f\"{a[\"k\"]!r:>{w}} {{x}}\"\n    return a + 20", "s = f\"{a[\"k\"\n    return a + 20"},
+          {"    if a:\n        s = f\"{a[\"k\"]!r:>{w}} {{x}}\"\n    return a + 30",
+           "    if a:\n            s = f\"{a}\"\n    return a + 30"},
+          {"    if a:\n        s = f\"{a[\"k\"]!r:>{w}} {{x}}\"\n    return a + 40",
+           "    if a:\n    s = 1\n    return a + 40"}}},
         {"r", r,
          {{"r\"(raw 3)\"", "r\"--(raw 3)\""},  // a raw string left open runs on
           {"r\"(raw 9)\"", "r\"(raw 9)--\""},  // ...and is closed again further down
           {"  else x[[1]]\n}\n\nf12", "  else x[[1]\n}\n\nf12"},
           {"f20 <- function(x) {", "f20 <- function(x)\n{"}}},
+        {"c", c_code,
+         {{"#ifdef F3\n", "#if F3\n"},                         // a directive left without its condition's newline
+          {"return 0; /* x */\n}\n#endif\n\n#ifdef F9", "return 0; /* x \n}\n#endif\n\n#ifdef F9"},  // a comment runs on
+          {"/* x */\n}\n#endif\n\n#ifdef F20", "/* x */\n}\n\n#ifdef F20"},  // an #endif goes missing
+          {"else if (a > 2) return 2;", "if (a > 2) return 2;"}}},
+        {"lua", lua,
+         {{"--[==[ note ]==]\n  return [[s3]]", "--[==[ note ]=]\n  return [[s3]]"},  // a block comment runs on
+          {"return [[s9]] .. x", "return [[s9]] .. x ]==]"},                          // ...to a later close
+          {"return [[s20]]", "return [=[s20]]"},
+          {"local function f30(x)", "global function f30(x)"}}},
         {"nix", nix,
          {{"a3 = ./p/${x}.nix;", "a3 = ./p/${x.nix;"},
           {"s7 = ''", "s7 = \""},
@@ -854,8 +1056,11 @@ int main() {
     TestPythonCalls();
     TestPythonAnnotations();
     TestPythonLiteralsAndComments();
+    TestPythonGrammar();
     TestNix();
     TestJust();
+    TestC();
+    TestLua();
     TestR();
     TestRStructure();
     TestSpanOrderAndClipping();

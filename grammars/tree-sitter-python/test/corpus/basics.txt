@@ -1,0 +1,178 @@
+================================================================================
+Indentation, with comments at the block's edge
+================================================================================
+
+if a:
+    b  # same line
+    # still in the block
+# after it
+
+c = 1
+
+--------------------------------------------------------------------------------
+
+(module
+  (if_statement
+    (identifier)
+    (block
+      (expression_statement
+        (identifier))
+      (comment)
+      (comment)))
+  (comment)
+  (expression_statement
+    (assignment
+      (identifier)
+      (integer))))
+
+================================================================================
+f-strings reusing their quotes (PEP 701)
+================================================================================
+
+f"{a["k"]!r:>{w}} {{x}} {f"{y}"}"
+
+--------------------------------------------------------------------------------
+
+(module
+  (expression_statement
+    (string
+      (string_start)
+      (interpolation
+        (subscript
+          (identifier)
+          (string
+            (string_start)
+            (string_content)
+            (string_end)))
+        (type_conversion)
+        (format_specifier
+          (format_expression
+            (identifier))))
+      (string_content
+        (escape_interpolation)
+        (escape_interpolation))
+      (interpolation
+        (string
+          (string_start)
+          (interpolation
+            (identifier))
+          (string_end)))
+      (string_end))))
+
+================================================================================
+A raw string ending in a backslash pair
+================================================================================
+
+r'\\'
+
+--------------------------------------------------------------------------------
+
+(module
+  (expression_statement
+    (string
+      (string_start)
+      (string_content)
+      (string_end))))
+
+================================================================================
+except*, with and without a space
+================================================================================
+
+try:
+    pass
+except* A as e:
+    pass
+except *B:
+    pass
+
+--------------------------------------------------------------------------------
+
+(module
+  (try_statement
+    (block
+      (pass_statement))
+    (except_clause
+      (as_pattern
+        (identifier)
+        (as_pattern_target
+          (identifier)))
+      (block
+        (pass_statement)))
+    (except_clause
+      (identifier)
+      (block
+        (pass_statement)))))
+
+================================================================================
+match and type as names and as statements
+================================================================================
+
+match[0] = type
+match x:
+    case [1, *r] if r:
+        pass
+type T[U] = list[U]
+
+--------------------------------------------------------------------------------
+
+(module
+  (expression_statement
+    (assignment
+      (subscript
+        (identifier)
+        (integer))
+      (identifier)))
+  (match_statement
+    (identifier)
+    (block
+      (case_clause
+        (case_pattern
+          (list_pattern
+            (case_pattern
+              (integer))
+            (case_pattern
+              (splat_pattern
+                (identifier)))))
+        (if_clause
+          (identifier))
+        (block
+          (pass_statement)))))
+  (type_alias_statement
+    (type
+      (generic_type
+        (identifier)
+        (type_parameter
+          (type
+            (identifier)))))
+    (type
+      (generic_type
+        (identifier)
+        (type_parameter
+          (type
+            (identifier)))))))
+
+================================================================================
+Python 2 statements
+================================================================================
+
+print >>f, a
+exec "x" in d
+x = 1L
+
+--------------------------------------------------------------------------------
+
+(module
+  (print_statement
+    (chevron
+      (identifier))
+    (identifier))
+  (exec_statement
+    (string
+      (string_start)
+      (string_content)
+      (string_end))
+    (identifier))
+  (expression_statement
+    (assignment
+      (identifier)
+      (integer))))

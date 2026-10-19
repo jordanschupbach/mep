@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "lua",
+      "camelcase": "Lua",
+      "scope": "source.lua",
+      "path": ".",
+      "file-types": ["lua"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Lua, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

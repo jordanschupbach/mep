@@ -206,6 +206,41 @@ just-grammar:
 r-grammar:
     cd grammars/tree-sitter-r && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
 
+# The same for mep's Lua grammar (grammars/tree-sitter-lua).
+lua-grammar:
+    cd grammars/tree-sitter-lua && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+
+# The same for mep's C grammar (grammars/tree-sitter-c).
+c-grammar:
+    cd grammars/tree-sitter-c && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+
+# The same for mep's Python grammar (grammars/tree-sitter-python).
+python-grammar:
+    cd grammars/tree-sitter-python && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+
+# Replacing a vendored tree-sitter grammar with mep's own: the tools in
+# tools/ts_grammar_diff (README there; plans/TREESITTER_GRAMMAR_PLAN.md).
+
+# Fetch a corpus of real code in a language from nixpkgs sources.
+grammar-corpus lang:
+    python3 -I tools/ts_grammar_diff/grammar_diff.py corpus {{lang}}
+
+# Compare a grammar's node types and fields with the one it replaces.
+grammar-symbols name *args:
+    python3 -I tools/ts_grammar_diff/grammar_diff.py symbols {{name}} {{args}}
+
+# Compare every tree over the corpus with the replaced grammar's (--oracle).
+grammar-diff name *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/ts_grammar_diff/grammar_diff.py diff {{name}} {{args}}
+
+# Parse damaged copies of the corpus under ASan + UBSan.
+grammar-fuzz name *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/ts_grammar_diff/grammar_diff.py fuzz {{name}} {{args}}
+
+# Bytes left inside ERROR nodes on damaged copies, old grammar vs new.
+grammar-recovery name *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/ts_grammar_diff/grammar_diff.py recovery {{name}} {{args}}
+
 # mep-tex's TeX bundle (nix/tex-bundle.nix, tools/tex_bundle.py): the TeX
 # Live packages mep's own engine reads, so builtin TeX compiles need no TeX
 # installation. Built by nix and linked beside the dev build's mep-tex,

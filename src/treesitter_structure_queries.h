@@ -21,17 +21,6 @@
 // dedups by exact byte span and keeps the more specific (non-"type") kind
 // when two patterns land on the identical node.
 
-static const char *kStructureC = R"TSQ(
-(struct_specifier name: (type_identifier) @name body: (_)) @definition.struct
-(enum_specifier name: (type_identifier) @name body: (_)) @definition.enum
-(union_specifier name: (type_identifier) @name body: (_)) @definition.union
-(type_definition type: (struct_specifier) declarator: (type_identifier) @name) @definition.struct
-(type_definition type: (enum_specifier) declarator: (type_identifier) @name) @definition.enum
-(type_definition type: (union_specifier) declarator: (type_identifier) @name) @definition.union
-(function_definition declarator: (function_declarator declarator: (identifier) @name)) @definition.function
-(function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))) @definition.function
-)TSQ";
-
 static const char *kStructureCpp = R"TSQ(
 (namespace_definition name: (_) @name) @definition.namespace
 (enum_specifier name: (type_identifier) @name body: (_)) @definition.enum
@@ -49,21 +38,6 @@ static const char *kStructureCpp = R"TSQ(
 (function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (qualified_identifier) @name))) @definition.method
 (function_definition declarator: (reference_declarator (function_declarator declarator: (identifier) @name))) @definition.function
 (function_definition declarator: (reference_declarator (function_declarator declarator: (qualified_identifier) @name))) @definition.method
-)TSQ";
-
-static const char *kStructureLua = R"TSQ(
-(function_declaration name: (identifier) @name) @definition.function
-(function_declaration name: (dot_index_expression) @name) @definition.function
-(function_declaration name: (method_index_expression) @name) @definition.method
-(variable_declaration
-  (assignment_statement
-    (variable_list name: (identifier) @name)
-    (expression_list value: (function_definition)))) @definition.function
-)TSQ";
-
-static const char *kStructurePython = R"TSQ(
-(class_definition name: (identifier) @name) @definition.class
-(function_definition name: (identifier) @name) @definition.function
 )TSQ";
 
 static const char *kStructureJavascript = R"TSQ(

@@ -31,3 +31,4 @@ tools/__pycache__/
 tools/web2cpp/__pycache__/
 bench_results/profiles/
 bench_results/last_run.jsonl
+tools/ts_grammar_diff/__pycache__/

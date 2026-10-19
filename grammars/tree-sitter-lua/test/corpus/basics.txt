@@ -1,0 +1,109 @@
+==================
+declarations and functions
+==================
+
+local a <const>, b = 1, "s\n"
+function M.f(x, ...) return ... end
+local function g() end
+global <const> *
+
+---
+
+(chunk
+  (variable_declaration
+    (assignment_statement
+      (variable_list (identifier) (attribute (identifier)) (identifier))
+      (expression_list
+        (number)
+        (string (string_content (escape_sequence))))))
+  (function_declaration
+    (dot_index_expression (identifier) (identifier))
+    (parameters (identifier) (vararg_expression))
+    (block (return_statement (expression_list (vararg_expression)))))
+  (function_declaration (identifier) (parameters))
+  (implicit_variable_declaration (attribute (identifier))))
+
+==================
+calls, indexing and tables
+==================
+
+obj:m"x":n{1, k = 2, [3] = 4; 5}
+t[1].x = f()
+f()
+(g)()
+
+---
+
+(chunk
+  (function_call
+    (method_index_expression
+      (function_call
+        (method_index_expression (identifier) (identifier))
+        (arguments (string (string_content))))
+      (identifier))
+    (arguments
+      (table_constructor
+        (field (number))
+        (field (identifier) (number))
+        (field (number) (number))
+        (field (number)))))
+  (assignment_statement
+    (variable_list
+      (dot_index_expression
+        (bracket_index_expression (identifier) (number))
+        (identifier)))
+    (expression_list (function_call (identifier) (arguments))))
+  (function_call
+    (function_call
+      (function_call (identifier) (arguments))
+      (arguments (identifier)))
+    (arguments)))
+
+==================
+long brackets and comments
+==================
+
+-- line
+--[==[ block ]] still ]==]
+s = [[]] .. [=[
+a]]b]=] .. ' --[[ not a comment '
+----x
+
+---
+
+(chunk
+  (comment (comment_content))
+  (comment (comment_content))
+  (assignment_statement
+    (variable_list (identifier))
+    (expression_list
+      (binary_expression
+        (string (string_content))
+        (binary_expression
+          (string (string_content))
+          (string (string_content))))))
+  (comment (comment_content)))
+
+==================
+global is a name outside declarations
+==================
+
+global.x = global
+local t = { global = global }
+global g = 1
+
+---
+
+(chunk
+  (assignment_statement
+    (variable_list (dot_index_expression (identifier) (identifier)))
+    (expression_list (identifier)))
+  (variable_declaration
+    (assignment_statement
+      (variable_list (identifier))
+      (expression_list
+        (table_constructor (field (identifier) (identifier))))))
+  (variable_declaration
+    (assignment_statement
+      (variable_list (identifier))
+      (expression_list (number)))))

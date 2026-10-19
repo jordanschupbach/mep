@@ -53,6 +53,10 @@ module.exports = grammar({
     $._raw_string_open,
     $._raw_string_content,
     $._raw_string_close,
+    // Zero-width, at byte 0: anchors `program` there even when the file
+    // starts with whitespace (r-lib's shape; the root would otherwise start
+    // at its first token).
+    $._program_start,
     // Never produced: valid only during error recovery, which the scanner
     // uses to tell that apart from a real parse state.
     $._error_sentinel,
@@ -63,7 +67,7 @@ module.exports = grammar({
   rules: {
     // The top level's expressions have no field (r-lib's shape); a
     // `{...}` body's are each `body`.
-    program: $ => optional(body($, $._expression)),
+    program: $ => seq($._program_start, optional(body($, $._expression))),
 
     _separator: $ => choice($._newline, ';'),
 

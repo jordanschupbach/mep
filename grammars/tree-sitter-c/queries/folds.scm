@@ -1,0 +1,15 @@
+[
+  (compound_statement)
+  (field_declaration_list)
+  (enumerator_list)
+  (initializer_list)
+  (declaration_list)
+  (parameter_list)
+  (argument_list)
+  (preproc_if)
+  (preproc_ifdef)
+  (preproc_elif)
+  (preproc_elifdef)
+  (preproc_else)
+  (comment)
+] @fold

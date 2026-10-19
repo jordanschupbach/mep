@@ -1,0 +1,24 @@
+# Corpus files whose trees differ from the vendored tree-sitter-python
+# 0.25's, reviewed, where this grammar is right and the old one wrong.
+# Python accepts them all, so the oracle cannot tell; see README.md.
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff (grammar-diff).
+
+# A raw string ending in an escaped backslash, r'\\' or r"a\\": the old
+# scanner forgets the text it has read when it steps over the pair, so the
+# string has no string_content and its string_end starts at the backslashes
+# (`\\'`). Here the text is string_content and string_end is the quote.
+*/Lib/fnmatch.py                                   # raw string ending in \\
+*/Lib/http/server.py                               # raw string ending in \\
+*/Lib/pydoc.py                                     # raw string ending in \\
+*/Lib/re/_parser.py                                # raw string ending in \\
+*/Lib/test/test_codecs.py                          # raw string ending in \\
+*/Lib/test/test_fstring.py                         # raw string ending in \\
+*/Lib/test/test_http_cookies.py                    # raw string ending in \\
+*/Lib/test/test_re.py                              # raw string ending in \\
+*/Lib/test/test_urllib.py                          # raw string ending in \\
+*/sympy/printing/latex.py                          # raw string ending in \\
+*/django/utils/http.py                             # raw string ending in \\
+*/django/utils/jslex.py                            # raw string ending in \\
+*/django/utils/text.py                             # raw string ending in \\
+*/numpy/distutils/system_info.py                   # raw string ending in \\
+*/vendored-meson/meson/run_project_tests.py        # raw string ending in \\

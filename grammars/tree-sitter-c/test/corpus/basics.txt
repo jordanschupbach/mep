@@ -1,0 +1,127 @@
+==================
+declarations and definitions
+==================
+
+static const unsigned long *p[3], x = 1;
+typedef struct node { int v : 3; struct node *next; } node_t;
+int f(int a, ...) { return a; }
+int kr(a) int a; { return a; }
+
+---
+
+(translation_unit
+  (declaration
+    (storage_class_specifier)
+    (type_qualifier)
+    (sized_type_specifier)
+    (pointer_declarator (array_declarator (identifier) (number_literal)))
+    (init_declarator (identifier) (number_literal)))
+  (type_definition
+    (struct_specifier
+      (type_identifier)
+      (field_declaration_list
+        (field_declaration (primitive_type) (field_identifier) (bitfield_clause (number_literal)))
+        (field_declaration
+          (struct_specifier (type_identifier))
+          (pointer_declarator (field_identifier)))))
+    (type_identifier))
+  (function_definition
+    (primitive_type)
+    (function_declarator
+      (identifier)
+      (parameter_list
+        (parameter_declaration (primitive_type) (identifier))
+        (variadic_parameter)))
+    (compound_statement (return_statement (identifier))))
+  (function_definition
+    (primitive_type)
+    (function_declarator (identifier) (parameter_list (identifier)))
+    (declaration (primitive_type) (identifier))
+    (compound_statement (return_statement (identifier)))))
+
+==================
+preprocessor
+==================
+
+#include <stdio.h>
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#if defined(X) && Y > 2
+int a;
+#elif Z
+int b;
+#else
+int c;
+#endif
+
+---
+
+(translation_unit
+  (preproc_include (system_lib_string))
+  (preproc_function_def (identifier) (preproc_params (identifier) (identifier)) (preproc_arg))
+  (preproc_if
+    (binary_expression
+      (preproc_defined (identifier))
+      (binary_expression (identifier) (number_literal)))
+    (declaration (primitive_type) (identifier))
+    (preproc_elif
+      (identifier)
+      (declaration (primitive_type) (identifier))
+      (preproc_else (declaration (primitive_type) (identifier))))))
+
+==================
+an if/else chain split by the preprocessor
+==================
+
+void f(void) {
+  if (a) {
+  }
+#ifdef X
+  else if (b) {
+  }
+#endif
+  else {
+  }
+}
+
+---
+
+(translation_unit
+  (function_definition
+    (primitive_type)
+    (function_declarator (identifier) (parameter_list (parameter_declaration (primitive_type))))
+    (compound_statement
+      (if_statement (parenthesized_expression (identifier)) (compound_statement))
+      (preproc_ifdef
+        (identifier)
+        (else_clause (if_statement (parenthesized_expression (identifier)) (compound_statement))))
+      (else_clause (compound_statement)))))
+
+==================
+expressions
+==================
+
+void g(void) {
+  a * b;
+  x = (int)y + -*p++ ? "s" PRId64 "t" : sizeof(int[2]);
+  NAME;
+}
+
+---
+
+(translation_unit
+  (function_definition
+    (primitive_type)
+    (function_declarator (identifier) (parameter_list (parameter_declaration (primitive_type))))
+    (compound_statement
+      (declaration (type_identifier) (pointer_declarator (identifier)))
+      (expression_statement
+        (assignment_expression
+          (identifier)
+          (conditional_expression
+            (binary_expression
+              (cast_expression (type_descriptor (primitive_type)) (identifier))
+              (unary_expression (pointer_expression (update_expression (identifier)))))
+            (concatenated_string (string_literal (string_content)) (identifier) (string_literal (string_content)))
+            (sizeof_expression
+              (type_descriptor (primitive_type) (abstract_array_declarator (number_literal)))))))
+      (expression_statement (identifier)))))

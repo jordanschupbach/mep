@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "python",
+      "camelcase": "Python",
+      "scope": "source.python",
+      "path": ".",
+      "file-types": ["py", "pyi"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Python, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

@@ -48192,7 +48192,7 @@ bool RunButtonSupportsExtension(const std::string &ext) {
         "cs",  "f",   "for", "f90", "f95", "f03", "f08", "F",   "F90", "d",   "kt",  "kts", "hs",  "jl",
         "rb",  "lua", "nim", "nix", "m",   "sh",  "bash", "js", "mjs", "cjs", "ts",  "mts", "clj", "cr",
         "exs", "ex",  "erl", "go",  "java", "ml", "pl",  "pm",  "php", "rs",  "scala", "zig", "scm", "ss",
-        "tcl", "dart", "fish", "groovy", "sql", "g", "gap", "mac", "max"};
+        "tcl", "dart", "fish", "groovy", "sql", "g", "gap", "mac", "max", "lisp", "lsp", "cl"};
     return kExts.count(ext) != 0;
 }
 

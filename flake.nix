@@ -639,6 +639,13 @@
             pkgs.fish
             pkgs.groovy
             pkgs.sqlite
+            # Common Lisp: the Run button's .lisp/.lsp/.cl runner (`sbcl
+            # --script`) and the Lisp language UI's console (kBuiltin
+            # lisp mode, mep.opt.lisp_ui_cmd).
+            pkgs.sbcl
+            # The Lisp console runs sbcl under rlwrap when it's on PATH
+            # (mep.opt.lisp_ui_rlwrap): line editing and history.
+            pkgs.rlwrap
 
             # LSP servers (mep.lsp_servers in src/main.cpp's kBuiltinLsp,
             # mep.lsp_attach) -- a completely separate concern from the

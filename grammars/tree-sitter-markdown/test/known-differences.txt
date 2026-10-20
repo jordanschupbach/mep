@@ -1,0 +1,13 @@
+# Corpus files whose trees differ from the vendored tree-sitter-markdown
+# 0.5's, reviewed, where this grammar follows CommonMark 0.31 and the old
+# one an earlier spec. `just grammar-diff markdown --oracle` checks each
+# against cmark too. Format: <path glob>  # why.  Read by tools/ts_grammar_diff.
+
+# §4.6 start condition 1 gained `textarea` in 0.31: its HTML block runs to
+# `</textarea>`, blank lines included.
+*/_spec-examples/cmark-spec-0171.md          # <textarea> ... </textarea>
+
+# §5.2: an ordered list may interrupt a paragraph only if it starts at 1.
+# The old scanner let any one-digit number do it, so `2. is` under
+# `1. this` opened a list; cmark reads one paragraph.
+*/bench/samples/block-list-nested.md         # nested `2.` inside a paragraph

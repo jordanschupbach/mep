@@ -30,7 +30,7 @@ leaving the editor.</p>
 <p>It uses the <b>same</b> compiler and flags as the <a href="run-button.html">run button</a>, taken from the same
 per-project configuration, so what you see is what your build produces
 rather than a default-flags approximation.</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.c_ui_filter_directives = <span class="tok-cyan">true</span>   <span class="tok-comment">-- hide .cfi/.size and friends</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.c_ui_filter_directives = <span class="tok-cyan">true</span>   <span class="tok-comment">-- hide .cfi/.size and friends</span></code></pre></div>
 <p>Assembler directives are noise for most reading, so filtering them is
 usually what you want.</p>
 <h1>Hex</h1>
@@ -41,7 +41,7 @@ usually what you want.</p>
 <tr><td><code>p</code></td><td>previous page</td></tr>
 <tr><td><code>r</code></td><td>reload the binary</td></tr>
 </table>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.opt.c_ui_hex_page = <span class="tok-cyan">1024</span>   <span class="tok-comment">-- bytes per page</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.c_ui_hex_page = <span class="tok-cyan">1024</span>   <span class="tok-comment">-- bytes per page</span></code></pre></div>
 <h1>Help</h1>
 <p><code>gh</code> on a symbol opens its <code>man</code> page in the Help tab.</p>
 <h1>Options</h1>

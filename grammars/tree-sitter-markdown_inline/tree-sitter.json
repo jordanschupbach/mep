@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "markdown_inline",
+      "camelcase": "MarkdownInline",
+      "scope": "text.markdown_inline",
+      "path": ".",
+      
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Markdown (inline content), mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

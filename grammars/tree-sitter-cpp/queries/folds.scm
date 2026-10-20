@@ -1,0 +1,25 @@
+; Blocks and bodies, the preprocessor's arms, bracketed lists and comments;
+; mep folds only the captures that span more than one row.
+[
+  (compound_statement)
+  (field_declaration_list)
+  (enumerator_list)
+  (initializer_list)
+  (declaration_list)
+  (parameter_list)
+  (argument_list)
+  (template_argument_list)
+  (template_parameter_list)
+  (field_initializer_list)
+  (requirement_seq)
+  (lambda_expression)
+  (case_statement)
+  (catch_clause)
+  (raw_string_literal)
+  (preproc_if)
+  (preproc_ifdef)
+  (preproc_elif)
+  (preproc_elifdef)
+  (preproc_else)
+  (comment)
+] @fold

@@ -120,9 +120,9 @@ not claim.</p>
 </table>
 <p>The table is <code>mep.lsp_semantic_hl</code>, keyed by the LSP token-type name and
 optionally by <code>type.modifier</code>, which is checked first:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_semantic_hl[<span class="tok-green">'variable.readonly'</span>] = <span class="tok-green">'Cyan'</span>  <span class="tok-comment">-- constants</span>
-mep.lsp_semantic_hl.class = <span class="tok-green">'Orange'</span>               <span class="tok-comment">-- every server's classes</span>
-mep.lsp_semantic_hl.parameter = <span class="tok-cyan">nil</span>                <span class="tok-comment">-- back to the grammar's colour</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_semantic_hl[<span class="tok-green">'variable.readonly'</span>] = <span class="tok-green">'Cyan'</span>  <span class="tok-comment">-- constants</span>
+<span class="tok-cyan">mep</span>.lsp_semantic_hl.class = <span class="tok-green">'Orange'</span>               <span class="tok-comment">-- every server's classes</span>
+<span class="tok-cyan">mep</span>.lsp_semantic_hl.parameter = <span class="tok-cyan">nil</span>                <span class="tok-comment">-- back to the grammar's colour</span></code></pre></div>
 <p>It is short on purpose: a token type mapped here overrides the grammar in
 <b>every</b> language at once. What is left out -- <code>variable</code>, <code>property</code>,
 <code>class</code>, <code>type</code> -- is left out because <a href="syntax.html">Treesitter</a> already colours those from
@@ -200,8 +200,13 @@ Maxima language server there is, so nothing competes with it for <code>.mac</cod
 <p>R's own <code>languageserver</code> package is still registered, under
 <code>r_languageserver</code>, with no file types claimed. It knows what an installed
 package exports, which mep's own server cannot. To prefer it:</p>
+<<<<<<< HEAD
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.r_languageserver.filetypes = {<span class="tok-green">'R'</span>, <span class="tok-green">'r'</span>}
 <span class="tok-cyan">mep</span>.lsp_servers.r_ls.filetypes = {}</code></pre></div>
+=======
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.r_languageserver.filetypes = <span class="tok-blue">{</span><span class="tok-green">'R'</span>, <span class="tok-green">'r'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.r_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+>>>>>>> f1f5186 (Add more inhouse ts)
 <h1>Inside org code blocks</h1>
 <p>Code blocks in an Org file get language-server support too, through a shadow
 buffer per block. See <a href="org-polyglot.html">Language servers in code blocks</a> for what that covers

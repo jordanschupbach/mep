@@ -85,7 +85,11 @@ unseen too. So:</p>
 <li>An unused half of a tuple unpacking, and any name starting with <code>_</code>, are not unused variables.</li>
 </ul>
 <p>A line-length hint exists but is off unless asked for:</p>
+<<<<<<< HEAD
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.python_ls.init_options = <span class="tok-blue">{</span>maxLineLength = <span class="tok-cyan">100</span>}</code></pre></div>
+=======
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.python_ls.init_options = <span class="tok-blue">{</span>maxLineLength = <span class="tok-cyan">100</span><span class="tok-blue">}</span></code></pre></div>
+>>>>>>> f1f5186 (Add more inhouse ts)
 <h1>Completion</h1>
 <p>Completion is context-aware rather than a word list:</p>
 <table>
@@ -138,7 +142,7 @@ interpreter, or the package not installed, hover answers as before.</p>
 <p>The interpreter is the first of: <code>pythonPath</code> in the server's
 <code>init_options</code>, <code>$MEP_PYTHON</code>, the active <code>$VIRTUAL_ENV</code>, the nearest
 <code>.venv</code> or <code>venv</code> directory above the file, then <code>python3</code> on <code>PATH</code>:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls.init_options = {pythonPath = <span class="tok-green">'/path/to/venv/bin/python'</span>}</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.python_ls.init_options = <span class="tok-blue">{</span>pythonPath = <span class="tok-green">'/path/to/venv/bin/python'</span><span class="tok-blue">}</span></code></pre></div>
 <p><code>&lt;leader&gt;lk</code> (signature help) shows the signature of the call the cursor
 is inside, with the parameter you are on highlighted -- including while
 you are typing a string argument, and with <code>self</code> dropped from a method
@@ -176,10 +180,15 @@ colour table and how to change it.</p>
 <h1>Turning it off</h1>
 <p>It is an ordinary entry in the server registry, so <code>init.lua</code> can drop it,
 or hand <code>py</code> back to pyright:</p>
+<<<<<<< HEAD
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls = <span class="tok-cyan">nil</span>
 <span class="tok-cyan">mep</span>.lsp_servers.pyright.filetypes = <span class="tok-blue">{</span><span class="tok-green">'py'</span>}</code></pre></div>
+=======
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.python_ls = <span class="tok-cyan">nil</span>
+<span class="tok-cyan">mep</span>.lsp_servers.pyright.filetypes = <span class="tok-blue">{</span><span class="tok-green">'py'</span><span class="tok-blue">}</span></code></pre></div>
+>>>>>>> f1f5186 (Add more inhouse ts)
 <p>Or point it at your own build:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.lsp_servers.python_ls.cmd = <span class="tok-blue">{</span><span class="tok-green">'/path/to/mep-python-lsp'</span>}</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.python_ls.cmd = <span class="tok-blue">{</span><span class="tok-green">'/path/to/mep-python-lsp'</span><span class="tok-blue">}</span></code></pre></div>
 <p>It also runs standalone, over stdio, in any editor that speaks LSP.</p>
 <h1>See also</h1>
 <ul>

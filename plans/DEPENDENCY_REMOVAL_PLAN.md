@@ -21,8 +21,8 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | --- | --- | --- | --- |
 | **OpenSSL** (libssl, libcrypto) | `find_package(OpenSSL)`, CMakeLists ~588 | TLS for native IMAP (`mail_imap.cpp`), `wss://` collab client (`collab_websocket.cpp`: also `SHA1`, `RAND_bytes`), `mep-collabd`, several tests, `mep-amalgam` | macOS (Homebrew `openssl@3`), Linux; optional on Windows (collab stubbed without it) |
 | **Lua 5.4.7** | `FetchContent` from lua.org, CMakeLists ~406 | the whole scripting layer | all; **downloaded at configure time** |
-| **tree-sitter** runtime v0.26.12 + 9 grammars | vendored in `third_party/` | syntax highlighting, folds, mepml parsing | all |
-| tree-sitter CLI + Node | `just` recipe, CMakeLists comment | regenerating `grammars/tree-sitter-mepml/src/parser.c` | dev only |
+| **tree-sitter** runtime v0.26.12 | vendored in `third_party/`; the 12 compiled-in grammars are mep's own (`grammars/`) | syntax highlighting, folds, outlines, mepml parsing | all |
+| ~~tree-sitter CLI + Node~~ | ~~`just <name>-grammar` recipes~~ | regenerating and testing `grammars/tree-sitter-*` | dev only -- **removed 2026-10-19**: `mep-ts-generate` + `mep-ts-corpus-test` (`tools/ts_generate`) |
 | **libX11, libXtst, libXi** (+ Xrandr/Xdamage/XKB headers) | `find_package(X11 ...)` | Linux window/input backend (`gfx/backend_native.cpp`), synthetic input for agent UI, X11 GUI embedding (`gui_embed_x11.cpp`, `gui_embed_webview_x11.cpp`) | Linux |
 | **ALSA** (libasound) | `find_package(ALSA)` | audio output | Linux |
 | **libGL / GLX** | `find_package(OpenGL)` | 2D/3D rendering | all (opengl32 on Windows, OpenGL.framework on macOS) |
@@ -517,15 +517,17 @@ already vendored) rather than rewrite now.
   decision, not a dependency fix. If wanted later: an in-house Lua 5.4
   compatible interpreter is feasible (mep already has a JS engine) and
   keeps configs working.
-* Replacing tree-sitter means an in-house incremental parser plus
-  grammars for C, C++, Lua, Python, JS, Markdown, Org, R and mepml. A
-  realistic middle step: an in-house parser *generator* that reads the
-  existing `grammar.js`-derived `grammar.json` and emits tables, which
-  also removes the Node + tree-sitter CLI dev dependency for mepml.
+* Replacing tree-sitter means an in-house incremental parser that runs
+  mep's grammars (C, C++, Lua, Python, JS, Markdown, Org, R, Nix,
+  justfiles, mepml). A
+  realistic middle step, now done (2026-10-19, `tools/ts_generate`): an
+  in-house parser *generator* that runs `grammar.js` on mep's JS engine and
+  emits the same tables, byte for byte, removing the Node + tree-sitter CLI
+  dev dependency for every grammar.
   mepml itself could get a hand-written parser (`mepml_doc.cpp` already
   parses it) and drop its tree-sitter grammar.
-* The grammars themselves are being replaced one at a time by mep's own
-  (R, Nix and justfiles so far): see `TREESITTER_GRAMMAR_PLAN.md`.
+* The grammars themselves are mep's own now (all 12 compiled-in ones,
+  `TREESITTER_GRAMMAR_PLAN.md`); only the runtime is third-party.
 
 **TLS 1.2.** Only if Phase 2's live test list shows a server we need that
 lacks 1.3.

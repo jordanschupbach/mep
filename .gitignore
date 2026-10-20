@@ -18,8 +18,8 @@ tmp_assets/
 # README.org back out (the file GitHub renders; it would show a README.md
 # in its place). The .md and .html stay in build/, but a stray copy of
 # either beside the source is not to be committed.
-README.html
-README.md
+/README.html
+/README.md
 .scratch/
 
 # NAFEMS example films and stills: build output, written by

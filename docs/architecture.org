@@ -47,7 +47,8 @@ fetch or preload step (license:
   list --porcelain= parsing, name validation, session-file paths);
   unit-tested by =mep-workspace-test=.
 - =src/treesitter.cpp= — syntax highlighting. A core set of grammars is
-  compiled in (see =TS_GRAMMAR_NAMES= in =CMakeLists.txt=); every other
+  compiled in, all mep's own (=grammars/=, =mep_grammar= in
+  =CMakeLists.txt=); every other
   language is =dlopen()=ed at runtime from =$MEP_TS_PARSER_PATH=.
 - =src/regex.cpp= — the dependency-free regex engine behind =/=, =:s=
   and =:g=.

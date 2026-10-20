@@ -43,7 +43,7 @@ place.</p>
 <p><code>e</code> is the escape hatch: the panel edits titles and states, but the float
 gives you the whole heading -- body, properties, logbook -- in a real
 editable buffer.</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.activity_todo_file = <span class="tok-green">'~/notes/tasks.org'</span>   <span class="tok-comment">-- override the path</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.activity_todo_file = <span class="tok-green">'~/notes/tasks.org'</span>   <span class="tok-comment">-- override the path</span></code></pre></div>
 <h1>The file is the source of truth</h1>
 <p>The panel does not hold state. Rows and the running clock are re-read from
 the file on every render, and the panel re-renders whenever <code>TODO.org</code> is

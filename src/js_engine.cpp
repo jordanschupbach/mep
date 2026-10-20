@@ -306,6 +306,9 @@ struct ObjectData {
     Value promise_value;
     std::vector<std::tuple<ObjectPtr, ObjectPtr, ObjectPtr>> promise_reactions;
     std::shared_ptr<mep_regex::Regex> regexp;
+    // A literal mep_regex can't compile still makes its object (its
+    // source and flags are fine to read); matching with it throws this.
+    std::string regexp_error;
     std::vector<std::string> regexp_group_names;  // index = capture group number; "" for unnamed
     bool regexp_global = false;
     long regexp_last_index = 0;
@@ -927,6 +930,87 @@ void RetireChildren(DomNode *node) {
     node->children.clear();
 }
 
+// A RegExp object for `pattern`/`flags`. With `defer_errors` (a literal),
+// a pattern mep_regex can't compile still yields the object -- its source
+// and flags are valid to read -- and matching with it throws instead.
+Value NewRegExp(const ObjectPtr &prototype, std::string pattern, const std::string &flags, bool defer_errors, bool &threw,
+               std::string &err) {
+    const std::string source = pattern;
+    // Named groups become plain capturing groups for the matcher; the
+    // names are kept by group number for exec()'s `groups`. Escapes the
+    // matcher doesn't know (\/, \xHH, \uHHHH) are rewritten to literals.
+    std::vector<std::string> group_names{""};
+    std::string unsupported;
+    {
+        std::string plain;
+        bool in_class = false;
+        for (size_t i = 0; i < pattern.size(); ++i) {
+            const char c = pattern[i];
+            if (c == '\\' && i + 1 < pattern.size()) {
+                const char e = pattern[i + 1];
+                auto hex_at = [&](size_t from, size_t count, unsigned &out) {
+                    if (from + count > pattern.size()) return false;
+                    out = 0;
+                    for (size_t k = 0; k < count; ++k) { const char h = pattern[from + k]; if (!std::isxdigit(static_cast<unsigned char>(h))) return false; out = out * 16 + static_cast<unsigned>(std::isdigit(static_cast<unsigned char>(h)) ? h - '0' : std::tolower(h) - 'a' + 10); }
+                    return true;
+                };
+                unsigned cp = 0;
+                size_t used = 0;
+                if (e == 'x' && hex_at(i + 2, 2, cp)) used = 4;
+                else if (e == 'u' && hex_at(i + 2, 4, cp)) used = 6;
+                if (used) {
+                    std::string utf8;
+                    if (cp < 0x80) { if (std::strchr("\\^$.|?*+()[]{}-/", static_cast<int>(cp))) utf8 += '\\'; utf8 += static_cast<char>(cp); }
+                    else if (cp < 0x800) { utf8 += static_cast<char>(0xC0 | (cp >> 6)); utf8 += static_cast<char>(0x80 | (cp & 0x3F)); }
+                    else { utf8 += static_cast<char>(0xE0 | (cp >> 12)); utf8 += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); utf8 += static_cast<char>(0x80 | (cp & 0x3F)); }
+                    plain += utf8;
+                    i += used - 1;
+                    continue;
+                }
+                if (e == '/') { plain += '/'; ++i; continue; }
+                // Unicode property escapes (\p{L}) would compile as literals
+                // and silently match the wrong thing: refuse them instead.
+                if ((e == 'p' || e == 'P') && i + 2 < pattern.size() && pattern[i + 2] == '{') unsupported = "Unicode property escapes (\\p{...}) are not supported";
+                plain += c; plain += e; ++i;
+                continue;
+            }
+            if (c == '[') in_class = true;
+            else if (c == ']') in_class = false;
+            if (!in_class && c == '(') {
+                const bool non_capturing = i + 1 < pattern.size() && pattern[i + 1] == '?';
+                const bool named = non_capturing && i + 2 < pattern.size() && pattern[i + 2] == '<' && i + 3 < pattern.size() && pattern[i + 3] != '=' && pattern[i + 3] != '!';
+                if (named) {
+                    const size_t close = pattern.find('>', i + 3);
+                    if (close != std::string::npos) { group_names.push_back(pattern.substr(i + 3, close - i - 3)); plain += '('; i = close; continue; }
+                }
+                if (!non_capturing) group_names.push_back("");
+            }
+            plain += c;
+        }
+        pattern = plain;
+    }
+    auto regex = std::make_shared<mep_regex::Regex>(pattern, flags.find('i') != std::string::npos);
+    auto value = std::make_shared<ObjectData>();
+    const std::string problem = !unsupported.empty() ? unsupported : regex->ok() ? "" : regex->error();
+    if (!problem.empty()) {
+        if (!defer_errors) { threw = true; err = "invalid RegExp: " + problem; return Value::Undef(); }
+        value->regexp_error = "invalid RegExp: " + problem;
+    }
+    value->is_regexp = true;
+    value->regexp_global = flags.find('g') != std::string::npos;
+    value->regexp_group_names = std::move(group_names);
+    value->props["lastIndex"] = Value::Num(0);
+    value->props["source"] = Value::Str(source);
+    value->props["flags"] = Value::Str(flags);
+    value->props["global"] = Value::Bool(value->regexp_global);
+    value->props["ignoreCase"] = Value::Bool(flags.find('i') != std::string::npos);
+    value->props["multiline"] = Value::Bool(flags.find('m') != std::string::npos);
+    for (const char *hidden : {"lastIndex", "source", "flags", "global", "ignoreCase", "multiline"}) value->non_enumerable.insert(hidden);
+    if (problem.empty()) value->regexp = std::move(regex);
+    value->prototype = prototype;
+    return Value::Obj(value);
+}
+
 Value GetProp(const ObjectPtr &obj, const std::string &key) {
     if (!obj) return Value::Undef();
     if (obj->dataset_node) {
@@ -958,10 +1042,12 @@ Value GetProp(const ObjectPtr &obj, const std::string &key) {
         }
         return Value::Undef();
     });
-    if (obj->is_regexp && key == "test") return MakeNativeFn([obj](const std::vector<Value> &args, bool &, std::string &) {
+    if (obj->is_regexp && key == "test") return MakeNativeFn([obj](const std::vector<Value> &args, bool &threw, std::string &err) {
+        if (!obj->regexp && !obj->regexp_error.empty()) { threw = true; err = obj->regexp_error; return Value::Undef(); }
         return Value::Bool(obj->regexp && !args.empty() && obj->regexp->PartialMatch(ToDisplayString(args[0])));
     });
-    if (obj->is_regexp && key == "exec") return MakeNativeFn([obj](const std::vector<Value> &args, bool &, std::string &) {
+    if (obj->is_regexp && key == "exec") return MakeNativeFn([obj](const std::vector<Value> &args, bool &threw, std::string &err) {
+        if (!obj->regexp && !obj->regexp_error.empty()) { threw = true; err = obj->regexp_error; return Value::Undef(); }
         if (!obj->regexp || args.empty()) return Value::MakeNull();
         std::string text = ToDisplayString(args[0]);
         mep_regex::Match match = obj->regexp->Search(text, obj->regexp_global ? static_cast<int>(obj->regexp_last_index) : 0);
@@ -4082,6 +4168,21 @@ Completion ExecBlockBody(Interpreter &interp, const std::vector<NodePtr> &stmts,
 }
 
 /**
+ * @brief Re-raises a callback's abrupt completion from the native function that called it.
+ * @param interp The interpreter; a thrown value is parked in its pending_throw, which CallFunction rethrows as-is.
+ * @param abrupt The callback's abrupt completion.
+ * @param threw Set to true.
+ * @param err Set to the thrown value's display string (or a break/continue's label).
+ */
+void RethrowFromNative(Interpreter &interp, const Completion &abrupt, bool &threw, std::string &err) {
+    threw = true;
+    if (abrupt.type != CompletionType::Throw) { err = abrupt.label; return; }
+    err = ToDisplayString(abrupt.value);
+    interp.pending_throw = abrupt.value;
+    interp.has_pending_throw = true;
+}
+
+/**
  * @brief Invokes a callable object (native or user-defined) with the given arguments, enforcing the max call-depth guard for user-defined functions and translating a concise arrow body's expression result or a block body's Return completion into the call's result.
  * @param interp The interpreter, providing call-depth tracking shared across the whole run.
  * @param fn The callable object to invoke.
@@ -4166,7 +4267,7 @@ Completion CallFunction(Interpreter &interp, const ObjectPtr &fn, std::vector<Va
                 interp.yield_values = &state->values;
                 Completion ran = CallFunction(interp, body, call_args, &receiver);
                 interp.yield_values = previous;
-                if (ran.IsAbrupt()) { threw = true; err = ran.label; return Value::Undef(); }
+                if (ran.IsAbrupt()) { RethrowFromNative(interp, ran, threw, err); return Value::Undef(); }
             }
             auto result = std::make_shared<ObjectData>();
             if (state->index < state->values.size()) {
@@ -4231,7 +4332,7 @@ Completion CallFunction(Interpreter &interp, const ObjectPtr &fn, std::vector<Va
                     Value *receiver = scope->Find("this");
                     if (!receiver) { threw = true; err = "super method receiver is unavailable"; return Value::Undef(); }
                     Completion called = CallFunction(interp, base_method, method_args, receiver);
-                    if (called.IsAbrupt()) { threw = true; err = called.label; return Value::Undef(); }
+                    if (called.IsAbrupt()) { RethrowFromNative(interp, called, threw, err); return Value::Undef(); }
                     return called.value;
                 });
             }
@@ -5012,6 +5113,7 @@ Completion MemberGet(Interpreter &interp, const Value &base, const std::string &
         if (key == "split") return Completion::Norm(MakeNativeFn([source, make_array](const std::vector<Value> &args, bool &, std::string &) { if (args.empty()) return make_array({source}); std::string separator = ToDisplayString(args[0]); std::vector<std::string> parts; if (separator.empty()) for (char c : source) parts.emplace_back(1, c); else { size_t from = 0, at; while ((at = source.find(separator, from)) != std::string::npos) { parts.push_back(source.substr(from, at - from)); from = at + separator.size(); } parts.push_back(source.substr(from)); } return make_array(parts); }));
         if (key == "replace" || key == "replaceAll") return Completion::Norm(MakeNativeFn([&interp, source, key](const std::vector<Value> &args, bool &threw, std::string &err) {
             if (args.size() < 2) return Value::Str(source);
+            if (args[0].type == VType::Object && args[0].obj && args[0].obj->is_regexp && !args[0].obj->regexp) { threw = true; err = args[0].obj->regexp_error; return Value::Undef(); }
             const bool by_regex = args[0].type == VType::Object && args[0].obj && args[0].obj->is_regexp && args[0].obj->regexp;
             const bool all = key == "replaceAll" || (by_regex && args[0].obj->regexp_global);
             const ObjectPtr callback = (args[1].type == VType::Object && args[1].obj && args[1].obj->is_function) ? args[1].obj : nullptr;
@@ -5061,7 +5163,8 @@ Completion MemberGet(Interpreter &interp, const Value &base, const std::string &
             if (pos < source.size()) out += source.substr(pos);
             return Value::Str(out);
         }));
-        if (key == "match" || key == "search") return Completion::Norm(MakeNativeFn([source, key](const std::vector<Value> &args, bool &, std::string &) {
+        if (key == "match" || key == "search") return Completion::Norm(MakeNativeFn([source, key](const std::vector<Value> &args, bool &threw, std::string &err) {
+            if (!args.empty() && args[0].type == VType::Object && args[0].obj && args[0].obj->is_regexp && !args[0].obj->regexp) { threw = true; err = args[0].obj->regexp_error; return Value::Undef(); }
             const bool by_regex = !args.empty() && args[0].type == VType::Object && args[0].obj && args[0].obj->is_regexp && args[0].obj->regexp;
             std::shared_ptr<mep_regex::Regex> regex = by_regex ? args[0].obj->regexp : std::make_shared<mep_regex::Regex>(args.empty() ? "" : ToDisplayString(args[0]), false);
             if (!regex->ok()) return Value::MakeNull();
@@ -5229,7 +5332,7 @@ Completion MemberGet(Interpreter &interp, const Value &base, const std::string &
             auto call = [&](const std::vector<Value> &values, Value &out) -> bool {
                 std::vector<Value> mutable_values = values;
                 Completion result = CallFunction(interp, callback, mutable_values);
-                if (result.IsAbrupt()) { threw = true; err = result.label; return false; }
+                if (result.IsAbrupt()) { RethrowFromNative(interp, result, threw, err); return false; }
                 out = result.value; return true;
             };
             const long length = ArrayLength(source);
@@ -5281,12 +5384,12 @@ Completion MemberGet(Interpreter &interp, const Value &base, const std::string &
                 return MakeNativeFn([&interp, target, receiver, call_args](const std::vector<Value> &later, bool &bound_threw, std::string &bound_err) mutable {
                     std::vector<Value> combined = call_args; combined.insert(combined.end(), later.begin(), later.end());
                     Completion called = CallFunction(interp, target, combined, &receiver);
-                    if (called.IsAbrupt()) { bound_threw = true; bound_err = called.label; return Value::Undef(); }
+                    if (called.IsAbrupt()) { RethrowFromNative(interp, called, bound_threw, bound_err); return Value::Undef(); }
                     return called.value;
                 });
             }
             Completion called = CallFunction(interp, target, call_args, &receiver);
-            if (called.IsAbrupt()) { threw = true; err = called.label; return Value::Undef(); }
+            if (called.IsAbrupt()) { RethrowFromNative(interp, called, threw, err); return Value::Undef(); }
             return called.value;
         }));
     }
@@ -5521,10 +5624,12 @@ Completion EvalExpr(Interpreter &interp, const Node &n, EnvPtr &env) {
             return last;
         }
         case NodeKind::RegexLit: {
-            Value *ctor = interp.global->Find("RegExp");
-            if (!ctor || ctor->type != VType::Object || !ctor->obj) return Completion::Thr("RegExp is unavailable");
-            std::vector<Value> ctor_args{Value::Str(n.str), Value::Str(n.op)};
-            return CallFunction(interp, ctor->obj, ctor_args);
+            bool threw = false;
+            std::string err;
+            Value prototype = BuiltinProtoLookupObject(interp, "RegExp");
+            Value value = NewRegExp(prototype.type == VType::Object ? prototype.obj : nullptr, n.str, n.op, true, threw, err);
+            if (threw) return Completion::Thr(err);
+            return Completion::Norm(value);
         }
         case NodeKind::Unary: {
             if (n.op == "typeof" && n.a->kind == NodeKind::Ident && !env->Find(n.a->name) &&
@@ -7414,79 +7519,22 @@ void SetupGlobals(Interpreter &interp, HtmlDoc &doc, const std::function<void(co
         return Value::Obj(xhr);
     }));
 
-    global->Define("RegExp", MakeNativeFn([](const std::vector<Value> &args, bool &threw, std::string &err) {
+    // RegExp.prototype: regexes inherit `constructor` (`re.constructor === RegExp`).
+    auto regexp_prototype = std::make_shared<ObjectData>();
+    global->Define("RegExp", MakeNativeFn([regexp_prototype](const std::vector<Value> &args, bool &threw, std::string &err) {
         std::string pattern = args.empty() ? "" : ToDisplayString(args[0]);
         std::string flags = args.size() < 2 || args[1].type == VType::Undefined ? "" : ToDisplayString(args[1]);
         if (!args.empty() && args[0].type == VType::Object && args[0].obj && args[0].obj->is_regexp) {
             pattern = ToDisplayString(GetProp(args[0].obj, "source"));
             if (args.size() < 2 || args[1].type == VType::Undefined) flags = ToDisplayString(GetProp(args[0].obj, "flags"));
         }
-        const std::string source = pattern;
-        // Named groups become plain capturing groups for the matcher; the
-        // names are kept by group number for exec()'s `groups`. Escapes the
-        // matcher doesn't know (\/, \xHH, \uHHHH) are rewritten to literals.
-        std::vector<std::string> group_names{""};
-        {
-            std::string plain;
-            bool in_class = false;
-            for (size_t i = 0; i < pattern.size(); ++i) {
-                const char c = pattern[i];
-                if (c == '\\' && i + 1 < pattern.size()) {
-                    const char e = pattern[i + 1];
-                    auto hex_at = [&](size_t from, size_t count, unsigned &out) {
-                        if (from + count > pattern.size()) return false;
-                        out = 0;
-                        for (size_t k = 0; k < count; ++k) { const char h = pattern[from + k]; if (!std::isxdigit(static_cast<unsigned char>(h))) return false; out = out * 16 + static_cast<unsigned>(std::isdigit(static_cast<unsigned char>(h)) ? h - '0' : std::tolower(h) - 'a' + 10); }
-                        return true;
-                    };
-                    unsigned cp = 0;
-                    size_t used = 0;
-                    if (e == 'x' && hex_at(i + 2, 2, cp)) used = 4;
-                    else if (e == 'u' && hex_at(i + 2, 4, cp)) used = 6;
-                    if (used) {
-                        std::string utf8;
-                        if (cp < 0x80) { if (std::strchr("\\^$.|?*+()[]{}-/", static_cast<int>(cp))) utf8 += '\\'; utf8 += static_cast<char>(cp); }
-                        else if (cp < 0x800) { utf8 += static_cast<char>(0xC0 | (cp >> 6)); utf8 += static_cast<char>(0x80 | (cp & 0x3F)); }
-                        else { utf8 += static_cast<char>(0xE0 | (cp >> 12)); utf8 += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); utf8 += static_cast<char>(0x80 | (cp & 0x3F)); }
-                        plain += utf8;
-                        i += used - 1;
-                        continue;
-                    }
-                    if (e == '/') { plain += '/'; ++i; continue; }
-                    plain += c; plain += e; ++i;
-                    continue;
-                }
-                if (c == '[') in_class = true;
-                else if (c == ']') in_class = false;
-                if (!in_class && c == '(') {
-                    const bool non_capturing = i + 1 < pattern.size() && pattern[i + 1] == '?';
-                    const bool named = non_capturing && i + 2 < pattern.size() && pattern[i + 2] == '<' && i + 3 < pattern.size() && pattern[i + 3] != '=' && pattern[i + 3] != '!';
-                    if (named) {
-                        const size_t close = pattern.find('>', i + 3);
-                        if (close != std::string::npos) { group_names.push_back(pattern.substr(i + 3, close - i - 3)); plain += '('; i = close; continue; }
-                    }
-                    if (!non_capturing) group_names.push_back("");
-                }
-                plain += c;
-            }
-            pattern = plain;
-        }
-        auto regex = std::make_shared<mep_regex::Regex>(pattern, flags.find('i') != std::string::npos);
-        if (!regex->ok()) { threw = true; err = "invalid RegExp: " + regex->error(); return Value::Undef(); }
-        auto value = std::make_shared<ObjectData>();
-        value->is_regexp = true;
-        value->regexp_global = flags.find('g') != std::string::npos;
-        value->regexp_group_names = std::move(group_names);
-        value->props["lastIndex"] = Value::Num(0);
-        value->props["source"] = Value::Str(source);
-        value->props["flags"] = Value::Str(flags);
-        value->props["global"] = Value::Bool(value->regexp_global);
-        value->props["ignoreCase"] = Value::Bool(flags.find('i') != std::string::npos);
-        value->props["multiline"] = Value::Bool(flags.find('m') != std::string::npos);
-        for (const char *hidden : {"lastIndex", "source", "flags", "global", "ignoreCase", "multiline"}) value->non_enumerable.insert(hidden);
-        value->regexp = std::move(regex);
-        return Value::Obj(value);
+        return NewRegExp(regexp_prototype, pattern, flags, false, threw, err);
     }));
+    if (Value *regexp_ctor = global->Find("RegExp"); regexp_ctor && regexp_ctor->obj) {
+        regexp_ctor->obj->props["prototype"] = Value::Obj(regexp_prototype);
+        regexp_prototype->props["constructor"] = *regexp_ctor;
+        regexp_prototype->non_enumerable.insert("constructor");
+    }
 
     auto make_collection = [](bool set) {
         return MakeNativeFn([set](const std::vector<Value> &args, bool &threw, std::string &err) {

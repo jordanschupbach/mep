@@ -1,0 +1,9 @@
+# Corpus files whose trees differ from the vendored tree-sitter-markdown
+# 0.5 inline grammar's, reviewed, where this grammar follows CommonMark 0.31
+# and the old one 0.29. Format: <path glob>  # why.  Read by tools/ts_grammar_diff.
+
+# §6.6: a declaration is `<!`, an ASCII letter, anything but `>`, and `>`
+# (0.29 wanted a blank after the name). cmark's regression tests: `<!A>` and
+# `<!x>` are raw HTML; `<!>` stays text.
+*/_spec-examples/cmark-regression-0018.md    # x <!A>
+*/_spec-examples/cmark-regression-0021.md    # x<!x>

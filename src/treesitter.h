@@ -149,7 +149,7 @@ struct TSFoldRange {
 
 // True if `filetype` has a fold query defined (distinct from
 // TreesitterHasGrammar: fewer filetypes have a fold query than have a
-// highlight query -- see treesitter_queries.h's kFolds* comment).
+// highlight query -- see treesitter.cpp's FoldQueryTable comment).
 /**
  * @brief Checks whether `filetype` has a fold query defined.
  * @param filetype Bare file extension identifying the language.

@@ -11,6 +11,12 @@
 //                      per line as "node <type>" / "field <name>", sorted.
 //
 // With DUMP_TRACE set, "@@PARSING <path>" goes to stderr before each parse.
+//
+// Built with -DTS_RANGES_LANGUAGE=tree_sitter_<block grammar> as well (for
+// markdown_inline), a file is first parsed with that grammar, and the
+// grammar under test is then run over each of its `inline` nodes' ranges
+// alone, as mep's highlighter does (ts_parser_set_included_ranges); every
+// range's tree is printed in turn under the file's one @@FILE line.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +28,24 @@
 #endif
 
 const TSLanguage *TS_LANGUAGE(void);
+#ifdef TS_RANGES_LANGUAGE
+const TSLanguage *TS_RANGES_LANGUAGE(void);
+
+// Every `inline` node under `node`, in document order.
+static void collect_ranges(TSNode node, TSRange **ranges, size_t *count, size_t *capacity) {
+    if (strcmp(ts_node_type(node), "inline") == 0 && ts_node_end_byte(node) > ts_node_start_byte(node)) {
+        if (*count == *capacity) {
+            *capacity = *capacity ? *capacity * 2 : 64;
+            *ranges = realloc(*ranges, *capacity * sizeof(TSRange));
+        }
+        (*ranges)[(*count)++] = (TSRange){ts_node_start_point(node), ts_node_end_point(node),
+                                          ts_node_start_byte(node), ts_node_end_byte(node)};
+        return;
+    }
+    const uint32_t n = ts_node_child_count(node);
+    for (uint32_t i = 0; i < n; i++) collect_ranges(ts_node_child(node, i), ranges, count, capacity);
+}
+#endif
 
 // Pre-order, iteratively: error recovery on a large damaged file can nest
 // deeply enough that a recursive walk overflows the stack.
@@ -105,14 +129,36 @@ int main(int argc, char **argv) {
         // The fuzzer's breadcrumb: stderr is unbuffered, so after a crash or
         // a hang the last line names the file that caused it.
         if (trace) fprintf(stderr, "@@PARSING %s\n", path);
-        TSTree *tree = ts_parser_parse_string(parser, NULL, text, (uint32_t)got);
         printf("@@FILE %s\n", path);
         int errors = 0;
+#ifdef TS_RANGES_LANGUAGE
+        static TSParser *ranges_parser = NULL;
+        if (!ranges_parser) {
+            ranges_parser = ts_parser_new();
+            ts_parser_set_language(ranges_parser, TS_RANGES_LANGUAGE());
+        }
+        TSTree *block = ts_parser_parse_string(ranges_parser, NULL, text, (uint32_t)got);
+        TSRange *ranges = NULL;
+        size_t count = 0, capacity = 0;
+        collect_ranges(ts_tree_root_node(block), &ranges, &count, &capacity);
+        for (size_t i = 0; i < count; i++) {
+            ts_parser_set_included_ranges(parser, &ranges[i], 1);
+            TSTree *tree = ts_parser_parse_string(parser, NULL, text, (uint32_t)got);
+            TSTreeCursor cursor = ts_tree_cursor_new(ts_tree_root_node(tree));
+            walk(&cursor, &errors);
+            ts_tree_cursor_delete(&cursor);
+            ts_tree_delete(tree);
+        }
+        free(ranges);
+        ts_tree_delete(block);
+#else
+        TSTree *tree = ts_parser_parse_string(parser, NULL, text, (uint32_t)got);
         TSTreeCursor cursor = ts_tree_cursor_new(ts_tree_root_node(tree));
         walk(&cursor, &errors);
         ts_tree_cursor_delete(&cursor);
-        printf("@@ERRORS %d\n", errors);
         ts_tree_delete(tree);
+#endif
+        printf("@@ERRORS %d\n", errors);
         free(text);
     }
     ts_parser_delete(parser);

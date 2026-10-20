@@ -151,10 +151,17 @@ saved whole.</p>
 <li>The same goes for changes made <b>inside</b> mep by something other than typing: a reload (<code>:e!</code>), <code>:Format</code> and anything else that rewrites a whole file at once, an agent replacing a buffer's contents over the agent socket, a collaborator's edit arriving. Each of those moves the folds with their text instead of leaving them where the rows used to be.</li>
 </ul>
 <h1>From Lua</h1>
+<<<<<<< HEAD
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.fold_create(start_row, end_row)
 mep.fold_toggle(row)
 mep.fold_clear_provider()
 mep.fold_list()</code></pre></div>
+=======
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.<span class="tok-blue">fold_create</span>(start_row, end_row)
+<span class="tok-cyan">mep</span>.<span class="tok-blue">fold_toggle</span>(row)
+<span class="tok-cyan">mep</span>.<span class="tok-blue">fold_clear_provider</span>()
+<span class="tok-cyan">mep</span>.<span class="tok-blue">fold_list</span>()</code></pre></div>
+>>>>>>> f1f5186 (Add more inhouse ts)
 <p>A feature that computes its own folds registers them with <code>fold_create</code> and
 clears its previous set with <code>fold_clear_provider</code>. <code>fold_list</code> is the read
 side: every fold in the current buffer as ={start_row, end_row, closed,

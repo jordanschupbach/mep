@@ -298,6 +298,22 @@ int main() {
     ParseHtml("<script>var expression = RegExp('(me)p', 'i'); var match = expression.exec('xxMEPyy'); var global = RegExp('a', 'g'); var first = global.exec('aba'); var second = global.exec('aba'); document.title = expression.test('Mep') + ':' + match[0] + ':' + match[1] + ':' + match.index + ':' + 'mep mep'.replaceAll(expression, 'X') + ':' + 'mep'.match(expression)[1] + ':' + first.index + ':' + second.index + ':' + global.lastIndex;</script>", regexp);
     RunScripts(regexp, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\\n", error.c_str()); std::abort(); });
     CHECK(regexp.title == "true:MEP:ME:2:X X:me:0:2:3");
+    // An exception thrown inside a callback a native function calls (map,
+    // forEach, call) reaches the catch as itself -- it used to arrive as
+    // an Error with an empty message. And a Unicode property escape, which
+    // mep_regex would read as literals, is an error rather than a regex
+    // silently matching something else (mep-ts-generate relies on both).
+    HtmlDoc rethrow;
+    ParseHtml("<script>var log = [];"
+              "try { [1].map(function () { throw new TypeError('boom'); }); } catch (e) { log.push(e instanceof TypeError && e.message); }"
+              "var thrown = {}; try { [1].forEach(function () { throw thrown; }); } catch (e) { log.push(e === thrown); }"
+              "try { (function () { throw 7; }).call(null); } catch (e) { log.push(e); }"
+              "try { 'abc'.replace(/\\p{L}/gu, 'x'); } catch (e) { log.push(e.message.indexOf('property escapes') >= 0); }"
+              "try { new RegExp('\\\\P{L}', 'u'); } catch (e) { log.push('ctor'); }"
+              "document.title = log.join(':');</script>",
+              rethrow);
+    RunScripts(rethrow, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\n", error.c_str()); std::abort(); });
+    CHECK(rethrow.title == "boom:true:7:true:ctor");
     HtmlDoc function_helpers;
     ParseHtml("<script>function add(a, b) { return this.base + a + b; } var context = {base: 2}; var bound = add.bind(context, 3); document.title = add.call(context, 1, 2) + ':' + add.apply(context, [2, 3]) + ':' + bound(4);</script>", function_helpers);
     RunScripts(function_helpers, [](const std::string &) {}, [](const std::string &error) { std::fprintf(stderr, "%s\\n", error.c_str()); std::abort(); });

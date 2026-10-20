@@ -1,14 +1,12 @@
 # third_party/
 
 Vendored source for Treesitter (Phase 19, `NVIM_PARITY_PLAN.md`): the
-runtime library plus a small **core set** of grammars, compiled
-directly into mep. Only what actually gets compiled is kept —
-`parser.c`, an optional external scanner (`scanner.c`/`scanner.cc`),
-and the grammar's own copy of `tree_sitter/parser.h` — not the full
-upstream repo (docs, language bindings, test corpora,
-`grammar.js`/`grammar.json`, examples, ...).
+runtime library only, compiled directly into mep. It held a small **core
+set** of grammars too (`parser.c`, scanners and headers), until each was
+replaced by a grammar of mep's own (`grammars/`, "The core set" below);
+the grammars mep compiles in are no longer third-party code.
 
-**This is deliberately a small set, not "as many languages as
+**The core set is deliberately small, not "as many languages as
 possible".** Every language beyond the core set is resolved at runtime
 instead, by `dlopen()`ing a `.so` the user already has on disk — see
 "Everything else: dynamic loading" below. mep went through a "vendor
@@ -24,7 +22,7 @@ tempted to grow this list back:
    submodules, and a plain recursive clone pulled gigabytes of them in
    just to reach the handful of files under `src/` that matter.
 2. Switching to committing the trimmed sources directly (this
-   directory's current mechanism) fixed the build-time problem, but at
+   directory's mechanism then) fixed the build-time problem, but at
    ~55 grammars added ~340MB to the repository's working tree —
    compressed size for network transfer was actually small (~15MB,
    these generated parser tables are extremely repetitive), but the
@@ -41,24 +39,16 @@ tempted to grow this list back:
 C, C++, Lua (mep's own scripting/config language — `~/.config/mep/init.lua`
 and any `.lua` file need this regardless of what else is available),
 Python, JavaScript, Markdown (+ its separate inline-formatting grammar),
-and Org. C, Python, JavaScript, Lua, R, Nix, justfiles and mepml have grammars of mep's
-own instead (`grammars/`), and `plans/TREESITTER_GRAMMAR_PLAN.md` replaces the rest of
-this set the same way, one grammar at a time.
+and Org are compiled in — and, like R, Nix, justfiles and mepml, they are
+grammars of mep's own now, in `grammars/` (written from each language's
+reference, drop-in replacements for the ones vendored here before;
+`plans/TREESITTER_GRAMMAR_PLAN.md`). None are vendored any more: this
+directory keeps the tree-sitter runtime.
 
-| name | repo | tag/commit | subdir |
-|---|---|---|---|
-| cpp | https://github.com/tree-sitter/tree-sitter-cpp | v0.23.4 | . |
-| markdown | https://github.com/tree-sitter-grammars/tree-sitter-markdown | v0.5.3 | tree-sitter-markdown |
-| markdown_inline | https://github.com/tree-sitter-grammars/tree-sitter-markdown | v0.5.3 | tree-sitter-markdown-inline |
-| org | https://github.com/nvim-orgmode/tree-sitter-org | 2.0.4 | . |
-
-To add another grammar to this compiled-in set: fetch its `src/`
-directory (dropping `grammar.json`/`node-types.json`) into
-`third_party/grammars/<name>/src/`, add `<name>` to `TS_GRAMMAR_NAMES` in
-`CMakeLists.txt`, add its file extension(s) to `LanguageTable()` in
-`src/treesitter.cpp`, and embed its `queries/highlights.scm` in
-`src/treesitter_queries.h`. Think twice first, though — see "Everything
-else" below for why the dynamic path is usually the better fit.
+A new compiled-in grammar is written the same way: `grammars/tree-sitter-<name>`,
+`mep_grammar(<name> <Camel>)` in `CMakeLists.txt`, its file extension(s) in
+`LanguageTable()` in `src/treesitter.cpp`. Think twice first, though — see
+"Everything else" below for why the dynamic path is usually the better fit.
 
 ## Everything else: dynamic loading
 

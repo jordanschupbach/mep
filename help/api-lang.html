@@ -17,7 +17,11 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
+<<<<<<< HEAD
 <h1>The bindings (67)</h1>
+=======
+<h1>The bindings (64)</h1>
+>>>>>>> f1f5186 (Add more inhouse ts)
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -83,7 +87,7 @@ that it does nothing.</p>
 <tr><td><code>mep.syntax_highlight_fallback</code></td><td>runs the no-vendored-grammar fallback lexer over the current buffer</td></tr>
 <tr><td><code>mep.ts_apply_captures</code></td><td>resolves each Treesitter capture to a highlight group via hl_map and adds a decoration for it</td></tr>
 <tr><td><code>mep.ts_captures</code></td><td>runs the vendored Treesitter grammar (if any) for a filetype over source text</td></tr>
-<tr><td><code>mep.ts_fold_ranges</code></td><td>runs the vendored Treesitter fold query (if any) over source text</td></tr>
+<tr><td><code>mep.ts_fold_ranges</code></td><td>runs the compiled-in Treesitter fold query (if any) over source text</td></tr>
 <tr><td><code>mep.ts_highlight</code></td><td>highlights text with its Treesitter grammar straight into decorations in `ns`</td></tr>
 <tr><td><code>mep.ts_highlight_async_ready</code></td><td>true once since the last call if a</td></tr>
 <tr><td><code>mep.ts_highlight_buffer</code></td><td>true, or nil</td></tr>

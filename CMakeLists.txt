@@ -291,9 +291,9 @@ endif()
 
 # Strict warnings for mep's OWN targets only (mep_core, mep, mep-collabd,
 # the collab/agent-rpc test binaries, mep-amalgam) -- deliberately NOT
-# applied to vendored/fetched third-party targets (lua,
-# tree_sitter, the ts_* grammar libs) since we don't own
-# that code and can't fix warnings inside it. Applied via
+# applied to vendored third-party targets (lua, tree_sitter) since we
+# don't own that code and can't fix warnings inside it, nor to the ts_*
+# grammar libs, whose parser.c is generated. Applied via
 # target_compile_options(... PRIVATE ${MEP_STRICT_FLAGS}) on each of our
 # own targets below, not injected globally through CMAKE_CXX_FLAGS.
 set(MEP_STRICT_FLAGS
@@ -450,33 +450,22 @@ add_library(lua STATIC ${LUA_SOURCES})
 # to warn on the exact same code, Clang's -Wold-style-cast did.
 target_include_directories(lua SYSTEM PUBLIC "${lua_SOURCE_DIR}/src")
 
-# Tree-sitter runtime + a small core set of grammars: vendored locally
-# under third_party/ (source files only -- parser.c, an optional
-# external scanner, and the grammar's own copy of tree_sitter/parser.h;
-# see third_party/README.md) rather than fetched via CMake FetchContent
-# at configure time -- a from-scratch `build/` directory doing a
-# sequential git clone per grammar didn't scale even at a moderate
-# count, and once, catastrophically, didn't scale at all: tree-sitter-
-# ocaml's examples/ directory vendors several huge, entirely unrelated
-# upstream projects (js_of_ocaml, dune, ...) as git submodules, and a
-# plain recursive clone pulled gigabytes of them in just to reach the
-# handful of files under src/ that actually matter. Vendoring only those
-# files makes every build fully offline and instant to configure.
-#
-# Deliberately a *small, curated* set, not "as many as possible": C,
-# C++, Lua (mep's own scripting/config language), Python, JavaScript,
-# Markdown (+ its separate inline-formatting grammar) and Org; C, Lua, R,
-# Nix, justfiles and mepml are mep's own grammars (mep_grammar below), and
-# plans/TREESITTER_GRAMMAR_PLAN.md is replacing the rest the same way.
-# Every other language is loaded dynamically at runtime instead (see
-# src/treesitter.cpp's LoadDynamicLanguage/TS_DYNAMIC_LANGUAGES) from a
-# compiled `.so` the user already has -- via a Nix devShell (flake.nix
-# demonstrates this: `pkgs.tree-sitter.withPlugins`, exported as
-# MEP_TS_PARSER_PATH), the tree-sitter CLI's own build cache, an
-# nvim-treesitter install, or mep's own ~/.config/mep/parsers/ -- rather
-# than compiled into mep itself. That dynamic path is native-only
-# (dlopen has no equivalent for the Emscripten/wasm build, which only
-# ever has these 8 grammars available).
+# The tree-sitter runtime, vendored under third_party/tree-sitter (no
+# network at configure time; see third_party/README.md), and a small core
+# set of grammars compiled into mep: C, C++, Lua (mep's own scripting/
+# config language), Python, JavaScript, Markdown (+ its separate
+# inline-formatting grammar), Org, R, Nix, justfiles and mepml. All of
+# them are mep's own (grammars/tree-sitter-<name>, mep_grammar below;
+# plans/TREESITTER_GRAMMAR_PLAN.md). Deliberately small, not "as many as
+# possible": every other language is loaded dynamically at runtime
+# instead (see src/treesitter.cpp's LoadDynamicLanguage/
+# TS_DYNAMIC_LANGUAGES) from a compiled `.so` the user already has -- via
+# a Nix devShell (flake.nix demonstrates this:
+# `pkgs.tree-sitter.withPlugins`, exported as MEP_TS_PARSER_PATH), the
+# tree-sitter CLI's own build cache, an nvim-treesitter install, or mep's
+# own ~/.config/mep/parsers/ -- rather than compiled into mep itself. That
+# dynamic path is native-only (dlopen has no equivalent for the
+# Emscripten/wasm build, which only ever has the core set available).
 set(TS_RUNTIME_DIR "${CMAKE_SOURCE_DIR}/third_party/tree-sitter")
 add_library(tree_sitter STATIC "${TS_RUNTIME_DIR}/src/lib.c")
 target_include_directories(tree_sitter
@@ -484,30 +473,11 @@ target_include_directories(tree_sitter
     PRIVATE "${TS_RUNTIME_DIR}/src"
 )
 
-# Builds one grammar library from third_party/grammars/<name>/src.
-function(ts_build name)
-    set(base "${CMAKE_SOURCE_DIR}/third_party/grammars/${name}/src")
-    set(grammar_src "${base}/parser.c")
-    if(EXISTS "${base}/scanner.c")
-        list(APPEND grammar_src "${base}/scanner.c")
-    elseif(EXISTS "${base}/scanner.cc")
-        list(APPEND grammar_src "${base}/scanner.cc")
-    endif()
-    add_library(ts_${name} STATIC ${grammar_src})
-    target_include_directories(ts_${name} PRIVATE "${base}")
-endfunction()
-
-set(TS_GRAMMAR_NAMES cpp markdown markdown_inline org)
 set(TS_GRAMMAR_LIBS "")
-foreach(gname ${TS_GRAMMAR_NAMES})
-    ts_build(${gname})
-    list(APPEND TS_GRAMMAR_LIBS ts_${gname})
-endforeach()
 
 # mep's own grammars (grammars/tree-sitter-<name>: grammar.js, a
-# hand-written src/scanner.c, and the parser.c `tree-sitter generate`
-# produces from them) are not vendored third-party ones, so they live
-# outside third_party/grammars. Each one's queries/*.scm are the one copy
+# hand-written src/scanner.c, and the parser.c mep-ts-generate produces
+# from them, below). Each one's queries/*.scm are the one copy
 # of its highlight/fold/structure queries: they are embedded into a
 # generated <name>_queries.h (kHighlights<Camel>, kFolds<Camel>, and
 # kStructure<Camel> when there is a structure.scm) at configure time,
@@ -522,15 +492,20 @@ function(mep_grammar name camel)
     endif()
     add_library(ts_${name} STATIC ${sources})
     target_include_directories(ts_${name} PRIVATE "${dir}/src")
-    # Unlike the vendored grammars, the external scanner is ours: the
-    # Sanitize build instruments it too (mep-mepml-ts-test's mutation run
+    # The external scanner is ours: the Sanitize build instruments it too (mep-mepml-ts-test's mutation run
     # exercises mepml's).
     target_compile_options(ts_${name} PRIVATE ${MEP_SANITIZE_FLAGS})
     set(TS_GRAMMAR_LIBS ${TS_GRAMMAR_LIBS} ts_${name} PARENT_SCOPE)
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-        "${dir}/queries/highlights.scm" "${dir}/queries/folds.scm")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dir}/queries/highlights.scm")
     file(READ "${dir}/queries/highlights.scm" highlights_scm)
-    file(READ "${dir}/queries/folds.scm" folds_scm)
+    # The fold query (kFolds<Camel>), for a grammar mep folds by its tree;
+    # Markdown's folds come from main.cpp's line-based provider instead.
+    set(folds_decl "")
+    if(EXISTS "${dir}/queries/folds.scm")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dir}/queries/folds.scm")
+        file(READ "${dir}/queries/folds.scm" folds_scm)
+        set(folds_decl "static const char *kFolds${camel} = R\"TSQ(${folds_scm})TSQ\";\n")
+    endif()
     # The structure sidebar's outline query (kStructure<Camel>), for a
     # grammar whose outline comes from its tree; mepml's is built from its
     # headings in Lua instead (main.cpp's mep_structure_mepml_items).
@@ -544,7 +519,7 @@ function(mep_grammar name camel)
         "// Generated by CMakeLists.txt from grammars/tree-sitter-${name}/queries -- do not edit.\n"
         "#pragma once\n"
         "static const char *kHighlights${camel} = R\"TSQ(${highlights_scm})TSQ\";\n"
-        "static const char *kFolds${camel} = R\"TSQ(${folds_scm})TSQ\";\n"
+        "${folds_decl}"
         "${structure_decl}")
     file(COPY_FILE "${CMAKE_BINARY_DIR}/generated/${name}_queries.h.tmp"
          "${CMAKE_BINARY_DIR}/generated/${name}_queries.h" ONLY_IF_DIFFERENT)
@@ -557,6 +532,46 @@ mep_grammar(lua Lua)
 mep_grammar(c C)
 mep_grammar(python Python)
 mep_grammar(javascript Javascript)
+mep_grammar(cpp Cpp)
+mep_grammar(org Org)
+mep_grammar(markdown Markdown)
+mep_grammar(markdown_inline MarkdownInline)
+
+# Regenerating a grammar needs neither the tree-sitter CLI nor Node
+# (tools/ts_generate/README.md): mep-ts-generate runs grammar.js on mep's
+# own JS engine (with tools/ts_generate/dsl.js) and writes what `tree-sitter
+# generate` 0.25.10 does, byte for byte; mep-ts-corpus-test runs each
+# grammar's test/corpus as `tree-sitter test` does. `just <name>-grammar`
+# runs both; `just grammar-generate-check` regenerates every grammar and
+# fails unless the result is identical to what is committed.
+set(TS_GENERATE_DIR "${CMAKE_SOURCE_DIR}/tools/ts_generate")
+set(TS_GENERATE_EMBED "// Generated by CMakeLists.txt from tools/ts_generate -- do not edit.\n#pragma once\n")
+foreach(_embed "kTemplateAllocH:templates/alloc.h" "kTemplateArrayH:templates/array.h"
+               "kTemplateParserH:templates/parser.h" "kDslJs:dsl.js")
+    string(REPLACE ":" ";" _embed "${_embed}")
+    list(GET _embed 0 _embed_name)
+    list(GET _embed 1 _embed_file)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TS_GENERATE_DIR}/${_embed_file}")
+    file(READ "${TS_GENERATE_DIR}/${_embed_file}" _embed_text)
+    string(APPEND TS_GENERATE_EMBED "inline constexpr const char ${_embed_name}[] = R\"__TSGEN__(${_embed_text})__TSGEN__\";\n")
+endforeach()
+file(WRITE "${CMAKE_BINARY_DIR}/generated/ts_generate_embedded.h.tmp" "${TS_GENERATE_EMBED}")
+file(COPY_FILE "${CMAKE_BINARY_DIR}/generated/ts_generate_embedded.h.tmp"
+     "${CMAKE_BINARY_DIR}/generated/ts_generate_embedded.h" ONLY_IF_DIFFERENT)
+add_executable(mep-ts-generate EXCLUDE_FROM_ALL
+    tools/ts_generate/main.cpp tools/ts_generate/grammar_js.cpp tools/ts_generate/parse_grammar.cpp
+    tools/ts_generate/prepare_grammar.cpp tools/ts_generate/node_types.cpp tools/ts_generate/build_tables.cpp
+    tools/ts_generate/build_lex_table.cpp tools/ts_generate/build_parse_table.cpp tools/ts_generate/render.cpp
+    tools/ts_generate/core.cpp tools/ts_generate/json.cpp tools/ts_generate/regex.cpp
+    src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)
+target_include_directories(mep-ts-generate PRIVATE src tools/ts_generate "${CMAKE_BINARY_DIR}/generated")
+target_compile_options(mep-ts-generate PRIVATE ${MEP_STRICT_FLAGS})
+
+add_executable(mep-ts-corpus-test EXCLUDE_FROM_ALL tools/ts_generate/corpus_test.cpp)
+target_link_libraries(mep-ts-corpus-test PRIVATE tree_sitter ${TS_GRAMMAR_LIBS})
+target_compile_definitions(mep-ts-corpus-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mep-ts-corpus-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-ts-corpus-test PRIVATE ${MEP_SANITIZE_FLAGS})
 
 # mepml's default style sheet (assets/mepml/default.mepss: mep's whole
 # default look for mepml documents, docs/mepml-spec/style.md) embedded for
@@ -2280,6 +2295,15 @@ add_dependencies(tests mep-mepml-doc-test)
 # mepml's tree-sitter grammar against mep's own parser: same blocks, same
 # inline constructs on test.mepml, and a mutation run over the external
 # scanner (see the file's own comment).
+# org_doc.cpp and the org grammar agree on the repository's .org files.
+add_executable(mep-org-ts-test EXCLUDE_FROM_ALL src/org_ts_test.cpp src/org_doc.cpp)
+target_include_directories(mep-org-ts-test PRIVATE src)
+target_link_libraries(mep-org-ts-test PRIVATE tree_sitter ts_org)
+target_compile_definitions(mep-org-ts-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mep-org-ts-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-org-ts-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-org-ts-test)
+
 add_executable(mep-mepml-ts-test EXCLUDE_FROM_ALL src/mepml_ts_test.cpp src/mepml_doc.cpp src/mepml_style.cpp)
 target_include_directories(mep-mepml-ts-test PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 target_link_libraries(mep-mepml-ts-test PRIVATE tree_sitter ts_mepml)
@@ -2287,6 +2311,9 @@ target_compile_definitions(mep-mepml-ts-test PRIVATE MEPML_REFERENCE_FILE="${CMA
 target_compile_options(mep-mepml-ts-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-mepml-ts-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-mepml-ts-test)
+
+# Every grammar's test/corpus (defined with mep-ts-generate above).
+add_dependencies(tests mep-ts-corpus-test)
 
 # The presentation editor's model and its .pptx/.odp readers and writers
 # (src/pres_doc.h) -- no window.

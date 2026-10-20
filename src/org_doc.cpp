@@ -430,6 +430,44 @@ std::string RewriteTimestampDate(const std::string &raw, const OrgTimestamp &new
     return raw.substr(0, 1) + std::string(buf) + raw.substr(wd_end);
 }
 
+/**
+ * @brief Reads the NAME of a `#+begin_NAME` or `#+end_NAME` line.
+ * @param line The line to read.
+ * @param marker "begin_" or "end_".
+ * @return NAME lower-cased, or "" when the line is not such a marker.
+ */
+std::string OrgBlockMarkerName(const std::string &line, const std::string &marker) {
+    size_t i = line.find_first_not_of(" \t");
+    if (i == std::string::npos || line.compare(i, 2, "#+") != 0) return "";
+    i += 2;
+    if (line.size() < i + marker.size()) return "";
+    for (size_t k = 0; k < marker.size(); k++) {
+        if (std::tolower(static_cast<unsigned char>(line[i + k])) != marker[k]) return "";
+    }
+    i += marker.size();
+    size_t end = i;
+    while (end < line.size() && !std::isspace(static_cast<unsigned char>(line[end]))) end++;
+    std::string name = line.substr(i, end - i);
+    for (char &c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return name;
+}
+
+/**
+ * @brief Finds where the block a `#+begin_NAME` line opens ends.
+ * @param lines The document's lines.
+ * @param begin The `#+begin_NAME` line's index.
+ * @return The index of its `#+end_NAME` line (same NAME, any case), or -1
+ * when there is none: an unclosed `#+begin_` is not a block, in org.
+ */
+int OrgBlockEnd(const std::vector<std::string> &lines, size_t begin) {
+    const std::string name = OrgBlockMarkerName(lines[begin], "begin_");
+    if (name.empty()) return -1;
+    for (size_t j = begin + 1; j < lines.size(); j++) {
+        if (OrgBlockMarkerName(lines[j], "end_") == name) return static_cast<int>(j);
+    }
+    return -1;
+}
+
 }  // namespace
 
 OrgOutline ParseOrgOutline(const std::vector<std::string> &lines) {
@@ -450,6 +488,12 @@ OrgOutline ParseOrgOutline(const std::vector<std::string> &lines) {
     std::vector<int> stack_level;
     std::vector<int> stack_index;
     for (size_t i = 0; i < lines.size(); i++) {
+        // A block's lines are its contents, even when one looks like a
+        // headline (an example block showing org markup).
+        if (const int end = OrgBlockEnd(lines, i); end >= 0) {
+            i = static_cast<size_t>(end);
+            continue;
+        }
         OrgHeadline h;
         if (!ParseHeadlineLine(lines[i], out.todo_keywords, out.done_keywords, h)) continue;
         h.line_start = static_cast<int>(i);

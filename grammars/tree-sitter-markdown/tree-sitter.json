@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "markdown",
+      "camelcase": "Markdown",
+      "scope": "text.markdown",
+      "path": ".",
+      "file-types": ["md", "markdown"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Markdown (block structure), mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

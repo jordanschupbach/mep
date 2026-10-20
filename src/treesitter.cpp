@@ -37,19 +37,19 @@
 #include "c_queries.h"
 #include "python_queries.h"
 #include "javascript_queries.h"
+#include "cpp_queries.h"
+#include "org_queries.h"
+#include "markdown_queries.h"
+#include "markdown_inline_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
 
-// The core set, compiled directly into mep (see CMakeLists.txt
-// TS_GRAMMAR_NAMES) -- statically linked, so these symbols are always
+// The core set, compiled directly into mep (CMakeLists.txt's
+// mep_grammar) -- statically linked, so these symbols are always
 // resolvable at link time.
 extern "C" {
-const TSLanguage *tree_sitter_cpp(void);
-const TSLanguage *tree_sitter_markdown(void);
-const TSLanguage *tree_sitter_markdown_inline(void);
-const TSLanguage *tree_sitter_org(void);
 const TSLanguage *tree_sitter_mepml(void);  // mep's own: grammars/tree-sitter-mepml
 const TSLanguage *tree_sitter_nix(void);    // mep's own: grammars/tree-sitter-nix
 const TSLanguage *tree_sitter_just(void);   // mep's own: grammars/tree-sitter-just
@@ -58,6 +58,10 @@ const TSLanguage *tree_sitter_lua(void);    // mep's own: grammars/tree-sitter-l
 const TSLanguage *tree_sitter_c(void);      // mep's own: grammars/tree-sitter-c
 const TSLanguage *tree_sitter_python(void); // mep's own: grammars/tree-sitter-python
 const TSLanguage *tree_sitter_javascript(void); // mep's own: grammars/tree-sitter-javascript
+const TSLanguage *tree_sitter_cpp(void);        // mep's own: grammars/tree-sitter-cpp
+const TSLanguage *tree_sitter_org(void);        // mep's own: grammars/tree-sitter-org
+const TSLanguage *tree_sitter_markdown(void);   // mep's own: grammars/tree-sitter-markdown
+const TSLanguage *tree_sitter_markdown_inline(void);  // mep's own: grammars/tree-sitter-markdown_inline
 }
 
 // The process-wide caches below -- parse trees and row answers per key,
@@ -149,9 +153,14 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
     return table;
 }
 
-// Fold queries: only the core compiled-in languages get one (see
-// treesitter_queries.h's kFolds* comment for why markdown is excluded
-// but org isn't), keyed the same way as LanguageTable.
+// Fold queries: one `@fold` capture per syntactic block worth collapsing,
+// for the core compiled-in languages only, each its grammar's own
+// queries/folds.scm (kFolds<Camel>, embedded via <name>_queries.h) and
+// keyed the same way as LanguageTable. Markdown has none: main.cpp's
+// line-based heading-depth provider (kBuiltinMarkdown) folds it, and a
+// second, tree-driven provider would double its folds. Org's is used by
+// Editor::RecomputeOrgFolds instead of main.cpp's line-based headline
+// scan, which cannot tell a `* ` line in a source block from a headline.
 /**
  * @brief Returns the process-lifetime table of fold queries for the core
  * compiled-in languages, keyed by bare file extension.
@@ -212,6 +221,9 @@ const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
         {"mjs", {tree_sitter_javascript, kStructureJavascript}},
         {"cjs", {tree_sitter_javascript, kStructureJavascript}},
         {"jsx", {tree_sitter_javascript, kStructureJavascript}},
+        {"org", {tree_sitter_org, kStructureOrg}},
+        {"md", {tree_sitter_markdown, kStructureMarkdown}},
+        {"markdown", {tree_sitter_markdown, kStructureMarkdown}},
         {"r", {tree_sitter_r, kStructureR}},
         {"R", {tree_sitter_r, kStructureR}},
         // mep's own grammars keep theirs in grammars/tree-sitter-<name>/

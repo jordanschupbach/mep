@@ -1,0 +1,142 @@
+================================================================================
+Emphasis and strong emphasis
+================================================================================
+*a* **b** _c_ __d__ ***e***
+
+--------------------------------------------------------------------------------
+
+(inline
+  (emphasis
+    (emphasis_delimiter)
+    (emphasis_delimiter))
+  (strong_emphasis
+    (emphasis_delimiter)
+    (emphasis_delimiter)
+    (emphasis_delimiter)
+    (emphasis_delimiter))
+  (emphasis
+    (emphasis_delimiter)
+    (emphasis_delimiter))
+  (strong_emphasis
+    (emphasis_delimiter)
+    (emphasis_delimiter)
+    (emphasis_delimiter)
+    (emphasis_delimiter))
+  (emphasis
+    (emphasis_delimiter)
+    (strong_emphasis
+      (emphasis_delimiter)
+      (emphasis_delimiter)
+      (emphasis_delimiter)
+      (emphasis_delimiter))
+    (emphasis_delimiter)))
+
+================================================================================
+Delimiter runs that neither open nor close
+================================================================================
+a * b _ c 5*3*2 snake_case_name
+
+--------------------------------------------------------------------------------
+
+(inline
+  (emphasis
+    (emphasis_delimiter)
+    (emphasis_delimiter)))
+
+================================================================================
+Code spans and unclosed backticks
+================================================================================
+`a` ``b ` c`` ``` d
+
+--------------------------------------------------------------------------------
+
+(inline
+  (code_span
+    (code_span_delimiter)
+    (code_span_delimiter))
+  (code_span
+    (code_span_delimiter)
+    (code_span_delimiter)))
+
+================================================================================
+Links of every kind
+================================================================================
+[a](/u "t") [b][ref] [c][] [d] ![e](/i.png)
+
+--------------------------------------------------------------------------------
+
+(inline
+  (inline_link
+    (link_text)
+    (link_destination)
+    (link_title))
+  (full_reference_link
+    (link_text)
+    (link_label))
+  (collapsed_reference_link
+    (link_text))
+  (shortcut_link
+    (link_text))
+  (image
+    (image_description)
+    (link_destination)))
+
+================================================================================
+Autolinks, HTML, entities and escapes
+================================================================================
+<https://x.org> <a@b.co> <span class="x"> &amp; &#42; \*
+
+--------------------------------------------------------------------------------
+
+(inline
+  (uri_autolink)
+  (email_autolink)
+  (html_tag)
+  (entity_reference)
+  (numeric_character_reference)
+  (backslash_escape))
+
+================================================================================
+Strikethrough and LaTeX spans
+================================================================================
+~~gone~~ $x^2$ $$y$$
+
+--------------------------------------------------------------------------------
+
+(inline
+  (strikethrough
+    (emphasis_delimiter)
+    (strikethrough
+      (emphasis_delimiter)
+      (emphasis_delimiter))
+    (emphasis_delimiter))
+  (latex_block
+    (latex_span_delimiter)
+    (latex_span_delimiter))
+  (latex_block
+    (latex_span_delimiter)
+    (latex_span_delimiter)))
+
+================================================================================
+Hard line breaks
+================================================================================
+a  
+b\
+c
+
+--------------------------------------------------------------------------------
+
+(inline
+  (hard_line_break)
+  (hard_line_break))
+
+================================================================================
+Declarations follow CommonMark 0.31
+================================================================================
+x <!A> y<!x>
+
+--------------------------------------------------------------------------------
+
+(inline
+  (html_tag)
+  (html_tag))

@@ -12491,47 +12491,24 @@ const char *kBuiltinStructure =
     "  return raw\n"
     "end\n"
 
-    // Markdown has a Treesitter *highlight* grammar registered
-    // (treesitter.cpp's LanguageTable) but no *structure* query (no
-    // kStructureMarkdown in StructureQueryTable/DynamicStructureQueryTable),
-    // so mep.ts_structure('md', ...) always returns nil for it, same gap
-    // LaTeX has -- this is the Markdown counterpart to
-    // mep_structure_tex_items just above, same {row, col, start_row,
-    // end_row, name, kind, depth} shape. Only ATX headings ("# Title", not
-    // the "Title\\n=====" Setext style) are recognized, matching
-    // mep.md_highlight's own scope decision (kBuiltinMarkdown) -- and
-    // reuses that same function's exact heading pattern/fence-and-front-
-    // matter-tracking state machine so a heading-looking line inside a
-    // ```` ``` ```` code fence or --- front-matter block is correctly
-    // skipped here too, not just in the highlighter.\n"
+    // Markdown's outline: the headings its grammar's structure query finds
+    // (grammars/tree-sitter-markdown/queries/structure.scm), the Markdown
+    // counterpart to mep_structure_tex_items just above, same {row, col,
+    // start_row, end_row, name, kind, depth} shape.\n"
     "local function mep_structure_md_items(lines)\n"
+    // The headings are the tree's (mep.ts_structure, the grammar's
+    // structure query): ATX and setext alike, and never a heading-looking
+    // line in a code block (``` or ~~~, or indented), an HTML block or
+    // front matter. The level is the kind's.\n"
     "  local raw = {}\n"
-    "  local in_fence = false\n"
-    "  local in_frontmatter = false\n"
-    "  for i, line in ipairs(lines) do\n"
-    "    if i == 1 and line == '---' then\n"
-    "      in_frontmatter = true\n"
-    "    elseif in_frontmatter then\n"
-    "      if line == '---' then in_frontmatter = false end\n"
-    "    elseif line:match('^```') then\n"
-    "      in_fence = not in_fence\n"
-    "    elseif not in_fence then\n"
-    "      local hashes, title = line:match('^(#+)%s+(.*)$')\n"
-    "      if hashes then\n"
-    // Lenient overflow, matching mep.md_highlight's own math.min(#hashes,
-    // 6) rather than CommonMark's stricter "7+ hashes isn't a heading at
-    // all" rule -- consistency with what this same file already renders
-    // as a colored/signed heading line matters more here than spec
-    // purity for the rare document that actually has one.\n"
-    "        local level = math.min(#hashes, 6)\n"
+    "  for _, node in ipairs(mep.ts_structure('md', table.concat(lines, '\\n')) or {}) do\n"
+    "    local level = tonumber(node.kind:match('(%d)$')) or 1\n"
     // An optional ATX closing sequence ("## Title ##") is part of the
     // heading text CommonMark itself strips -- trimmed here so it doesn't
     // clutter the sidebar's own label.\n"
-    "        title = title:gsub('%s+#+%s*$', '')\n"
-    "        if title ~= '' then\n"
-    "          raw[#raw + 1] = {row = i, col = 0, name = title, kind = 'heading' .. level, depth = level - 1}\n"
-    "        end\n"
-    "      end\n"
+    "    local title = node.name:gsub('%s+#+%s*$', '')\n"
+    "    if title ~= '' then\n"
+    "      raw[#raw + 1] = {row = node.row, col = 0, name = title, kind = 'heading' .. level, depth = level - 1}\n"
     "    end\n"
     "  end\n"
     "  if #raw == 0 then return nil end\n"
@@ -12551,10 +12528,8 @@ const char *kBuiltinStructure =
     "  return raw\n"
     "end\n"
 
-    // Org has a Treesitter grammar registered for highlighting/folding
-    // (treesitter.cpp's LanguageTable/kFoldsOrg) but, like LaTeX and
-    // Markdown, no *structure* query, so mep.ts_structure('org', ...)
-    // always returns nil for it -- this is the org counterpart to
+    // Org's outline: the headlines its grammar's structure query finds
+    // (mep.ts_structure('org', ...)), the org counterpart to
     // mep_structure_md_items above, same {row, col, start_row, end_row,
     // name, kind, depth} shape, plus a "respects the todo nature of it"
     // checkbox mark for a headline that actually has an org TODO
@@ -12600,17 +12575,20 @@ const char *kBuiltinStructure =
     "      if it.line then todo_by_line[it.line] = it end\n"
     "    end\n"
     "  end\n"
+    // The headlines are the tree's (mep.ts_structure, the grammar's
+    // structure query): a line in a block that looks like one -- an
+    // example block showing org, a `* ` in a source block -- is the
+    // block's text. The level is the line's own star count.\n"
     "  local raw = {}\n"
-    "  for i, line in ipairs(lines) do\n"
-    "    local stars, title = line:match('^(%*+)%s+(.*)$')\n"
+    "  for _, node in ipairs(mep.ts_structure('org', table.concat(lines, '\\n')) or {}) do\n"
+    "    local i, title = node.row, node.name\n"
+    "    local stars = (lines[i] or ''):match('^(%*+)')\n"
     "    if stars then\n"
     "      local level = #stars\n"
     "      local todo_it = todo_by_line[i]\n"
     // A keyworded headline shows the Todo sidebar's own [ ]/[x] mark and
     // its already keyword/priority/tag-stripped title; a plain one shows
-    // its raw title text as scanned (tags and all -- this is a quick
-    // heuristic scan, not a real org parser, same tolerance every other
-    // hand-rolled scanner in this file already has).\n"
+    // its title (tags left off).\n"
     "      local name = todo_it and ((todo_it.done and '[x] ' or '[ ] ') .. todo_it.text) or title\n"
     "      raw[#raw + 1] = {row = i, col = 0, name = name, kind = 'heading' .. math.min(level, 6), depth = level - 1}\n"
     "    end\n"
@@ -14043,7 +14021,7 @@ const char *kBuiltinSyntax =
     "  ['text.math'] = 'Cyan',\n"
     // Org (queries/highlights.scm ships only this one example query,
     // using its own Org-prefixed capture names rather than the nvim-style
-    // dotted convention every other vendored grammar's query uses).
+    // dotted convention every other grammar's query uses).
     // One colour per depth, the same ladder markdown's own text.title.1..3
     // already uses -- with the headline sizes DrawPane now draws
     // (kOrgHeadingStyles), colour and size carry the outline's depth
@@ -14119,10 +14097,10 @@ const char *kBuiltinSyntax =
     "  kotlin = 'kt', haskell = 'hs', ocaml = 'ml', d = 'd',\n"
     "}\n"
     // Org emphasis markup (*bold*/\/italic\//_underline_/+strike+/=verbatim=/
-    // ~code~), a hand-rolled scanner since the vendored org grammar has no
-    // emphasis nodes to query (confirmed against third_party/grammars/org's
-    // own node types -- headlines/tags/properties/timestamps/blocks/etc.
-    // are there, emphasis marks aren't). Markers are left visible (matching
+    // ~code~), a hand-rolled scanner since the org grammar has no emphasis
+    // nodes to query (grammars/tree-sitter-org: headlines, tags,
+    // properties, timestamps, blocks and so on are there, emphasis marks
+    // aren't; see its README). Markers are left visible (matching
     // real Emacs org-mode's own default -- org-hide-emphasis-markers is off
     // by default there too) and the *whole* matched span, markers included,
     // gets the styling -- simpler than concealing them, and composes
@@ -21249,9 +21227,17 @@ const char *kBuiltinOrgExport =
     // reaches a position first and skipping any later span that starts
     // before text already emitted -- reproducing a real editor's
     // decoration-priority rules isn't worth it for a one-shot export.
+    // Captures starting at the same column keep the editor's rule, the
+    // later query pattern winning (mep.ts_captures lists them in pattern
+    // order): `mep.f()`'s `f` is both @field and the later @function.call.
+    // table.sort is not stable, so the original index breaks the tie.
     "local function mep_org_html_highlight_line(line, spans)\n"
     "  if not spans or #spans == 0 then return mep_org_html_escape(line) end\n"
-    "  table.sort(spans, function(a, b) return a.col_start < b.col_start end)\n"
+    "  for i, sp in ipairs(spans) do sp.order = i end\n"
+    "  table.sort(spans, function(a, b)\n"
+    "    if a.col_start ~= b.col_start then return a.col_start < b.col_start end\n"
+    "    return a.order > b.order\n"
+    "  end)\n"
     "  local out, pos = {}, 1\n"
     "  for _, sp in ipairs(spans) do\n"
     "    if sp.col_start >= pos then\n"

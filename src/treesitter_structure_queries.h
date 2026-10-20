@@ -1,7 +1,10 @@
 #pragma once
 
-// Document-structure queries for the sidebar (main.cpp's kBuiltinStructure /
-// mep.ts_structure): one query per language, each pattern tagging the
+// Document-structure queries for the sidebar, for the dynamically-loaded
+// languages (treesitter.cpp's DynamicStructureQueryTable); the compiled-in
+// grammars' are their own queries/structure.scm, embedded via
+// <name>_queries.h. Read by main.cpp's kBuiltinStructure
+// (mep.ts_structure): one query per language, each pattern tagging the
 // *whole* definition node `@definition.<kind>` (used for the entry's
 // end-row, so containment/nesting can be computed generically in
 // TreesitterStructure) and the identifier node actually holding the
@@ -20,25 +23,6 @@
 // type's own declaration) is intentional, not a bug -- TreesitterStructure
 // dedups by exact byte span and keeps the more specific (non-"type") kind
 // when two patterns land on the identical node.
-
-static const char *kStructureCpp = R"TSQ(
-(namespace_definition name: (_) @name) @definition.namespace
-(enum_specifier name: (type_identifier) @name body: (_)) @definition.enum
-(struct_specifier name: (type_identifier) @name body: (_)) @definition.struct
-(class_specifier name: (type_identifier) @name body: (_)) @definition.class
-(union_specifier name: (type_identifier) @name body: (_)) @definition.union
-(field_declaration declarator: (function_declarator declarator: (field_identifier) @name)) @definition.method
-(declaration declarator: (function_declarator declarator: (identifier) @name)) @definition.method
-(declaration declarator: (function_declarator declarator: (destructor_name) @name)) @definition.method
-(function_definition declarator: (function_declarator declarator: (identifier) @name)) @definition.function
-(function_definition declarator: (function_declarator declarator: (qualified_identifier) @name)) @definition.method
-(function_definition declarator: (function_declarator declarator: (destructor_name) @name)) @definition.method
-(function_definition declarator: (function_declarator declarator: (field_identifier) @name)) @definition.method
-(function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))) @definition.function
-(function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (qualified_identifier) @name))) @definition.method
-(function_definition declarator: (reference_declarator (function_declarator declarator: (identifier) @name))) @definition.function
-(function_definition declarator: (reference_declarator (function_declarator declarator: (qualified_identifier) @name))) @definition.method
-)TSQ";
 
 // Typescript/tsx share this: JSX adds element syntax, not new declaration
 // node shapes, so the same query covers both (see treesitter.cpp's

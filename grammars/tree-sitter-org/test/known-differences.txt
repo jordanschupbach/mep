@@ -1,0 +1,14 @@
+# Corpus files whose trees differ from the vendored tree-sitter-org's,
+# reviewed, where this grammar is right and the old one wrong. Org has no
+# oracle to arbitrate (see README.md).
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff (grammar-diff).
+
+# A `# comment` line right after a directive: the old grammar read the
+# comment's first line as the text of a paragraph owning the directive,
+# and only the lines after it as a comment. A line starting with `# ` is a
+# comment (org-syntax: Comments), so here the directive is the document's
+# and the lines after it one comment.
+*/doc/doc-setupfile.org                              # `# Usage:` after `#+macro:`
+*/test/site/content-org/citation-org-ref.org         # `# Local Variables:` after `#+bind:`
+*/test/site/content-org/issues/issue-542.org         # `# Local Variables:` after `#+bind:`
+*/test/site/content-org/issues/issue-556.org         # `# Local Variables:` after `#+bind:`

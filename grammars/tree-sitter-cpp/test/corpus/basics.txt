@@ -1,0 +1,569 @@
+================================================================================
+Templates against comparisons
+================================================================================
+
+a.b<c>(d);
+x = t.n < a || t.n >= b;
+std::vector<std::pair<int, int>> v;
+f<(1 > 2)>();
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (expression_statement
+    (call_expression
+      (field_expression
+        (identifier)
+        (template_method
+          (field_identifier)
+          (template_argument_list
+            (type_descriptor
+              (type_identifier)))))
+      (argument_list
+        (identifier))))
+  (expression_statement
+    (assignment_expression
+      (identifier)
+      (binary_expression
+        (binary_expression
+          (field_expression
+            (identifier)
+            (field_identifier))
+          (identifier))
+        (binary_expression
+          (field_expression
+            (identifier)
+            (field_identifier))
+          (identifier)))))
+  (declaration
+    (qualified_identifier
+      (namespace_identifier)
+      (template_type
+        (type_identifier)
+        (template_argument_list
+          (type_descriptor
+            (qualified_identifier
+              (namespace_identifier)
+              (template_type
+                (type_identifier)
+                (template_argument_list
+                  (type_descriptor
+                    (primitive_type))
+                  (type_descriptor
+                    (primitive_type)))))))))
+    (identifier))
+  (expression_statement
+    (call_expression
+      (template_function
+        (identifier)
+        (template_argument_list
+          (parenthesized_expression
+            (binary_expression
+              (number_literal)
+              (number_literal)))))
+      (argument_list))))
+
+================================================================================
+Classes, constructors and access
+================================================================================
+
+class A : public B, virtual protected C {
+ public:
+  explicit A(int x) : B(x), y_{x} {}
+  ~A() override = default;
+  operator bool() const noexcept;
+ private:
+  int y_ = 0;
+};
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (class_specifier
+    (type_identifier)
+    (base_class_clause
+      (access_specifier)
+      (type_identifier)
+      (access_specifier)
+      (type_identifier))
+    (field_declaration_list
+      (access_specifier)
+      (function_definition
+        (explicit_function_specifier)
+        (function_declarator
+          (identifier)
+          (parameter_list
+            (parameter_declaration
+              (primitive_type)
+              (identifier))))
+        (field_initializer_list
+          (field_initializer
+            (field_identifier)
+            (argument_list
+              (identifier)))
+          (field_initializer
+            (field_identifier)
+            (initializer_list
+              (identifier))))
+        (compound_statement))
+      (function_definition
+        (function_declarator
+          (destructor_name
+            (identifier))
+          (parameter_list)
+          (virtual_specifier))
+        (default_method_clause))
+      (declaration
+        (operator_cast
+          (primitive_type)
+          (abstract_function_declarator
+            (parameter_list)
+            (type_qualifier)
+            (noexcept))))
+      (access_specifier)
+      (field_declaration
+        (primitive_type)
+        (field_identifier)
+        (number_literal)))))
+
+================================================================================
+Raw strings
+================================================================================
+
+auto a = R"(plain)";
+auto b = R"x(has )" and )y")x";
+auto c = u8R"--(a
+b)--";
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (declaration
+    (placeholder_type_specifier
+      (auto))
+    (init_declarator
+      (identifier)
+      (raw_string_literal
+        (raw_string_content))))
+  (declaration
+    (placeholder_type_specifier
+      (auto))
+    (init_declarator
+      (identifier)
+      (raw_string_literal
+        (raw_string_delimiter)
+        (raw_string_content)
+        (raw_string_delimiter))))
+  (declaration
+    (placeholder_type_specifier
+      (auto))
+    (init_declarator
+      (identifier)
+      (raw_string_literal
+        (raw_string_delimiter)
+        (raw_string_content)
+        (raw_string_delimiter)))))
+
+================================================================================
+Number literals and suffixes
+================================================================================
+
+auto a = 1'000ul + 0x1Fu + 0b1010 + 07l + 1.5e-3f + 0x1p3 + 1.0bf16;
+auto b = 12_km + 1f + 1.5d + "s"sv;
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (declaration
+    (placeholder_type_specifier
+      (auto))
+    (init_declarator
+      (identifier)
+      (binary_expression
+        (binary_expression
+          (binary_expression
+            (binary_expression
+              (binary_expression
+                (binary_expression
+                  (number_literal)
+                  (number_literal))
+                (number_literal))
+              (number_literal))
+            (number_literal))
+          (number_literal))
+        (number_literal))))
+  (declaration
+    (placeholder_type_specifier
+      (auto))
+    (init_declarator
+      (identifier)
+      (binary_expression
+        (binary_expression
+          (binary_expression
+            (user_defined_literal
+              (number_literal)
+              (literal_suffix))
+            (user_defined_literal
+              (number_literal)
+              (literal_suffix)))
+          (user_defined_literal
+            (number_literal)
+            (literal_suffix)))
+        (user_defined_literal
+          (string_literal
+            (string_content))
+          (literal_suffix))))))
+
+================================================================================
+Pointer-to-member operators
+================================================================================
+
+void f() { (a.*pm)(); (p->*pm)(); }
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (function_definition
+    (primitive_type)
+    (function_declarator
+      (identifier)
+      (parameter_list))
+    (compound_statement
+      (expression_statement
+        (call_expression
+          (parenthesized_expression
+            (field_expression
+              (identifier)
+              (field_identifier)))
+          (argument_list)))
+      (expression_statement
+        (call_expression
+          (parenthesized_expression
+            (field_expression
+              (identifier)
+              (field_identifier)))
+          (argument_list))))))
+
+================================================================================
+Members through a qualified name
+================================================================================
+
+void f() { a.Base::g(); p->Base::~Base(); a.template h<int>(); }
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (function_definition
+    (primitive_type)
+    (function_declarator
+      (identifier)
+      (parameter_list))
+    (compound_statement
+      (expression_statement
+        (call_expression
+          (field_expression
+            (identifier)
+            (qualified_identifier
+              (namespace_identifier)
+              (field_identifier)))
+          (argument_list)))
+      (expression_statement
+        (call_expression
+          (field_expression
+            (identifier)
+            (qualified_identifier
+              (namespace_identifier)
+              (destructor_name
+                (identifier))))
+          (argument_list)))
+      (expression_statement
+        (call_expression
+          (field_expression
+            (identifier)
+            (dependent_name
+              (template_method
+                (field_identifier)
+                (template_argument_list
+                  (type_descriptor
+                    (primitive_type))))))
+          (argument_list))))))
+
+================================================================================
+Lambdas, folds and structured bindings
+================================================================================
+
+auto g = [&, n](int a) mutable -> int { return a; };
+template <typename... T> auto sum(T... t) { return (t + ...); }
+auto [k, v] = *m.begin();
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (declaration
+    (placeholder_type_specifier
+      (auto))
+    (init_declarator
+      (identifier)
+      (lambda_expression
+        (lambda_capture_specifier
+          (lambda_default_capture)
+          (identifier))
+        (abstract_function_declarator
+          (parameter_list
+            (parameter_declaration
+              (primitive_type)
+              (identifier)))
+          (type_qualifier)
+          (trailing_return_type
+            (type_descriptor
+              (primitive_type))))
+        (compound_statement
+          (return_statement
+            (identifier))))))
+  (template_declaration
+    (template_parameter_list
+      (variadic_type_parameter_declaration
+        (type_identifier)))
+    (function_definition
+      (placeholder_type_specifier
+        (auto))
+      (function_declarator
+        (identifier)
+        (parameter_list
+          (variadic_parameter_declaration
+            (type_identifier)
+            (variadic_declarator
+              (identifier)))))
+      (compound_statement
+        (return_statement
+          (fold_expression
+            (identifier))))))
+  (declaration
+    (placeholder_type_specifier
+      (auto))
+    (init_declarator
+      (structured_binding_declarator
+        (identifier)
+        (identifier))
+      (pointer_expression
+        (call_expression
+          (field_expression
+            (identifier)
+            (field_identifier))
+          (argument_list))))))
+
+================================================================================
+Concepts and requires
+================================================================================
+
+template <typename T>
+concept Addable = requires(T a) { a + a; { a } -> std::same_as<T>; };
+template <typename T> requires Addable<T> T add(T a, T b);
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (template_declaration
+    (template_parameter_list
+      (type_parameter_declaration
+        (type_identifier)))
+    (concept_definition
+      (identifier)
+      (requires_expression
+        (parameter_list
+          (parameter_declaration
+            (type_identifier)
+            (identifier)))
+        (requirement_seq
+          (simple_requirement
+            (binary_expression
+              (identifier)
+              (identifier)))
+          (compound_requirement
+            (identifier)
+            (trailing_return_type
+              (type_descriptor
+                (qualified_identifier
+                  (namespace_identifier)
+                  (template_type
+                    (type_identifier)
+                    (template_argument_list
+                      (type_descriptor
+                        (type_identifier))))))))))))
+  (template_declaration
+    (template_parameter_list
+      (type_parameter_declaration
+        (type_identifier)))
+    (requires_clause
+      (template_type
+        (type_identifier)
+        (template_argument_list
+          (type_descriptor
+            (type_identifier)))))
+    (declaration
+      (type_identifier)
+      (function_declarator
+        (identifier)
+        (parameter_list
+          (parameter_declaration
+            (type_identifier)
+            (identifier))
+          (parameter_declaration
+            (type_identifier)
+            (identifier)))))))
+
+================================================================================
+Statements with initializers
+================================================================================
+
+void f() {
+  if constexpr (N > 0) {}
+  if (auto it = m.find(k); it != m.end()) {}
+  for (auto &[a, b] : m) {}
+  switch (int c = g(); c) { default: break; }
+  try { throw E(); } catch (const E &e) {} catch (...) {}
+}
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (function_definition
+    (primitive_type)
+    (function_declarator
+      (identifier)
+      (parameter_list))
+    (compound_statement
+      (if_statement
+        (condition_clause
+          (binary_expression
+            (identifier)
+            (number_literal)))
+        (compound_statement))
+      (if_statement
+        (condition_clause
+          (init_statement
+            (declaration
+              (placeholder_type_specifier
+                (auto))
+              (init_declarator
+                (identifier)
+                (call_expression
+                  (field_expression
+                    (identifier)
+                    (field_identifier))
+                  (argument_list
+                    (identifier))))))
+          (binary_expression
+            (identifier)
+            (call_expression
+              (field_expression
+                (identifier)
+                (field_identifier))
+              (argument_list))))
+        (compound_statement))
+      (for_range_loop
+        (placeholder_type_specifier
+          (auto))
+        (reference_declarator
+          (structured_binding_declarator
+            (identifier)
+            (identifier)))
+        (identifier)
+        (compound_statement))
+      (switch_statement
+        (condition_clause
+          (init_statement
+            (declaration
+              (primitive_type)
+              (init_declarator
+                (identifier)
+                (call_expression
+                  (identifier)
+                  (argument_list)))))
+          (identifier))
+        (compound_statement
+          (case_statement
+            (break_statement))))
+      (try_statement
+        (compound_statement
+          (throw_statement
+            (call_expression
+              (identifier)
+              (argument_list))))
+        (catch_clause
+          (parameter_list
+            (parameter_declaration
+              (type_qualifier)
+              (type_identifier)
+              (reference_declarator
+                (identifier))))
+          (compound_statement))
+        (catch_clause
+          (parameter_list)
+          (compound_statement))))))
+
+================================================================================
+Namespaces, aliases and usings
+================================================================================
+
+namespace a::inline b::c {}
+namespace d = a::b;
+using namespace std;
+using T = std::map<int, int>;
+static_assert(sizeof(T) > 0, "size");
+extern template class std::vector<int>;
+template class Foo<int>;
+
+--------------------------------------------------------------------------------
+
+(translation_unit
+  (namespace_definition
+    (nested_namespace_specifier
+      (namespace_identifier)
+      (nested_namespace_specifier
+        (namespace_identifier)
+        (namespace_identifier)))
+    (declaration_list))
+  (namespace_alias_definition
+    (namespace_identifier)
+    (nested_namespace_specifier
+      (namespace_identifier)
+      (namespace_identifier)))
+  (using_declaration
+    (identifier))
+  (alias_declaration
+    (type_identifier)
+    (type_descriptor
+      (qualified_identifier
+        (namespace_identifier)
+        (template_type
+          (type_identifier)
+          (template_argument_list
+            (type_descriptor
+              (primitive_type))
+            (type_descriptor
+              (primitive_type)))))))
+  (static_assert_declaration
+    (binary_expression
+      (sizeof_expression
+        (parenthesized_expression
+          (identifier)))
+      (number_literal))
+    (string_literal
+      (string_content)))
+  (template_instantiation
+    (class_specifier
+      (qualified_identifier
+        (namespace_identifier)
+        (template_type
+          (type_identifier)
+          (template_argument_list
+            (type_descriptor
+              (primitive_type)))))))
+  (template_instantiation
+    (class_specifier
+      (template_type
+        (type_identifier)
+        (template_argument_list
+          (type_descriptor
+            (primitive_type)))))))

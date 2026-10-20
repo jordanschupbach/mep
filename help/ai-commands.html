@@ -71,7 +71,7 @@ your config, so it cannot land in a dotfile backup or a synced directory.</p>
 <li><code>mep.ai_api_key_cmd</code>, a command that prints the key.</li>
 <li>Failing both, a masked prompt.</li>
 </ol>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.ai_api_key_cmd = {<span class="tok-green">'pass'</span>, <span class="tok-green">'show'</span>, <span class="tok-green">'anthropic/api'</span>}</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.ai_api_key_cmd = <span class="tok-blue">{</span><span class="tok-green">'pass'</span>, <span class="tok-green">'show'</span>, <span class="tok-green">'anthropic/api'</span><span class="tok-blue">}</span></code></pre></div>
 <p>The command runs once, on the first request of the session, and its first
 line of output is the key. It is not in the <a href="settings.html">Settings</a> panel: that panel is
 for preferences, and a row about where a secret comes from read as though
@@ -83,13 +83,22 @@ server and job mep starts -- and by anything else of yours that can read
 secrets and out of the environment entirely.</p>
 <h1>Which model</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.ai_provider = <span class="tok-green">'anthropic'</span>            <span class="tok-comment">-- default 'openai'</span>
+<<<<<<< HEAD
 mep.ai_anthropic_model = <span class="tok-green">'claude-opus-5'</span> <span class="tok-comment">-- the default</span>
 mep.ai_model = <span class="tok-green">'gpt-4o-mini'</span>             <span class="tok-comment">-- the OpenAI-side default</span></code></pre></div>
+=======
+<span class="tok-cyan">mep</span>.ai_anthropic_model = <span class="tok-green">'claude-opus-5'</span> <span class="tok-comment">-- the default</span>
+<span class="tok-cyan">mep</span>.ai_model = <span class="tok-green">'gpt-4o-mini'</span>             <span class="tok-comment">-- the OpenAI-side default</span></code></pre></div>
+>>>>>>> f1f5186 (Add more inhouse ts)
 <p><code>mep.ai_base_url</code> points the OpenAI path somewhere else, which is how you
 run this against a local model -- anything speaking the OpenAI chat
 completions API will do, and the key can be any non-empty string:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.ai_base_url = <span class="tok-green">'http://localhost:11434/v1'</span>  <span class="tok-comment">-- ollama</span>
+<<<<<<< HEAD
 mep.ai_api_key = <span class="tok-green">'local'</span></code></pre></div>
+=======
+<span class="tok-cyan">mep</span>.ai_api_key = <span class="tok-green">'local'</span></code></pre></div>
+>>>>>>> f1f5186 (Add more inhouse ts)
 <h1>See also</h1>
 <ul>
 <li><a href="pdf.html">PDF</a> -- <code>K</code> and <code>A</code> ask about a passage of a document you are reading.</li>

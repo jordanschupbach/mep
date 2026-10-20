@@ -845,6 +845,205 @@ void TestJavascript() {
 }
 
 // ---------------------------------------------------------------------------
+// C++: mep's own grammar (grammars/tree-sitter-cpp), compiled in
+// ---------------------------------------------------------------------------
+
+void TestCpp() {
+    CHECK(TreesitterHasFoldQuery("cpp"));
+    CHECK(TreesitterHasStructureQuery("cpp"));
+    const std::string src =
+        "#include <vector>\n"
+        "namespace geo {\n"
+        "template <typename T>\n"
+        "class Point : public Base {\n"
+        " public:\n"
+        "  explicit Point(T x) : x_(x) {}\n"
+        "  virtual ~Point() = default;\n"
+        "  T norm() const noexcept override { return std::sqrt(x_ * x_); }\n"
+        "  bool operator==(const Point &o) const;\n"
+        " private:\n"
+        "  T x_ = 0;\n"
+        "};\n"
+        "using Pt = Point<double>;\n"
+        "auto f(std::vector<int> &v, int n = 2) -> int {\n"
+        "  for (auto &[k, w] : v) if constexpr (true) co_return;\n"
+        "  try { throw std::runtime_error(R\"x(raw \"s\")x\"); } catch (...) {}\n"
+        "  auto g = [&, n](int a) mutable { return a <=> n; };\n"
+        "  return p->*m + v.size<int>() + 12_km + nullptr;\n"
+        "}\n"
+        "}  // namespace geo\n";
+    ExpectCaptures("cpp", src, "#include", "include");
+    ExpectCaptures("cpp", src, "namespace geo", "keyword");
+    ExpectCaptures("cpp", src, "geo {", "module");
+    ExpectCaptures("cpp", src, "template", "keyword");
+    ExpectCaptures("cpp", src, "<typename", "operator punctuation.bracket");
+    ExpectCaptures("cpp", src, "T>", "type type.definition");
+    ExpectCaptures("cpp", src, "class", "keyword");
+    ExpectCaptures("cpp", src, "Point :", "type");
+    ExpectCaptures("cpp", src, "public Base", "keyword");
+    ExpectCaptures("cpp", src, "explicit", "keyword");
+    ExpectCaptures("cpp", src, "Point(T", "variable function constructor");
+    ExpectCaptures("cpp", src, "x_(x)", "property");
+    ExpectCaptures("cpp", src, "virtual", "keyword");
+    ExpectCaptures("cpp", src, "Point() =", "variable constructor");
+    ExpectCaptures("cpp", src, "default", "conditional keyword");
+    ExpectCaptures("cpp", src, "norm", "property function.method");
+    ExpectCaptures("cpp", src, "noexcept", "keyword.operator");
+    ExpectCaptures("cpp", src, "override", "keyword");
+    ExpectCaptures("cpp", src, "std::sqrt", "module");
+    ExpectCaptures("cpp", src, "sqrt", "variable function.call");
+    ExpectCaptures("cpp", src, "operator==", "function keyword");
+    ExpectCaptures("cpp", src, "o)", "variable variable.parameter");
+    ExpectCaptures("cpp", src, "using", "keyword");
+    ExpectCaptures("cpp", src, "auto f", "type");
+    ExpectCaptures("cpp", src, "f(std", "variable function");
+    ExpectCaptures("cpp", src, "v, int", "variable variable.parameter");
+    ExpectCaptures("cpp", src, "n = 2", "variable variable.parameter");
+    ExpectCaptures("cpp", src, "for", "repeat");
+    ExpectCaptures("cpp", src, "if constexpr", "conditional");
+    ExpectCaptures("cpp", src, "true", "boolean");
+    ExpectCaptures("cpp", src, "co_return", "keyword.return");
+    ExpectCaptures("cpp", src, "try", "exception");
+    ExpectCaptures("cpp", src, "throw", "exception");
+    ExpectCaptures("cpp", src, "R\"x(", "string");
+    ExpectCaptures("cpp", src, "x(raw", "string string.special");
+    ExpectCaptures("cpp", src, "catch", "exception");
+    ExpectCaptures("cpp", src, "mutable", "keyword");
+    ExpectCaptures("cpp", src, "<=>", "operator");
+    ExpectCaptures("cpp", src, "->*", "operator");
+    ExpectCaptures("cpp", src, "size", "property function.method.call");
+    ExpectCaptures("cpp", src, "_km", "type");
+    ExpectCaptures("cpp", src, "nullptr", "constant.builtin");
+
+    ExpectOutline("cpp", src,
+                  "0:namespace:geo@1\n"
+                  "1:class:Point@3\n"
+                  "2:method:Point@5\n"
+                  "2:method:~Point@6\n"
+                  "2:method:norm@7\n"
+                  "2:method:operator==@8\n"
+                  "1:type:Pt@12\n"
+                  "1:function:f@13\n");
+    ExpectOutline("cpp", "struct S { int g(); };\nint S::g() { return 0; }\nint &h() { static int i; return i; }\n",
+                  "0:struct:S@0\n1:method:g@0\n0:method:S::g@1\n0:function:h@2\n");
+
+    bool body = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("cpp", src)) body = body || (f.start_row == 3 && f.end_row == 11);
+    CHECK(body);
+}
+
+// ---------------------------------------------------------------------------
+// Org: mep's own grammar (grammars/tree-sitter-org), compiled in
+// ---------------------------------------------------------------------------
+
+void TestOrg() {
+    CHECK(TreesitterHasFoldQuery("org"));
+    CHECK(TreesitterHasStructureQuery("org"));
+    const std::string src =
+        "#+TITLE: Notes\n"
+        "* TODO [#A] Ship it :work:\n"
+        "SCHEDULED: <2024-01-03 Wed>\n"
+        ":PROPERTIES:\n"
+        ":ID: 42\n"
+        ":END:\n"
+        "- [X] done item\n"
+        "| a | 1 |\n"
+        "|---+---|\n"
+        "# a comment\n"
+        "** Sub heading\n"
+        "#+begin_example\n"
+        "* not a heading\n"
+        "#+end_example\n"
+        "* DONE Second\n";
+    ExpectCaptures("org", src, "#+TITLE", "OrgDirective");
+    ExpectCaptures("org", src, "TITLE", "OrgDirective OrgDirectiveName");
+    ExpectCaptures("org", src, "Notes", "OrgDirective OrgDirectiveValue");
+    ExpectCaptures("org", src, "* TODO", "OrgStars1");
+    ExpectCaptures("org", src, "TODO [", "OrgHeadlineLevel1 OrgKeywordTodo");
+    ExpectCaptures("org", src, "[#A]", "OrgHeadlineLevel1 OrgPriorityCookie");
+    ExpectCaptures("org", src, "Ship", "OrgHeadlineLevel1");
+    ExpectCaptures("org", src, "work", "OrgTagList OrgTag");
+    ExpectCaptures("org", src, "<2024", "OrgTimestampActive OrgTimestampActive");
+    ExpectCaptures("org", src, "2024-01-03", "OrgTimestampActive OrgTimestampActive OrgTimestampDate");
+    ExpectCaptures("org", src, ":PROPERTIES:", "OrgPropertyDrawer");
+    ExpectCaptures("org", src, "ID", "OrgPropertyDrawer OrgProperty OrgPropertyName");
+    ExpectCaptures("org", src, "42", "OrgPropertyDrawer OrgProperty OrgPropertyValue");
+    ExpectCaptures("org", src, "- [X]", "OrgListBullet");
+    ExpectCaptures("org", src, "[X]", "OrgCheckbox");
+    ExpectCaptures("org", src, "X]", "OrgCheckbox OrgCheckDone");
+    ExpectCaptures("org", src, "|---", "OrgTableHorizontalRuler");
+    ExpectCaptures("org", src, "# a comment", "OrgComment");
+    ExpectCaptures("org", src, "** Sub", "OrgStars2");
+    ExpectCaptures("org", src, "Sub heading", "OrgHeadlineLevel2");
+    ExpectCaptures("org", src, "#+begin_example", "OrgBlock");
+    ExpectCaptures("org", src, "example\n*", "OrgBlock OrgBlockName");
+    ExpectCaptures("org", src, "* not", "OrgBlock OrgBlockContents");
+    ExpectCaptures("org", src, "DONE", "OrgHeadlineLevel1 OrgKeywordDone");
+
+    // A line inside a block is its text, never a headline.
+    ExpectOutline("org", src,
+                  "0:heading1:TODO [#A] Ship it@1\n"
+                  "1:heading2:Sub heading@10\n"
+                  "0:heading1:DONE Second@14\n");
+
+    bool section = false, block = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("org", src)) {
+        section = section || (f.start_row == 1 && f.end_row == 13);
+        block = block || (f.start_row == 11 && f.end_row == 13);
+    }
+    CHECK(section);
+    CHECK(block);
+}
+
+// ---------------------------------------------------------------------------
+// Markdown: mep's own grammars (grammars/tree-sitter-markdown and
+// grammars/tree-sitter-markdown_inline), compiled in
+// ---------------------------------------------------------------------------
+
+void TestMarkdown() {
+    CHECK(TreesitterHasGrammar("md"));
+    CHECK(TreesitterHasStructureQuery("md"));
+    const std::string src =
+        "# Title ##\n"
+        "\n"
+        "Some *emphasis*, **strong**, `code` and a [link](http://x.org \"t\").\n"
+        "\n"
+        "> - [x] done\n"
+        ">   - nested\n"
+        "\n"
+        "~~~\n"
+        "# not a heading\n"
+        "~~~\n"
+        "\n"
+        "Setext\n"
+        "------\n"
+        "\n"
+        "| a | b |\n"
+        "|---|:-:|\n"
+        "| 1 | 2 |\n";
+    ExpectCaptures("md", src, "# Title", "punctuation.special");
+    ExpectCaptures("md", src, "Title", "text.title.1");
+    ExpectCaptures("md", src, "*emphasis*", "text.emphasis punctuation.delimiter");
+    ExpectCaptures("md", src, "emphasis*", "text.emphasis");
+    ExpectCaptures("md", src, "strong**", "text.strong");
+    ExpectCaptures("md", src, "`code`", "text.literal punctuation.delimiter");
+    ExpectCaptures("md", src, "link]", "text.reference");
+    ExpectCaptures("md", src, "http", "text.uri");
+    ExpectCaptures("md", src, "> -", "punctuation.special");
+    ExpectCaptures("md", src, "- [x]", "punctuation.special");
+    ExpectCaptures("md", src, "~~~\n#", "text.literal punctuation.delimiter");
+    ExpectCaptures("md", src, "# not", "text.literal none");
+    ExpectCaptures("md", src, "Setext", "text.title.2");
+    ExpectCaptures("md", src, "------", "punctuation.special");
+
+    // A heading-looking line in a code block is not a heading; setext
+    // headings count.
+    ExpectOutline("md", src,
+                  "0:heading1:Title ##@0\n"
+                  "0:heading2:Setext@11\n");
+}
+
+// ---------------------------------------------------------------------------
 // R: mep's own grammar (grammars/tree-sitter-r), compiled in
 // ---------------------------------------------------------------------------
 
@@ -1066,7 +1265,7 @@ void TestIncrementalRowsMatchWholeText() {
     std::string cpp;
     for (int i = 0; i < 60; i++)
         cpp += "int f" + std::to_string(i) + "(int a) {\n    // comment\n    return a * " + std::to_string(i) +
-               "; /* block */\n}\n\n";
+               "; /* block */\n    auto s = R\"x(raw " + std::to_string(i) + ")x\";\n}\n\n";
     std::string py;
     for (int i = 0; i < 60; i++)
         py += "def f" + std::to_string(i) + "(a):\n    \"\"\"doc\"\"\"\n    if a:\n        s = f\"{a[\"k\"]!r:>{w}} {{x}}\"\n    return a + " +
@@ -1089,6 +1288,10 @@ void TestIncrementalRowsMatchWholeText() {
     for (int i = 0; i < 50; i++)
         js += "function f" + std::to_string(i) + "(x) {\n  /* note */ const s = `a${x}b" + std::to_string(i) +
               "`\n  return <p a=\"1\">x {s}</p>\n}\n\n";
+    std::string org;
+    for (int i = 0; i < 40; i++)
+        org += "* H" + std::to_string(i) + " :t:\n- a $x$\n  - b\n:LOGBOOK:\nCLOCK: [2024-01-01 Mon]\n:END:\n#+begin_src c\nint x" +
+               std::to_string(i) + ";\n#+end_src\n\n";
     std::string nix = "{\n";
     for (int i = 0; i < 50; i++)
         nix += "  a" + std::to_string(i) + " = ./p/${x}.nix;\n  s" + std::to_string(i) + " = ''\n    v ${y}\n  '';\n";
@@ -1103,12 +1306,18 @@ void TestIncrementalRowsMatchWholeText() {
           {"# Heading 7", "Heading 7"},                                        // a heading stops being one
           {"```python\nx = 3", "```python\nx = 3\n```\n\n```"},           // fences re-pair
           {"- item _two_", "- item _two"},
-          {"\n\n# Heading 20", "\n\nPlain text joining\n# Heading 20"}}},
+          {"\n\n# Heading 20", "\n\nPlain text joining\n# Heading 20"},
+          {"- item one\n- item _two_\n\n```python\nx = 25", "> - item one\n>   - item _two_\n\n```python\nx = 25"},  // a quote and a nested list open
+          {"- item one\n- item _two_\n\n```python\nx = 30", "- item one\n    - item _two_\n\n~~~python\nx = 30"},  // a list deepens; a fence changes kind
+          {"> - item one", "- item one"}}},                                                                       // ...and the quote closes again
         {"cpp", cpp,
          {{"// comment", "/* opens a block comment"},
           {"/* block */", "*/ /* block */"},
           {"return a * 5;", "return \"unterminated;"},
-          {"int f9(int a) {", "int f9(int a) {\n    int added = 1;"}}},
+          {"int f9(int a) {", "int f9(int a) {\n    int added = 1;"},
+          {"R\"x(raw 20)x\"", "R\"x(raw 20)y\""},   // a raw string's delimiter no longer closes it...
+          {"R\"x(raw 30)x\"", "R\"y(raw 30)y\""},   // ...until a later one does
+          {"R\"x(raw 40)", "R\"x(raw )x\" 40)"}}},  // content holding a quote-like `)x"`
         {"py", py,
          {{"\"\"\"doc\"\"\"", "\"\"\"doc"},
           {"return a + 3", "return a + 3  \"\"\""},
@@ -1141,6 +1350,13 @@ void TestIncrementalRowsMatchWholeText() {
           {"`a${x}b20`", "`a${x b20`"},                                       // a substitution left open
           {"`a${x}b25`\n  return", "`a${x}b25\n  return"},                    // a template left open
           {"return <p a=\"1\">x {s}</p>\n}\n\nfunction f30", "return <p a=\"1\">x {s}\n}\n\nfunction f30"}}},  // an unclosed element
+        {"org", org,
+         {{"#+begin_src c\nint x3;", "#+begin_example c\nint x3;"},  // a block's end no longer matches...
+          {"#+begin_src c\nint x9;\n#+end_src", "#+begin_src c\nint x9;\n#+end_example"},  // ...until a later one does
+          {"- a $x$\n  - b\n:LOGBOOK:\nCLOCK: [2024-01-01 Mon]\n:END:\n#+begin_src c\nint x20", "- a $x\n  - b\n:LOGBOOK:\nCLOCK: [2024-01-01 Mon]\n:END:\n#+begin_src c\nint x20"},  // math left open
+          {"  - b\n:LOGBOOK:\nCLOCK: [2024-01-01 Mon]\n:END:\n#+begin_src c\nint x25", "    - b\n:LOGBOOK:\nCLOCK: [2024-01-01 Mon]\n:END:\n#+begin_src c\nint x25"},  // a list deepens
+          {":END:\n#+begin_src c\nint x30", "\n#+begin_src c\nint x30"},  // a drawer left open
+          {"* H35", "*** H35"}}},
         {"nix", nix,
          {{"a3 = ./p/${x}.nix;", "a3 = ./p/${x.nix;"},
           {"s7 = ''", "s7 = \""},
@@ -1181,6 +1397,9 @@ int main() {
     TestC();
     TestLua();
     TestJavascript();
+    TestCpp();
+    TestOrg();
+    TestMarkdown();
     TestR();
     TestRStructure();
     TestSpanOrderAndClipping();

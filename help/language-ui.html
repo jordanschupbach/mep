@@ -48,11 +48,11 @@ you there. Calling <code>help(x)</code> (or <code>?topic</code> in R) in the con
 Help tab to the front of its pane but leaves the cursor exactly where it
 was, so a lookup never interrupts what you were typing.</p>
 <h1>Adding your own</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.language_ui_modes.js = {
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.language_ui_modes.js = <span class="tok-blue">{</span>
   <span class="tok-blue">open</span> = <span class="tok-purple">function</span>()
     <span class="tok-comment">-- build the layout you want</span>
   <span class="tok-purple">end</span>,
-}</code></pre></div>
+<span class="tok-blue">}</span></code></pre></div>
 <p><code>mep.language_ui_modes</code> is keyed by language. <code>mep.language_ui_active</code>
 tracks the open one, and <code>mep.language_ui_layout</code> is the shared layout
 helper the built-in modes use, so a new mode can match their shape without

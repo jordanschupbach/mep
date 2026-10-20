@@ -127,14 +127,25 @@ LANGUAGES = {
     ),
     'org': dict(
         globs=['*.org'],
-        sources=[('emacs.src', ['*.org'])],
+        # Emacs's Org manual and friends, and four Org packages' docs and
+        # test files (ox-hugo's test site is 55 files of every feature).
+        sources=[('emacs.src', ['*.org']), ('emacsPackages.ox-hugo.src', ['*.org']),
+                 ('emacsPackages.org-roam.src', ['*.org']), ('emacsPackages.org-ql.src', ['*.org']),
+                 ('emacsPackages.org-super-agenda.src', ['*.org'])],
         oracle=None,
         tokens=['* ', '** ', '#+begin_src', '#+end_src', ':PROPERTIES:', ':END:', '[[', ']]', '|', '- [ ] '],
     ),
     'markdown': dict(
         globs=['*.md', '*.markdown'],
-        sources=[('cmark.src', ['*.md']), ('nodejs.src', ['*/doc/*.md'])],
+        # Plus every example of the CommonMark and GFM specs (and both
+        # suites' regression and extension tests), one file each: the edge
+        # cases the specs were written to pin down.
+        sources=[('cmark.src', ['*.md']), ('nodejs.src', ['*/doc/*.md']), ('@spec-examples', [])],
+        # Markdown accepts any text, so its oracle compares structure: the
+        # blocks cmark-gfm (the reference implementation, with GFM's tables
+        # and task lists) reads, against the tree's (markdown_skeleton).
         oracle=None,
+        structure_oracle='markdown',
         tokens=['```', '~~~', '# ', '> ', '- ', '1. ', '*', '_', '[', '](', '<', '|', '\n\n'],
     ),
 }
@@ -169,6 +180,39 @@ def nix_out_path(attr):
     root.parent.mkdir(parents=True, exist_ok=True)
     return subprocess.run(['nix', 'build', '--out-link', str(root), '--print-out-paths', f'nixpkgs#{attr}'],
                           check=True, capture_output=True, text=True).stdout.strip().splitlines()[0]
+
+
+SPEC_FILES = [('cmark.src', ['test/spec.txt', 'test/regression.txt']),
+              ('cmark-gfm.src', ['test/spec.txt', 'test/regression.txt', 'test/extensions.txt'])]
+
+
+def spec_examples(dest):
+    """Each example of the CommonMark/GFM spec files as its own .md file
+    (and its expected HTML beside it as .html), the spec's `→` back to the
+    tab it stands for."""
+    fence = '`' * 32
+    got = []
+    for attr, names in SPEC_FILES:
+        root = Path(nix_out_path(attr))
+        for name in names:
+            text = (root / name).read_text(encoding='utf-8')
+            stem = f'{attr.split(".")[0]}-{Path(name).stem}'
+            n = 0
+            for block in text.split(fence + ' example')[1:]:
+                body = block.split('\n' + fence, 1)[0]
+                body = body.split('\n', 1)[1] if '\n' in body else ''
+                if '\n.\n' in '\n' + body:
+                    md, html = ('\n' + body).split('\n.\n', 1)
+                    md = md[1:] + '\n' if md.startswith('\n') else md
+                else:
+                    md, html = body, ''
+                n += 1
+                out = dest / f'{stem}-{n:04d}.md'
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(md.replace('\u2192', '\t'), encoding='utf-8')
+                out.with_suffix('.html').write_text(html.replace('\u2192', '\t'), encoding='utf-8')
+                got.append(str(out))
+    return got
 
 
 def matches(path, patterns):
@@ -231,7 +275,8 @@ def just_test_justfiles(dest):
 
 
 def corpus_list(lang):
-    return CORPUS / lang / 'files.txt'
+    # A grammar parsed over another's ranges reads that one's corpus.
+    return CORPUS / RANGES_FROM.get(lang, lang) / 'files.txt'
 
 
 def cmd_corpus(args):
@@ -243,6 +288,8 @@ def cmd_corpus(args):
         dest = CORPUS / args.lang / attr.replace('@', '_')
         if attr == '@just-tests':
             got = just_test_justfiles(dest)
+        elif attr == '@spec-examples':
+            got = spec_examples(dest)
         else:
             got = unpack(nix_out_path(attr), patterns, dest)
         print(f'{attr}: {len(got)} files')
@@ -305,12 +352,23 @@ def new_source(name, override):
     return src, str(src.relative_to(REPO)) if not override else override
 
 
+# A grammar parsed only over another's ranges: the inline grammar runs
+# over the block grammar's `inline` nodes (dump.c's TS_RANGES_LANGUAGE).
+# Both variants take their ranges from the same (the replaced) block
+# grammar, so a difference is the inline grammar's own.
+RANGES_FROM = {'markdown_inline': 'markdown'}
+
+
 def build_dump(name, src, variant, sanitize=False):
     """build/grammar-diff/<name>/<variant>/dump, rebuilt when its sources change."""
     sources = [src / 'parser.c'] + [p for p in (src / 'scanner.c', src / 'scanner.cc') if p.exists()]
+    ranges = []
+    if name in RANGES_FROM:
+        ranges_src, _ = old_source(RANGES_FROM[name], None)
+        ranges = [ranges_src / 'parser.c'] + [p for p in (ranges_src / 'scanner.c',) if p.exists()]
     flags = ['-g', '-O1', '-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if sanitize else ['-O2']
     key = hashlib.sha256()
-    for p in sources + [TOOL_DIR / 'dump.c', RUNTIME / 'src' / 'lib.c']:
+    for p in sources + ranges + [TOOL_DIR / 'dump.c', RUNTIME / 'src' / 'lib.c']:
         key.update(p.read_bytes())
     key.update(' '.join(flags).encode())
     out_dir = BUILD / name / variant
@@ -325,8 +383,15 @@ def build_dump(name, src, variant, sanitize=False):
         obj = out_dir / (c.name + '.o')
         compiler = cxx if c.suffix == '.cc' else cc
         extra = [f'-DTS_LANGUAGE=tree_sitter_{name}'] if c.name == 'dump.c' else []
+        if c.name == 'dump.c' and ranges:
+            extra.append(f'-DTS_RANGES_LANGUAGE=tree_sitter_{RANGES_FROM[name]}')
         print(f'  building {variant}: {c.name}', file=sys.stderr)
         run([compiler, *flags, '-w', *include, *extra, '-c', str(c), '-o', str(obj)])
+        objects.append(str(obj))
+    for c in ranges:
+        obj = out_dir / ('ranges-' + c.name + '.o')
+        print(f'  building {variant}: {RANGES_FROM[name]} {c.name}', file=sys.stderr)
+        run([cc, *flags, '-w', '-I', str(c.parent), '-I', str(RUNTIME / 'include'), '-c', str(c), '-o', str(obj)])
         objects.append(str(obj))
     run([cxx, *flags, *objects, '-o', str(exe)])
     stamp.write_text(key.hexdigest())
@@ -465,6 +530,105 @@ def is_known(path, known):
     return next((why for pattern, why in known if fnmatch.fnmatch(path, pattern)), None)
 
 
+# ---- Markdown's structural oracle -------------------------------------------
+
+# Tree node types that are blocks to cmark, by cmark's names. Sections, link
+# reference definitions (cmark drops them) and the rest are left out.
+MARKDOWN_BLOCKS = {
+    'paragraph': 'paragraph', 'thematic_break': 'thematic_break', 'block_quote': 'block_quote',
+    'list': 'list', 'list_item': 'item', 'indented_code_block': 'code_block',
+    'fenced_code_block': 'code_block', 'html_block': 'html_block', 'pipe_table': 'table',
+}
+CMARK_BLOCKS = {'paragraph', 'thematic_break', 'block_quote', 'list', 'item', 'code_block', 'html_block',
+                'table', 'heading'}
+
+
+def markdown_skeleton(lines):
+    """A tree's blocks as (depth, kind) in document order, depth counting
+    only block quotes, lists and items -- the shape cmark's XML has."""
+    out, stack = [], []  # stack: (tree depth, is container)
+    heading_depth = None
+    for line in lines:
+        d, _, t = line.split()[:3]
+        d = int(d)
+        while stack and stack[-1][0] >= d:
+            stack.pop()
+        if heading_depth is not None and d <= heading_depth:
+            heading_depth = None
+        nest = sum(1 for _, c in stack if c)
+        if t in ('atx_heading', 'setext_heading'):
+            out.append([nest, 'heading'])
+            heading_depth = d
+            stack.append((d, False))
+            continue
+        if heading_depth is not None:
+            # The level, from the marker or underline; nothing else inside.
+            for level in '123456':
+                if t in (f'atx_h{level}_marker', f'setext_h{level}_underline'):
+                    out[-1][1] = f'heading{level}'
+            continue
+        kind = MARKDOWN_BLOCKS.get(t)
+        if kind:
+            out.append([nest, kind])
+        stack.append((d, kind in ('block_quote', 'list', 'item')))
+    return [tuple(x) for x in out]
+
+
+def cmark_skeleton(xml_text):
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml_text)
+    out = []
+    def walk(el, nest):
+        tag = el.tag.split('}')[-1]
+        if tag in CMARK_BLOCKS:
+            out.append((nest, f'heading{el.get("level")}' if tag == 'heading' else tag))
+            if tag in ('block_quote', 'list', 'item'):
+                nest += 1
+            elif tag in ('paragraph', 'heading', 'code_block', 'html_block', 'table', 'thematic_break'):
+                return
+        for child in el:
+            walk(child, nest)
+    walk(root, 0)
+    return out
+
+
+def cmark_binaries():
+    """cmark-gfm (GFM's tables and task lists, on CommonMark 0.29) and cmark
+    (CommonMark 0.31): a tree agreeing with either reads the file right."""
+    return [[str(Path(nix_out_path('cmark-gfm')) / 'bin' / 'cmark-gfm'), '-e', 'table', '-e', 'tasklist'],
+            [str(Path(nix_out_path('cmark')) / 'bin' / 'cmark')]]
+
+
+def markdown_oracle(differ, old, new):
+    """For each differing file: does cmark-gfm's block structure agree with
+    the new tree, the old one, or neither? Fails when only the old agrees."""
+    binaries = cmark_binaries()
+    def judge(f):
+        if any(' minus_metadata ' in l or ' plus_metadata ' in l for l in new.get(f, [])):
+            return 'front matter (cmark has none)'
+        wants = [cmark_skeleton(subprocess.run([*b, '--to', 'xml', f], capture_output=True, text=True,
+                                               errors='replace').stdout) for b in binaries]
+        n, o = markdown_skeleton(new.get(f, [])), markdown_skeleton(old.get(f, []))
+        if n in wants:
+            return 'new agrees with cmark'
+        if o in wants:
+            return 'only old agrees with cmark'
+        return 'neither agrees with cmark'
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
+        verdicts = dict(zip(differ, pool.map(judge, differ)))
+    counts = collections.Counter(verdicts.values())
+    print(f'\noracle (cmark-gfm/cmark block structure), {len(differ)} differing files:')
+    for verdict, count in counts.most_common():
+        print(f'  {count:5}  {verdict}')
+    bad = [f for f, v in verdicts.items() if v == 'only old agrees with cmark']
+    for f in bad:
+        print(f'  fails: {f}')
+    for f, v in verdicts.items():
+        if v == 'neither agrees with cmark':
+            print(f'  neither: {f}')
+    return 1 if bad else 0
+
+
 def cmd_diff(args):
     spec = language(args.name)
     files = read_corpus(args, args.name)
@@ -520,7 +684,12 @@ def cmd_diff(args):
             print(f'  {p}')
 
     status = 0
-    if args.oracle:
+    if args.oracle and spec.get('structure_oracle') == 'markdown' and args.name == 'markdown':
+        status = markdown_oracle(differ, old, new)
+    elif args.oracle and spec.get('structure_oracle'):
+        print('\noracle: none for the inline grammar (its differences are reviewed by hand)')
+        status = 1 if differ else 0
+    elif args.oracle:
         if not spec['oracle']:
             die(f'{args.name} has no oracle (see LANGUAGES in this script)')
         suspects = sorted(set(differ) | {f for f in errs_new - errs_old if f not in expected})

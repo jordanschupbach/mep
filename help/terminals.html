@@ -74,9 +74,15 @@ the first terminal found in the active tab -- so accepting it is one more
 Enter. Each source buffer remembers its own target, so several buffers can
 each drive a different terminal.</p>
 <h1>From Lua</h1>
+<<<<<<< HEAD
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.terminal_here()                  <span class="tok-comment">-- turn this pane into a terminal</span>
 <span class="tok-cyan">mep</span>.<span class="tok-blue">terminal_here</span>(<span class="tok-green">'make test'</span>)       <span class="tok-comment">-- ...running a shell command</span>
 <span class="tok-cyan">mep</span>.terminal_here_argv(<span class="tok-blue">{</span><span class="tok-green">'python3'</span>})  <span class="tok-comment">-- ...running argv directly, no shell</span>
+=======
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.<span class="tok-blue">terminal_here</span>()                  <span class="tok-comment">-- turn this pane into a terminal</span>
+<span class="tok-cyan">mep</span>.<span class="tok-blue">terminal_here</span>(<span class="tok-green">'make test'</span>)       <span class="tok-comment">-- ...running a shell command</span>
+<span class="tok-cyan">mep</span>.<span class="tok-blue">terminal_here_argv</span>(<span class="tok-blue">{</span><span class="tok-green">'python3'</span><span class="tok-blue">}</span>)  <span class="tok-comment">-- ...running argv directly, no shell</span>
+>>>>>>> f1f5186 (Add more inhouse ts)
 <span class="tok-cyan">mep</span>.<span class="tok-blue">terminal_info</span>(buffer_id)         <span class="tok-comment">-- {title=, exited=, exit_code=}</span></code></pre></div>
 <p><code>terminal_here_argv</code> avoids shell quoting entirely, which matters for
 arguments like a multi-line prompt.</p>

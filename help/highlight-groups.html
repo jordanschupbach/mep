@@ -34,11 +34,15 @@ spelling squiggle, a search match, an LSP diagnostic, a git-gutter mark.
 They all go through one pipeline, which is why they compose predictably and
 why a theme change re-tints every one of them at once.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> ns = <span class="tok-cyan">mep</span>.<span class="tok-blue">ns_create</span>(<span class="tok-green">'my_feature'</span>)
+<<<<<<< HEAD
 <span class="tok-cyan">mep</span>.<span class="tok-blue">buffer_deco_add</span>(mep.<span class="tok-blue">current_buffer</span>(), ns, {
+=======
+<span class="tok-cyan">mep</span>.<span class="tok-blue">buffer_deco_add</span>(<span class="tok-cyan">mep</span>.<span class="tok-blue">current_buffer</span>(), ns, <span class="tok-blue">{</span>
+>>>>>>> f1f5186 (Add more inhouse ts)
   row = <span class="tok-cyan">3</span>, col_start = <span class="tok-cyan">1</span>, col_end = <span class="tok-cyan">11</span>,   <span class="tok-comment">-- the line's first 10 characters</span>
   hl_group = <span class="tok-green">'Error'</span>,
   priority = <span class="tok-cyan">100</span>,
-})</code></pre></div>
+<span class="tok-blue">}</span>)</code></pre></div>
 <table>
 <tr><th>Function</th><th>Does</th></tr>
 <tr><td><code>mep.ns_create(name)</code></td><td>make a namespace</td></tr>
@@ -68,7 +72,7 @@ the git and diagnostic marks in the gutter column.</p>
 <h1>Syntax capture mapping</h1>
 <p>Treesitter captures are mapped to colour groups by <code>mep.ts_capture_hl</code>, a
 plain Lua table you can read or change:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">mep.ts_capture_hl[<span class="tok-green">'keyword'</span>] = <span class="tok-green">'Red'</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.ts_capture_hl[<span class="tok-green">'keyword'</span>] = <span class="tok-green">'Red'</span></code></pre></div>
 <p>A capture falls back to its own first component, so <code>function.call</code> uses
 <code>function</code>'s colour when it has no entry of its own.</p>
 <h1>Per-file colours and icons</h1>

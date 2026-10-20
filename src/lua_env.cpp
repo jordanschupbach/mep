@@ -5863,14 +5863,14 @@ int l_ts_highlight_async_ready(lua_State *L) {
 
 // mep.ts_fold_ranges(filetype, text) -> array of {start_row, end_row}
 // (1-indexed, inclusive -- mep.fold_create's own convention), or nil if
-// `filetype` has no Treesitter fold query (see treesitter_queries.h's
-// kFolds* -- only the core compiled-in languages with real block/body
+// `filetype` has no Treesitter fold query (see treesitter.cpp's
+// FoldQueryTable -- only the core compiled-in languages with real block/body
 // grammar nodes have one; markdown/org keep their own heading-based fold
 // providers instead). The caller (kBuiltinSyntax's mep.syntax_fold in
 // main.cpp) feeds each range straight into mep.fold_create under a
 // dedicated 'treesitter' provider.
 /**
- * @brief Implements mep.ts_fold_ranges(filetype, text): runs the vendored Treesitter fold query (if any) over source text.
+ * @brief Implements mep.ts_fold_ranges(filetype, text): runs the compiled-in Treesitter fold query (if any) over source text.
  * @param L Lua state; arg 1 is the filetype, arg 2 the source text.
  * @return Number of values pushed (1: array of {start_row, end_row} 1-indexed inclusive ranges, or nil if no fold query exists for filetype).
  */

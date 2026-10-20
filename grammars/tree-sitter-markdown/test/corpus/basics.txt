@@ -1,0 +1,237 @@
+================================================================================
+ATX and setext headings open sections
+================================================================================
+# One
+text
+## Two
+Setext
+======
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (atx_heading
+      (atx_h1_marker)
+      (inline))
+    (paragraph
+      (inline))
+    (section
+      (atx_heading
+        (atx_h2_marker)
+        (inline))
+      (setext_heading
+        (paragraph
+          (inline))
+        (setext_h1_underline)))))
+
+================================================================================
+Lists, nested and tight, with task items
+================================================================================
+- a
+  - [x] b
+- c
+
+1. one
+2. two
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (list
+      (list_item
+        (list_marker_minus)
+        (paragraph
+          (inline)
+          (block_continuation))
+        (list
+          (list_item
+            (list_marker_minus)
+            (task_list_marker_checked)
+            (paragraph
+              (inline)))))
+      (list_item
+        (list_marker_minus)
+        (paragraph
+          (inline)
+          (block_continuation))))
+    (list
+      (list_item
+        (list_marker_dot)
+        (paragraph
+          (inline)))
+      (list_item
+        (list_marker_dot)
+        (paragraph
+          (inline))))))
+
+================================================================================
+A list item numbered 2 does not interrupt a paragraph
+================================================================================
+text
+2. not a list
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (paragraph
+      (inline))))
+
+================================================================================
+Block quotes and lazy continuation
+================================================================================
+> quote
+lazy
+> > nested
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (block_quote
+      (block_quote_marker)
+      (paragraph
+        (inline)
+        (block_continuation))
+      (block_quote
+        (block_quote_marker)
+        (paragraph
+          (inline))))))
+
+================================================================================
+Fenced and indented code
+================================================================================
+```js
+let x;
+```
+~~~
+raw
+~~~
+
+    indented
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (fenced_code_block
+      (fenced_code_block_delimiter)
+      (info_string
+        (language))
+      (block_continuation)
+      (code_fence_content
+        (block_continuation))
+      (fenced_code_block_delimiter))
+    (fenced_code_block
+      (fenced_code_block_delimiter)
+      (block_continuation)
+      (code_fence_content
+        (block_continuation))
+      (fenced_code_block_delimiter))
+    (indented_code_block)))
+
+================================================================================
+HTML blocks
+================================================================================
+<div>
+*not emphasis*
+</div>
+
+<!-- comment -->
+
+<!doctype html>
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (html_block
+      (block_continuation)
+      (block_continuation)
+      (block_continuation))
+    (html_block)
+    (html_block)))
+
+================================================================================
+Link reference definitions
+================================================================================
+[foo]: /url "title"
+
+[bar]:
+  <x y>
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (link_reference_definition
+      (link_label)
+      (link_destination)
+      (link_title))
+    (link_reference_definition
+      (link_label)
+      (link_destination))))
+
+================================================================================
+Pipe tables
+================================================================================
+| a | b |
+|:--|--:|
+| 1 | 2 |
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (pipe_table
+      (pipe_table_header
+        (pipe_table_cell)
+        (pipe_table_cell))
+      (pipe_table_delimiter_row
+        (pipe_table_delimiter_cell
+          (pipe_table_align_left))
+        (pipe_table_delimiter_cell
+          (pipe_table_align_right)))
+      (pipe_table_row
+        (pipe_table_cell)
+        (pipe_table_cell)))))
+
+================================================================================
+Front matter
+================================================================================
+---
+title: x
+---
+# Doc
+
+--------------------------------------------------------------------------------
+
+(document
+  (minus_metadata)
+  (section
+    (atx_heading
+      (atx_h1_marker)
+      (inline))))
+
+================================================================================
+Thematic breaks and their look-alikes
+================================================================================
+***
+- - -
+__ __ __
++ item
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (thematic_break)
+    (thematic_break)
+    (thematic_break)
+    (list
+      (list_item
+        (list_marker_plus)
+        (paragraph
+          (inline))))))

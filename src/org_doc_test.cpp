@@ -1856,6 +1856,33 @@ int main() {
         CHECK(OrgLiteralSpans({"Just prose.", "", "More prose."}).empty());
     }
 
+    // --- The outline skips a block's lines, as org (and the tree-sitter
+    //     grammar) do: an example block showing a headline holds no
+    //     headline; only `#+end_` with the block's own name closes it, so a
+    //     block may hold another; an unclosed `#+begin_` is not a block.
+    {
+        const Lines doc = {
+            "* One",
+            "#+begin_example",
+            "* Not a headline",
+            "#+end_example",
+            "#+BEGIN_details",
+            "#+begin_summary",
+            "** Still not one",
+            "#+end_summary",
+            "#+End_Details",
+            "** Two",
+            "#+begin_quote",
+            "* Three",
+        };
+        const OrgOutline outline = ParseOrgOutline(doc);
+        CHECK(outline.headlines.size() == 3);
+        CHECK(outline.headlines[0].line_start == 0);
+        CHECK(outline.headlines[1].line_start == 9 && outline.headlines[1].level == 2);
+        CHECK(outline.headlines[2].line_start == 11);
+        CHECK(outline.headlines[0].line_end == 10);
+    }
+
     std::printf("org_doc_test: all checks passed\n");
     return 0;
 }

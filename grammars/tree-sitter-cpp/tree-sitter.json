@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "cpp",
+      "camelcase": "Cpp",
+      "scope": "source.cpp",
+      "path": ".",
+      "file-types": ["cc", "cpp", "cxx", "hpp", "hh", "hxx", "h"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "C++, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

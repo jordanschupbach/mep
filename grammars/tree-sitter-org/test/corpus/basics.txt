@@ -1,0 +1,351 @@
+================================================================================
+A headline with keyword, priority, tags and a plan
+================================================================================
+* TODO [#A] Ship it :work:home:
+SCHEDULED: <2024-01-03 Wed +1w> DEADLINE: [2024-02-01 Thu]
+:PROPERTIES:
+:ID: 42
+:END:
+Body text.
+** Sub
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (headline
+      (stars)
+      (item
+        (expr)
+        (priority)
+        (expr)
+        (expr))
+      (tag_list
+        (tag)
+        (tag)))
+    (plan
+      (entry
+        (entry_name)
+        (timestamp
+          (date)
+          (day)
+          (repeat)))
+      (entry
+        (entry_name)
+        (timestamp
+          (date)
+          (day))))
+    (property_drawer
+      (property
+        (expr)
+        (value
+          (expr))))
+    (body
+      (paragraph
+        (expr)
+        (expr)))
+    (section
+      (headline
+        (stars)
+        (item
+          (expr))))))
+
+================================================================================
+Directives: the document's, and an element's
+================================================================================
+#+TITLE: Notes
+
+#+name: tbl
+| a | 1 |
+|---+---|
+#+TBLFM: $2=1
+
+--------------------------------------------------------------------------------
+
+(document
+  (body
+    (directive
+      (expr)
+      (value
+        (expr)))
+    (table
+      (directive
+        (expr)
+        (value
+          (expr)))
+      (row
+        (cell
+          (contents
+            (expr)))
+        (cell
+          (contents
+            (expr))))
+      (hr)
+      (formula
+        (expr)))))
+
+================================================================================
+Lists, nested, with checkboxes
+================================================================================
+- [ ] one
+  - [X] two
+  - [-] three
+- four
+
+1. first
+2. second
+
+--------------------------------------------------------------------------------
+
+(document
+  (body
+    (list
+      (listitem
+        (bullet)
+        (checkbox)
+        (paragraph
+          (expr))
+        (list
+          (listitem
+            (bullet)
+            (checkbox
+              (expr))
+            (paragraph
+              (expr)))
+          (listitem
+            (bullet)
+            (checkbox
+              (expr))
+            (paragraph
+              (expr)))))
+      (listitem
+        (bullet)
+        (paragraph
+          (expr))))
+    (list
+      (listitem
+        (bullet)
+        (paragraph
+          (expr)))
+      (listitem
+        (bullet)
+        (paragraph
+          (expr))))))
+
+================================================================================
+A block holding a differently named one
+================================================================================
+#+begin_details
+#+begin_summary
+S
+#+end_summary
+D
+#+end_details
+#+BEGIN_SRC c
+,#+end_src
+#+END_SRC
+
+--------------------------------------------------------------------------------
+
+(document
+  (body
+    (block
+      (expr)
+      (contents
+        (expr)
+        (expr)
+        (expr)
+        (expr))
+      (expr))
+    (block
+      (expr)
+      (expr)
+      (contents
+        (expr))
+      (expr))))
+
+================================================================================
+Drawers, and a property drawer only after a headline
+================================================================================
+* H
+:PROPERTIES:
+:a: 1
+:END:
+text
+:LOGBOOK:
+CLOCK: [2024-01-01 Mon 10:00]--[2024-01-01 Mon 11:00]
+:END:
+
+--------------------------------------------------------------------------------
+
+(document
+  (section
+    (headline
+      (stars)
+      (item
+        (expr)))
+    (property_drawer
+      (property
+        (expr)
+        (value
+          (expr))))
+    (body
+      (paragraph
+        (expr))
+      (drawer
+        (expr)
+        (contents
+          (expr)
+          (timestamp
+            (date)
+            (day)
+            (time)
+            (date)
+            (day)
+            (time)))))))
+
+================================================================================
+Footnotes, inline definitions included
+================================================================================
+Text[fn:1] and[fn:: inline] and[fn:n: named].
+
+[fn:1] The note,
+running on.
+[fn:2] Next.
+
+--------------------------------------------------------------------------------
+
+(document
+  (body
+    (paragraph
+      (expr)
+      (fnref
+        (expr))
+      (expr)
+      (fnref
+        (description
+          (expr)))
+      (expr)
+      (fnref
+        (expr)
+        (description
+          (expr)))
+      (expr))
+    (fndef
+      (expr)
+      (description
+        (expr)
+        (expr)
+        (expr)))
+    (fndef
+      (expr)
+      (description
+        (expr)))))
+
+================================================================================
+Links, citations, inline code and math
+================================================================================
+[[https://orgmode.org][Org]] [[file:a.org]] [cite/t:@key; @b] src_py[:var x=1]{x+1} \(a\) $b$ $$c$$ cost $5.
+
+--------------------------------------------------------------------------------
+
+(document
+  (body
+    (paragraph
+      (link_desc
+        (expr)
+        (expr))
+      (link
+        (expr))
+      (citation
+        (expr)
+        (citation_reference
+          (expr))
+        (expr)
+        (citation_reference
+          (expr)))
+      (inline_code_block
+        (open)
+        (contents
+          (expr))
+        (close))
+      (inline_math_block
+        (open)
+        (contents
+          (expr))
+        (close))
+      (inline_math_block
+        (open)
+        (contents
+          (expr))
+        (close))
+      (display_math_block
+        (open)
+        (contents
+          (expr))
+        (close))
+      (expr)
+      (expr))))
+
+================================================================================
+A comment after a directive
+================================================================================
+#+macro: m x
+# a comment
+# more
+
+--------------------------------------------------------------------------------
+
+(document
+  (body
+    (directive
+      (expr)
+      (value
+        (expr)
+        (expr)))
+    (comment
+      (expr)
+      (expr)
+      (expr))))
+
+================================================================================
+LaTeX environments
+================================================================================
+\begin{equation}
+x
+\end{equation}
+\[
+y
+\]
+
+--------------------------------------------------------------------------------
+
+(document
+  (body
+    (latex_env
+      (name)
+      (contents
+        (expr))
+      (name))
+    (latex_env
+      (contents
+        (expr)))))
+
+================================================================================
+Words of every kind of character
+================================================================================
+abc123 a-b x^2 ~code~ =v= é日本 $5 1.5e3
+
+--------------------------------------------------------------------------------
+
+(document
+  (body
+    (paragraph
+      (expr)
+      (expr)
+      (expr)
+      (expr)
+      (expr)
+      (expr)
+      (expr)
+      (expr))))

@@ -28826,9 +28826,9 @@ bool Editor::IsOrgBuffer() const {
 }
 
 // Rebuilds provider="org" folds from the buffer's real headline *and*
-// greater-block structure via org's own tree-sitter grammar (kFoldsOrg's
-// `[(section) (block)] @fold` -- see treesitter_queries.h's comment on
-// it): a headline's `section` node already spans exactly itself through
+// greater-block structure via org's own tree-sitter grammar (kFoldsOrg,
+// grammars/tree-sitter-org/queries/folds.scm: sections, blocks, drawers
+// and LaTeX environments): a headline's `section` node already spans exactly itself through
 // its last nested subsection, body included, so this reproduces the same
 // nesting a hand-rolled `^(%*+)%s+` line scan would -- but *correctly*
 // excludes anything inside a `#+begin_src`/`#+begin_example`/etc. block,

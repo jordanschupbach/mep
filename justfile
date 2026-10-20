@@ -188,39 +188,56 @@ nafems:
     echo "NAFEMS examples: $agreed of $ran agreed with their references, $blocked blocked"
     [ "$failed" -eq 0 ]
 
-# Regenerate mepml's tree-sitter parser from grammars/tree-sitter-mepml/
-# grammar.js and run its corpus tests (see that directory's README). The
-# generated src/ is committed; rebuild mep afterwards to pick it up.
-mepml-grammar:
-    cd grammars/tree-sitter-mepml && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+# With mep's own tools -- no tree-sitter CLI or Node (tools/ts_generate/
+# README.md). The generated src/ is committed; rebuild mep afterwards to
+# pick it up. `just <name>-grammar` below is the same.
+# Regenerate grammars/tree-sitter-<name> from grammar.js and run its corpus.
+grammar-generate name:
+    cmake -S . -B {{native_build_dir}} -DCMAKE_BUILD_TYPE=Release {{native_cmake_flags}}
+    cmake --build {{native_build_dir}} -j --target mep-ts-generate
+    env -u LD_LIBRARY_PATH ./{{native_build_dir}}/mep-ts-generate grammars/tree-sitter-{{name}}
+    cmake --build {{native_build_dir}} -j --target mep-ts-corpus-test
+    env -u LD_LIBRARY_PATH ./{{native_build_dir}}/mep-ts-corpus-test {{name}}
 
-# The same for mep's Nix grammar (grammars/tree-sitter-nix).
-nix-grammar:
-    cd grammars/tree-sitter-nix && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+# Every grammar is regenerated into a scratch directory, and each file --
+# grammar.json, parser.c, node-types.json and the tree_sitter/ headers --
+# must be byte-identical to the committed one: the check that
+# mep-ts-generate is a faithful replacement for `tree-sitter generate`.
+# Check that regenerating every grammar reproduces its committed src/.
+grammar-generate-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmake -S . -B {{native_build_dir}} -DCMAKE_BUILD_TYPE=Release {{native_cmake_flags}} > /dev/null
+    cmake --build {{native_build_dir}} -j --target mep-ts-generate
+    out=$(mktemp -d)
+    trap 'rm -rf "$out"' EXIT
+    failed=0
+    for dir in grammars/tree-sitter-*/; do
+        name=$(basename "$dir"); name=${name#tree-sitter-}
+        env -u LD_LIBRARY_PATH ./{{native_build_dir}}/mep-ts-generate --out "$out/$name" "$dir" > /dev/null
+        differ=""
+        for f in grammar.json parser.c node-types.json tree_sitter/alloc.h tree_sitter/array.h tree_sitter/parser.h; do
+            cmp -s "$out/$name/$f" "$dir/src/$f" || differ="$differ $f"
+        done
+        if [ -n "$differ" ]; then echo "$name: differs:$differ"; failed=1; else echo "$name: identical"; fi
+    done
+    exit $failed
 
-# The same for mep's justfile grammar (grammars/tree-sitter-just).
-just-grammar:
-    cd grammars/tree-sitter-just && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
-
-# The same for mep's R grammar (grammars/tree-sitter-r).
-r-grammar:
-    cd grammars/tree-sitter-r && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
-
-# The same for mep's Lua grammar (grammars/tree-sitter-lua).
-lua-grammar:
-    cd grammars/tree-sitter-lua && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
-
-# The same for mep's C grammar (grammars/tree-sitter-c).
-c-grammar:
-    cd grammars/tree-sitter-c && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
-
-# The same for mep's Python grammar (grammars/tree-sitter-python).
-python-grammar:
-    cd grammars/tree-sitter-python && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
-
-# The same for mep's JavaScript grammar (grammars/tree-sitter-javascript).
-javascript-grammar:
-    cd grammars/tree-sitter-javascript && nix shell nixpkgs#tree-sitter nixpkgs#nodejs nixpkgs#gcc --command sh -c 'tree-sitter generate && tree-sitter test'
+mepml-grammar: (grammar-generate "mepml")
+nix-grammar: (grammar-generate "nix")
+just-grammar: (grammar-generate "just")
+r-grammar: (grammar-generate "r")
+lua-grammar: (grammar-generate "lua")
+c-grammar: (grammar-generate "c")
+python-grammar: (grammar-generate "python")
+# Regenerate the C++ grammar (it extends C's: after changing either).
+cpp-grammar: (grammar-generate "cpp")
+org-grammar: (grammar-generate "org")
+# The Markdown grammars share tree-sitter-markdown/common.js.
+# Regenerate the Markdown block grammar (and markdown_inline after common.js).
+markdown-grammar: (grammar-generate "markdown")
+markdown_inline-grammar: (grammar-generate "markdown_inline")
+javascript-grammar: (grammar-generate "javascript")
 
 # Replacing a vendored tree-sitter grammar with mep's own: the tools in
 # tools/ts_grammar_diff (README there; plans/TREESITTER_GRAMMAR_PLAN.md).
@@ -506,7 +523,7 @@ test: build-native
     ./{{native_build_dir}}/mep-check-help {{native_build_dir}}/mep --strict
     echo "== deps-audit"
     scripts/deps-audit.sh {{native_build_dir}}/mep
-    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-org-ts-test mep-ts-corpus-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then

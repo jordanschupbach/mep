@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 191 =<leader>= sequences registered at startup. Press
+All 192 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -173,9 +173,10 @@ the features live.
 | =<leader>pp= | Loaded projects | [[file:pickers.html][Pickers]] |
 | =<leader>pr= | Live grep | [[file:pickers.html][Pickers]] |
 | =<leader>rc= | Configure send-to-terminal target | [[file:files.html][Files and buffers]] |
+| =<leader>re= | Run: evaluate the Lisp form at the cursor in its console | [[file:lisp-mode.html][Common Lisp mode]] |
 | =<leader>rj= | Jump to/from Run/REPL pane | [[file:repl.html][REPL and send-to-terminal]] |
 | =<leader>rn= | LSP: rename | [[file:c-lsp.html][The C language server]] |
-| =<leader>rr= | Run button: run/compile current file | [[file:mepml.html][mepml]] |
+| =<leader>rr= | Run button: run/compile current file | [[file:lisp-mode.html][Common Lisp mode]] |
 | =<leader>rs= | Run button: setup current filetype | [[file:run-button.html][Running the current file]] |
 | =<leader>sS= | Toggle structure split (buffer-local) | [[file:structure-symbols.html][Structure and symbols]] |
 | =<leader>ss= | Open structure pane (treesitter) | [[file:sidebars.html][Sidebars]] |

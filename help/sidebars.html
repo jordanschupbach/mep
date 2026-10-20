@@ -73,17 +73,6 @@ at still tracks what you are doing.</p>
 click. The git panel is built on this -- Status, Log, Graph, Branches and
 Stash are five views of one sidebar.</p>
 <h1>Writing your own</h1>
-<<<<<<< HEAD
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> id = <span class="tok-cyan">mep</span>.sidebar_create(<span class="tok-green">'Notes'</span>, <span class="tok-green">'left'</span>, <span class="tok-cyan">30</span>)
-mep.sidebar_set_sections(id, <span class="tok-blue">{</span>{
-  id = <span class="tok-green">'main'</span>, title = <span class="tok-green">'Notes'</span>, collapsed = <span class="tok-cyan">false</span>,
-  widgets = {
-    {id = <span class="tok-green">'one'</span>, text = <span class="tok-green">'First note'</span>, <span class="tok-blue">on_click</span> = <span class="tok-purple">function</span>() <span class="tok-cyan">mep</span>.<span class="tok-blue">notify</span>(<span class="tok-green">'one'</span>) <span class="tok-purple">end</span>},
-    {id = <span class="tok-green">'two'</span>, text = <span class="tok-green">'Second note'</span>},
-  <span class="tok-blue">}</span>,
-}<span class="tok-blue">}</span>)
-<span class="tok-cyan">mep</span>.sidebar_open(id)</code></pre></div>
-=======
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> id = <span class="tok-cyan">mep</span>.<span class="tok-blue">sidebar_create</span>(<span class="tok-green">'Notes'</span>, <span class="tok-green">'left'</span>, <span class="tok-cyan">30</span>)
 <span class="tok-cyan">mep</span>.<span class="tok-blue">sidebar_set_sections</span>(id, <span class="tok-blue">{</span><span class="tok-blue">{</span>
   id = <span class="tok-green">'main'</span>, title = <span class="tok-green">'Notes'</span>, collapsed = <span class="tok-cyan">false</span>,
@@ -93,7 +82,6 @@ mep.sidebar_set_sections(id, <span class="tok-blue">{</span>{
   <span class="tok-blue">}</span>,
 <span class="tok-blue">}</span><span class="tok-blue">}</span>)
 <span class="tok-cyan">mep</span>.<span class="tok-blue">sidebar_open</span>(id)</code></pre></div>
->>>>>>> f1f5186 (Add more inhouse ts)
 <p><code>mep.sidebar_set_help(id, {{key, description}, ...})</code> fills in the <code>?</code>
 overlay, <code>mep.sidebar_set_on_key(id, fn)</code> handles keys, and
 <code>mep.sidebar_set_tabs</code> adds a tab strip. To give it a popout preview,

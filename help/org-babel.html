@@ -159,6 +159,8 @@ spaces; quote it if it contains a colon.</p>
 <tr><td><code>:dir PATH</code></td><td>run the block in that directory</td></tr>
 <tr><td><code>:prologue</code> / <code>:epilogue</code></td><td>code around the body (<code>\n</code> separates lines)</td></tr>
 <tr><td><code>:cmdline ARGS</code></td><td>arguments the block's own program is run with</td></tr>
+<tr><td><code>:cmd COMMAND</code></td><td>the shell command that runs the block (see below)</td></tr>
+<tr><td><code>:nix-shell PKGS</code></td><td>run the block inside <code>nix-shell -p PKGS</code> (see below)</td></tr>
 <tr><td><code>:flags</code> / <code>:libs</code></td><td>compiler and linker arguments (compiled languages)</td></tr>
 <tr><td><code>:main no</code></td><td>the body supplies its own entry point</td></tr>
 <tr><td><code>:stdin NAME</code></td><td>feed another block's results in on stdin</td></tr>
@@ -166,6 +168,21 @@ spaces; quote it if it contains a colon.</p>
 <tr><td><code>:session NAME</code></td><td>share state with the other blocks in that session (export only)</td></tr>
 <tr><td><code>:noweb yes</code></td><td>expand <code>&lt;&lt;name&gt;&gt;</code> references from other named blocks</td></tr>
 </table>
+<p><code>:cmd</code> replaces the language's own invocation -- and its compile step --
+with a shell command of your own. <code>{file}</code> in it is the block's source,
+written to a temporary file; <code>{bin}</code> a temporary path for a program the
+command builds (removed afterwards); <code>{dir}</code> the directory the block runs
+in; <code>{exe}</code> the language's interpreter or compiler. Each is put in
+shell-quoted. <code>:cmdline</code> is still appended to the end. A language babel does
+not know runs too when it has a <code>:cmd</code>:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">org</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="org">#+begin_src cpp :cmd clang++ -std=c++23 -O2 {file} -o {bin} &amp;&amp; {bin}
+#+begin_src fish :cmd fish {file}</code></pre></div>
+<p><code>:nix-shell</code> runs the block -- its compile too -- inside a nix-shell, so
+the interpreter and libraries need not be installed: =:nix-shell python3
+python3Packages.numpy= brings those packages in (<code>nix-shell -p</code>), a
+<code>.nix</code> file or a directory holding a <code>shell.nix</code> enters that shell, and
+<code>:nix-shell yes</code> enters the run directory's own <code>shell.nix</code>. With <code>:cmd</code>,
+the command runs inside the shell.</p>
 <p><code>:eval no</code> matters for export: code blocks are executed as part of
 exporting, matching real org-mode's default, so a block you do not want run
 during a build needs to say so. <code>:exports</code> is the other half of that

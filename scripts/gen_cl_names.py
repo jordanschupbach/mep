@@ -26,7 +26,7 @@ from the standard's own syntax sections.
 
 Run from the repository root:
 
-    nix shell nixpkgs#sbcl -c python3 scripts/gen_cl_names.py
+    nix shell nixpkgs#sbcl nixpkgs#python3 -c python3 scripts/gen_cl_names.py
 
 The generated file is committed, so building mep never needs SBCL. The
 output is sorted under a byte comparison of the upcased name, because

@@ -34,11 +34,7 @@ spelling squiggle, a search match, an LSP diagnostic, a git-gutter mark.
 They all go through one pipeline, which is why they compose predictably and
 why a theme change re-tints every one of them at once.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> ns = <span class="tok-cyan">mep</span>.<span class="tok-blue">ns_create</span>(<span class="tok-green">'my_feature'</span>)
-<<<<<<< HEAD
-<span class="tok-cyan">mep</span>.<span class="tok-blue">buffer_deco_add</span>(mep.<span class="tok-blue">current_buffer</span>(), ns, {
-=======
 <span class="tok-cyan">mep</span>.<span class="tok-blue">buffer_deco_add</span>(<span class="tok-cyan">mep</span>.<span class="tok-blue">current_buffer</span>(), ns, <span class="tok-blue">{</span>
->>>>>>> f1f5186 (Add more inhouse ts)
   row = <span class="tok-cyan">3</span>, col_start = <span class="tok-cyan">1</span>, col_end = <span class="tok-cyan">11</span>,   <span class="tok-comment">-- the line's first 10 characters</span>
   hl_group = <span class="tok-green">'Error'</span>,
   priority = <span class="tok-cyan">100</span>,

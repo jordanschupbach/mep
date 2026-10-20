@@ -7787,6 +7787,15 @@ const char *kBuiltinLsp =
     // material uses. There is no third-party Maxima language server to
     // defer to -- this is the only one there is.
     "  maxima_ls = {cmd = {mep.bundled_tool('mep-maxima-lsp')}, filetypes = {'mac', 'dem', 'mc', 'max'}},\n"
+    // mep's own Common Lisp server (src/lisp_lsp_server.cpp), bundled the
+    // same way maxima_ls and the others are. It never starts a Lisp image:
+    // SLIME, Sly and the image-backed servers are the right tools for an
+    // interactive session, and the wrong ones for "open a file and see
+    // what is wrong with it" on a machine that may have no Lisp at all.
+    // `.lisp`/`.lsp`/`.cl` are Common Lisp's source suffixes and `.asd`
+    // an ASDF system definition, which is Lisp too. The same binary is a
+    // command-line linter: `mep-lisp-lsp --lint FILE...`.
+    "  lisp_ls = {cmd = {mep.bundled_tool('mep-lisp-lsp')}, filetypes = {'lisp', 'lsp', 'cl', 'asd'}},\n"
     // mep's own mepml server (src/mepml_lsp_server.cpp), bundled the same
     // way as the entries above. It reads a document with mepml_doc.h's
     // parser -- the one the editor renders from -- so it can never

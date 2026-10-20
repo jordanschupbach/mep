@@ -32,6 +32,7 @@ layout rather than accumulating panels.</p>
 <tr><td>R</td><td><a href="r-mode.html">R mode</a></td></tr>
 <tr><td>Python</td><td><a href="python-mode.html">Python mode</a></td></tr>
 <tr><td>C, C++</td><td><a href="c-mode.html">C and C++ mode</a></td></tr>
+<tr><td>Common Lisp</td><td><a href="lisp-mode.html">Common Lisp mode</a></td></tr>
 </table>
 <p>Each shares the same shape: a console, a Help tab, and panels specific to
 the language.</p>
@@ -39,7 +40,7 @@ the language.</p>
 <p><code>gh</code> ("go help") opens documentation for the symbol under the cursor. What
 answers depends on where you are:</p>
 <ul>
-<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++;</li>
+<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++, <code>DESCRIBE</code> for Common Lisp;</li>
 <li>otherwise, the LSP hover popup, the same one <code>K</code> opens.</li>
 </ul>
 <p><code>&lt;leader&gt;hs</code> and <code>:MepGoHelp</code> do the same thing.</p>

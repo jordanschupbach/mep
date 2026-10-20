@@ -174,6 +174,7 @@ struct Binding {
     std::string doc;
     std::string origin;  // "let", "defun", "parameter of FOO", ...
     int def_count = 1;   // definitions of this global name in the file, of any kind
+    std::string pkg;     // the package current at a global definition (the last in-package above it)
 };
 
 struct Scope {
@@ -211,6 +212,8 @@ struct Index {
     std::map<int, int> def_binding;  // defining form node -> its binding
     std::vector<UnknownCall> unknown_calls;
     std::vector<UnknownCall> unknown_setqs;
+    std::vector<LispRange> read_evals;  // `#.(...)` computations in code position
+    std::vector<LispRange> capturing_calls;  // calls of with-/do- macros defined elsewhere
     std::set<std::string> extra_known;  // :import-from / :shadow names, SBCL's cl-user extras
     bool names_known = false;           // see lisp_lsp.h: the file's package uses only COMMON-LISP
     // The file never leaves CL-USER, which also :uses whatever extension
@@ -528,6 +531,12 @@ class Walker {
 
     void Run() {
         for (int top : r_.top) CollectDefinitions(top, false);
+        // `pkg::name` where pkg is the file's own package is the same
+        // symbol as a bare `name`.
+        if (own_packages_.empty()) {
+            own_packages_.insert("CL-USER");
+            own_packages_.insert("COMMON-LISP-USER");
+        }
         CountDefinitions();
         for (int top : r_.top) Walk(top, 0);
         Resolve();
@@ -633,7 +642,8 @@ class Walker {
         b.special = IsKnownSpecial(n);
         b.declared_special = IsDeclaredSpecial(n);
         b.check_unused = unused_check && Checked() && conditional_ == 0 && !b.special;
-        if (IsEarmuffed(n.name) && !b.declared_special && kind == BK::Lexical && Checked() && conditional_ == 0) {
+        if (IsEarmuffed(n.name) && !b.declared_special && kind == BK::Lexical && Checked() && conditional_ == 0 &&
+            n.package.empty()) {
             pending_earmuffs_.push_back(id);
         }
         return id;
@@ -696,7 +706,7 @@ class Walker {
         o.scope = scope;
         // A symbol from another package is never one of this file's
         // lexical bindings, whatever its name.
-        if (ns != Ns::Data && (n.package.empty() || LispIsUnqualifiedOrCl(n)) && !n.uninterned) {
+        if (ns != Ns::Data && (LispIsUnqualifiedOrCl(n) || own_packages_.count(n.package) > 0) && !n.uninterned) {
             o.binding = Lookup(n.name, ns, scope);
         }
         if (o.binding >= 0) Count(o.binding, write, o.checked);
@@ -719,7 +729,10 @@ class Walker {
     void Resolve() {
         for (Occ &o : ix_->occs) {
             if (o.binding >= 0 || o.ns == Ns::Data) continue;
-            if (!(o.package.empty() || o.package == "CL" || o.package == "COMMON-LISP")) continue;
+            if (!(o.package.empty() || o.package == "CL" || o.package == "COMMON-LISP" ||
+                  own_packages_.count(o.package) > 0)) {
+                continue;
+            }
             o.binding = Lookup(o.name, o.ns, o.scope);
             if (o.binding >= 0) Count(o.binding, o.write, o.checked);
         }
@@ -737,6 +750,7 @@ class Walker {
         ix_->occs.pop_back();
         Binding &b = ix_->bindings[static_cast<size_t>(id)];
         b.def_range = At(form).range;
+        b.pkg = current_pkg_;
         ix_->def_binding.emplace(form, id);
         return id;
     }
@@ -785,6 +799,13 @@ class Walker {
             return;
         }
         const int name = Kid(form, 1);
+        if (op == "IN-PACKAGE") {
+            if (name >= 0) {
+                current_pkg_ = At(name).name;
+                own_packages_.insert(current_pkg_);
+            }
+            return;
+        }
         if (op == "PROGN" || op == "LOCALLY") {
             for (size_t i = 1; i < n.kids.size(); i++) CollectDefinitions(n.kids[i], conditional);
             return;
@@ -1095,21 +1116,26 @@ class Walker {
             if (kv.first.first != static_cast<int>(Ns::Func)) continue;
             // Redefinition: the same function, macro or generic defined
             // twice outside any feature conditional.
-            std::vector<int> real;
+            // Grouped by package as well: the same name defined after two
+            // different in-package forms is two different symbols.
+            std::map<std::string, std::vector<int>> real_by_pkg;
             for (int id : kv.second) {
                 const Binding &b = ix_->bindings[static_cast<size_t>(id)];
                 if (b.conditional) continue;
                 if (b.kind == BK::Function || b.kind == BK::Macro ||
                     (b.kind == BK::Generic && b.origin == "defgeneric")) {
-                    real.push_back(id);
+                    real_by_pkg[b.pkg].push_back(id);
                 }
             }
+            for (const auto &group : real_by_pkg) {
+            const std::vector<int> &real = group.second;
             for (size_t i = 1; i < real.size(); i++) {
                 const Binding &b = ix_->bindings[static_cast<size_t>(real[i])];
                 const Binding &first = ix_->bindings[static_cast<size_t>(real[0])];
                 Diag(b.range, LispLspSeverity::Warning, "redefinition",
                      "`" + Lower(b.name) + "` is already defined by the " + first.origin + " on line " +
                          std::to_string(first.range.line + 1) + "; this definition replaces it.");
+            }
             }
         }
     }
@@ -1121,6 +1147,8 @@ class Walker {
 
   private:
     std::map<std::string, std::vector<std::string>> struct_slots_;
+    std::string current_pkg_;
+    std::set<std::string> own_packages_;
 
     // --- Walking --------------------------------------------------------
 
@@ -1234,8 +1262,15 @@ class Walker {
                 if (!n.kids.empty()) WalkFunctionRef(n.kids[0], scope);
                 return;
             case LispNodeKind::ReadEval: {
+                // Read-time code very often builds the code around it out
+                // of quoted lists, so its quoted names count as mentions.
                 ChecksOff off(this);
+                macro_body_++;
                 if (!n.kids.empty()) Walk(n.kids[0], scope);
+                macro_body_--;
+                // `#.(build-code ...)` can produce code that uses any
+                // variable in scope, under a name computed at read time.
+                if (!n.kids.empty() && IsList(n.kids[0])) ix_->read_evals.push_back(n.range);
                 return;
             }
             case LispNodeKind::Feature: {
@@ -1287,6 +1322,47 @@ class Walker {
         if (o.binding >= 0 || !o.checked || !o.package.empty()) return;
         if (ClIsOperator(LispLspFindCl(o.name))) return;
         ix_->unknown_calls.push_back({o.name, o.range});
+    }
+
+    /**
+     * @brief Counts every visible variable or local function named anywhere in a macro call's arguments as used.
+     *
+     * A macro this server cannot expand may put any of its argument
+     * symbols in evaluated position -- `(do-blocks (block component) ...)`
+     * evaluates `component` even though, read as code, `(block component)`
+     * would make it a block name. Unused-variable reports stay quiet
+     * about anything a macro call mentions.
+     */
+    void SweepMacroArgs(int form, size_t from, int scope) {
+        std::vector<int> stack;
+        const std::vector<int> &k = Kids(form);
+        for (size_t i = from; i < k.size(); i++) stack.push_back(k[i]);
+        while (!stack.empty()) {
+            const int node = stack.back();
+            stack.pop_back();
+            const LispNode &n = At(node);
+            if (n.kind == LispNodeKind::Symbol) {
+                if (!n.package.empty() && !LispIsUnqualifiedOrCl(n)) continue;
+                const int var = Lookup(n.name, Ns::Var, scope);
+                if (var >= 0) Count(var, false, false);
+                const int fn = Lookup(n.name, Ns::Func, scope);
+                if (fn >= 0 && ix_->bindings[static_cast<size_t>(fn)].scope != 0) Count(fn, false, false);
+                continue;
+            }
+            for (int kid : n.kids) stack.push_back(kid);
+        }
+    }
+
+    /**
+     * @brief Remembers a call to a `with-...`/`do-...` macro from elsewhere.
+     *
+     * Those are the macros that capture variables from their call site
+     * by name (`(let ((testp test)) (with-member-test ...))` in SBCL's
+     * own seq.lisp), so a binding whose scope holds one is not reported
+     * unused: its use may be in the expansion.
+     */
+    void NoteCapturingMacro(int form, const std::string &op) {
+        if (StartsWith(op, "WITH-") || StartsWith(op, "DO-")) ix_->capturing_calls.push_back(At(form).range);
     }
 
     /** @brief An element whose presence depends on the platform (#+/#-) or the readtable (an unknown `#x`). */
@@ -1383,10 +1459,20 @@ class Walker {
         if (h.kind == LispNodeKind::List) {
             if (!h.kids.empty() && ClName(h.kids[0]) == "LAMBDA") {
                 WalkLambdaLike(head, 1, 2, scope, "lambda", LLKind::Ordinary, -1);
-            } else {
-                Walk(head, scope);
+                WalkArgs(form, 1, scope);
+                return;
             }
-            WalkArgs(form, 1, scope);
+            // `((a 1) (b 2))` is not a call: it is data some macro (or a
+            // file read as data) will take apart. Uses count; nothing is judged.
+            ChecksOff off(this);
+            WalkArgs(form, 0, scope);
+            return;
+        }
+        if (h.kind == LispNodeKind::Feature) {
+            // `(#+cmucl lisp::with-array-data #+sbcl sb-kernel:with-array-data ...)`:
+            // the operator itself depends on the platform.
+            ChecksOff off(this);
+            WalkArgs(form, 0, scope);
             return;
         }
         if (h.kind != LispNodeKind::Symbol || LispIsKeyword(h)) {
@@ -1397,6 +1483,8 @@ class Walker {
             // Another package's operator: often a macro, and it may bind
             // anything.
             Use(head, Ns::Func, scope, false, true);
+            NoteCapturingMacro(form, h.name);
+            SweepMacroArgs(form, 1, scope);
             ChecksOff off(this);
             WalkArgs(form, 1, scope);
             return;
@@ -1418,6 +1506,7 @@ class Walker {
             Use(head, Ns::Func, scope, false, true);
             const Binding &b = ix_->bindings[static_cast<size_t>(local)];
             if (b.kind == BK::LocalMacro) {
+                SweepMacroArgs(form, 1, scope);
                 ChecksOff off(this);
                 WalkArgs(form, 1, scope);
                 return;
@@ -1440,6 +1529,7 @@ class Walker {
             const Binding &b = ix_->bindings[static_cast<size_t>(global)];
             if (b.has_shape && b.def_count == 1) CheckArgs(form, b.shape, Lower(op), b.check_keys);
             if (b.kind == BK::Macro) {
+                SweepMacroArgs(form, 1, scope);
                 ChecksOff off(this);
                 WalkArgs(form, 1, scope);
                 return;
@@ -1449,6 +1539,8 @@ class Walker {
         }
         NoteUnknownOperator(occ);
         if (Checked() && conditional_ == 0 && IsDynamicDefiner(op)) dynamic_definitions_ = true;
+        NoteCapturingMacro(form, op);
+        SweepMacroArgs(form, 1, scope);
         ChecksOff off(this);
         WalkArgs(form, 1, scope);
     }
@@ -1492,8 +1584,15 @@ class Walker {
             for (size_t i = 1; i < p.kids.size(); i++) WalkPlace(p.kids[i], scope, also_reads);
             return;
         }
-        // (setf (accessor x) v): the accessor is used, as a place.
+        if (op == "FDEFINITION" || op == "SYMBOL-FUNCTION" || op == "MACRO-FUNCTION" ||
+            op == "COMPILER-MACRO-FUNCTION") {
+            dynamic_definitions_ = true;  // (setf (fdefinition 'name) ...) defines a function by name
+        }
+        // (setf (accessor x) v): the accessor is used, as a place -- and
+        // so is a local `(setf accessor)` function, if there is one.
         Use(p.kids[0], Ns::Func, scope, false, false);
+        const int setf_fn = Lookup("(SETF " + At(p.kids[0]).name + ")", Ns::Func, scope);
+        if (setf_fn >= 0) Count(setf_fn, false, Checked());
         WalkArgs(place, 1, scope);
     }
 
@@ -1572,7 +1671,18 @@ class Walker {
             for (size_t i = 1; i < n; i++) {
                 const LispNode &a = At(k[i]);
                 if (a.kind == LispNodeKind::Number || a.kind == LispNodeKind::Character) {
-                    CheckedDiag(a.range, LispLspSeverity::Warning, "eq-on-number",
+                    // A small integer or a character happens to work in every
+                    // implementation (they are immediate), so that is
+                    // information; a float, ratio or bignum genuinely fails.
+                    bool small = a.kind == LispNodeKind::Character;
+                    if (a.kind == LispNodeKind::Number) {
+                        const std::string &t = a.text;
+                        const size_t digits = t.find_first_not_of("+-");
+                        small = digits != std::string::npos && t.find_first_not_of("0123456789", digits) == std::string::npos &&
+                                t.size() - digits <= 9;
+                    }
+                    CheckedDiag(a.range, small ? LispLspSeverity::Information : LispLspSeverity::Warning,
+                                "eq-on-number",
                                 "`eq` on a number or character is unreliable: the same value need not be the same "
                                 "object. Use `eql` (or `=`, `char=`).");
                 }
@@ -1742,6 +1852,7 @@ class Walker {
         }
         if (op == "COND") {
             for (size_t i = 1; i < n; i++) {
+                if (WalkFeatureClause(k[i], scope)) continue;
                 if (IsList(k[i])) {
                     WalkArgs(k[i], 0, scope);
                 } else {
@@ -1756,6 +1867,7 @@ class Walker {
             const bool types = op.find("TYPECASE") != std::string::npos;
             for (size_t i = 2; i < n; i++) {
                 const int clause = k[i];
+                if (WalkFeatureClause(clause, scope)) continue;
                 if (!IsList(clause) || Kids(clause).empty()) continue;
                 const int key = Kid(clause, 0);
                 if (!types) CheckCaseKey(key);
@@ -1768,6 +1880,7 @@ class Walker {
             if (n > 1) Walk(k[1], scope);
             for (size_t i = 2; i < n; i++) {
                 const int clause = k[i];
+                if (WalkFeatureClause(clause, scope)) continue;
                 if (!IsList(clause) || Kids(clause).empty()) continue;
                 const int type = Kid(clause, 0);
                 if (LispIsKeyword(At(type)) && At(type).name == "NO-ERROR") {
@@ -1802,6 +1915,7 @@ class Walker {
             if (n > 1) Walk(k[1], scope);
             for (size_t i = 2; i < n; i++) {
                 const int clause = k[i];
+                if (WalkFeatureClause(clause, scope)) continue;
                 if (!IsList(clause) || Kids(clause).size() < 2) continue;
                 const int s = NewScope(scope, clause);
                 BindLambdaList(Kid(clause, 1), s, LLKind::Ordinary, "restart parameter");
@@ -1864,6 +1978,9 @@ class Walker {
             if (IsList(spec) && !Kids(spec).empty()) {
                 WalkArgs(spec, 1, scope);
                 const int var = Kid(spec, 0);
+                // pprint-logical-block's stream symbol names the stream it
+                // writes to as well as the one it binds.
+                if (op == "PPRINT-LOGICAL-BLOCK" && IsSym(var)) Walk(var, scope);
                 if (IsSym(var) && !LispIsSymbolNamed(At(var), "NIL")) {
                     if (op == "WITH-HASH-TABLE-ITERATOR" || op == "WITH-PACKAGE-ITERATOR") {
                         Bind(var, Ns::Func, BK::LocalMacro, s, Lower(op));
@@ -1926,16 +2043,20 @@ class Walker {
             if (op == "SET-MACRO-CHARACTER" || op == "SET-DISPATCH-MACRO-CHARACTER") ix_->custom_readtable = true;
             return false;
         }
-        if (op == "FDEFINITION" || op == "SYMBOL-FUNCTION" || op == "MACRO-FUNCTION") {
-            // Only a setf of these defines anything; that is caught where
-            // the place is walked, via the parent.
-            const int parent = At(form).parent;
-            if (parent >= 0 && IsList(parent) && !Kids(parent).empty() && ClName(Kid(parent, 0)) == "SETF") {
-                dynamic_definitions_ = true;
-            }
-            return false;
-        }
         return false;
+    }
+
+    /** @brief A `#+f (clause ...)` clause: its uses count, nothing in it is judged. Returns whether it was one. */
+    bool WalkFeatureClause(int clause, int scope) {
+        if (At(clause).kind != LispNodeKind::Feature) return false;
+        const LispNode &f = At(clause);
+        if (f.kids.size() < 2 || FeatureStateOf(r_, f) == FeatureState::Dead) return true;
+        SweepMacroArgs(clause, 1, scope);
+        ChecksOff off(this);
+        conditional_++;
+        if (IsList(f.kids[1])) WalkArgs(f.kids[1], 0, scope);
+        conditional_--;
+        return true;
     }
 
     void WalkFunctionish(int node, int scope) {
@@ -1988,7 +2109,7 @@ class Walker {
                     // (x #+sbcl a #-sbcl b): one init form per platform.
                     vars.emplace_back(bn.kids[0], -1);
                     ChecksOff off(this);
-                    WalkArgs(b, 1, scope);
+                    WalkArgs(b, 1, sequential ? s : scope);
                 } else if (bn.kind == LispNodeKind::List && !bn.kids.empty() && bn.kids.size() <= 2 &&
                            IsSym(bn.kids[0]) && !bn.dotted) {
                     vars.emplace_back(bn.kids[0], bn.kids.size() == 2 ? bn.kids[1] : -1);
@@ -2007,6 +2128,9 @@ class Walker {
                     BindVar(vars.back().first, BK::Lexical, s, prog ? "prog*" : "let*", true);
                 }
             }
+        } else if (bindings >= 0 && At(bindings).kind == LispNodeKind::Feature) {
+            ChecksOff off(this);
+            Walk(bindings, scope);
         } else if (bindings >= 0 && !LispIsSymbolNamed(At(bindings), "NIL")) {
             CheckedDiag(At(bindings).range, LispLspSeverity::Error, "malformed-binding",
                         "The bindings of a `let` must be a list.");
@@ -2130,9 +2254,11 @@ class Walker {
     }
 
     void BindParam(int name_node, int s, LLKind kind, const std::string &origin, bool unused_check,
-                   std::vector<std::string> *seen) {
+                   std::vector<std::string> *seen, bool aux = false) {
         if (!IsSym(name_node)) return;
-        CheckDuplicate(name_node, seen, "duplicate-parameter");
+        // &aux binds like let*, after the parameters: rebinding one of
+        // them there is legal and a common idiom.
+        if (!aux) CheckDuplicate(name_node, seen, "duplicate-parameter");
         if (kind == LLKind::Generic) return;
         BindVar(name_node, BK::Param, s, origin, unused_check && kind != LLKind::Method);
     }
@@ -2147,6 +2273,13 @@ class Walker {
         if (LispIsSymbolNamed(n, "NIL")) return;
         if (n.kind == LispNodeKind::Symbol && kind == LLKind::Macro) {
             BindParam(ll, s, kind, origin, true, seen);  // (destructuring-bind x ...) / dotted tail
+            return;
+        }
+        if (n.kind == LispNodeKind::Feature) {
+            // `#+poll (&optional x) #-poll (&aux x)`: the first variant is the
+            // one bound; neither is judged.
+            ChecksOff off(this);
+            if (n.kids.size() >= 2) BindLambdaListInto(n.kids[1], s, kind, origin, seen);
             return;
         }
         if (n.kind != LispNodeKind::List) {
@@ -2262,13 +2395,13 @@ class Walker {
                 case Key:
                 case Aux:
                     if (en.kind == LispNodeKind::Symbol) {
-                        BindParam(e, s, kind, param_origin, true, seen);
+                        BindParam(e, s, kind, param_origin, true, seen, state == Aux);
                     } else if (en.kind == LispNodeKind::List && !en.kids.empty()) {
                         int var = en.kids[0];
                         if (state == Key && IsList(var)) var = Kid(var, 1);  // ((:kw var) ...)
                         if (en.kids.size() > 1 && kind != LLKind::Generic) Walk(en.kids[1], s);
                         if (IsSym(var)) {
-                            BindParam(var, s, kind, param_origin, true, seen);
+                            BindParam(var, s, kind, param_origin, true, seen, state == Aux);
                         } else if (IsList(var) && kind == LLKind::Macro) {
                             BindLambdaListInto(var, s, kind, origin, seen);
                         }
@@ -2313,6 +2446,13 @@ class Walker {
             }
             if (allow_declare && e.kind == LispNodeKind::List && !e.kids.empty() && ClName(e.kids[0]) == "DECLARE") {
                 ProcessDeclare(k[i], s);
+                i++;
+                continue;
+            }
+            // `#.(optimize-settings)`: whatever the reader computes there is
+            // usually a declaration, so the declaration phase goes on.
+            if (allow_declare && e.kind == LispNodeKind::ReadEval) {
+                Walk(k[i], s);
                 i++;
                 continue;
             }
@@ -2621,7 +2761,9 @@ void AnalyzePackages(Index *ix) {
             } else if (current != name) {
                 conflicting = true;
             }
-        } else if (op == "IN-READTABLE") {
+        } else if (op.find("READTABLE") != std::string::npos || op.find("SYNTAX") != std::string::npos) {
+            // `(in-readtable ...)`, `(in-ironclad-readtable)`,
+            // `(enable-interpol-syntax)`: reader macros of the file's own.
             ix->custom_readtable = true;
         } else if ((op == "DEFPACKAGE" || op == "DEFINE-PACKAGE") && f.kids.size() > 1) {
             Pkg pkg;
@@ -2667,7 +2809,9 @@ Index BuildIndex(const std::vector<std::string> &lines) {
     Walker w(lines, &ix);
     w.Run();
     if (w.dynamic_definitions_) ix.names_known = false;
-    if (ix.names_known) {
+    // In CL-USER an earmuffed name may be any implementation package's
+    // special, inherited unqualified; only a file's own package is known.
+    if (ix.names_known && !ix.cl_user) {
         for (int id : w.pending_earmuffs_) {
             const Binding &b = ix.bindings[static_cast<size_t>(id)];
             if (b.declared_special) continue;
@@ -2755,7 +2899,30 @@ std::vector<LispLspDiagnostic> LispLspDiagnostics(const std::vector<std::string>
         d.message = e.message;
         out.push_back(d);
     }
-    for (const LispLspDiagnostic &d : ix.diags) out.push_back(d);
+    // The naming hints are a convention, and a file that consistently
+    // follows another one (SBCL's own sources name constants without
+    // plus signs) has made a choice rather than a slip: past three
+    // definitions, a majority of unconventional names silences the hint.
+    int constants = 0;
+    int globals = 0;
+    for (const Binding &b : ix.bindings) {
+        if (b.scope != 0 || b.ns != Ns::Var) continue;
+        if (b.kind == BK::Constant) constants++;
+        if (b.kind == BK::Global && b.origin != "declaim special") globals++;
+    }
+    int constant_hints = 0;
+    int global_hints = 0;
+    for (const LispLspDiagnostic &d : ix.diags) {
+        if (d.code == "defconstant-naming") constant_hints++;
+        if (d.code == "defvar-naming") global_hints++;
+    }
+    const bool quiet_constants = constants >= 3 && constant_hints * 2 > constants;
+    const bool quiet_globals = globals >= 3 && global_hints * 2 > globals;
+    for (const LispLspDiagnostic &d : ix.diags) {
+        if (quiet_constants && d.code == "defconstant-naming") continue;
+        if (quiet_globals && d.code == "defvar-naming") continue;
+        out.push_back(d);
+    }
 
     // --- Unused and ignored variables ----------------------------------
     // A name mentioned inside a backquote template in the binding's own
@@ -2772,6 +2939,19 @@ std::vector<LispLspDiagnostic> LispLspDiagnostics(const std::vector<std::string>
     }
     auto mentioned_in_scope = [&](const Binding &b) {
         if (template_mentions.count(b.name) > 0) return true;
+        const LispRange &scope_range = ix.scopes[static_cast<size_t>(b.scope)].range;
+        for (const LispRange &r : ix.capturing_calls) {
+            if (!PosLess(r.line, r.col, scope_range.line, scope_range.col) &&
+                PosLess(r.line, r.col, scope_range.end_line, scope_range.end_col)) {
+                return true;
+            }
+        }
+        for (const LispRange &r : ix.read_evals) {
+            if (!PosLess(r.line, r.col, scope_range.line, scope_range.col) &&
+                PosLess(r.line, r.col, scope_range.end_line, scope_range.end_col)) {
+                return true;
+            }
+        }
         const auto it = data_mentions.find(b.name);
         if (it == data_mentions.end()) return false;
         const LispRange &sr = ix.scopes[static_cast<size_t>(b.scope)].range;

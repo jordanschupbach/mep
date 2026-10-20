@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Common Lisp language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="13">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Common Lisp language server</h1>
+<h1>What it is</h1>
+<p>Common Lisp files get a language server of their own, <code>mep-lisp-lsp</code>,
+built and shipped with mep. Open a <code>.lisp</code>, <code>.lsp</code>, <code>.cl</code> or <code>.asd</code> file
+and it attaches by itself -- there is nothing to install, and *no Lisp
+image is ever started*. It is mep's own implementation of the standard
+reader plus a scope analyser, with all 978 symbols of the <code>COMMON-LISP</code>
+package (their kinds, lambda lists and summaries, generated from SBCL)
+compiled into it.</p>
+<p>The same binary is a command-line linter; see <a href="*Linting from the command line">Linting from the command line</a>.</p>
+<h1>Never starting a Lisp</h1>
+<p>SLIME, Sly and the image-backed servers talk to a running Lisp, which is
+the right design for an interactive session. This server is for the other
+job: open a file and see what is wrong with it, on a machine that may have
+no Lisp at all, without loading a system or running a line of the file.
+Reading Lisp in a real image runs every <code>#.</code> form; here nothing in the
+file can execute.</p>
+<p>The trade is named rather than hidden. The server sees one file. It does
+not macroexpand, does not know what other files of the same system define,
+and does not infer types.</p>
+<h1>Reading Lisp</h1>
+<p>The reader follows the standard's token and dispatch-macro rules, which is
+where an approximate parser goes wrong:</p>
+<table>
+<tr><th>Written</th><th>Reads as</th></tr>
+<tr><td><code>1.</code></td><td>the integer 1</td></tr>
+<tr><td><code>.5</code>, <code>1.5d0</code></td><td>floats</td></tr>
+<tr><td><code>1+</code>, <code>a#b</code></td><td>symbols</td></tr>
+<tr><td><code>#\(</code></td><td>a character, not an open paren</td></tr>
+<tr><td><code>pkg::sym</code></td><td>an internal symbol of <code>PKG</code></td></tr>
+<tr><td><code>#+sbcl x</code></td><td><code>x</code>, marked as conditional</td></tr>
+</table>
+<p>Likewise <code>|Foo Bar|</code> is one symbol, its case preserved. Symbols are
+compared the way the reader interns them -- upcased, escapes
+kept verbatim -- and shown the way they were written. Nested <code>#| |#</code>
+comments, <code>#'=, =#.</code>, <code>#p</code>, <code>#S</code>, <code>#nA</code>, <code>#c</code>, <code>#*</code>, <code>#n</code> labels, radix
+numbers (<code>#x</code>, <code>#b</code>, <code>#o</code>, <code>#36r</code>) and SBCL's <code>pkg::(form)</code> are all
+read. Errors never stop the read: a missing paren, a stray one, an
+unterminated string or comment is reported and the rest of the file is
+still read, so the outline and completion keep working while you type.
+A top-level <code>(defun</code> at column 0 inside an unclosed form is taken as the
+place the missing parens belong, so one forgotten <code>)</code> does not swallow
+the file.</p>
+<p>A file that installs reader macros of its own (<code>in-readtable</code>,
+<code>set-dispatch-macro-character</code>, an <code>(enable-...-syntax)</code> call) is
+noticed, and dispatch characters this reader does not know are not
+reported there.</p>
+<h1>Feature expressions</h1>
+<p><code>#+=/=#-</code> are evaluated against a conservative feature set: SBCL on
+64-bit Linux, plus what every implementation shares.</p>
+<ul>
+<li><code>#+(or)</code> and <code>#+nil</code> code is dead and skipped entirely.</li>
+<li>Code for the assumed platform is checked like any other.</li>
+<li>Code for any other feature (<code>#+ccl</code>, <code>#-sbcl</code>) is read for its definitions and its variable uses -- a parameter used only under <code>#+ccl</code> is not "unused" -- but no name check runs inside it, and two definitions of one function under different features are not a redefinition.</li>
+</ul>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>unbalanced-paren</code></td><td>error</td><td>a form is never closed</td></tr>
+<tr><td><code>stray-close-paren</code></td><td>error</td><td>a <code>)</code> with nothing to close</td></tr>
+<tr><td><code>unterminated-string</code></td><td>error</td><td>a string runs to the end of the file</td></tr>
+<tr><td><code>unterminated-comment</code></td><td>error</td><td>a block comment is never closed</td></tr>
+<tr><td><code>unterminated-escape</code></td><td>error</td><td>a bar-escaped symbol name is never closed</td></tr>
+<tr><td><code>unknown-dispatch</code></td><td>error</td><td><code>#?</code> and friends: not in the standard readtable</td></tr>
+<tr><td><code>unreadable-object</code></td><td>error</td><td><code>#&lt;...&gt;</code>, which no reader accepts</td></tr>
+<tr><td><code>bad-number</code></td><td>error</td><td><code>#xZZ</code>, <code>#b102</code>, <code>1/0</code></td></tr>
+<tr><td><code>bad-symbol</code></td><td>error</td><td><code>a:b:c</code>, <code>pkg:</code> with no name</td></tr>
+<tr><td><code>bad-dot</code></td><td>error</td><td>a consing dot in the wrong place</td></tr>
+<tr><td><code>comma-outside-backquote</code></td><td>error</td><td>=,x= with no backquote around it</td></tr>
+<tr><td><code>missing-form</code></td><td>error</td><td>='= or =#'= with nothing after it</td></tr>
+<tr><td><code>unknown-character-name</code></td><td>warning</td><td><code>#\Spcae</code>: a near-miss of a standard name</td></tr>
+<tr><td><code>too-deep</code></td><td>warning</td><td>nesting past 1,000 levels (generated input)</td></tr>
+<tr><td><code>unused-variable</code></td><td>warning</td><td>a binding never read (<code>declare ignore</code> silences it)</td></tr>
+<tr><td><code>used-ignored-variable</code></td><td>warning</td><td>declared <code>ignore</code>, but used</td></tr>
+<tr><td><code>unused-function</code></td><td>warning</td><td>an <code>flet=/=labels</code> function never called</td></tr>
+<tr><td><code>duplicate-parameter</code></td><td>error</td><td>the same name twice in a lambda list</td></tr>
+<tr><td><code>duplicate-binding</code></td><td>error</td><td>the same name twice in one <code>let</code> or m-v-bind</td></tr>
+<tr><td><code>malformed-binding</code></td><td>error</td><td>a binding that is not <code>x</code>, <code>(x)</code> or <code>(x init)</code></td></tr>
+<tr><td><code>malformed-lambda-list</code></td><td>error</td><td>lambda-list keywords out of order, <code>&amp;rest</code> with no var</td></tr>
+<tr><td><code>bind-constant</code></td><td>error</td><td>binding or assigning <code>t</code>, <code>nil</code>, a keyword, <code>pi</code></td></tr>
+<tr><td><code>wrong-arg-count</code></td><td>warning</td><td>a call to a CL operator or a file-local definition</td></tr>
+<tr><td><code>odd-keyword-args</code></td><td>warning</td><td>keyword arguments not in <code>:name value</code> pairs</td></tr>
+<tr><td><code>unknown-keyword</code></td><td>warning</td><td>a keyword a file-local function does not take</td></tr>
+<tr><td><code>if-arity</code></td><td>error</td><td><code>if</code> with other than 2 or 3 arguments</td></tr>
+<tr><td><code>odd-setf-args</code></td><td>error</td><td><code>setf=/=setq</code> with a place and no value</td></tr>
+<tr><td><code>misplaced-declare</code></td><td>error</td><td>a <code>declare</code> that is not at the start of a body</td></tr>
+<tr><td><code>optional-and-key</code></td><td>info</td><td><code>&amp;optional</code> with <code>&amp;key</code>, SBCL's style warning</td></tr>
+<tr><td><code>eq-on-number</code></td><td>warning</td><td><code>eq</code> on a float, ratio or bignum (info for small integers and characters)</td></tr>
+<tr><td><code>quoted-case-key</code></td><td>warning</td><td><code>(case x ('a ...))</code> -- keys are not evaluated</td></tr>
+<tr><td><code>redefinition</code></td><td>warning</td><td>the same function or macro defined twice</td></tr>
+<tr><td><code>undefined-function</code></td><td>warning</td><td>an operator nothing defines (calibrated, below)</td></tr>
+<tr><td><code>setq-undefined</code></td><td>warning</td><td><code>setq</code> of a variable nothing binds (calibrated)</td></tr>
+<tr><td><code>lexical-earmuffs</code></td><td>info</td><td>a <code>*name*</code> bound by <code>let</code> that nothing makes special</td></tr>
+<tr><td><code>defvar-naming</code></td><td>hint</td><td><code>defvar=/=defparameter</code> without <b>earmuffs</b></td></tr>
+<tr><td><code>defconstant-naming</code></td><td>hint</td><td><code>defconstant</code> without <del>plus signs</del></td></tr>
+<tr><td><code>quoted-self-evaluating</code></td><td>hint</td><td>=':key=, ='42=, ='"s"= -- the quote does nothing</td></tr>
+</table>
+<h2>Calibration</h2>
+<p>False reports on idiomatic code are what get a linter switched off, so
+each check was run over a corpus -- SBCL's own 2.5.10 source tree and two
+dozen widely used libraries (alexandria, cl-ppcre, iterate, cffi,
+ironclad, serapeum, hunchentoot, usocket, bordeaux-threads, ...) -- and
+tuned until what it reports there is real. The rules that came out of
+that:</p>
+<ul>
+<li><b>Unknown macros.</b> A macro this server cannot expand may bind anything and evaluate any of its arguments. Variables it mentions count as used; no name check runs inside its arguments. A binding whose scope calls a <code>with-...</code> or <code>do-...</code> macro from elsewhere is not reported unused, because those macros capture variables by name; nor is one mentioned in a backquote template or quoted code of a macro in the file.</li>
+<li><b>Methods.</b> <code>defmethod</code> parameters are never reported unused: they are there for dispatch. <code>dolist</code>, <code>dotimes</code> and <code>loop</code> variables are not either, as SBCL does not report them.</li>
+<li><b>undefined-function and setq-undefined</b> run only when the file's package is known to use nothing but <code>COMMON-LISP</code>: a <code>defpackage</code> in the same file with <code>(:use :cl)</code> only (<code>:import-from</code> names are known), and no <code>in-package</code> of a package defined elsewhere. They switch off for a file that defines names dynamically (<code>(setf (fdefinition ...))</code>, <code>eval</code>, <code>load</code>, <code>use-package</code>, a macro that expands into a <code>def...</code> form, a <code>defsystem</code> or any other unknown definer) or that contains more than five distinct names it cannot place. In <code>CL-USER</code> -- a script with no package -- only a near-miss of a real name (<code>mapcr</code>) is reported, since the implementation's own extensions are visible there.</li>
+<li><b>Naming hints</b> go quiet in a file whose own house style is consistently different (more than half of three or more =defconstant=s without plus signs).</li>
+</ul>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> on a symbol: a local's binding form and line; a file definition's lambda list and docstring; a CL operator's lambda list, an explanation written for this server and SBCL's own summary; a lambda-list or <code>loop</code> keyword's meaning.</li>
+<li><b>Completion</b> offers the locals visible at the cursor, then the file's definitions, then COMMON-LISP -- inserted in the case you are typing in. After a <code>:</code> inside a call, the keyword arguments that call takes come first.</li>
+<li><b>Signature help</b> shows the lambda list and highlights the parameter the argument under the cursor fills, including the <code>&amp;key</code> parameter a <code>:keyword</code> names.</li>
+<li><b>Go to definition</b>, <b>references</b> and <b>highlights</b> follow lexical scope (<code>let</code>, <code>flet</code>, <code>labels</code>, lambda lists, <code>destructuring-bind</code>, <code>multiple-value-bind</code>, <code>handler-case</code>, <code>do</code>, <code>loop</code>, <code>block</code> names, <code>tagbody</code> tags, <code>with-slots</code> ...) and the separate function and variable namespaces. A quoted ='name= or <code>#'name</code> is a reference to the definition it names.</li>
+<li><b>Rename</b> works for locals and for names this file defines, including their quoted mentions and declarations; a CL symbol or another package's cannot be renamed.</li>
+<li><b>Formatting</b> is re-indentation only: standard Lisp indentation (body forms 2 past the open paren, ordinary arguments aligned with the first one), applied to leading whitespace. Nothing else on a line changes, and nothing inside a string or a <code>#| |#</code> comment moves. The same indenter drives the Enter key in Lisp buffers.</li>
+<li>The <b>outline</b> lists <code>defun</code>, <code>defmacro</code>, <code>defgeneric</code>, <code>defmethod</code> (with its specializers), <code>defvar</code>, <code>defparameter</code>, <code>defconstant</code>, <code>defclass</code> and <code>defstruct</code> (with their slots), <code>define-condition</code>, <code>deftype</code>, <code>defpackage</code>, <code>in-package</code>, <code>define-compiler-macro</code>, <code>defsetf</code> and <code>define-modify-macro</code> -- including those inside <code>eval-when</code> or <code>progn</code> -- under the <code>;;;; Section</code> banner they fall beneath.</li>
+<li><b>Folding</b> covers multi-line forms, block comments and runs of <code>;</code> comment lines.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-lisp-lsp</span> <span class="tok-cyan">--lint</span> src/*.lisp
+<span class="tok-blue">cat</span> file.lisp | <span class="tok-blue">mep-lisp-lsp</span> <span class="tok-cyan">--lint</span> <span class="tok-cyan">-</span></code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>src/util.lisp:12:9: warning: `count` is never used; declare it `(declare (ignore count))` if that is deliberate. [unused-variable]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise,
+so it drops into a CI step or a pre-commit hook as it is. With no
+arguments, <code>mep-lisp-lsp</code> is the language server on stdio.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lisp-mode.html">Common Lisp mode</a> -- the Lisp buffer's own commands.</li>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+</ul>
+</body>
+</html>

@@ -19,12 +19,27 @@ struct SpecEntry {
 // not matching one of the prefix rules in LispIndentDistinguishedArgs,
 // indents as an ordinary call.
 const SpecEntry kSpecs[] = {
+    // A few library macros common enough that leaving them as ordinary
+    // calls would misindent most real code (alexandria, metabang-bind).
+    {"BIND", 1},
+    {"IF-LET", 1},
+    {"IF-LET*", 1},
+    {"ONCE-ONLY", 1},
+    {"WHEN-LET", 1},
+    {"WHEN-LET*", 1},
+    {"DESTRUCTURING-CASE", 1},
+    {"DESTRUCTURING-ECASE", 1},
     {"BLOCK", 1},
     {"CASE", 1},
     {"CATCH", 1},
     {"CCASE", 1},
     {"CTYPECASE", 1},
     {"DEFCLASS", 2},
+    {"DEFCONSTANT", 1},
+    {"DEFPACKAGE", 1},
+    {"DEFPARAMETER", 1},
+    {"DEFSTRUCT", 1},
+    {"DEFVAR", 1},
     {"DEFGENERIC", 2},
     {"DEFINE-COMPILER-MACRO", 2},
     {"DEFINE-CONDITION", 2},
@@ -49,7 +64,7 @@ const SpecEntry kSpecs[] = {
     {"LAMBDA", 1},
     {"LET", 1},
     {"LET*", 1},
-    {"LOCALLY", 0},
+    {"LOCALLY", 1},
     {"MACROLET", 1},
     {"MULTIPLE-VALUE-BIND", 2},
     {"MULTIPLE-VALUE-PROG1", 1},
@@ -76,7 +91,8 @@ const SpecEntry kSpecs[] = {
 /** @brief What a list is to the form around it, which decides how its own elements align. */
 enum class Role {
     Code,        // an ordinary form
-    Data,        // align every element with the first: quoted data, vectors, lambda and binding lists
+    Data,        // align every element with the first: quoted data, vectors, binding lists
+    LambdaList,  // like Data, but a line continues under the parameter after the last &keyword
     LocalFns,    // the definition list of flet/labels/macrolet: each element is a LocalFn
     LocalFn,     // one (name lambda-list . body) definition, or a handler-case/restart-case clause
     CaseClause,  // a case/typecase clause: elements align with the key
@@ -94,6 +110,16 @@ struct Frame {
     int first_elem_col = -1;
     int first_arg_col = -1;  // the second element's column, when it is on the open paren's line
     bool list_arg_seen = false;  // defmethod: a list element after the name (the lambda list) has started
+    // LambdaList: the column of the first parameter after the most recent
+    // &keyword on its line (`&key test` -> under `test`).
+    int kw_arg_col = -1;
+    int kw_line = -1;
+    bool kw_pending = false;
+    // LOOP: the column of the last form that followed a clause keyword on
+    // the same line (`do (foo)` -> under `(foo)`), and the line the last
+    // symbol element ended on.
+    int loop_form_col = -1;
+    int last_symbol_line = -1;
 };
 
 char Up(char c) { return (c >= 'a' && c <= 'z') ? static_cast<char>(c - 'a' + 'A') : c; }
@@ -109,11 +135,18 @@ class Indenter {
     /** @brief Whether the next line starts inside a string, a `|...|` escape or a block comment. */
     bool InText() const { return in_string_ || in_bar_ || comment_depth_ > 0; }
 
-    /** @brief The column a line starting now should be indented to (meaningless while InText()). */
-    int Indent() const {
+    /**
+     * @brief The column a line starting now should be indented to (meaningless while InText()).
+     * @param next the text the line starts with (leading blanks removed), "" when not yet typed
+     */
+    int Indent(const std::string &next) const {
         if (stack_.empty()) return 0;
         const Frame &f = stack_.back();
         if (f.elems == 0) return f.open_col + 1;
+        if (f.role == Role::LambdaList) {
+            if (!next.empty() && next[0] == '&') return f.first_elem_col;
+            return f.kw_arg_col >= 0 ? f.kw_arg_col : f.first_elem_col;
+        }
         if (f.role == Role::Data || f.role == Role::Feature || f.role == Role::CaseClause || !f.op_is_symbol) {
             return f.first_elem_col;
         }
@@ -125,7 +158,21 @@ class Indenter {
             return f.list_arg_seen ? f.open_col + 2 : f.open_col + 4;
         }
         if (f.op == "LOOP") {
+            // A line that continues a clause's forms (`do (a)` / `(b)`)
+            // lines up under the first of them; a new clause under the first.
+            const bool continues_forms = !next.empty() && (next[0] == '(' || next[0] == '\'' || next[0] == '`' ||
+                                                          next[0] == '#' || next[0] == '"' || next[0] == ',');
+            if (continues_forms && f.loop_form_col >= 0) return f.loop_form_col;
             return f.first_arg_col >= 0 ? f.first_arg_col : f.open_col + 2;
+        }
+        if ((f.op == "MULTIPLE-VALUE-BIND" || f.op == "DESTRUCTURING-BIND") && args_before == 0) {
+            return f.open_col + 6;  // SLIME's (&whole 6 &rest 1) for the variable list on its own line
+        }
+        if (f.op == "COND" && f.first_arg_col < 0) return f.open_col + 2;  // (cond\n  (clause ...))
+        // `(defsystem "x"\n  :depends-on ...)`: a keyword after the name
+        // starts the body of a keyword-style definer.
+        if (spec == 2 && args_before == 1 && !next.empty() && next[0] == ':' && StartsWith(f.op, "DEF")) {
+            return f.open_col + 2;
         }
         if (spec >= 0) return args_before < spec ? f.open_col + 4 : f.open_col + 2;
         return f.first_arg_col >= 0 ? f.first_arg_col : f.open_col + 1;
@@ -237,6 +284,10 @@ class Indenter {
         Frame &f = stack_.back();
         if (f.elems == 0) f.first_elem_col = col;
         if (f.elems == 1 && line_ == f.open_line) f.first_arg_col = col;
+        if (f.kw_pending) {
+            if (line_ == f.kw_line) f.kw_arg_col = col;
+            f.kw_pending = false;
+        }
         f.elems++;
     }
 
@@ -271,6 +322,11 @@ class Indenter {
         if (!stack_.empty() && !skipping_feature && stack_.back().op == "DEFMETHOD" && stack_.back().elems >= 3) {
             stack_.back().list_arg_seen = true;
         }
+        if (!stack_.empty() && !skipping_feature && stack_.back().op == "LOOP" &&
+            stack_.back().last_symbol_line == line_) {
+            stack_.back().loop_form_col = col;
+            stack_.back().last_symbol_line = -1;
+        }
         Frame f;
         f.open_col = col;
         f.open_line = line_;
@@ -295,16 +351,16 @@ class Indenter {
         const int index = parent.elems - 1;  // this list's own position in the parent
         const std::string &op = parent.op;
         if (parent.role == Role::LocalFns) return Role::LocalFn;
-        if (parent.role == Role::LocalFn) return index == 1 ? Role::Data : Role::Code;
+        if (parent.role == Role::LocalFn) return index == 1 ? Role::LambdaList : Role::Code;
         if (!parent.op_is_symbol) return Role::Code;
         if (op == "DEFUN" || op == "DEFMACRO" || op == "DEFGENERIC" || op == "DEFINE-COMPILER-MACRO" ||
             op == "DEFTYPE" || op == "DEFINE-SETF-EXPANDER") {
-            return index == 2 ? Role::Data : Role::Code;
+            return index == 2 ? Role::LambdaList : Role::Code;
         }
-        if (op == "DEFMETHOD") return (index >= 2 && !parent.list_arg_seen) ? Role::Data : Role::Code;
-        if (op == "LAMBDA") return index == 1 ? Role::Data : Role::Code;
-        if (op == "DESTRUCTURING-BIND" || op == "MULTIPLE-VALUE-BIND" || op == "WITH-SLOTS" ||
-            op == "WITH-ACCESSORS") {
+        if (op == "DEFMETHOD") return (index >= 2 && !parent.list_arg_seen) ? Role::LambdaList : Role::Code;
+        if (op == "LAMBDA") return index == 1 ? Role::LambdaList : Role::Code;
+        if (op == "DESTRUCTURING-BIND") return index == 1 ? Role::LambdaList : Role::Code;
+        if (op == "MULTIPLE-VALUE-BIND" || op == "WITH-SLOTS" || op == "WITH-ACCESSORS") {
             return index == 1 ? Role::Data : Role::Code;
         }
         if (op == "LET" || op == "LET*" || op == "PROG" || op == "PROG*" || op == "SYMBOL-MACROLET" || op == "DO" ||
@@ -426,6 +482,13 @@ class Indenter {
             // conditional form that follows is the counted element.
             skip_feature_ = false;
             pending_ = true;
+        } else if (!token_is_op_ && !stack_.empty() && token_frame_ == static_cast<int>(stack_.size())) {
+            Frame &f = stack_.back();
+            if (f.role == Role::LambdaList && !token_.empty() && token_[0] == '&') {
+                f.kw_line = line_;
+                f.kw_pending = true;
+            }
+            if (f.op == "LOOP") f.last_symbol_line = line_;
         } else if (token_is_op_ && !stack_.empty() && token_frame_ == static_cast<int>(stack_.size())) {
             Frame &f = stack_.back();
             std::string name = token_;
@@ -459,7 +522,9 @@ int LispIndentDistinguishedArgs(const std::string &name) {
     for (const SpecEntry &e : kSpecs) {
         if (name == e.name) return e.args;
     }
-    if (StartsWith(name, "DEF")) return 1;
+    // SLIME's default for def* forms: (4 &lambda &body) -- a name and a
+    // lambda list, then the body.
+    if (StartsWith(name, "DEF")) return 2;
     if (StartsWith(name, "WITH-") || StartsWith(name, "DO-")) return 1;
     return -1;
 }
@@ -474,7 +539,9 @@ int LispIndentForLine(const std::vector<std::string> &lines, int line) {
         // line's margin.
         return LeadingBlanks(lines[stop - 1]);
     }
-    return ind.Indent();
+    const std::string &own = lines.size() > stop ? lines[stop] : std::string();
+    const size_t first = own.find_first_not_of(" \t");
+    return ind.Indent(first == std::string::npos ? std::string() : own.substr(first));
 }
 
 std::vector<std::string> LispReindent(const std::vector<std::string> &lines) {
@@ -494,7 +561,7 @@ std::vector<std::string> LispReindent(const std::vector<std::string> &lines) {
             } else if (StartsWith(body, ";;;")) {
                 // Emacs leaves `;;;` comment lines where they are too.
             } else {
-                result = std::string(static_cast<size_t>(ind.Indent()), ' ') + body;
+                result = std::string(static_cast<size_t>(ind.Indent(body)), ' ') + body;
             }
         }
         ind.Scan(result, static_cast<int>(i));

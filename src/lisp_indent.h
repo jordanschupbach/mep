@@ -23,11 +23,17 @@
 //     formatter leaves it alone, and LispIndentForLine answers with the
 //     previous line's indentation (what typing on in a docstring wants).
 //   - Inside a form whose operator has distinguished arguments -- `defun`
-//     (2: name, lambda list), `let`/`when`/`unless`/`lambda`/`flet`/
-//     `labels`/`dolist`/`handler-case`/... (1), `destructuring-bind`/
-//     `multiple-value-bind`/`with-slots`/`do` (2), any `def...`,
-//     `with-...` or `do-...` macro (1) -- a distinguished argument on its
-//     own line is indented 4 past the open paren and every body form 2.
+//     and any other `def...` (2: name, lambda list; `defvar`/`defpackage`/
+//     `defstruct` 1), `let`/`when`/`unless`/`lambda`/`flet`/`labels`/
+//     `dolist`/`handler-case`/... (1), `destructuring-bind`/
+//     `multiple-value-bind`/`with-slots`/`do` (2), any `with-...` or
+//     `do-...` macro (1) -- a distinguished argument on its own line is
+//     indented 4 past the open paren (6 for a binding form's variable
+//     list, as SLIME does) and every body form 2.
+//   - `(cond` with no clause on its line puts the clauses 2 in; LOOP
+//     lines up a form that continues a clause (`do (a)` / `(b)`) under
+//     that clause's first form; a lambda list continues under the
+//     parameter after its last &keyword.
 //   - Inside an ordinary call, arguments align with the first argument
 //     when it is on the operator's line, and otherwise with the operator
 //     itself (1 past the open paren).

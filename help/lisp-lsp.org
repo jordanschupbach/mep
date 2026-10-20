@@ -1,0 +1,209 @@
+#+TITLE: The Common Lisp language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="13">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Common Lisp files get a language server of their own, =mep-lisp-lsp=,
+built and shipped with mep. Open a =.lisp=, =.lsp=, =.cl= or =.asd= file
+and it attaches by itself -- there is nothing to install, and *no Lisp
+image is ever started*. It is mep's own implementation of the standard
+reader plus a scope analyser, with all 978 symbols of the =COMMON-LISP=
+package (their kinds, lambda lists and summaries, generated from SBCL)
+compiled into it.
+
+The same binary is a command-line linter; see [[*Linting from the command line][Linting from the command line]].
+
+* Never starting a Lisp
+
+SLIME, Sly and the image-backed servers talk to a running Lisp, which is
+the right design for an interactive session. This server is for the other
+job: open a file and see what is wrong with it, on a machine that may have
+no Lisp at all, without loading a system or running a line of the file.
+Reading Lisp in a real image runs every =#.= form; here nothing in the
+file can execute.
+
+The trade is named rather than hidden. The server sees one file. It does
+not macroexpand, does not know what other files of the same system define,
+and does not infer types.
+
+* Reading Lisp
+
+The reader follows the standard's token and dispatch-macro rules, which is
+where an approximate parser goes wrong:
+
+| Written       | Reads as                        |
+|---------------+---------------------------------|
+| =1.=          | the integer 1                   |
+| =.5=, =1.5d0= | floats                          |
+| =1+=, =a#b=   | symbols                         |
+| =#\(=         | a character, not an open paren  |
+| =pkg::sym=    | an internal symbol of =PKG=     |
+| =#+sbcl x=    | =x=, marked as conditional      |
+
+Likewise =|Foo Bar|= is one symbol, its case preserved. Symbols are
+compared the way the reader interns them -- upcased, escapes
+kept verbatim -- and shown the way they were written. Nested =#| |#=
+comments, =#'=, =#.=, =#p=, =#S=, =#nA=, =#c=, =#*=, =#n= labels, radix
+numbers (=#x=, =#b=, =#o=, =#36r=) and SBCL's =pkg::(form)= are all
+read. Errors never stop the read: a missing paren, a stray one, an
+unterminated string or comment is reported and the rest of the file is
+still read, so the outline and completion keep working while you type.
+A top-level =(defun= at column 0 inside an unclosed form is taken as the
+place the missing parens belong, so one forgotten =)= does not swallow
+the file.
+
+A file that installs reader macros of its own (=in-readtable=,
+=set-dispatch-macro-character=, an =(enable-...-syntax)= call) is
+noticed, and dispatch characters this reader does not know are not
+reported there.
+
+* Feature expressions
+
+=#+=/=#-= are evaluated against a conservative feature set: SBCL on
+64-bit Linux, plus what every implementation shares.
+
+- =#+(or)= and =#+nil= code is dead and skipped entirely.
+- Code for the assumed platform is checked like any other.
+- Code for any other feature (=#+ccl=, =#-sbcl=) is read for its
+  definitions and its variable uses -- a parameter used only under
+  =#+ccl= is not "unused" -- but no name check runs inside it, and two
+  definitions of one function under different features are not a
+  redefinition.
+
+* What it reports
+
+| Code                      | Severity | What it means                                        |
+|---------------------------+----------+------------------------------------------------------|
+| =unbalanced-paren=        | error    | a form is never closed                               |
+| =stray-close-paren=       | error    | a =)= with nothing to close                          |
+| =unterminated-string=     | error    | a string runs to the end of the file                 |
+| =unterminated-comment=    | error    | a block comment is never closed                      |
+| =unterminated-escape=     | error    | a bar-escaped symbol name is never closed            |
+| =unknown-dispatch=        | error    | =#?= and friends: not in the standard readtable      |
+| =unreadable-object=       | error    | =#<...>=, which no reader accepts                    |
+| =bad-number=              | error    | =#xZZ=, =#b102=, =1/0=                               |
+| =bad-symbol=              | error    | =a:b:c=, =pkg:= with no name                         |
+| =bad-dot=                 | error    | a consing dot in the wrong place                     |
+| =comma-outside-backquote= | error    | =,x= with no backquote around it                     |
+| =missing-form=            | error    | ='= or =#'= with nothing after it                    |
+| =unknown-character-name=  | warning  | =#\Spcae=: a near-miss of a standard name            |
+| =too-deep=                | warning  | nesting past 1,000 levels (generated input)          |
+| =unused-variable=         | warning  | a binding never read (=declare ignore= silences it)  |
+| =used-ignored-variable=   | warning  | declared =ignore=, but used                          |
+| =unused-function=         | warning  | an =flet=/=labels= function never called             |
+| =duplicate-parameter=     | error    | the same name twice in a lambda list                 |
+| =duplicate-binding=       | error    | the same name twice in one =let= or m-v-bind         |
+| =malformed-binding=       | error    | a binding that is not =x=, =(x)= or =(x init)=       |
+| =malformed-lambda-list=   | error    | lambda-list keywords out of order, =&rest= with no var |
+| =bind-constant=           | error    | binding or assigning =t=, =nil=, a keyword, =pi=     |
+| =wrong-arg-count=         | warning  | a call to a CL operator or a file-local definition   |
+| =odd-keyword-args=        | warning  | keyword arguments not in =:name value= pairs         |
+| =unknown-keyword=         | warning  | a keyword a file-local function does not take        |
+| =if-arity=                | error    | =if= with other than 2 or 3 arguments                |
+| =odd-setf-args=           | error    | =setf=/=setq= with a place and no value              |
+| =misplaced-declare=       | error    | a =declare= that is not at the start of a body       |
+| =optional-and-key=        | info     | =&optional= with =&key=, SBCL's style warning        |
+| =eq-on-number=            | warning  | =eq= on a float, ratio or bignum (info for small integers and characters) |
+| =quoted-case-key=         | warning  | =(case x ('a ...))= -- keys are not evaluated        |
+| =redefinition=            | warning  | the same function or macro defined twice             |
+| =undefined-function=      | warning  | an operator nothing defines (calibrated, below)      |
+| =setq-undefined=          | warning  | =setq= of a variable nothing binds (calibrated)      |
+| =lexical-earmuffs=        | info     | a =*name*= bound by =let= that nothing makes special |
+| =defvar-naming=           | hint     | =defvar=/=defparameter= without *earmuffs*           |
+| =defconstant-naming=      | hint     | =defconstant= without +plus signs+                   |
+| =quoted-self-evaluating=  | hint     | =':key=, ='42=, ='"s"= -- the quote does nothing     |
+
+** Calibration
+
+False reports on idiomatic code are what get a linter switched off, so
+each check was run over a corpus -- SBCL's own 2.5.10 source tree and two
+dozen widely used libraries (alexandria, cl-ppcre, iterate, cffi,
+ironclad, serapeum, hunchentoot, usocket, bordeaux-threads, ...) -- and
+tuned until what it reports there is real. The rules that came out of
+that:
+
+- *Unknown macros.* A macro this server cannot expand may bind anything
+  and evaluate any of its arguments. Variables it mentions count as used;
+  no name check runs inside its arguments. A binding whose scope calls a
+  =with-...= or =do-...= macro from elsewhere is not reported unused,
+  because those macros capture variables by name; nor is one mentioned
+  in a backquote template or quoted code of a macro in the file.
+- *Methods.* =defmethod= parameters are never reported unused: they are
+  there for dispatch. =dolist=, =dotimes= and =loop= variables are not
+  either, as SBCL does not report them.
+- *undefined-function and setq-undefined* run only when the file's
+  package is known to use nothing but =COMMON-LISP=: a =defpackage= in
+  the same file with =(:use :cl)= only (=:import-from= names are known),
+  and no =in-package= of a package defined elsewhere. They switch off
+  for a file that defines names dynamically (=(setf (fdefinition ...))=,
+  =eval=, =load=, =use-package=, a macro that expands into a =def...=
+  form, a =defsystem= or any other unknown definer) or that contains more
+  than five distinct names it cannot place. In =CL-USER= -- a script
+  with no package -- only a near-miss of a real name (=mapcr=) is
+  reported, since the implementation's own extensions are visible there.
+- *Naming hints* go quiet in a file whose own house style is consistently
+  different (more than half of three or more =defconstant=s without plus
+  signs).
+
+* What else it does
+
+- *Hover* on a symbol: a local's binding form and line; a file
+  definition's lambda list and docstring; a CL operator's lambda list,
+  an explanation written for this server and SBCL's own summary; a
+  lambda-list or =loop= keyword's meaning.
+- *Completion* offers the locals visible at the cursor, then the file's
+  definitions, then COMMON-LISP -- inserted in the case you are typing
+  in. After a =:= inside a call, the keyword arguments that call takes
+  come first.
+- *Signature help* shows the lambda list and highlights the parameter
+  the argument under the cursor fills, including the =&key= parameter a
+  =:keyword= names.
+- *Go to definition*, *references* and *highlights* follow lexical scope
+  (=let=, =flet=, =labels=, lambda lists, =destructuring-bind=,
+  =multiple-value-bind=, =handler-case=, =do=, =loop=, =block= names,
+  =tagbody= tags, =with-slots= ...) and the separate function and
+  variable namespaces. A quoted ='name= or =#'name= is a reference to
+  the definition it names.
+- *Rename* works for locals and for names this file defines, including
+  their quoted mentions and declarations; a CL symbol or another
+  package's cannot be renamed.
+- *Formatting* is re-indentation only: standard Lisp indentation (body
+  forms 2 past the open paren, ordinary arguments aligned with the first
+  one), applied to leading whitespace. Nothing else on a line changes,
+  and nothing inside a string or a =#| |#= comment moves. The same
+  indenter drives the Enter key in Lisp buffers.
+- The *outline* lists =defun=, =defmacro=, =defgeneric=, =defmethod=
+  (with its specializers), =defvar=, =defparameter=, =defconstant=,
+  =defclass= and =defstruct= (with their slots), =define-condition=,
+  =deftype=, =defpackage=, =in-package=, =define-compiler-macro=,
+  =defsetf= and =define-modify-macro= -- including those inside
+  =eval-when= or =progn= -- under the =;;;; Section= banner they fall
+  beneath.
+- *Folding* covers multi-line forms, block comments and runs of =;=
+  comment lines.
+
+* Linting from the command line
+
+#+begin_src sh
+mep-lisp-lsp --lint src/*.lisp
+cat file.lisp | mep-lisp-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+src/util.lisp:12:9: warning: `count` is never used; declare it `(declare (ignore count))` if that is deliberate. [unused-variable]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise,
+so it drops into a CI step or a pre-commit hook as it is. With no
+arguments, =mep-lisp-lsp= is the language server on stdio.
+
+* See also
+
+- [[file:lisp-mode.html][Common Lisp mode]] -- the Lisp buffer's own commands.
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.

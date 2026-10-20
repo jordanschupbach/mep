@@ -60,11 +60,7 @@ what you are reading; it leaves the history intact.</p>
 <p>Lua's own <code>print()</code> shows its output on the status line as well, so a
 <code>print</code> in your config or in a <code>:lua</code> one-liner is visible rather than
 vanishing into a terminal mep does not have.</p>
-<<<<<<< HEAD
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">:lua print(mep.line_count())</code></pre></div>
-=======
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua">:lua <span class="tok-blue">print</span>(<span class="tok-cyan">mep</span>.<span class="tok-blue">line_count</span>())</code></pre></div>
->>>>>>> f1f5186 (Add more inhouse ts)
 <p>That makes <code>print</code> a perfectly good debugging tool here. If you want
 something louder, <code>mep.notify(msg, 'warn')</code> pops a toast; and
 <code>mep.notify_unread()</code> returns the count and highest level behind the bell's

@@ -32,17 +32,10 @@ opens it in the <a href="browser.html">browser pane</a> -- the whole preview loo
 <p>That last one matters: without it you would spend time wondering why a
 change has not appeared.</p>
 <h1>From Lua</h1>
-<<<<<<< HEAD
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> port = mep.http_serve(<span class="tok-green">'/path/to/site'</span>, <span class="tok-cyan">8080</span>)
-mep.http_servers()      <span class="tok-comment">--&gt; what is running</span>
-mep.http_stop(port)
-mep.http_get(url)       <span class="tok-comment">--&gt; fetch a URL directly</span></code></pre></div>
-=======
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> port = <span class="tok-cyan">mep</span>.<span class="tok-blue">http_serve</span>(<span class="tok-green">'/path/to/site'</span>, <span class="tok-cyan">8080</span>)
 <span class="tok-cyan">mep</span>.<span class="tok-blue">http_servers</span>()      <span class="tok-comment">--&gt; what is running</span>
 <span class="tok-cyan">mep</span>.<span class="tok-blue">http_stop</span>(port)
 <span class="tok-cyan">mep</span>.<span class="tok-blue">http_get</span>(url)       <span class="tok-comment">--&gt; fetch a URL directly</span></code></pre></div>
->>>>>>> f1f5186 (Add more inhouse ts)
 <h1>See also</h1>
 <ul>
 <li><a href="browser.html">The browser pane</a> -- where the page opens.</li>

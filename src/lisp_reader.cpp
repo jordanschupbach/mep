@@ -141,7 +141,7 @@ std::string MisspelledCharName(const std::string &name) {
                                             "BACKSPACE", "ESCAPE", "DELETE"};
     for (const char *s : kStandard) {
         const std::string cand = s;
-        const int limit = cand.size() >= 6 ? 2 : 1;
+        const int limit = cand.size() >= 5 ? 2 : 1;
         if (std::abs(static_cast<int>(cand.size()) - static_cast<int>(up.size())) > limit) continue;
         if (Distance(up, cand) <= limit) return cand;
     }
@@ -265,7 +265,7 @@ class Reader {
                 }
             } else if (c == '"' || c == '|') {
                 i++;
-                while (i < n && text_[i] != c) i += text_[i] == '\\' ? 2 : 1;
+                while (i < n && text_[i] != c) i += text_[i] == '\\' ? size_t{2} : size_t{1};
                 i++;
             } else if (c == ';') {
                 while (i < n && text_[i] != '\n') i++;
@@ -571,7 +571,7 @@ class Reader {
             }
             if (c == '"') {
                 pos_++;
-                while (pos_ < text_.size() && text_[pos_] != '"') pos_ += text_[pos_] == '\\' ? 2 : 1;
+                while (pos_ < text_.size() && text_[pos_] != '"') pos_ += text_[pos_] == '\\' ? size_t{2} : size_t{1};
                 pos_++;
                 continue;
             }
@@ -760,7 +760,10 @@ class Reader {
             return node;
         }
         const size_t name_start = first + (double_colon ? 2 : 1);
-        if (name_start >= t.canonical.size() && first > 0 && pos_ < text_.size() && text_[pos_] == '(') {
+        size_t after = pos_;
+        while (after < text_.size() && IsWhitespace(text_[after])) after++;
+        if (name_start >= t.canonical.size() && first > 0 && after < text_.size() && text_[after] == '(') {
+            pos_ = after;
             // SBCL's `sb-kernel::(form ...)`: the form is read with that
             // package current. Kept as a prefix over the form.
             n.kind = LispNodeKind::Dispatch;
@@ -908,6 +911,17 @@ class Reader {
                 }
                 return ReadForm();
             }
+            case '_':
+            case '$': {
+                // Clozure CL's own reader macros for foreign names (`#_malloc`,
+                // `#$O_RDONLY`), part of that implementation's standard
+                // readtable: read the name, raise nothing.
+                pos_++;
+                Token t = ScanToken();
+                const int node = NewNode(LispNodeKind::Error, start, t.end);
+                Node(node).text = text_.substr(start, t.end - start);
+                return node;
+            }
             case '<': {
                 pos_++;
                 SoftError(start, pos_, "unreadable-object",
@@ -921,7 +935,9 @@ class Reader {
         // Unknown, or one the standard reserves (`#)`, `#` + whitespace,
         // `#!`, `#[`, `#{`, `#?` ...): consume the subchar so the read
         // makes progress, unless it is a delimiter the enclosing form needs.
-        if (sub != ')' && !IsWhitespace(sub)) pos_ += Utf8Length(static_cast<unsigned char>(sub));
+        // A terminating macro character (`#"..."`, ABCL's Java syntax) is
+        // left for the normal reader, so the structure around it survives.
+        if (sub != ')' && !IsWhitespace(sub) && !IsTerminating(sub)) pos_ += Utf8Length(static_cast<unsigned char>(sub));
         SoftError(start, std::max(pos_, start + 1), "unknown-dispatch",
                   IsWhitespace(sub) || sub == ')'
                       ? std::string("`#` must be followed by a dispatch character.")

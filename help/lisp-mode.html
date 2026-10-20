@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Common Lisp mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="35">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Common Lisp mode</h1>
+<h1>Opening it</h1>
+<p><code>&lt;leader&gt;uu</code> (or <code>&lt;leader&gt;lu</code>) in a <code>.lisp</code>, <code>.lsp</code>, <code>.cl</code> or <code>.asd</code> file.
+The tab becomes a Lisp workspace: your source, a live SBCL below it, and
+panels showing what the image knows.</p>
+<p>You need <code>sbcl</code> on your <code>PATH</code>. If <code>rlwrap</code> is there too, the console runs
+under it, which gives SBCL's REPL the line editing and history it lacks on
+its own.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>evaluate the top-level form at the cursor, in its package</td></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td><code>LOAD</code> the whole file, then switch the REPL to its package</td></tr>
+<tr><td><code>gh</code></td><td>documentation for the symbol under the cursor</td></tr>
+<tr><td><code>(mep-ui:help 'x)</code></td><td>the same, from the console</td></tr>
+<tr><td><code>(mep-ui:view x)</code></td><td>describe any value in the Inspect panel</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> is the editor half of SLIME's <code>C-M-x</code>: it finds the form that
+opens at column 0 above the cursor, and evaluates it in the package the
+nearest <code>(in-package ...)</code> above it names -- so redefining one function of
+a file that lives in its own package does not quietly define it in
+<code>CL-USER</code> instead. The form's values print in the console as if typed.</p>
+<p>Errors land in SBCL's own debugger in the console, with its restarts; pick
+one by number as usual.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Symbols</td><td>what the current package defines: variables with their values, functions and macros with their lambda lists, generic functions, classes</td></tr>
+<tr><td>Inspect</td><td><code>DESCRIBE</code> of a value, and a list's, vector's or hash table's contents one per line</td></tr>
+<tr><td>Packages</td><td>every package, its export count and nicknames (the current one starred), and the ASDF systems loaded</td></tr>
+<tr><td>History</td><td>the forms the REPL has read, newest first; click one to run it again</td></tr>
+<tr><td>Help</td><td><code>DESCRIBE</code> of a symbol -- its documentation, lambda list and type -- or the <code>APROPOS</code> matches for a name that is not one</td></tr>
+</table>
+<p>Clicking a Symbols row inspects it: the value of a variable, the
+definition of anything else.</p>
+<p>The panels refresh after every evaluation. They come from two hooks into
+SBCL's REPL (the prompt and the form reader); on another implementation the
+console works but the panels only update when a <code>mep-ui</code> function runs.
+The prompt names the current package, <code>SHAPES&gt;</code>, as SLIME's does.</p>
+<h1>Editing Lisp</h1>
+<p>These work in any Lisp buffer, with or without the mode open:</p>
+<ul>
+<li><b>Highlighting and folds</b> come from mep's own Common Lisp grammar: special forms, definitions and their names, lambda-list keywords, <code>LOOP</code> keywords, <code>FORMAT</code> directives inside strings, reader conditionals.</li>
+<li><b>Enter</b>, <code>o</code> and <code>O</code> indent the new line the way Emacs's lisp-mode does: body forms two past the open paren, arguments under the first argument.</li>
+<li><b>The structure sidebar</b> lists the file's packages, classes, structures, functions, macros, methods and variables.</li>
+<li><b>The language server</b>, <code>mep-lisp-lsp</code>, adds diagnostics (a linter), completion, hover, go-to-definition, references, rename, signature help and formatting -- see <a href="lisp-lsp.html">The Common Lisp language server</a>.</li>
+</ul>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.lisp_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'sbcl'</span>, <span class="tok-green">'--noinform'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- '--load &lt;init&gt;' is added after these</span>
+<span class="tok-cyan">mep</span>.opt.lisp_ui_rlwrap = <span class="tok-cyan">true</span>                    <span class="tok-comment">-- false: never wrap the console in rlwrap</span>
+<span class="tok-cyan">mep</span>.opt.lisp_ui_info_share = <span class="tok-cyan">0.3</span>
+<span class="tok-cyan">mep</span>.opt.lisp_ui_bottom_share = <span class="tok-cyan">0.4</span>
+<span class="tok-cyan">mep</span>.opt.lisp_ui_bottom_info_share = <span class="tok-cyan">0.4</span></code></pre></div>
+<p>To start from a saved core with your libraries already loaded, add
+<code>--core</code> to <code>lisp_ui_cmd</code>: <code>{'sbcl', '--core', '/path/to/my.core', '--noinform'}</code>.</p>
+<h1>Org source blocks</h1>
+<p><code>#+begin_src lisp</code> blocks highlight with the same grammar and run with
+<code>sbcl --script</code> (<code>C-c C-c</code>, see <a href="org-babel.html">Executing code blocks</a>).</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the shared machinery.</li>
+<li><a href="lisp-lsp.html">The Common Lisp language server</a> -- diagnostics and the <code>--lint</code> command.</li>
+</ul>
+</body>
+</html>

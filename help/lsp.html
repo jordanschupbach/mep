@@ -133,8 +133,8 @@ typing, on opening a file and on switching back to one -- and on
 <code>:MepLspSemanticTokens</code>. <code>mep.lsp_semantic_auto = false</code> stops the
 automatic refresh, leaving the command.</p>
 <h1>Servers mep knows about</h1>
-<p>Forty. Each is used when its command is on <code>$PATH</code>; the org, R, Python,
-C++, C and Maxima ones ship with mep itself:</p>
+<p>Forty-one. Each is used when its command is on <code>$PATH</code>; the org, R,
+Python, C++, C, Maxima and Common Lisp ones ship with mep itself:</p>
 <table>
 <tr><th>Language</th><th>Command</th></tr>
 <tr><td>C++</td><td><code>mep-cpp-lsp</code> (ships with mep), or <code>clangd</code></td></tr>
@@ -162,6 +162,7 @@ C++, C and Maxima ones ship with mep itself:</p>
 <tr><td>D</td><td><code>serve-d</code></td></tr>
 <tr><td>Julia</td><td>Julia's <code>LanguageServer</code></td></tr>
 <tr><td>Clojure</td><td><code>clojure-lsp</code></td></tr>
+<tr><td>Common Lisp</td><td><code>mep-lisp-lsp</code> (ships with mep)</td></tr>
 <tr><td>Kotlin</td><td><code>kotlin-language-server</code></td></tr>
 <tr><td>Svelte</td><td><code>svelteserver</code></td></tr>
 <tr><td>YAML</td><td><code>yaml-language-server</code></td></tr>
@@ -178,14 +179,16 @@ C++, C and Maxima ones ship with mep itself:</p>
 <tr><td>mepml</td><td><code>mep-mepml-lsp</code> (ships with mep)</td></tr>
 </table>
 <p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
-<h1>The seven mep brings itself</h1>
+<h1>The eight mep brings itself</h1>
 <p><code>mep-org-lsp</code>, <code>mep-r-lsp</code>, <code>mep-python-lsp</code>, <code>mep-cpp-lsp</code>, <code>mep-c-lsp</code>,
-<code>mep-maxima-lsp</code> and <code>mep-mepml-lsp</code> are mep's own servers, built and
-installed alongside <code>mep</code>, so org, R, Python, C++, C, Maxima and mepml
-files get diagnostics and completion with nothing to install. See
+<code>mep-maxima-lsp</code>, <code>mep-lisp-lsp</code> and <code>mep-mepml-lsp</code> are mep's own
+servers, built and installed alongside <code>mep</code>, so org, R, Python, C++, C,
+Maxima, Common Lisp and mepml files get diagnostics and completion with
+nothing to install. See
 <a href="org-lsp.html">The org language server</a>, <a href="r-lsp.html">The R language server</a>,
 <a href="python-lsp.html">The Python language server</a>, <a href="cpp-lsp.html">The C++ language server</a>,
-<a href="c-lsp.html">The C language server</a>, <a href="maxima-lsp.html">The Maxima language server</a> and
+<a href="c-lsp.html">The C language server</a>, <a href="maxima-lsp.html">The Maxima language server</a>,
+<a href="lisp-lsp.html">The Common Lisp language server</a> and
 <a href="mepml-lsp.html">The mepml language server</a>.</p>
 <p>Python, C++ and C are the three languages where mep's own server is
 preferred over an external one out of the box: <code>pyright</code> and <code>clangd</code>
@@ -196,17 +199,15 @@ as well; a project whose headers are all C can hand it over with
 <p>The R one never starts R: it parses the language itself, so a <code>.R</code> file
 gets diagnostics, completion, hover and signature help on a machine with
 no R installed at all. The Maxima one is the same -- and it is the only
-Maxima language server there is, so nothing competes with it for <code>.mac</code>.</p>
+Maxima language server there is, so nothing competes with it for <code>.mac</code>.
+The Common Lisp one never starts a Lisp image either, which is what sets
+it apart from SLIME, Sly and the image-backed servers: it reads the file
+with its own implementation of the standard reader.</p>
 <p>R's own <code>languageserver</code> package is still registered, under
 <code>r_languageserver</code>, with no file types claimed. It knows what an installed
 package exports, which mep's own server cannot. To prefer it:</p>
-<<<<<<< HEAD
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.r_languageserver.filetypes = {<span class="tok-green">'R'</span>, <span class="tok-green">'r'</span>}
-<span class="tok-cyan">mep</span>.lsp_servers.r_ls.filetypes = {}</code></pre></div>
-=======
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.r_languageserver.filetypes = <span class="tok-blue">{</span><span class="tok-green">'R'</span>, <span class="tok-green">'r'</span><span class="tok-blue">}</span>
 <span class="tok-cyan">mep</span>.lsp_servers.r_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
->>>>>>> f1f5186 (Add more inhouse ts)
 <h1>Inside org code blocks</h1>
 <p>Code blocks in an Org file get language-server support too, through a shadow
 buffer per block. See <a href="org-polyglot.html">Language servers in code blocks</a> for what that covers

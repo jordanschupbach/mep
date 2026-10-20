@@ -57,11 +57,7 @@ either direction, and nothing is written into mep's own config.</p>
 whose whole point is to hold a secret are never sent at all -- <code>.env</code>,
 <code>*.pem</code>, <code>*.key</code>, <code>id_rsa</code>, <code>.netrc</code>, <code>secrets.yaml</code> and friends.</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.copilot_exclude_patterns   <span class="tok-comment">-- the list; extend it</span>
-<<<<<<< HEAD
-mep.copilot_filetypes[<span class="tok-green">'md'</span>] = <span class="tok-cyan">false</span>   <span class="tok-comment">-- off for one filetype</span>
-=======
 <span class="tok-cyan">mep</span>.copilot_filetypes[<span class="tok-green">'md'</span>] = <span class="tok-cyan">false</span>   <span class="tok-comment">-- off for one filetype</span>
->>>>>>> f1f5186 (Add more inhouse ts)
 <span class="tok-cyan">mep</span>.copilot_enabled = <span class="tok-cyan">false</span>           <span class="tok-comment">-- off entirely, before any server starts</span></code></pre></div>
 <p>Setting <code>copilot_enabled = false</code> in <code>init.lua</code> means no server is ever
 started, rather than one started and ignored.</p>

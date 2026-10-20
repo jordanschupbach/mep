@@ -158,8 +158,8 @@ automatic refresh, leaving the command.
 
 * Servers mep knows about
 
-Forty. Each is used when its command is on =$PATH=; the org, R, Python,
-C++, C and Maxima ones ship with mep itself:
+Forty-one. Each is used when its command is on =$PATH=; the org, R,
+Python, C++, C, Maxima and Common Lisp ones ship with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
@@ -188,6 +188,7 @@ C++, C and Maxima ones ship with mep itself:
 | D               | =serve-d=                          |
 | Julia           | Julia's =LanguageServer=           |
 | Clojure         | =clojure-lsp=                      |
+| Common Lisp     | =mep-lisp-lsp= (ships with mep)    |
 | Kotlin          | =kotlin-language-server=           |
 | Svelte          | =svelteserver=                     |
 | YAML            | =yaml-language-server=             |
@@ -205,15 +206,17 @@ C++, C and Maxima ones ship with mep itself:
 
 If a server is missing, nothing breaks -- the file simply opens without one.
 
-* The seven mep brings itself
+* The eight mep brings itself
 
 =mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp=, =mep-cpp-lsp=, =mep-c-lsp=,
-=mep-maxima-lsp= and =mep-mepml-lsp= are mep's own servers, built and
-installed alongside =mep=, so org, R, Python, C++, C, Maxima and mepml
-files get diagnostics and completion with nothing to install. See
+=mep-maxima-lsp=, =mep-lisp-lsp= and =mep-mepml-lsp= are mep's own
+servers, built and installed alongside =mep=, so org, R, Python, C++, C,
+Maxima, Common Lisp and mepml files get diagnostics and completion with
+nothing to install. See
 [[file:org-lsp.html][The org language server]], [[file:r-lsp.html][The R language server]],
 [[file:python-lsp.html][The Python language server]], [[file:cpp-lsp.html][The C++ language server]],
-[[file:c-lsp.html][The C language server]], [[file:maxima-lsp.html][The Maxima language server]] and
+[[file:c-lsp.html][The C language server]], [[file:maxima-lsp.html][The Maxima language server]],
+[[file:lisp-lsp.html][The Common Lisp language server]] and
 [[file:mepml-lsp.html][The mepml language server]].
 
 Python, C++ and C are the three languages where mep's own server is
@@ -227,6 +230,9 @@ The R one never starts R: it parses the language itself, so a =.R= file
 gets diagnostics, completion, hover and signature help on a machine with
 no R installed at all. The Maxima one is the same -- and it is the only
 Maxima language server there is, so nothing competes with it for =.mac=.
+The Common Lisp one never starts a Lisp image either, which is what sets
+it apart from SLIME, Sly and the image-backed servers: it reads the file
+with its own implementation of the standard reader.
 
 R's own =languageserver= package is still registered, under
 =r_languageserver=, with no file types claimed. It knows what an installed

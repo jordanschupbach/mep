@@ -24,13 +24,15 @@
 <tr><td>Markdown</td><td>Treesitter</td><td><code>marksman</code></td><td>LSP</td><td></td></tr>
 <tr><td>Org</td><td>Treesitter</td><td><code>mep-org-lsp</code></td><td></td><td></td></tr>
 <tr><td>Maxima</td><td>per-line lexer</td><td><code>mep-maxima-lsp</code></td><td>built in</td><td><code>maxima</code></td></tr>
+<tr><td>Common Lisp</td><td>Treesitter</td><td><code>mep-lisp-lsp</code></td><td>LSP (indent)</td><td><code>sbcl</code></td></tr>
 <tr><td>mepml</td><td>Treesitter</td><td><code>mep-mepml-lsp</code></td><td>LSP (tables)</td><td></td></tr>
 <tr><td>Go</td><td>grammar via <code>just fetch-grammars</code></td><td><code>gopls</code></td><td>LSP</td><td></td></tr>
 <tr><td>Rust</td><td>grammar via <code>just fetch-grammars</code></td><td><code>rust-analyzer</code></td><td>LSP</td><td></td></tr>
 <tr><td>everything else</td><td>per-line lexer</td><td>see <a href="lsp.html">Language servers</a></td><td>LSP if attached</td><td></td></tr>
 </table>
-<p>Eight grammars are compiled in: <code>c</code>, <code>cpp</code>, <code>javascript</code>, <code>lua</code>,
-<code>markdown</code>, <code>org</code>, <code>python</code>, <code>r</code>. About fifty more are one
+<p>Twelve grammars are compiled in: <code>c</code>, <code>commonlisp</code>, <code>cpp</code>,
+<code>javascript</code>, <code>just</code>, <code>lua</code>, <code>markdown</code>, <code>mepml</code>, <code>nix</code>, <code>org</code>,
+<code>python</code>, <code>r</code>. About fifty more are one
 <code>just fetch-grammars</code> away -- see <a href="syntax.html">Syntax highlighting</a>.</p>
 <h1>Test runners</h1>
 <p><code>gt</code> knows how to test Go, Python, R, C/C++ and Rust files. See <a href="tests.html">Tests</a>.</p>

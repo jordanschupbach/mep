@@ -454,7 +454,7 @@ target_include_directories(lua SYSTEM PUBLIC "${lua_SOURCE_DIR}/src")
 # network at configure time; see third_party/README.md), and a small core
 # set of grammars compiled into mep: C, C++, Lua (mep's own scripting/
 # config language), Python, JavaScript, Markdown (+ its separate
-# inline-formatting grammar), Org, R, Nix, justfiles and mepml. All of
+# inline-formatting grammar), Org, R, Nix, justfiles, Common Lisp and mepml. All of
 # them are mep's own (grammars/tree-sitter-<name>, mep_grammar below;
 # plans/TREESITTER_GRAMMAR_PLAN.md). Deliberately small, not "as many as
 # possible": every other language is loaded dynamically at runtime
@@ -536,6 +536,7 @@ mep_grammar(cpp Cpp)
 mep_grammar(org Org)
 mep_grammar(markdown Markdown)
 mep_grammar(markdown_inline MarkdownInline)
+mep_grammar(commonlisp Commonlisp)
 
 # Regenerating a grammar needs neither the tree-sitter CLI nor Node
 # (tools/ts_generate/README.md): mep-ts-generate runs grammar.js on mep's
@@ -974,6 +975,10 @@ add_library(mep_core STATIC
     src/cpp_format.cpp
     src/maxima_format.cpp
     src/maxima_ast.cpp
+    # Common Lisp indentation for Enter-key auto-indent (editor.cpp); the
+    # same rules mep-lisp-lsp's formatter uses, with no dependency on the
+    # Lisp reader or the COMMON-LISP name table.
+    src/lisp_indent.cpp
     src/math_tex.cpp
     src/math_speech.cpp
     src/math_markup.cpp
@@ -2213,6 +2218,36 @@ target_compile_options(mep-maxima-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SAN
 target_link_options(mep-maxima-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-maxima-lsp-test)
 
+# mep's own Common Lisp language server and linter: the wire half
+# (src/lisp_lsp_server.cpp, which is also `mep-lisp-lsp --lint FILE...`)
+# over the analysis half (src/lisp_lsp.cpp), the hand-written standard
+# reader under both (src/lisp_reader.cpp), the indenter shared with the
+# editor's Enter key (src/lisp_indent.cpp), the prose vocabulary
+# (src/lisp_lsp_vocab.cpp) and the generated COMMON-LISP symbol table
+# (src/lisp_lsp_cl_names.cpp, produced by scripts/gen_cl_names.py from a
+# live SBCL and committed, so building mep never needs a Lisp). Same
+# reasoning as mep-maxima-lsp above: no mep_core, built by default because
+# kBuiltinLsp's `lisp_ls` entry spawns it out of mep's own bin directory,
+# skipped on Emscripten.
+set(MEP_LISP_LSP_SOURCES src/lisp_lsp.cpp src/lisp_lsp_vocab.cpp src/lisp_lsp_cl_names.cpp src/lisp_reader.cpp
+    src/lisp_indent.cpp)
+if(NOT EMSCRIPTEN)
+    add_executable(mep-lisp-lsp src/lisp_lsp_server.cpp ${MEP_LISP_LSP_SOURCES})
+    target_include_directories(mep-lisp-lsp PRIVATE src)
+    target_compile_options(mep-lisp-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-lisp-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-lisp-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The Common Lisp reader, indenter and analysis halves driven directly --
+# no process, no JSON-RPC client, no Lisp. Same CHECK()-based shape as
+# mep-maxima-lsp-test.
+add_executable(mep-lisp-lsp-test EXCLUDE_FROM_ALL src/lisp_lsp_test.cpp ${MEP_LISP_LSP_SOURCES})
+target_include_directories(mep-lisp-lsp-test PRIVATE src)
+target_compile_options(mep-lisp-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-lisp-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-lisp-lsp-test)
+
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
 add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)
@@ -3267,7 +3302,7 @@ if(NOT EMSCRIPTEN)
         mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test
         mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
-        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-vterm-test mep-spell-test
+        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test
         mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test
         mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test

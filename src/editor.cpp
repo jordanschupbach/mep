@@ -4,6 +4,7 @@
 #include "http_client.h"
 #include "agent_rpc.h"
 #include "indent.h"
+#include "lisp_indent.h"
 #include "lua_env.h"
 #include "job.h"
 #include "formula.h"
@@ -648,6 +649,41 @@ std::vector<std::string> SplitIntoLines(const std::string &content) {
     }
     if (lines.empty()) lines.emplace_back("");
     return lines;
+}
+
+/**
+ * @brief Reports whether a filetype (LspFiletype's bare extension) is Common Lisp.
+ * @param ft The filetype.
+ * @return True for .lisp, .lsp, .cl and .asd.
+ */
+bool IsLispFiletype(const std::string &ft) { return ft == "lisp" || ft == "lsp" || ft == "cl" || ft == "asd"; }
+
+// A new Common Lisp line's indentation. Unlike every other filetype's,
+// it is not the previous line's plus or minus a level: it depends on
+// every form still open above it (lisp_indent.h has the rules). Only the
+// lines back to the enclosing top-level form can matter -- one that
+// opens at column 0, the convention every Lisp editor relies on -- so
+// that is all that is handed over, not the whole buffer on every Enter.
+/**
+ * @brief Computes the indentation of a new Lisp line opened after `row`.
+ * @param lines The buffer's lines.
+ * @param row The line the new one follows, or -1 for a new first line.
+ * @param head The text of `row` that stays on it (everything before the cursor).
+ * @return The new line's leading whitespace, as spaces.
+ */
+std::string LispNewlineIndent(const std::vector<std::string> &lines, int row, const std::string &head) {
+    if (row < 0) return "";
+    constexpr int kMaxLookback = 5000;
+    int start = row;
+    while (start > 0 && row - start < kMaxLookback &&
+           !(start < static_cast<int>(lines.size()) && !lines[static_cast<size_t>(start)].empty() &&
+             lines[static_cast<size_t>(start)][0] == '('))
+        start--;
+    std::vector<std::string> window(lines.begin() + start, lines.begin() + row);
+    window.push_back(head);
+    window.emplace_back();
+    const int col = LispIndentForLine(window, static_cast<int>(window.size()) - 1);
+    return std::string(static_cast<size_t>(std::max(0, col)), ' ');
 }
 
 }  // namespace
@@ -24915,8 +24951,10 @@ bool Editor::DispatchNormalKey(int cp) {
             // The opened line inherits the preceding line's indent (and one level
             // deeper after a Python block opener), same policy as pressing Enter
             // at its end -- ComputeNewlineIndent reads the whole current line.
-            std::string indent = mepindent::ComputeNewlineIndent(
-                Buf().lines[static_cast<size_t>(after)], LspFiletype(Buf().filename));
+            const std::string ft = LspFiletype(Buf().filename);
+            std::string indent = IsLispFiletype(ft)
+                                     ? LispNewlineIndent(Buf().lines, after, Buf().lines[static_cast<size_t>(after)])
+                                     : mepindent::ComputeNewlineIndent(Buf().lines[static_cast<size_t>(after)], ft);
             Buf().lines.insert(Buf().lines.begin() + after + 1, indent);
             ShiftMarksForLineEdit(after + 1, 1);
             ShiftFoldsForLineEdit(after + 1, 1);
@@ -24936,10 +24974,14 @@ bool Editor::DispatchNormalKey(int cp) {
             const int before = FoldAwareOpenRow(cursor.row, /*below=*/false);
             // Open above: match the current line's own indentation (no block-
             // opener bonus -- the new line precedes it, it isn't its body).
+            // Lisp's is still the forms open above it, as for o.
             const std::string &cur = Buf().lines[static_cast<size_t>(before)];
             size_t n = 0;
             while (n < cur.size() && (cur[n] == ' ' || cur[n] == '\t')) n++;
             std::string indent = cur.substr(0, n);
+            if (IsLispFiletype(LspFiletype(Buf().filename)))
+                indent = before > 0 ? LispNewlineIndent(Buf().lines, before - 1, Buf().lines[static_cast<size_t>(before - 1)])
+                                    : "";
             Buf().lines.insert(Buf().lines.begin() + before, indent);
             ShiftMarksForLineEdit(before, 1);
             ShiftFoldsForLineEdit(before, 1);
@@ -25677,8 +25719,10 @@ void Editor::InsertNewline(bool auto_indent) {
     std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
     std::string indent;
     if (auto_indent) {
-        indent = mepindent::ComputeNewlineIndent(
-            line.substr(0, static_cast<size_t>(cursor.col)), LspFiletype(Buf().filename));
+        const std::string ft = LspFiletype(Buf().filename);
+        const std::string head = line.substr(0, static_cast<size_t>(cursor.col));
+        indent = IsLispFiletype(ft) ? LispNewlineIndent(Buf().lines, cursor.row, head)
+                                    : mepindent::ComputeNewlineIndent(head, ft);
     }
     std::string remainder = indent + line.substr(static_cast<size_t>(cursor.col));
     line.erase(static_cast<size_t>(cursor.col));

@@ -39,7 +39,7 @@ tempted to grow this list back:
 C, C++, Lua (mep's own scripting/config language — `~/.config/mep/init.lua`
 and any `.lua` file need this regardless of what else is available),
 Python, JavaScript, Markdown (+ its separate inline-formatting grammar),
-and Org are compiled in — and, like R, Nix, justfiles and mepml, they are
+and Org are compiled in — and, like R, Nix, justfiles, Common Lisp and mepml, they are
 grammars of mep's own now, in `grammars/` (written from each language's
 reference, drop-in replacements for the ones vendored here before;
 `plans/TREESITTER_GRAMMAR_PLAN.md`). None are vendored any more: this

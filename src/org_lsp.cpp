@@ -412,6 +412,8 @@ const std::vector<OrgLspVocabEntry> kBabelLangs = {
     {"java", "compiled", "Compiled and run with javac/java."},
     {"javascript", "Node", "Runs with node."},   {"js", "alias of javascript", "Runs with node."},
     {"julia", "Julia", "Runs with julia."},      {"kotlin", "JVM", "Runs with kotlinc."},
+    {"lisp", "Common Lisp", "Runs with sbcl --script."},
+    {"common-lisp", "alias of lisp", "Runs with sbcl --script."},
     {"lua", "Lua", "Runs with lua."},
     {"matlab", "alias of octave", "Runs with octave-cli/octave."},
     {"maxima", "computer algebra", "Runs with maxima."},
@@ -431,7 +433,7 @@ const std::vector<OrgLspVocabEntry> kBabelLangs = {
 // Other languages org-babel commonly sees that mep cannot execute. Listed
 // so the "unknown language" check stays quiet on them -- being unable to
 // *run* a block is not a reason to call its language a typo.
-const char *const kOtherKnownLangs[] = {"emacs-lisp", "elisp",     "lisp",   "dot",     "ditaa",
+const char *const kOtherKnownLangs[] = {"emacs-lisp", "elisp",     "dot",     "ditaa",
                                         "plantuml",   "gnuplot",   "latex",  "org",     "sql",    "sqlite",
                                         "awk",        "sed",       "make",
                                         "asymptote",  "css",       "html",   "json",    "yaml",   "toml",

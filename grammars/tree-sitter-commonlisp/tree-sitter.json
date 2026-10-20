@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "commonlisp",
+      "camelcase": "Commonlisp",
+      "scope": "source.commonlisp",
+      "path": ".",
+      "file-types": ["lisp", "lsp", "cl", "asd"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Common Lisp, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

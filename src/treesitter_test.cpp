@@ -752,6 +752,88 @@ void TestLua() {
 }
 
 // ---------------------------------------------------------------------------
+// Common Lisp: mep's own grammar (grammars/tree-sitter-commonlisp), compiled in
+// ---------------------------------------------------------------------------
+
+void TestCommonLisp() {
+    for (const char *ft : {"lisp", "lsp", "cl", "asd"}) {
+        CHECK(TreesitterHasGrammar(ft));
+        CHECK(TreesitterHasFoldQuery(ft));
+        CHECK(TreesitterHasStructureQuery(ft));
+    }
+    const std::string src =
+        ";;; Geometry\n"
+        "(defpackage :geometry (:use :cl))\n"
+        "(in-package :geometry)\n"
+        "(defparameter *origin* (cons 0 0))\n"
+        "(defconstant +unit+ 1)\n"
+        "(defstruct point x y)\n"
+        "(defclass shape () ((name :initarg :name :accessor shape-name)))\n"
+        "(defgeneric area (shape))\n"
+        "(defmethod area ((s shape)) 0)\n"
+        "(defun distance (a b &optional (scale 1.0d0))\n"
+        "  \"Distance from A to B.\"\n"
+        "  (let ((dx (- (point-x a) (point-x b)))\n"
+        "        (dy (- (point-y a) (point-y b))))\n"
+        "    (* scale (sqrt (+ (* dx dx) (* dy dy))))))\n"
+        "(defmacro with-origin (&body body) `(let ((o *origin*)) ,@body))\n"
+        "(loop for i from 1 to 3 collect (format nil \"~a~%\" i))\n"
+        "#+sbcl (sb-ext:gc :full t)\n"
+        "(mapcar #'distance '(nil) (list #\\Space))\n";
+    ExpectCaptures("lisp", src, ";;; Geometry", "comment");
+    ExpectCaptures("lisp", src, "defpackage", "variable function.call keyword");
+    ExpectCaptures("lisp", src, ":geometry", "constant");
+    ExpectCaptures("lisp", src, "*origin*", "variable variable.builtin");
+    ExpectCaptures("lisp", src, "+unit+", "variable constant constant");
+    ExpectCaptures("lisp", src, "point x", "variable type");
+    ExpectCaptures("lisp", src, "area (shape)", "variable function");
+    ExpectCaptures("lisp", src, "area ((s", "variable function.method");
+    ExpectCaptures("lisp", src, "s shape))", "variable function.call variable.parameter");
+    ExpectCaptures("lisp", src, "defun", "variable function.call keyword.function");
+    ExpectCaptures("lisp", src, "distance (a", "variable function");
+    ExpectCaptures("lisp", src, "a b &", "variable function.call variable.parameter");
+    ExpectCaptures("lisp", src, "&optional", "variable variable.parameter keyword.directive");
+    ExpectCaptures("lisp", src, "scale 1", "variable function.call variable.parameter");
+    ExpectCaptures("lisp", src, "1.0d0", "number");
+    ExpectCaptures("lisp", src, "\"Distance", "string");
+    ExpectCaptures("lisp", src, "let ((dx", "variable function.call keyword");
+    ExpectCaptures("lisp", src, "dx (-", "variable function.call variable");
+    ExpectCaptures("lisp", src, "sqrt", "variable function.call function.builtin");
+    ExpectCaptures("lisp", src, "with-origin", "variable function.macro");
+    ExpectCaptures("lisp", src, "`(let", "punctuation.special");
+    ExpectCaptures("lisp", src, ",@body", "punctuation.special");
+    ExpectCaptures("lisp", src, "loop", "variable function.call repeat");
+    ExpectCaptures("lisp", src, "for i", "variable keyword");
+    ExpectCaptures("lisp", src, "collect", "variable keyword");
+    ExpectCaptures("lisp", src, "~a", "string string.special");
+    ExpectCaptures("lisp", src, "#+", "preproc");
+    ExpectCaptures("lisp", src, "sbcl", "variable preproc");
+    ExpectCaptures("lisp", src, "sb-ext:", "module");
+    ExpectCaptures("lisp", src, "gc", "variable function.call");
+    ExpectCaptures("lisp", src, "#'", "punctuation.special");
+    ExpectCaptures("lisp", src, "distance '", "variable function");
+    ExpectCaptures("lisp", src, "nil)", "variable function.call constant.builtin");
+    ExpectCaptures("lisp", src, "#\\Space", "character");
+
+    ExpectOutline("lisp", src,
+                  "0:module::geometry@1\n"
+                  "0:variable:*origin*@3\n"
+                  "0:variable:+unit+@4\n"
+                  "0:struct:point@5\n"
+                  "0:class:shape@6\n"
+                  "0:function:area@7\n"
+                  "0:method:area@8\n"
+                  "0:function:distance@9\n"
+                  "0:macro:with-origin@14\n");
+    ExpectOutline("lisp", "(defstruct (pt (:constructor mk)) x)\n(defun (setf thing) (v o) v)\n",
+                  "0:struct:pt@0\n0:function:(setf thing)@1\n");
+
+    bool body = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("lisp", src)) body = body || (f.start_row == 9 && f.end_row == 13);
+    CHECK(body);
+}
+
+// ---------------------------------------------------------------------------
 // JavaScript: mep's own grammar (grammars/tree-sitter-javascript), compiled in
 // ---------------------------------------------------------------------------
 
@@ -1296,6 +1378,10 @@ void TestIncrementalRowsMatchWholeText() {
     for (int i = 0; i < 50; i++)
         nix += "  a" + std::to_string(i) + " = ./p/${x}.nix;\n  s" + std::to_string(i) + " = ''\n    v ${y}\n  '';\n";
     nix += "}\n";
+    std::string lisp;
+    for (int i = 0; i < 50; i++)
+        lisp += "(defun f" + std::to_string(i) + " (x)\n  #| note |#\n  (f \"s" + std::to_string(i) +
+                "\" x))\n\n";
     std::string just;
     for (int i = 0; i < 50; i++)
         just += "r" + std::to_string(i) + " a='x':\n    echo {{a}} \\\n        -n\n\n";
@@ -1361,6 +1447,11 @@ void TestIncrementalRowsMatchWholeText() {
          {{"a3 = ./p/${x}.nix;", "a3 = ./p/${x.nix;"},
           {"s7 = ''", "s7 = \""},
           {"a20 = ./p", "a20 = p"}}},
+        {"lisp", lisp,
+         {{"#| note |#\n  (f \"s3\"", "#| note \n  (f \"s3\""},  // a block comment runs on
+          {"(f \"s9\" x))", "(f \"s9\" x)) |#"},                    // ...to a later close
+          {"#| note |#\n  (f \"s20\"", "#| #| note |#\n  (f \"s20\""},  // nested: one close is not enough
+          {"(f \"s30\" x)", "(f \"s30 x)"}}},                        // a string left open
         {"just", just,
          {{"r3 a='x':", "r3 a='x"},
           {"echo {{a}} \\\n        -n\n\nr9", "echo {{a}}\n        -n\n\nr9"},
@@ -1397,6 +1488,7 @@ int main() {
     TestC();
     TestLua();
     TestJavascript();
+    TestCommonLisp();
     TestCpp();
     TestOrg();
     TestMarkdown();

@@ -125,6 +125,18 @@ LANGUAGES = {
                 '*) exec node --check "$1";; esac', 'sh', '{}'],
         tokens=['`', '${', '/', '/g', '=>', '<div>', '</div>', ';', '\n'],
     ),
+    'commonlisp': dict(
+        globs=['*.lisp', '*.lsp', '*.cl', '*.asd'],
+        # SBCL's own sources (compiler, runtime library, contribs) and a few
+        # widely used libraries with heavy reader-macro and backquote use.
+        sources=[('sbcl.src', ['*.lisp', '*.asd'])] + [
+            (f'sbclPackages.{p}.src', ['*.lisp', '*.asd'])
+            for p in ('alexandria', 'cl-ppcre', 'iterate', 'trivia', 'cffi', 'fiveam')],
+        # Reading a file needs its packages to exist (`pkg:sym`) and its
+        # reader macros installed, so the reader alone says little: no oracle.
+        oracle=None,
+        tokens=['#|', '|#', '#\\', '#+', '#-', ',@', '`', '|', '\\', '#(', "#'", ';', ':'],
+    ),
     'org': dict(
         globs=['*.org'],
         # Emacs's Org manual and friends, and four Org packages' docs and

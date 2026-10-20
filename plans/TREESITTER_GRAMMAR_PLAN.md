@@ -32,6 +32,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done.
 | javascript | vendored tree-sitter/tree-sitter-javascript v0.25.0 | same 114 node types / 36 fields; identical trees on 2,093 of 2,096 files (585 `.jsx`), the other 3 an old-grammar `await` bug (`test/known-differences.txt`); 5.2% fewer bytes in errors on damaged code |
 | org | vendored nvim-orgmode/tree-sitter-org 2.0.4 (extended) | same 56 node types / 36 fields; all 1,459 cleanly parsed top-level items identical; files in error 16 -> 4; blocks close by name; agrees with org_doc.cpp (`mep-org-ts-test`) |
 | markdown, markdown_inline | vendored tree-sitter-grammars/tree-sitter-markdown v0.5.3 | same 51 + 26 node types; 1,607 of 1,609 files identical for each, the 2 + 2 others CommonMark 0.31 corrections, checked against cmark by a structural oracle |
+| commonlisp | (new: no grammar before) | written from CLHS ch. 2 (the reader); 1,512 of 1,521 files from SBCL's sources and six libraries parse with no errors, the other 9 user reader macros or deliberately malformed tests; scanner clean under ASan + UBSan on 4,521 files |
 | cpp | vendored tree-sitter/tree-sitter-cpp v0.23.4 | same 206 node types / 50 fields, same rule order; built on the C grammar; every top-level item both grammars parse without errors is identical (38,871 checked); `parser.c` 16.2 MB against 17.3 MB, size budget relaxed (Phase 5) |
 
 ### Still vendored

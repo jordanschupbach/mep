@@ -1,0 +1,89 @@
+#+TITLE: Common Lisp mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="35">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+=<leader>uu= (or =<leader>lu=) in a =.lisp=, =.lsp=, =.cl= or =.asd= file.
+The tab becomes a Lisp workspace: your source, a live SBCL below it, and
+panels showing what the image knows.
+
+You need =sbcl= on your =PATH=. If =rlwrap= is there too, the console runs
+under it, which gives SBCL's REPL the line editing and history it lacks on
+its own.
+
+* Working in it
+
+| Key / call               | Does                                                      |
+|--------------------------+-----------------------------------------------------------|
+| =<leader>re=             | evaluate the top-level form at the cursor, in its package |
+| =<leader>rr=             | =LOAD= the whole file, then switch the REPL to its package |
+| =gh=                     | documentation for the symbol under the cursor             |
+| =(mep-ui:help 'x)=       | the same, from the console                                |
+| =(mep-ui:view x)=        | describe any value in the Inspect panel                   |
+
+=<leader>re= is the editor half of SLIME's =C-M-x=: it finds the form that
+opens at column 0 above the cursor, and evaluates it in the package the
+nearest =(in-package ...)= above it names -- so redefining one function of
+a file that lives in its own package does not quietly define it in
+=CL-USER= instead. The form's values print in the console as if typed.
+
+Errors land in SBCL's own debugger in the console, with its restarts; pick
+one by number as usual.
+
+* The panels
+
+| Panel    | Shows                                                               |
+|----------+---------------------------------------------------------------------|
+| Symbols  | what the current package defines: variables with their values, functions and macros with their lambda lists, generic functions, classes |
+| Inspect  | =DESCRIBE= of a value, and a list's, vector's or hash table's contents one per line |
+| Packages | every package, its export count and nicknames (the current one starred), and the ASDF systems loaded |
+| History  | the forms the REPL has read, newest first; click one to run it again |
+| Help     | =DESCRIBE= of a symbol -- its documentation, lambda list and type -- or the =APROPOS= matches for a name that is not one |
+
+Clicking a Symbols row inspects it: the value of a variable, the
+definition of anything else.
+
+The panels refresh after every evaluation. They come from two hooks into
+SBCL's REPL (the prompt and the form reader); on another implementation the
+console works but the panels only update when a =mep-ui= function runs.
+The prompt names the current package, =SHAPES>=, as SLIME's does.
+
+* Editing Lisp
+
+These work in any Lisp buffer, with or without the mode open:
+
+- *Highlighting and folds* come from mep's own Common Lisp grammar: special
+  forms, definitions and their names, lambda-list keywords, =LOOP=
+  keywords, =FORMAT= directives inside strings, reader conditionals.
+- *Enter*, =o= and =O= indent the new line the way Emacs's lisp-mode does:
+  body forms two past the open paren, arguments under the first argument.
+- *The structure sidebar* lists the file's packages, classes, structures,
+  functions, macros, methods and variables.
+- *The language server*, =mep-lisp-lsp=, adds diagnostics (a linter),
+  completion, hover, go-to-definition, references, rename, signature help
+  and formatting -- see [[file:lisp-lsp.html][The Common Lisp language server]].
+
+* Options
+
+#+begin_src lua
+mep.opt.lisp_ui_cmd = {'sbcl', '--noinform'}   -- '--load <init>' is added after these
+mep.opt.lisp_ui_rlwrap = true                    -- false: never wrap the console in rlwrap
+mep.opt.lisp_ui_info_share = 0.3
+mep.opt.lisp_ui_bottom_share = 0.4
+mep.opt.lisp_ui_bottom_info_share = 0.4
+#+end_src
+
+To start from a saved core with your libraries already loaded, add
+=--core= to =lisp_ui_cmd=: ={'sbcl', '--core', '/path/to/my.core', '--noinform'}=.
+
+* Org source blocks
+
+=#+begin_src lisp= blocks highlight with the same grammar and run with
+=sbcl --script= (=C-c C-c=, see [[file:org-babel.html][Executing code blocks]]).
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the shared machinery.
+- [[file:lisp-lsp.html][The Common Lisp language server]] -- diagnostics and the =--lint= command.

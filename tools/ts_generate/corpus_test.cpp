@@ -31,7 +31,7 @@
 namespace fs = std::filesystem;
 
 #define MEP_TS_GRAMMARS(X) \
-    X(c) X(cpp) X(javascript) X(just) X(lua) X(markdown) X(markdown_inline) X(mepml) X(nix) X(org) X(python) X(r)
+    X(c) X(commonlisp) X(cpp) X(javascript) X(just) X(lua) X(markdown) X(markdown_inline) X(mepml) X(nix) X(org) X(python) X(r)
 
 #define DECLARE(name) extern "C" const TSLanguage *tree_sitter_##name(void);
 MEP_TS_GRAMMARS(DECLARE)

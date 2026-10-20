@@ -1,0 +1,169 @@
+==================
+definition
+==================
+
+(defun square (x)
+  "Return X squared."
+  (* x x))
+
+---
+
+(source
+  (list (symbol) (symbol) (list (symbol))
+    (string)
+    (list (symbol) (symbol) (symbol))))
+
+==================
+numbers and symbols that look like numbers
+==================
+
+(12 -3 +4 1.5 .5 1. 1/2 -3/4 1e10 2.0d0 6.02S23 #x1F #b-101 #o17 #36rZZ #xa/b)
+(1+ 1- + - ... a/b 1.5x)
+
+---
+
+(source
+  (list (number) (number) (number) (number) (number) (number) (number) (number)
+    (number) (number) (number) (number) (number) (number) (number) (number))
+  (list (symbol) (symbol) (symbol) (symbol) (symbol) (symbol) (symbol)))
+
+==================
+packages and keywords
+==================
+
+(cl:car alexandria::flatten :test #:gensym keyword::x |Mixed Case| foo\ bar)
+
+---
+
+(source
+  (list
+    (qualified_symbol package: (package) name: (symbol))
+    (qualified_symbol package: (package) name: (symbol))
+    (keyword)
+    (uninterned_symbol)
+    (qualified_symbol package: (package) name: (symbol))
+    (symbol)
+    (symbol)))
+
+==================
+strings, escapes and format directives
+==================
+
+(format t "~&Hello, ~a!~%" "\"world\" #| not a comment |#")
+"~10,'0d ~:@(~a~) ~{~a~^, ~}"
+("~" "a~" "\"~\"")
+
+---
+
+(source
+  (list (symbol) (symbol)
+    (string (format_directive) (format_directive) (format_directive))
+    (string (escape_sequence) (escape_sequence)))
+  (string (format_directive) (format_directive) (format_directive) (format_directive)
+    (format_directive) (format_directive) (format_directive) (format_directive))
+  (list (string) (string) (string (escape_sequence) (escape_sequence))))
+
+==================
+characters
+==================
+
+(list #\a #\Space #\( #\) #\; #\" #\Newline)
+
+---
+
+(source
+  (list (symbol) (character) (character) (character) (character) (character)
+    (character) (character)))
+
+==================
+quoting and backquote
+==================
+
+'(a b)
+`(list ,x ,@rest ,.more)
+#'car
+#'(lambda (x) x)
+
+---
+
+(source
+  (quote value: (list (symbol) (symbol)))
+  (quasiquote value: (list (symbol)
+    (unquote value: (symbol))
+    (unquote_splicing value: (symbol))
+    (unquote_splicing value: (symbol))))
+  (function value: (symbol))
+  (function value: (list (symbol) (list (symbol)) (symbol))))
+
+==================
+dotted pairs and vectors
+==================
+
+'(a . b)
+#(1 2 3)
+#3(x)
+#*1010
+#2A((1 2) (3 4))
+
+---
+
+(source
+  (quote value: (list (symbol) (dot) (symbol)))
+  (vector (number) (number) (number))
+  (vector (symbol))
+  (bit_vector)
+  (array value: (list (list (number) (number)) (list (number) (number)))))
+
+==================
+reader conditionals and other dispatch macros
+==================
+
+#+sbcl (sb-ext:quit)
+#-(or ccl ecl) (error "unsupported")
+#.(+ 1 2)
+#1=(a . #1#)
+#S(point :x 1)
+#C(1 2)
+#P"/tmp/x.lisp"
+
+---
+
+(source
+  (feature_expression feature: (symbol)
+    value: (list (qualified_symbol package: (package) name: (symbol))))
+  (feature_expression feature: (list (symbol) (symbol) (symbol))
+    value: (list (symbol) (string)))
+  (read_eval value: (list (symbol) (number) (number)))
+  (label value: (list (symbol) (dot) (label_reference)))
+  (structure value: (list (symbol) (keyword) (number)))
+  (complex value: (list (number) (number)))
+  (pathname value: (string)))
+
+==================
+comments
+==================
+
+;;; Section
+(a ; trailing
+ #| block #| nested |# still |# b)
+#||#
+
+---
+
+(source
+  (comment)
+  (list (symbol) (comment) (block_comment) (symbol))
+  (block_comment))
+
+==================
+shebang
+==================
+
+#!/usr/bin/env -S sbcl --script
+(print 1)
+
+---
+
+(source
+  (shebang)
+  (list (symbol) (number)))

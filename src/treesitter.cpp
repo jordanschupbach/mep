@@ -41,6 +41,7 @@
 #include "org_queries.h"
 #include "markdown_queries.h"
 #include "markdown_inline_queries.h"
+#include "commonlisp_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -62,6 +63,7 @@ const TSLanguage *tree_sitter_cpp(void);        // mep's own: grammars/tree-sitt
 const TSLanguage *tree_sitter_org(void);        // mep's own: grammars/tree-sitter-org
 const TSLanguage *tree_sitter_markdown(void);   // mep's own: grammars/tree-sitter-markdown
 const TSLanguage *tree_sitter_markdown_inline(void);  // mep's own: grammars/tree-sitter-markdown_inline
+const TSLanguage *tree_sitter_commonlisp(void);       // mep's own: grammars/tree-sitter-commonlisp
 }
 
 // The process-wide caches below -- parse trees and row answers per key,
@@ -149,6 +151,12 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"nix", {tree_sitter_nix, kHighlightsNix}},
         // justfiles: LspFiletype maps `justfile`, `Justfile` and `.justfile` here too.
         {"just", {tree_sitter_just, kHighlightsJust}},
+        // Common Lisp: .lisp and .cl for source, .lsp the older spelling,
+        // .asd an ASDF system definition (which is Lisp read by ASDF).
+        {"lisp", {tree_sitter_commonlisp, kHighlightsCommonlisp}},
+        {"lsp", {tree_sitter_commonlisp, kHighlightsCommonlisp}},
+        {"cl", {tree_sitter_commonlisp, kHighlightsCommonlisp}},
+        {"asd", {tree_sitter_commonlisp, kHighlightsCommonlisp}},
     };
     return table;
 }
@@ -189,6 +197,10 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"mepml", {tree_sitter_mepml, kFoldsMepml}},
         {"nix", {tree_sitter_nix, kFoldsNix}},
         {"just", {tree_sitter_just, kFoldsJust}},
+        {"lisp", {tree_sitter_commonlisp, kFoldsCommonlisp}},
+        {"lsp", {tree_sitter_commonlisp, kFoldsCommonlisp}},
+        {"cl", {tree_sitter_commonlisp, kFoldsCommonlisp}},
+        {"asd", {tree_sitter_commonlisp, kFoldsCommonlisp}},
     };
     return table;
 }
@@ -230,6 +242,10 @@ const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
         // queries/structure.scm (embedded via <name>_queries.h).
         {"nix", {tree_sitter_nix, kStructureNix}},
         {"just", {tree_sitter_just, kStructureJust}},
+        {"lisp", {tree_sitter_commonlisp, kStructureCommonlisp}},
+        {"lsp", {tree_sitter_commonlisp, kStructureCommonlisp}},
+        {"cl", {tree_sitter_commonlisp, kStructureCommonlisp}},
+        {"asd", {tree_sitter_commonlisp, kStructureCommonlisp}},
     };
     return table;
 }

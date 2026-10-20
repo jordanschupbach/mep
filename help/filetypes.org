@@ -16,13 +16,15 @@
 | Markdown     | Treesitter    | =marksman=                   | LSP            |           |
 | Org          | Treesitter    | =mep-org-lsp=                |                |           |
 | Maxima       | per-line lexer | =mep-maxima-lsp=            | built in       | =maxima=  |
+| Common Lisp  | Treesitter    | =mep-lisp-lsp=               | LSP (indent)   | =sbcl=    |
 | mepml        | Treesitter    | =mep-mepml-lsp=              | LSP (tables)   |           |
 | Go           | grammar via =just fetch-grammars= | =gopls=  | LSP            |           |
 | Rust         | grammar via =just fetch-grammars= | =rust-analyzer= | LSP     |           |
 | everything else | per-line lexer | see [[file:lsp.html][Language servers]]    | LSP if attached |          |
 
-Eight grammars are compiled in: =c=, =cpp=, =javascript=, =lua=,
-=markdown=, =org=, =python=, =r=. About fifty more are one
+Twelve grammars are compiled in: =c=, =commonlisp=, =cpp=,
+=javascript=, =just=, =lua=, =markdown=, =mepml=, =nix=, =org=,
+=python=, =r=. About fifty more are one
 =just fetch-grammars= away -- see [[file:syntax.html][Syntax highlighting]].
 
 * Test runners

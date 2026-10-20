@@ -17,7 +17,7 @@ Both render through the same [[file:highlight-groups.html][decoration]] pipeline
 
 * Grammars compiled in
 
-=c=, =cpp=, =javascript=, =just=, =lua=, =markdown=, =mepml=, =nix=, =org=, =python=, =r=.
+=c=, =commonlisp=, =cpp=, =javascript=, =just=, =lua=, =markdown=, =mepml=, =nix=, =org=, =python=, =r=.
 
 * Grammars you can add
 

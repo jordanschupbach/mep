@@ -28,8 +28,6 @@ nix run github:jordanschupbach/mep              # run it
 nix profile install github:jordanschupbach/mep  # install it
 #+end_src
 
-The flake package builds on Linux and Apple Silicon macOS.
-
 ** From source
 
 You need CMake ≥ 3.28, a C++20 compiler, and — on the system — OpenGL,
@@ -113,7 +111,7 @@ ported, and *compiled out* rather than failing at runtime:
 
 - *Everything that spawns a child process.* The ~:terminal~ pane, LSP
   servers, ~:!~ commands, the Jupyter/notebook kernels and the YouTube
-  pane's ~curl~ downloads all go through ~job.cpp~, which is
+  pane's ~yt-dlp~/~ffmpeg~ all go through ~job.cpp~, which is
   ~fork~/~forkpty~ on POSIX. Windows has no ~fork~; the equivalent is
   ~CreateProcess~ plus ConPTY (~CreatePseudoConsole~) for the terminal.
   This is the single largest remaining piece.
@@ -199,7 +197,7 @@ resizable, and each one pops out into a large preview float with
 | ~.pdf~                                          | a PDF viewer with real text extraction, outlines and links                                                     |
 | ~.html~ (or ~:Browse <url>~)                    | a browser pane with mep's own HTML/CSS/JS engine; ~:Serve~ hosts a directory ([[file:docs/web.org][more]])     |
 | ~.png~, ~.jpg~, …                               | an image viewer, and ~e~ enters a layer-based editor with procedural fills ([[file:IMAGE_EDITOR.md][more]])    |
-| ~.obj~, ~.gltf~, ~.glb~, ~.iqm~, ~.vox~, ~.m3d~ | a 3D modeler: mesh editing, materials, lights, animation, rendering (~.blend~ too, with its own reader)        |
+| ~.obj~, ~.gltf~, ~.glb~, ~.iqm~, ~.vox~, ~.m3d~ | a 3D modeler: mesh editing, materials, lights, animation, rendering (~.blend~ too, via a local Blender)        |
 | ~.ipynb~                                        | a Jupyter notebook with per-cell kernels, run without ~jupyter_client~ ([[file:docs/notebooks.org][more]])     |
 | ~.org~                                          | agenda, babel, roam, capture, clock, drill, LaTeX and image preview, export, plus ~:Gantt~ and ~:Kanban~ views |
 | ~.docx~, ~.odt~, ~.xlsx~, ~.ods~, ~.csv~        | office documents and spreadsheets, with formulas                                                               |

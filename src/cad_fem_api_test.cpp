@@ -689,7 +689,9 @@ void TestAdaptiveThroughTheSurface() {
     const bool adapted = caller.Ok("fem.adapt", params);
     CHECK(adapted);
     if (!adapted) return;
-    const Json &cycles = caller.last.get("cycles");
+    // Keep an owned copy: the fem.summary call below replaces caller.last.
+    // A reference into that object would dangle before the final comparison.
+    const Json cycles = caller.last.get("cycles");
     std::printf("  %d cycles, reached target %s, stopped early %s\n",
                 static_cast<int>(cycles.size()),
                 caller.last.get("reached_target").as_bool() ? "yes" : "no",

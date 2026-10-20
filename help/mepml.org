@@ -1011,7 +1011,10 @@ A language mep does not know runs as well, as long as it has a =cmd=.
 interpreter and libraries need not be installed. Its value is the packages
 to bring in (=nix-shell -p=); a =.nix= file, or a directory holding a
 =shell.nix=, enters that shell instead; =nix-shell=yes= enters the
-document directory's own =shell.nix=:
+document directory's own =shell.nix=. A flake reference (one word with a
+=#=, such as =nix-shell=".#analysis"= or =nix-shell="github:me/env#py"=)
+enters that flake's dev shell with =nix develop=; =.= is the document's
+directory:
 
 #+begin_example
 ```{python, nix-shell="python3 python3Packages.numpy"}

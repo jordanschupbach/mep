@@ -125,8 +125,8 @@
           ) (pkgs.lib.splitString "\n" (builtins.readFile "${webviewRuntimeClosure}/store-paths"))
         );
 
-        # Only C/C++/Lua/Python/JavaScript/Markdown/Org/R are compiled
-        # into mep itself (see CMakeLists.txt's TS_GRAMMAR_NAMES) --
+        # Only the grammars declared with `mep_grammar(...)` in
+        # CMakeLists.txt are compiled into mep itself --
         # every other language's Treesitter highlighting is resolved at
         # runtime instead, by dlopen()ing a `<name>.so` found on
         # $MEP_TS_PARSER_PATH (src/treesitter.cpp's

@@ -2515,7 +2515,7 @@ std::vector<OrgHeaderArgSpec> OrgHeaderArgSpecsFor(const std::string &block_kind
     AddText(&out, "", "epilogue", "Code appended to the body before it runs (\\n separates lines).");
     AddText(&out, "", "cmdline", "Arguments the block's own program is run with.");
     AddText(&out, "", "cmd", "Shell command that runs the block: {file} source, {bin} temp program, {dir}, {exe}.");
-    AddText(&out, "", "nix-shell", "Run inside nix-shell: packages, a .nix file, or yes for ./shell.nix.");
+    AddText(&out, "", "nix-shell", "Run inside nix-shell: packages, a .nix file, yes for ./shell.nix, or a flake ref (.#name).");
     AddText(&out, "", "stdin", "Name of a block whose results are fed in on stdin.");
     AddText(&out, "Output", "file", "Write the results to this file and link to it.");
     AddText(&out, "", "file-ext", "Extension used when :file is derived from the block's name.");

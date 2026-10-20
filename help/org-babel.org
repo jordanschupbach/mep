@@ -227,8 +227,10 @@ not know runs too when it has a =:cmd=:
 the interpreter and libraries need not be installed: =:nix-shell python3
 python3Packages.numpy= brings those packages in (=nix-shell -p=), a
 =.nix= file or a directory holding a =shell.nix= enters that shell, and
-=:nix-shell yes= enters the run directory's own =shell.nix=. With =:cmd=,
-the command runs inside the shell.
+=:nix-shell yes= enters the run directory's own =shell.nix=. A flake
+reference such as =:nix-shell .#analysis= enters that flake's dev shell
+with =nix develop= (=.= is the run directory). With =:cmd=, the command
+runs inside the shell.
 
 =:eval no= matters for export: code blocks are executed as part of
 exporting, matching real org-mode's default, so a block you do not want run

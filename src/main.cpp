@@ -25844,12 +25844,12 @@ const char *kBuiltinMathSnippets =
     "local function s(trig, body, opts)\n"
     "  opts = opts or {}\n"
     "  M[#M + 1] = {trig = trig, body = body, math = opts.math ~= false,\n"
-    "               word = opts.word ~= false, expand = opts.expand}\n"
+    "               word = opts.word ~= false, expand = opts.expand, math_not = opts.math_not}\n"
     "end\n"
     "local function p(pat, fn, opts)\n"
     "  opts = opts or {}\n"
     "  M[#M + 1] = {pattern = pat, fn = fn, math = opts.math ~= false,\n"
-    "               guard = opts.guard}\n"
+    "               guard = opts.guard, math_not = opts.math_not}\n"
     "end\n"
     // Fractions / roots / scripts. '//' is the fast symbolic form, 'frac'
     // the word alias. The ([%a])(%d) pattern auto-subscripts any letter
@@ -26021,6 +26021,16 @@ const char *kBuiltinMathSnippets =
     // the in-editor render; they differ only in export centering (\(..\)
     // inline, \[..\] centered). flalign's trailing '&' per row is the
     // flush-to-both-margins idiom.
+    //
+    // '$' itself is 'mk' with no trigger word to type: the keystroke that
+    // opens a zone is also one of the two characters a zone is scanned out
+    // of, so math_not (checked against the state *before* this very '$',
+    // not mk's plain math=false) is what keeps it from re-firing on the
+    // '$' that CLOSES a zone -- that one is left to insert literally and
+    // end the session the normal way. word (default on) doubles as the
+    // guard that keeps a hand-typed '\$' (a literal dollar sign) from
+    // opening a zone right after itself.
+    "s('$', '\\\\$${1}\\\\$$0', {math = false, math_not = true})\n"
     "s('mk', '\\\\$${1}\\\\$$0', {math = false})\n"
     "s('dk', '\\\\(\\n  ${1}\\n\\\\)$0', {math = false})\n"
     "s('ck', '\\\\[\\n  ${1}\\n\\\\]$0', {math = false})\n"
@@ -26210,7 +26220,13 @@ const char *kBuiltinMathSnippets =
     "end\n"
     // Tries every spec against the text before the cursor; returns the number
     // of characters to replace and the spec (or a pattern spec's body), or nil.
-    "local function mep_autosnip_match(specs, before, in_math)\n"
+    // row/col (the cursor's current, post-keystroke position) back a second
+    // gate, math_not: a spec needs the zone state from *before* its own
+    // trigger text was typed, not in_math()'s (memoized at the current
+    // column) -- a trigger built out of zone delimiters themselves (the bare
+    // '$' opener) would otherwise see its own just-typed character and read
+    // the zone it's about to open as already closed.
+    "local function mep_autosnip_match(specs, before, in_math, row, col)\n"
     "  local idx = mep_autosnip_index(specs)\n"
     "  local bucket = idx.by_last[before:sub(-1)]\n"
     "  if bucket then\n"
@@ -26219,7 +26235,8 @@ const char *kBuiltinMathSnippets =
     "      for _, form in ipairs(e.forms) do\n"
     "        if #before >= #form and before:sub(-#form) == form then\n"
     "          local prev = #before > #form and before:sub(#before - #form, #before - #form) or ''\n"
-    "          if (not sp.word or mep_autosnip_boundary_ok(prev)) and (not sp.math or in_math()) then\n"
+    "          if (not sp.word or mep_autosnip_boundary_ok(prev)) and (not sp.math or in_math())\n"
+    "              and (not sp.math_not or not mep_in_mathzone(row, col - #form)) then\n"
     "            return #form, sp.body, sp.expand\n"
     "          end\n"
     "        end\n"
@@ -26228,7 +26245,8 @@ const char *kBuiltinMathSnippets =
     "  end\n"
     "  for _, sp in ipairs(idx.pats) do\n"
     "    local s0, e0, c1, c2 = before:find(sp.pattern)\n"
-    "    if s0 and e0 == #before and (not sp.math or in_math()) then\n"
+    "    if s0 and e0 == #before and (not sp.math or in_math())\n"
+    "        and (not sp.math_not or not mep_in_mathzone(row, col - (#before - s0 + 1))) then\n"
     "      local prev = s0 > 1 and before:sub(s0 - 1, s0 - 1) or ''\n"
     "      if not sp.guard or mep_autosnip_boundary_ok(prev) then\n"
     "        return #before - s0 + 1, sp.fn(c1, c2)\n"
@@ -26289,7 +26307,7 @@ const char *kBuiltinMathSnippets =
     "    if mathzone == nil then mathzone = mep_in_mathzone(row, col) end\n"
     "    return mathzone\n"
     "  end\n"
-    "  local n, body, expand = mep_autosnip_match(specs, before, in_math)\n"
+    "  local n, body, expand = mep_autosnip_match(specs, before, in_math, row, col)\n"
     "  if not n then return end\n"
     "  local keep = before:sub(1, #before - n)\n"
     "  local after = line:sub(col)\n"

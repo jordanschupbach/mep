@@ -268,6 +268,8 @@ const std::vector<OrgLspVocabEntry> kHeaderArgs = {
     {"flags", "compiler flags", "Extra flags passed to the compiler for a compiled-language block."},
     {"includes", "#include lines", "Extra include directives for a C/C++ block."},
     {"cmdline", "program arguments", "Arguments appended to the program invocation."},
+    {"cmd", "shell command", "mep extension: the shell command that runs the block; {file} is its source, {bin} a temp program path, {dir} the run directory, {exe} the interpreter."},
+    {"nix-shell", "packages|file.nix|yes", "mep extension: run the block (and its compile) inside nix-shell -p <packages>, or the named shell.nix."},
     {"stdin", "stdin text", "Text fed to the block's standard input."},
     {"screen-width", "columns", "Width GAP displays values at before wrapping them (mep's `gap` backend)."},
     {"memory", "workspace limit", "Size a `gap` block's workspace will not grow past, e.g. `2g` (mep's `gap` backend)."},

@@ -201,12 +201,34 @@ spaces; quote it if it contains a colon.
 | =:dir PATH=           | run the block in that directory                     |
 | =:prologue= / =:epilogue= | code around the body (=\n= separates lines)      |
 | =:cmdline ARGS=       | arguments the block's own program is run with       |
+| =:cmd COMMAND=        | the shell command that runs the block (see below)   |
+| =:nix-shell PKGS=     | run the block inside =nix-shell -p PKGS= (see below) |
 | =:flags= / =:libs=    | compiler and linker arguments (compiled languages)  |
 | =:main no=            | the body supplies its own entry point               |
 | =:stdin NAME=         | feed another block's results in on stdin            |
 | =:cache yes=          | re-run only when the body or arguments change       |
 | =:session NAME=       | share state with the other blocks in that session (export only) |
 | =:noweb yes=          | expand =<<name>>= references from other named blocks |
+
+=:cmd= replaces the language's own invocation -- and its compile step --
+with a shell command of your own. ={file}= in it is the block's source,
+written to a temporary file; ={bin}= a temporary path for a program the
+command builds (removed afterwards); ={dir}= the directory the block runs
+in; ={exe}= the language's interpreter or compiler. Each is put in
+shell-quoted. =:cmdline= is still appended to the end. A language babel does
+not know runs too when it has a =:cmd=:
+
+#+begin_src org
+,#+begin_src cpp :cmd clang++ -std=c++23 -O2 {file} -o {bin} && {bin}
+,#+begin_src fish :cmd fish {file}
+#+end_src
+
+=:nix-shell= runs the block -- its compile too -- inside a nix-shell, so
+the interpreter and libraries need not be installed: =:nix-shell python3
+python3Packages.numpy= brings those packages in (=nix-shell -p=), a
+=.nix= file or a directory holding a =shell.nix= enters that shell, and
+=:nix-shell yes= enters the run directory's own =shell.nix=. With =:cmd=,
+the command runs inside the shell.
 
 =:eval no= matters for export: code blocks are executed as part of
 exporting, matching real org-mode's default, so a block you do not want run

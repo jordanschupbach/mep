@@ -985,6 +985,50 @@ language org can run works here (=bash=, =python=, =r=, =c=, =cpp=,
 =stdin=. =mep-lua= runs inside mep itself and returns its values. Blocks
 run in the document's own directory.
 
+** Choosing the command and the environment
+
+=cmd= says how the block runs: a shell command, in place of the
+language's own invocation (and its compile step). In it ={file}= is the
+block's code, written to a temporary file; ={bin}= a temporary path for a
+program the command builds, deleted afterwards; ={dir}= the directory the
+block runs in; ={exe}= the language's interpreter or compiler. Each is put
+in shell-quoted, and =cmdline= is still appended to the end:
+
+#+begin_example
+```{cpp, cmd="clang++ -std=c++23 -O2 {file} -o {bin} && {bin}"}
+#include <print>
+int main() { std::println("hi"); }
+```
+
+```{fish, cmd="fish {file}"}
+echo hello from fish
+```
+#+end_example
+
+A language mep does not know runs as well, as long as it has a =cmd=.
+
+=nix-shell= runs the block -- its compile too -- inside a nix-shell, so its
+interpreter and libraries need not be installed. Its value is the packages
+to bring in (=nix-shell -p=); a =.nix= file, or a directory holding a
+=shell.nix=, enters that shell instead; =nix-shell=yes= enters the
+document directory's own =shell.nix=:
+
+#+begin_example
+```{python, nix-shell="python3 python3Packages.numpy"}
+import numpy as np
+print(np.arange(5) ** 2)
+```
+
+```{r, nix-shell="R rPackages.ggplot2", file="figs/plot.png"}
+library(ggplot2)
+ggplot(mtcars, aes(wt, mpg)) + geom_point()
+```
+#+end_example
+
+The two combine: with =cmd= set, the command runs inside the shell. Both
+work for =results=exec= blocks too, and in org documents as the =:cmd= and
+=:nix-shell= header arguments.
+
 ** Web pages and apps
 
 =results=web= shows what a block makes as a live web page, in a browser

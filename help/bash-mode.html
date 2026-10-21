@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bash mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="36">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Bash mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.sh</code> or <code>.bash</code> file.
+The tab becomes a shell workspace: your script, an interactive bash below
+it, and panels showing what that shell has defined.</p>
+<p>The console is your login shell when it is bash (<code>$SHELL</code>), else the first
+<code>bash</code> on <code>PATH</code>, and it reads your <code>~/.bashrc</code> first, so your prompt and
+aliases are there. Its history is kept apart from <code>~/.bash_history</code>.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>source the whole file into the console</td></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the top-level block at the cursor in the console</td></tr>
+<tr><td><code>gh</code></td><td>documentation for the command under the cursor, in the Help panel</td></tr>
+<tr><td><code>mep_help NAME</code></td><td>the same, from the console</td></tr>
+<tr><td><code>mep_view VAR</code></td><td>a variable, element by element, in the Inspect panel</td></tr>
+<tr><td><code>mep_run FILE</code></td><td>source a file the way <code>&lt;leader&gt;rr</code> does</td></tr>
+</table>
+<p><code>&lt;leader&gt;rr</code> <b>sources</b> the file rather than running it as a new process, so
+the variables and functions it defines stay defined and show up in the
+panels -- the REPL way of working. A script is still a script, though, so
+while it runs that way:</p>
+<ul>
+<li>its <code>exit</code> returns from it instead of closing the console;</li>
+<li>a <code>set -e</code> in it (<code>set -euo pipefail</code> too) is dropped, since in an interactive shell it would close the console at the first failure;</li>
+<li>the shell's options are put back afterwards, so its <code>set -u</code> does not linger.</li>
+</ul>
+<p><code>&lt;leader&gt;re</code> finds the block around the cursor -- from the nearest line
+above that starts a command at column 0 to just before the next one: a
+whole function, an <code>if</code>, <code>case</code> or loop, or a run of commands written
+together -- and runs it the same way. It goes into the history as itself.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Variables</td><td>what the session has set, with its kind (string, integer, array, assoc, exported, readonly) and value</td></tr>
+<tr><td>Functions</td><td>what the session has defined, with the file and line it came from</td></tr>
+<tr><td>Inspect</td><td><code>declare -p</code> of a variable, and an array's elements one per line</td></tr>
+<tr><td>Jobs</td><td><code>jobs -l</code></td></tr>
+<tr><td>History</td><td>the session's commands, newest first; click one to run it again</td></tr>
+<tr><td>Help</td><td><code>help</code> for a builtin or keyword, the body of a function, the <code>man</code> page of a program, <code>declare -p</code> of a variable</td></tr>
+</table>
+<p>Clicking a Variables row inspects it; clicking a Functions row goes to its
+definition. What existed when the console started -- bash's own variables,
+your <code>~/.bashrc</code>'s -- is left out, so the panels show your session.</p>
+<p>The panels refresh after every command (a <code>PROMPT_COMMAND</code> hook). Panel
+clicks and <code>gh</code> type their commands with a leading space, which keeps them
+out of the history.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.bash_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'/usr/local/bin/bash'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- the console's bash</span>
+<span class="tok-cyan">mep</span>.opt.bash_ui_source_bashrc = <span class="tok-cyan">false</span>           <span class="tok-comment">-- start without ~/.bashrc</span>
+<span class="tok-cyan">mep</span>.opt.bash_ui_hide_vars = <span class="tok-green">'^(STARSHIP_|MYPROMPT_)'</span>  <span class="tok-comment">-- variables to leave out (an ERE)</span></code></pre></div>
+<p>The default <code>bash_ui_hide_vars</code> covers the variables common prompt
+frameworks set after every command (starship, powerline, bash-preexec,
+liquidprompt, ...).</p>
+<h1>Editing shell scripts</h1>
+<p>These work in any shell script, with or without the mode open:</p>
+<ul>
+<li><b>Highlighting, folds and the outline</b> come from mep's own Bash grammar.</li>
+<li><b>Diagnostics, completion, hover, rename and formatting</b> come from <a href="bash-lsp.html">mep's own Bash language server</a>.</li>
+</ul>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="bash-lsp.html">The Bash language server</a>.</li>
+</ul>
+</body>
+</html>

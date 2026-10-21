@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Bash language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Bash language server</h1>
+<h1>What it is</h1>
+<p>Shell scripts get a language server of their own, <code>mep-bash-lsp</code>, built
+and shipped with mep. Open a <code>.sh</code> or <code>.bash</code> file and it attaches by
+itself -- nothing to install, and <b>no shell is ever run</b>. It is mep's own
+Bash parser plus a scope analyser, with bash's builtins, reserved words,
+shell variables and operators described in its own words.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>The same syntax errors as bash</h1>
+<p>Its syntax errors are the ones <code>bash -n</code> reports, worded the same way and
+on the same line: the parser is checked against bash over 3,600 scripts
+(bash-completion, git's test suite, bash's own examples and tests, every
+<code>.sh</code> in nixpkgs). It reads, it never runs: no =source=d file is opened,
+no command substitution is executed.</p>
+<p>Where bash itself only complains when a line runs -- <code>for 1 in ...</code>, a
+bad <code>${...}</code> substitution, the inside of backquotes -- the server does
+not call it a syntax error either; the first is reported by the checks
+below instead.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>what <code>bash -n</code> says, in its words</td></tr>
+<tr><td><code>unexpected-eof</code></td><td>error</td><td>a quote, <code>$(</code>, <code>${</code> or compound command never closed</td></tr>
+<tr><td><code>unterminated-heredoc</code></td><td>warning</td><td>a here-document runs to the end of the file (bash warns too)</td></tr>
+<tr><td><code>local-outside-function</code></td><td>error</td><td><code>local</code> at the top level of a script</td></tr>
+<tr><td><code>invalid-identifier</code></td><td>error</td><td><code>for 1 in</code>, <code>read 2x</code>, <code>local -x a.b=</code>: not a variable name</td></tr>
+<tr><td><code>test-missing-bracket</code></td><td>error</td><td>a <code>[</code> whose last argument is not <code>]</code> (often <code>[ a &amp;&amp; b ]</code>)</td></tr>
+<tr><td><code>assignment-spaces</code></td><td>warning</td><td><code>x = 1</code>: runs a command named <code>x</code></td></tr>
+<tr><td><code>quoted-regex</code></td><td>warning</td><td><code>[[ $x =~ "^a+$" ]]</code>: a quoted regex matches as a plain string</td></tr>
+<tr><td><code>unquoted-at</code></td><td>warning</td><td>unquoted <code>$@</code> or <code>${a[@]}</code> re-splits every element</td></tr>
+<tr><td><code>array-as-string</code></td><td>warning</td><td><code>$arr</code> is only the first element of an array</td></tr>
+<tr><td><code>literal-tilde</code></td><td>warning</td><td>="~/x"<code>: a quoted =~</code> is not your home directory</td></tr>
+<tr><td><code>exit-code-range</code></td><td>warning</td><td><code>exit 256</code>, <code>return -1</code>: wraps around</td></tr>
+<tr><td><code>unused-variable</code></td><td>warning</td><td>assigned, never read (calibrated, below)</td></tr>
+<tr><td><code>undefined-variable</code></td><td>warning</td><td>read, never assigned (calibrated, below)</td></tr>
+<tr><td><code>bashism</code></td><td>warning</td><td>a bash feature in a script whose <code>#!</code> line is <code>sh</code>, <code>dash</code> or <code>ash</code></td></tr>
+<tr><td><code>unquoted-expansion</code></td><td>info</td><td>an unquoted <code>$x</code> or <code>$(...)</code> argument is split and globbed</td></tr>
+<tr><td><code>cd-unchecked</code></td><td>info</td><td><code>cd dir</code> whose failure is not handled (and no <code>set -e</code>)</td></tr>
+<tr><td><code>read-without-r</code></td><td>info</td><td><code>read</code> without <code>-r</code> eats backslashes</td></tr>
+<tr><td><code>masked-return</code></td><td>info</td><td><code>local x=$(cmd)</code> hides <code>cmd</code>'s exit status</td></tr>
+<tr><td><code>duplicate-function</code></td><td>info</td><td>a function redefined before the first definition was ever called</td></tr>
+<tr><td><code>for-in-ls</code></td><td>info</td><td><code>for f in $(ls)</code> breaks on file names with spaces</td></tr>
+<tr><td><code>backticks</code></td><td>hint</td><td><code>`...`</code> rather than <code>$(...)</code></td></tr>
+<tr><td><code>unreachable</code></td><td>hint</td><td>code after an unconditional <code>exit</code> or <code>return</code></td></tr>
+</table>
+<p>Each check stays quiet on the idiomatic forms of what it looks for: no
+<code>unquoted-expansion</code> in an assignment, a <code>[[ ]]</code>, a <code>case</code> word, a
+here-string or a <code>for</code> list (where splitting is the point), or for <code>$#</code>,
+<code>$?</code> and <code>${x:+--flag}</code>; no <code>cd-unchecked</code> in a condition, before <code>&amp;&amp;</code> or
+<code>||</code>, or under <code>set -e</code> (<code>#!/bin/bash -e</code> counts); no <code>quoted-regex</code> when
+the quoted text has no regex characters in it (<code>[[ $x =~ "::" ]]</code> is a
+substring test).</p>
+<h2>Calibration</h2>
+<p>The two name checks would be wrong more often than right if they ran
+unconditionally, so they hold back:</p>
+<ul>
+<li><code>unused-variable</code> looks only at names given a value -- =local cur prev= with no value is how a function shields its caller's variables from a function it calls -- and not at a local any other function reads (bash scopes dynamically), the name <code>_</code> or names starting with one, the last name of a <code>read</code> (it takes the rest of the line), names that appear as <code>$name</code> inside a single-quoted string (code that something runs later: <code>compgen -W</code>, <code>trap</code>, a test harness), or exported names. For globals it also needs a <code>#!</code> line (a file without one is probably sourced, and the sourcing script may read them) and skips ALL_CAPS names, which are usually meant for child processes.</li>
+<li><code>undefined-variable</code> looks only at lower-case names in a script with a <code>#!</code> line, not inside <code>${x:-default}</code> or after <code>[[ -v x ]]</code>, and only when the script is self-contained: it reports nothing in a file that uses <code>source</code>, <code>eval</code> or <code>${!name}</code> indirection, that reads <code>$out</code> or <code>$stdenv</code> (a nixpkgs builder, which gets its variables from the derivation), or that would have more than five such names (then the variables are coming from somewhere else).</li>
+</ul>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> explains a builtin (its usage line too), a reserved word, a test operator (<code>-f</code>, <code>-nt</code>, <code>=~</code>), a <code>${...}</code> operator, a builtin's option (<code>-r</code> of <code>read</code>), a <code>set -o</code> or <code>shopt</code> option name, a shell variable or special parameter; on the file's own names, a variable's attributes and the line that assigns it, or a function's parameters and the comment above its definition.</li>
+<li><b>Completion</b> offers variables after <code>$</code> and <code>${</code> (the function's own locals first), commands in command position (keywords, the file's functions, builtins, then programs on <code>PATH</code>), a builtin's options after <code>-</code>, test operators inside <code>[[ ]]</code>, option names after <code>set -o</code> and <code>shopt</code>.</li>
+<li><b>Signature help</b> shows a builtin's usage line, or a function's parameters as its body names them -- <code>local name=$1 greeting=${2:-hi}</code> makes <code>greet name [greeting]</code> -- with the argument being typed highlighted.</li>
+<li><b>Go to definition</b>, <b>references</b>, <b>highlights</b> and <b>rename</b> follow scope: a name a function declares <code>local</code> (or with <code>declare=/=typeset</code>) is that function's, every other is global. They see names wherever bash assigns them: <code>read</code>, <code>mapfile</code>, <code>getopts</code>, <code>printf -v</code>, <code>for</code>, <code>${x:=default}</code>, arithmetic, <code>exec {fd}&gt;file</code>, <code>[[ -v x ]]</code>. A variable bash or the environment provides, or one the file never assigns, cannot be renamed.</li>
+<li>The <b>outline</b> lists functions (nested ones under their parent) and the global variables assigned at the top level, read-only ones as constants.</li>
+<li><b>Folding</b> covers compound commands, functions, here-documents, multi-line arrays and command substitutions, and runs of comment lines.</li>
+<li><b>Formatting</b> is re-indentation only, from the structure, in the file's own indent unit (tabs, or the width its indented lines use most). Continuation lines go one level in -- unless the file keeps its <code>&amp;&amp;</code> chains level, as git's test suite does, which it follows. Here-document bodies and the inside of multi-line strings are never touched, and a file with a syntax error is left alone.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-bash-lsp</span> <span class="tok-red">--lint</span> scripts/*.sh
+<span class="tok-blue">cat</span> build.sh | <span class="tok-blue">mep-bash-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>deploy.sh:12:9: warning: `tmp` is assigned but never used in this function [unused-variable]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+With no arguments, <code>mep-bash-lsp</code> is the language server on stdio.</p>
+<h1>Using bash-language-server instead</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.bashls.filetypes = <span class="tok-blue">{</span><span class="tok-green">'sh'</span>, <span class="tok-green">'bash'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.bash_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="run-button.html">Running the current file</a>.</li>
+</ul>
+</body>
+</html>

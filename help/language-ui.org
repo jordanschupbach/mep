@@ -29,6 +29,7 @@ layout rather than accumulating panels.
 | Python   | [[file:python-mode.html][Python mode]]        |
 | C, C++   | [[file:c-mode.html][C and C++ mode]]          |
 | Common Lisp | [[file:lisp-mode.html][Common Lisp mode]]   |
+| Bash        | [[file:bash-mode.html][Bash mode]]          |
 
 Each shares the same shape: a console, a Help tab, and panels specific to
 the language.
@@ -39,7 +40,8 @@ the language.
 answers depends on where you are:
 
 - in a language UI mode, its own Help tab -- R's =help()=, Python's pydoc,
-  =man= for C and C++, =DESCRIBE= for Common Lisp;
+  =man= for C and C++, =DESCRIBE= for Common Lisp, =help= and =man= for
+  Bash;
 - otherwise, the LSP hover popup, the same one =K= opens.
 
 =<leader>hs= and =:MepGoHelp= do the same thing.

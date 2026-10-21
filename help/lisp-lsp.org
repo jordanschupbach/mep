@@ -13,7 +13,7 @@ reader plus a scope analyser, with all 978 symbols of the =COMMON-LISP=
 package (their kinds, lambda lists and summaries, generated from SBCL)
 compiled into it.
 
-The same binary is a command-line linter; see [[*Linting from the command line][Linting from the command line]].
+The same binary is a command-line linter; see /Linting from the command line/ below.
 
 * Never starting a Lisp
 

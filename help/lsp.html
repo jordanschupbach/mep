@@ -134,7 +134,7 @@ typing, on opening a file and on switching back to one -- and on
 automatic refresh, leaving the command.</p>
 <h1>Servers mep knows about</h1>
 <p>Forty-one. Each is used when its command is on <code>$PATH</code>; the org, R,
-Python, C++, C, Maxima and Common Lisp ones ship with mep itself:</p>
+Python, C++, C, Maxima, Common Lisp and Bash ones ship with mep itself:</p>
 <table>
 <tr><th>Language</th><th>Command</th></tr>
 <tr><td>C++</td><td><code>mep-cpp-lsp</code> (ships with mep), or <code>clangd</code></td></tr>
@@ -152,7 +152,7 @@ Python, C++, C, Maxima and Common Lisp ones ship with mep itself:</p>
 <tr><td>OCaml</td><td><code>ocamllsp</code></td></tr>
 <tr><td>Zig</td><td><code>zls</code></td></tr>
 <tr><td>Elixir</td><td><code>elixir-ls</code></td></tr>
-<tr><td>Bash</td><td><code>bash-language-server</code></td></tr>
+<tr><td>Bash</td><td><code>mep-bash-lsp</code> (ships with mep), or <code>bash-language-server</code></td></tr>
 <tr><td>R</td><td><code>mep-r-lsp</code> (ships with mep)</td></tr>
 <tr><td>Perl</td><td>Perl's <code>PLS</code></td></tr>
 <tr><td>Fortran</td><td><code>fortls</code></td></tr>
@@ -179,20 +179,21 @@ Python, C++, C, Maxima and Common Lisp ones ship with mep itself:</p>
 <tr><td>mepml</td><td><code>mep-mepml-lsp</code> (ships with mep)</td></tr>
 </table>
 <p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
-<h1>The eight mep brings itself</h1>
+<h1>The nine mep brings itself</h1>
 <p><code>mep-org-lsp</code>, <code>mep-r-lsp</code>, <code>mep-python-lsp</code>, <code>mep-cpp-lsp</code>, <code>mep-c-lsp</code>,
-<code>mep-maxima-lsp</code>, <code>mep-lisp-lsp</code> and <code>mep-mepml-lsp</code> are mep's own
-servers, built and installed alongside <code>mep</code>, so org, R, Python, C++, C,
-Maxima, Common Lisp and mepml files get diagnostics and completion with
-nothing to install. See
+<code>mep-maxima-lsp</code>, <code>mep-lisp-lsp</code>, <code>mep-bash-lsp</code> and <code>mep-mepml-lsp</code> are
+mep's own servers, built and installed alongside <code>mep</code>, so org, R, Python,
+C++, C, Maxima, Common Lisp, shell and mepml files get diagnostics and
+completion with nothing to install. See
 <a href="org-lsp.html">The org language server</a>, <a href="r-lsp.html">The R language server</a>,
 <a href="python-lsp.html">The Python language server</a>, <a href="cpp-lsp.html">The C++ language server</a>,
 <a href="c-lsp.html">The C language server</a>, <a href="maxima-lsp.html">The Maxima language server</a>,
-<a href="lisp-lsp.html">The Common Lisp language server</a> and
+<a href="lisp-lsp.html">The Common Lisp language server</a>,
+<a href="bash-lsp.html">The Bash language server</a> and
 <a href="mepml-lsp.html">The mepml language server</a>.</p>
-<p>Python, C++ and C are the three languages where mep's own server is
-preferred over an external one out of the box: <code>pyright</code> and <code>clangd</code>
-stay registered but claim no filetype of their own, and one line in
+<p>Python, C++, C and Bash are the languages where mep's own server is
+preferred over an external one out of the box: <code>pyright</code>, <code>clangd</code> and
+<code>bash-language-server</code> stay registered but claim no filetype of their own, and one line in
 <code>init.lua</code> swaps either back. <code>.h</code> goes to the C++ server, which reads C
 as well; a project whose headers are all C can hand it over with
 <code>mep.lsp_servers.c_ls.filetypes = {'c', 'h'}</code>.</p>

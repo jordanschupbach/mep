@@ -1,0 +1,151 @@
+#+TITLE: The Bash language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Shell scripts get a language server of their own, =mep-bash-lsp=, built
+and shipped with mep. Open a =.sh= or =.bash= file and it attaches by
+itself -- nothing to install, and *no shell is ever run*. It is mep's own
+Bash parser plus a scope analyser, with bash's builtins, reserved words,
+shell variables and operators described in its own words.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* The same syntax errors as bash
+
+Its syntax errors are the ones =bash -n= reports, worded the same way and
+on the same line: the parser is checked against bash over 3,600 scripts
+(bash-completion, git's test suite, bash's own examples and tests, every
+=.sh= in nixpkgs). It reads, it never runs: no =source=d file is opened,
+no command substitution is executed.
+
+Where bash itself only complains when a line runs -- =for 1 in ...=, a
+bad =${...}= substitution, the inside of backquotes -- the server does
+not call it a syntax error either; the first is reported by the checks
+below instead.
+
+* What it reports
+
+| Code                     | Severity | What it means                                                       |
+|--------------------------+----------+---------------------------------------------------------------------|
+| =syntax-error=           | error    | what =bash -n= says, in its words                                   |
+| =unexpected-eof=         | error    | a quote, =$(=, =${= or compound command never closed                |
+| =unterminated-heredoc=   | warning  | a here-document runs to the end of the file (bash warns too)        |
+| =local-outside-function= | error    | =local= at the top level of a script                                |
+| =invalid-identifier=     | error    | =for 1 in=, =read 2x=, =local -x a.b==: not a variable name         |
+| =test-missing-bracket=   | error    | a =[= whose last argument is not =]= (often =[ a && b ]=)           |
+| =assignment-spaces=      | warning  | =x = 1=: runs a command named =x=                                   |
+| =quoted-regex=           | warning  | =[[ $x =~ "^a+$" ]]=: a quoted regex matches as a plain string      |
+| =unquoted-at=            | warning  | unquoted =$@= or =${a[@]}= re-splits every element                  |
+| =array-as-string=        | warning  | =$arr= is only the first element of an array                        |
+| =literal-tilde=          | warning  | ="~/x"=: a quoted =~= is not your home directory                    |
+| =exit-code-range=        | warning  | =exit 256=, =return -1=: wraps around                               |
+| =unused-variable=        | warning  | assigned, never read (calibrated, below)                            |
+| =undefined-variable=     | warning  | read, never assigned (calibrated, below)                            |
+| =bashism=                | warning  | a bash feature in a script whose =#!= line is =sh=, =dash= or =ash= |
+| =unquoted-expansion=     | info     | an unquoted =$x= or =$(...)= argument is split and globbed          |
+| =cd-unchecked=           | info     | =cd dir= whose failure is not handled (and no =set -e=)             |
+| =read-without-r=         | info     | =read= without =-r= eats backslashes                                |
+| =masked-return=          | info     | =local x=$(cmd)= hides =cmd='s exit status                          |
+| =duplicate-function=     | info     | a function redefined before the first definition was ever called    |
+| =for-in-ls=              | info     | =for f in $(ls)= breaks on file names with spaces                   |
+| =backticks=              | hint     | =`...`= rather than =$(...)=                                        |
+| =unreachable=            | hint     | code after an unconditional =exit= or =return=                      |
+
+Each check stays quiet on the idiomatic forms of what it looks for: no
+=unquoted-expansion= in an assignment, a =[[ ]]=, a =case= word, a
+here-string or a =for= list (where splitting is the point), or for =$#=,
+=$?= and =${x:+--flag}=; no =cd-unchecked= in a condition, before =&&= or
+=||=, or under =set -e= (=#!/bin/bash -e= counts); no =quoted-regex= when
+the quoted text has no regex characters in it (=[[ $x =~ "::" ]]= is a
+substring test).
+
+** Calibration
+
+The two name checks would be wrong more often than right if they ran
+unconditionally, so they hold back:
+
+- =unused-variable= looks only at names given a value -- =local cur
+  prev= with no value is how a function shields its caller's variables
+  from a function it calls -- and not at a local any other function
+  reads (bash scopes dynamically), the name =_= or names starting with
+  one, the last name of a =read= (it takes the rest of the line), names
+  that appear as =$name= inside a single-quoted string (code that
+  something runs later: =compgen -W=, =trap=, a test harness), or
+  exported names. For globals it also needs a =#!= line (a file without
+  one is probably sourced, and the sourcing script may read them) and
+  skips ALL_CAPS names, which are usually meant for child processes.
+- =undefined-variable= looks only at lower-case names in a script with a
+  =#!= line, not inside =${x:-default}= or after =[[ -v x ]]=, and only
+  when the script is self-contained: it reports nothing in a file that
+  uses =source=, =eval= or =${!name}= indirection, that reads =$out= or
+  =$stdenv= (a nixpkgs builder, which gets its variables from the
+  derivation), or that would have more than five such names (then the
+  variables are coming from somewhere else).
+
+* What else it does
+
+- *Hover* explains a builtin (its usage line too), a reserved word, a
+  test operator (=-f=, =-nt=, ==~=), a =${...}= operator, a builtin's
+  option (=-r= of =read=), a =set -o= or =shopt= option name, a shell
+  variable or special parameter; on the file's own names, a variable's
+  attributes and the line that assigns it, or a function's parameters and
+  the comment above its definition.
+- *Completion* offers variables after =$= and =${= (the function's own
+  locals first), commands in command position (keywords, the file's
+  functions, builtins, then programs on =PATH=), a builtin's options after
+  =-=, test operators inside =[[ ]]=, option names after =set -o= and
+  =shopt=.
+- *Signature help* shows a builtin's usage line, or a function's
+  parameters as its body names them -- =local name=$1 greeting=${2:-hi}=
+  makes =greet name [greeting]= -- with the argument being typed
+  highlighted.
+- *Go to definition*, *references*, *highlights* and *rename* follow
+  scope: a name a function declares =local= (or with =declare=/=typeset=)
+  is that function's, every other is global. They see names wherever bash
+  assigns them: =read=, =mapfile=, =getopts=, =printf -v=, =for=,
+  =${x:=default}=, arithmetic, =exec {fd}>file=, =[[ -v x ]]=. A
+  variable bash or the environment provides, or one the file never
+  assigns, cannot be renamed.
+- The *outline* lists functions (nested ones under their parent) and the
+  global variables assigned at the top level, read-only ones as constants.
+- *Folding* covers compound commands, functions, here-documents,
+  multi-line arrays and command substitutions, and runs of comment lines.
+- *Formatting* is re-indentation only, from the structure, in the file's
+  own indent unit (tabs, or the width its indented lines use most).
+  Continuation lines go one level in -- unless the file keeps its =&&=
+  chains level, as git's test suite does, which it follows. Here-document
+  bodies and the inside of multi-line strings are never touched, and a
+  file with a syntax error is left alone.
+
+* Linting from the command line
+
+#+begin_src sh
+mep-bash-lsp --lint scripts/*.sh
+cat build.sh | mep-bash-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+deploy.sh:12:9: warning: `tmp` is assigned but never used in this function [unused-variable]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+With no arguments, =mep-bash-lsp= is the language server on stdio.
+
+* Using bash-language-server instead
+
+#+begin_src lua
+mep.lsp_servers.bashls.filetypes = {'sh', 'bash'}
+mep.lsp_servers.bash_ls.filetypes = {}
+#+end_src
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:run-button.html][Running the current file]].

@@ -287,6 +287,24 @@ ships two *servers* of its own:
 - =src/lisp_lsp_server.cpp= — the =mep-lisp-lsp= binary: the same stdio
   JSON-RPC shape, plus =--lint FILE...= as a command-line linter. It
   claims =lisp=, =lsp=, =cl= and =asd=.
+- =src/bash_parse.cpp= — a Bash parser written from parse.y's grammar,
+  not tree-sitter's: recursive descent over the raw text (the shell's
+  lexer depends on the parser at every turn), with here-documents read at
+  the next newline and line continuations stepped over. Its syntax errors
+  are =bash -n='s, worded the same and on the same line; after one it
+  resynchronizes at the next line, so the rest of the file still has a
+  tree.
+- =src/bash_lsp_index.cpp= — every variable and function occurrence,
+  resolved to a scope (a function's =local=s, or global), including the
+  names builtins assign (=read=, =mapfile=, =getopts=, =printf -v=,
+  =exec {fd}>=). =src/bash_lsp.cpp= (outline, folds, navigation, rename,
+  the re-indenting formatter), =src/bash_lsp_diagnostics.cpp= (the checks,
+  calibrated like the Maxima and Lisp servers' name checks),
+  =src/bash_lsp_completion.cpp= (completion, hover, signature help) and
+  =src/bash_lsp_vocab.cpp= (the prose) work over it.
+- =src/bash_lsp_server.cpp= — the =mep-bash-lsp= binary: the same stdio
+  JSON-RPC shape and =--lint=. It claims =sh= and =bash=;
+  bash-language-server stays registered without a filetype.
 
 Code *inside* a =#+begin_src= block is handled separately, by
 =kBuiltinOrgPolyglot='s per-block shadow buffers talking to a real server

@@ -1,0 +1,85 @@
+#+TITLE: Bash mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="36">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.sh= or =.bash= file.
+The tab becomes a shell workspace: your script, an interactive bash below
+it, and panels showing what that shell has defined.
+
+The console is your login shell when it is bash (=$SHELL=), else the first
+=bash= on =PATH=, and it reads your =~/.bashrc= first, so your prompt and
+aliases are there. Its history is kept apart from =~/.bash_history=.
+
+* Working in it
+
+| Key / call       | Does                                                           |
+|------------------+----------------------------------------------------------------|
+| =<leader>rr=     | source the whole file into the console                         |
+| =<leader>re=     | run the top-level block at the cursor in the console           |
+| =gh=             | documentation for the command under the cursor, in the Help panel |
+| =mep_help NAME=  | the same, from the console                                     |
+| =mep_view VAR=   | a variable, element by element, in the Inspect panel           |
+| =mep_run FILE=   | source a file the way =<leader>rr= does                        |
+
+=<leader>rr= *sources* the file rather than running it as a new process, so
+the variables and functions it defines stay defined and show up in the
+panels -- the REPL way of working. A script is still a script, though, so
+while it runs that way:
+
+- its =exit= returns from it instead of closing the console;
+- a =set -e= in it (=set -euo pipefail= too) is dropped, since in an
+  interactive shell it would close the console at the first failure;
+- the shell's options are put back afterwards, so its =set -u= does not
+  linger.
+
+=<leader>re= finds the block around the cursor -- from the nearest line
+above that starts a command at column 0 to just before the next one: a
+whole function, an =if=, =case= or loop, or a run of commands written
+together -- and runs it the same way. It goes into the history as itself.
+
+* The panels
+
+| Panel     | Shows                                                               |
+|-----------+---------------------------------------------------------------------|
+| Variables | what the session has set, with its kind (string, integer, array, assoc, exported, readonly) and value |
+| Functions | what the session has defined, with the file and line it came from  |
+| Inspect   | =declare -p= of a variable, and an array's elements one per line    |
+| Jobs      | =jobs -l=                                                           |
+| History   | the session's commands, newest first; click one to run it again     |
+| Help      | =help= for a builtin or keyword, the body of a function, the =man= page of a program, =declare -p= of a variable |
+
+Clicking a Variables row inspects it; clicking a Functions row goes to its
+definition. What existed when the console started -- bash's own variables,
+your =~/.bashrc='s -- is left out, so the panels show your session.
+
+The panels refresh after every command (a =PROMPT_COMMAND= hook). Panel
+clicks and =gh= type their commands with a leading space, which keeps them
+out of the history.
+
+* Options
+
+#+begin_src lua
+mep.opt.bash_ui_cmd = {'/usr/local/bin/bash'}   -- the console's bash
+mep.opt.bash_ui_source_bashrc = false           -- start without ~/.bashrc
+mep.opt.bash_ui_hide_vars = '^(STARSHIP_|MYPROMPT_)'  -- variables to leave out (an ERE)
+#+end_src
+
+The default =bash_ui_hide_vars= covers the variables common prompt
+frameworks set after every command (starship, powerline, bash-preexec,
+liquidprompt, ...).
+
+* Editing shell scripts
+
+These work in any shell script, with or without the mode open:
+
+- *Highlighting, folds and the outline* come from mep's own Bash grammar.
+- *Diagnostics, completion, hover, rename and formatting* come from
+  [[file:bash-lsp.html][mep's own Bash language server]].
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:bash-lsp.html][The Bash language server]].

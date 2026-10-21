@@ -20,7 +20,7 @@ image is ever started*. It is mep's own implementation of the standard
 reader plus a scope analyser, with all 978 symbols of the <code>COMMON-LISP</code>
 package (their kinds, lambda lists and summaries, generated from SBCL)
 compiled into it.</p>
-<p>The same binary is a command-line linter; see <a href="*Linting from the command line">Linting from the command line</a>.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
 <h1>Never starting a Lisp</h1>
 <p>SLIME, Sly and the image-backed servers talk to a running Lisp, which is
 the right design for an interactive session. This server is for the other
@@ -133,8 +133,8 @@ that:</p>
 <li><b>Folding</b> covers multi-line forms, block comments and runs of <code>;</code> comment lines.</li>
 </ul>
 <h1>Linting from the command line</h1>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-lisp-lsp</span> <span class="tok-cyan">--lint</span> src/*.lisp
-<span class="tok-blue">cat</span> file.lisp | <span class="tok-blue">mep-lisp-lsp</span> <span class="tok-cyan">--lint</span> <span class="tok-cyan">-</span></code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-lisp-lsp</span> <span class="tok-red">--lint</span> src/*.lisp
+<span class="tok-blue">cat</span> file.lisp | <span class="tok-blue">mep-lisp-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
 <p>prints every diagnostic as</p>
 <pre>src/util.lisp:12:9: warning: `count` is never used; declare it `(declare (ignore count))` if that is deliberate. [unused-variable]</pre>
 <p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,

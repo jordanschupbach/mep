@@ -1,0 +1,118 @@
+# Corpus files whose trees differ from tree-sitter-bash 0.25's (the grammar
+# mep loaded dynamically before this one), each reviewed. Bash accepts all of
+# them, so the oracle cannot tell; see README.md.
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff (grammar-diff).
+
+# A named file descriptor, {fd}>file (bash 4.1): the old grammar has no
+# such descriptor, so `{fd}` became part of the command. Here it is the
+# redirect's file_descriptor.
+*/bash-*/tests/nameref11.sub                                           # named descriptor {fd}>
+*/bash-*/tests/vredir.tests                                            # named descriptor {fd}>
+*/bash-*/tests/vredir1.sub                                             # named descriptor {fd}>
+*/bash-*/tests/vredir2.sub                                             # named descriptor {fd}>
+*/bash-*/tests/vredir3.sub                                             # named descriptor {fd}>
+*/bash-*/tests/vredir4.sub                                             # named descriptor {fd}>
+*/bash-*/tests/vredir5.sub                                             # named descriptor {fd}>
+*/bash-*/tests/vredir6.sub                                             # named descriptor {fd}>
+*/bash-*/tests/vredir7.sub                                             # named descriptor {fd}>
+*/bash-*/tests/vredir8.sub                                             # named descriptor {fd}>
+*/nixos/modules/system/boot/stage-2-init.sh                            # named descriptor {fd}>
+*/pkgs/by-name/br/breakpointHook/attach.sh                             # named descriptor {fd}>
+*/pkgs/stdenv/generic/setup.sh                                         # named descriptor {fd}>
+
+# $@name@ (a nixpkgs placeholder after $): the old scanner read `@name`
+# as a variable name. Bash reads $@ and then the word `name@`.
+*/pkgs/build-support/rust/rustc-wrapper/rustc-wrapper.sh               # $@ then a word
+
+# A backslash in a pattern escapes the next character, whatever it is: the
+# old scanner only stepped over an escaped blank or double quote, so in
+# `*\\'[<>]'*` the escaped backslash's quote was read as escaped.
+*/bash-*/examples/complete/complete-examples                           # escape in a pattern
+*/bash-*/tests/glob.tests                                              # escape in a pattern
+*/git-*/t/t3070-wildmatch.sh                                           # escape in a pattern
+
+# A case pattern on a continuation line (`a | \<newline> --b)`): the old
+# grammar read it as a word there but as an extglob_pattern on the same
+# line. Here it is read the same way on both.
+*/bash-completion-*/completions/_mock                                  # pattern after a line continuation
+*/bash-completion-*/completions/_udevadm                               # pattern after a line continuation
+*/bash-completion-*/completions/_xm                                    # pattern after a line continuation
+*/bash-completion-*/completions/a2x                                    # pattern after a line continuation
+*/bash-completion-*/completions/aptitude                               # pattern after a line continuation
+*/bash-completion-*/completions/chage                                  # pattern after a line continuation
+*/bash-completion-*/completions/configure                              # pattern after a line continuation
+*/bash-completion-*/completions/cppcheck                               # pattern after a line continuation
+*/bash-completion-*/completions/cryptsetup                             # pattern after a line continuation
+*/bash-completion-*/completions/curl                                   # pattern after a line continuation
+*/bash-completion-*/completions/dpkg                                   # pattern after a line continuation
+*/bash-completion-*/completions/evince                                 # pattern after a line continuation
+*/bash-completion-*/completions/fbgs                                   # pattern after a line continuation
+*/bash-completion-*/completions/feh                                    # pattern after a line continuation
+*/bash-completion-*/completions/firefox                                # pattern after a line continuation
+*/bash-completion-*/completions/genisoimage                            # pattern after a line continuation
+*/bash-completion-*/completions/gnokii                                 # pattern after a line continuation
+*/bash-completion-*/completions/gpg                                    # pattern after a line continuation
+*/bash-completion-*/completions/gpg2                                   # pattern after a line continuation
+*/bash-completion-*/completions/iconv                                  # pattern after a line continuation
+*/bash-completion-*/completions/ip                                     # pattern after a line continuation
+*/bash-completion-*/completions/iperf                                  # pattern after a line continuation
+*/bash-completion-*/completions/isort                                  # pattern after a line continuation
+*/bash-completion-*/completions/links                                  # pattern after a line continuation
+*/bash-completion-*/completions/lintian                                # pattern after a line continuation
+*/bash-completion-*/completions/mplayer                                # pattern after a line continuation
+*/bash-completion-*/completions/mysql                                  # pattern after a line continuation
+*/bash-completion-*/completions/mysqladmin                             # pattern after a line continuation
+*/bash-completion-*/completions/pack200                                # pattern after a line continuation
+*/bash-completion-*/completions/pkg-config                             # pattern after a line continuation
+*/bash-completion-*/completions/psql                                   # pattern after a line continuation
+*/bash-completion-*/completions/puppet                                 # pattern after a line continuation
+*/bash-completion-*/completions/pv                                     # pattern after a line continuation
+*/bash-completion-*/completions/pydocstyle                             # pattern after a line continuation
+*/bash-completion-*/completions/pylint                                 # pattern after a line continuation
+*/bash-completion-*/completions/reportbug                              # pattern after a line continuation
+*/bash-completion-*/completions/rpm                                    # pattern after a line continuation
+*/bash-completion-*/completions/rsync                                  # pattern after a line continuation
+*/bash-completion-*/completions/smbclient                              # pattern after a line continuation
+*/bash-completion-*/completions/ssh                                    # pattern after a line continuation
+*/bash-completion-*/completions/sysbench                               # pattern after a line continuation
+*/bash-completion-*/completions/tar                                    # pattern after a line continuation
+*/bash-completion-*/completions/useradd                                # pattern after a line continuation
+*/bash-completion-*/completions/usermod                                # pattern after a line continuation
+*/bash-completion-*/completions/vpnc                                   # pattern after a line continuation
+*/bash-completion-*/completions/wget                                   # pattern after a line continuation
+*/bash-completion-*/completions/xrandr                                 # pattern after a line continuation
+*/bash-completion-*/completions/xz                                     # pattern after a line continuation
+*/bash-completion-*/test/fallback/completions/mock                     # pattern after a line continuation
+*/bash-completion-*/test/fallback/completions/udevadm                  # pattern after a line continuation
+*/bash-completion-*/test/fallback/completions/xm                       # pattern after a line continuation
+
+# A pattern starting with an escaped blank, `\ *`: still an
+# extglob_pattern, but it starts after the backslash (the scanner has
+# skipped it by the time it can tell an escape from a line continuation).
+*/bash-completion-*/completions/screen                                 # pattern starting with an escaped blank
+# An escaped quote in a ${x#pattern} or ${x%pattern}, `${line#*\'}`, or
+# ANSI-C quoting there, `${x%$'a\'b'}`: the old scanner opened a quote at
+# the `\'` and read on into the next line or expansion.
+*/git-*/ci/util/extract-trash-dirs.sh                                  # escaped quote in a pattern
+*/bash-*/tests/posixexp7.sub                                           # escaped quote in a pattern
+
+# A pipeline of three or more commands followed by && or ||: the old
+# grammar allowed a list as a pipeline stage, so `a | b | c && d` was
+# `a | (b | c && d)` -- and a following line `x && y` could be swallowed
+# into the pipeline's last command as arguments, the newline skipped. `|`
+# binds tighter than `&&` and `||` in bash, so here it is a list of a pipeline.
+*/git-*/t/perf/p5303-many-packs.sh                                     # pipeline then && or ||
+*/git-*/t/t5505-remote.sh                                              # pipeline then && or ||
+*/lib/tests/sources.sh                                                 # pipeline then && or ||
+*/maintainers/scripts/rebuild-amount.sh                                # pipeline then && or ||
+*/maintainers/scripts/vanity.sh                                        # pipeline then && or ||
+*/pkgs/applications/science/electronics/kicad/update.sh                # pipeline then && or ||
+*/pkgs/build-support/kernel/modules-closure.sh                         # pipeline then && or ||
+*/pkgs/build-support/setup-hooks/strip.sh                              # pipeline then && or ||
+*/pkgs/tools/typesetting/tex/nix/run-latex.sh                          # pipeline then && or ||
+
+# Recovered from an error the old grammar made earlier in the file: it read
+# everything after an extglob it could not scan as one unterminated string,
+# so the file's last lines were "clean" but wrong.
+*/bash-completion-*/completions/perl                                   # old grammar's earlier error
+*/bash-completion-*/bash_completion                                    # old grammar's earlier error

@@ -1,0 +1,241 @@
+==================
+simple command and quoting
+==================
+
+echo hello "$USER" 'raw' $'\t' $"tr"
+
+---
+
+(program
+  (command name: (command_name (word)) argument: (word) argument: (string (simple_expansion (variable_name))) argument: (raw_string) argument: (ansi_c_string) argument: (string (string_content)))
+)
+
+==================
+assignments
+==================
+
+FOO=1 BAR=x cmd arg
+x+=(a b)
+arr[1]=v
+empty=
+
+---
+
+(program
+  (command (variable_assignment name: (variable_name) value: (number)) (variable_assignment name: (variable_name) value: (word)) name: (command_name (word)) argument: (word))
+  (variable_assignment name: (variable_name) value: (array (word) (word)))
+  (variable_assignment name: (subscript name: (variable_name) index: (number)) value: (word))
+  (variable_assignment name: (variable_name))
+)
+
+==================
+pipelines and lists
+==================
+
+a | b |& c
+a && b || c
+! a
+a &
+
+---
+
+(program
+  (pipeline (command name: (command_name (word))) (command name: (command_name (word))) (command name: (command_name (word))))
+  (list (list (command name: (command_name (word))) (command name: (command_name (word)))) (command name: (command_name (word))))
+  (negated_command (command name: (command_name (word))))
+  (command name: (command_name (word)))
+)
+
+==================
+conditionals and loops
+==================
+
+if a; then b; elif c; then d; else e; fi
+while x; do y; done
+until x; do y; done
+
+---
+
+(program
+  (if_statement condition: (command name: (command_name (word))) (command name: (command_name (word))) (elif_clause (command name: (command_name (word))) (command name: (command_name (word)))) (else_clause (command name: (command_name (word)))))
+  (while_statement condition: (command name: (command_name (word))) body: (do_group (command name: (command_name (word)))))
+  (while_statement condition: (command name: (command_name (word))) body: (do_group (command name: (command_name (word)))))
+)
+
+==================
+for loops
+==================
+
+for i in 1 2 3; do echo $i; done
+for i do echo; done
+for x in ; do :; done
+for ((i = 0; i < 3; i++)); do :; done
+select s in a b; do break; done
+
+---
+
+(program
+  (for_statement variable: (variable_name) value: (number) value: (number) value: (number) body: (do_group (command name: (command_name (word)) argument: (simple_expansion (variable_name)))))
+  (for_statement variable: (variable_name) body: (do_group (command name: (command_name (word)))))
+  (for_statement variable: (variable_name) body: (do_group (command name: (command_name (word)))))
+  (c_style_for_statement initializer: (variable_assignment name: (variable_name) value: (number)) condition: (binary_expression left: (word) right: (number)) update: (postfix_expression (word)) body: (do_group (command name: (command_name (word)))))
+  (for_statement variable: (variable_name) value: (word) value: (word) body: (do_group (command name: (command_name (word)))))
+)
+
+==================
+case
+==================
+
+case $x in
+  a|b) one ;;
+  *.txt) two ;&
+  @(x|y)) three ;;&
+  *) ;;
+esac
+
+---
+
+(program
+  (case_statement value: (simple_expansion (variable_name)) (case_item value: (extglob_pattern) value: (word) (command name: (command_name (word)))) (case_item value: (word) (command name: (command_name (word)))) (case_item value: (extglob_pattern) (command name: (command_name (word)))) (case_item value: (extglob_pattern)))
+)
+
+==================
+functions
+==================
+
+f() { echo; }
+function g { :; }
+function h() ( sub )
+
+---
+
+(program
+  (function_definition name: (word) body: (compound_statement (command name: (command_name (word)))))
+  (function_definition name: (word) body: (compound_statement (command name: (command_name (word)))))
+  (function_definition name: (word) body: (subshell (command name: (command_name (word)))))
+)
+
+==================
+parameter expansion
+==================
+
+echo ${x} ${#x} ${x:-def} ${x/a/b} ${x##*/} ${x%%.*} ${x^^} ${x:1:2} ${!pre*} ${x@Q} ${arr[@]}
+
+---
+
+(program
+  (command name: (command_name (word)) argument: (expansion (variable_name)) argument: (expansion (variable_name)) argument: (expansion (variable_name) (word)) argument: (expansion (variable_name) (regex) (word)) argument: (expansion (variable_name) (regex)) argument: (expansion (variable_name) (regex)) argument: (expansion (variable_name)) argument: (expansion (variable_name) (number) (number)) argument: (expansion (variable_name)) argument: (expansion (variable_name)) argument: (expansion (subscript name: (variable_name) index: (word))))
+)
+
+==================
+substitutions and brace expansion
+==================
+
+echo $(date) `date` <(ls) $((1 + 2 * 3)) {1..10}
+
+---
+
+(program
+  (command name: (command_name (word)) argument: (command_substitution (command name: (command_name (word)))) argument: (command_substitution (command name: (command_name (word)))) argument: (process_substitution (command name: (command_name (word)))) argument: (arithmetic_expansion (binary_expression left: (number) right: (binary_expression left: (number) right: (number)))) argument: (brace_expression (number) (number)))
+)
+
+==================
+redirections
+==================
+
+cmd > out 2>&1 < in >> log &> all
+exec 9<>file
+exec {fd}>&-
+cat <<< "$x"
+
+---
+
+(program
+  (redirected_statement body: (command name: (command_name (word))) redirect: (file_redirect destination: (word)) redirect: (file_redirect descriptor: (file_descriptor) destination: (number)) redirect: (file_redirect destination: (word)) redirect: (file_redirect destination: (word)) redirect: (file_redirect destination: (word)))
+  (redirected_statement body: (command name: (command_name (word))) redirect: (file_redirect descriptor: (file_descriptor) destination: (word)))
+  (redirected_statement body: (command name: (command_name (word))) redirect: (file_redirect descriptor: (file_descriptor)))
+  (command name: (command_name (word)) redirect: (herestring_redirect (string (simple_expansion (variable_name)))))
+)
+
+==================
+here-documents
+==================
+
+cat <<EOF
+hello $name
+EOF
+cat <<-'END'
+	literal $x
+	END
+
+---
+
+(program
+  (redirected_statement body: (command name: (command_name (word))) redirect: (heredoc_redirect (heredoc_start) (heredoc_body (simple_expansion (variable_name)) (heredoc_content)) (heredoc_end)))
+  (redirected_statement body: (command name: (command_name (word))) redirect: (heredoc_redirect (heredoc_start) (heredoc_body) (heredoc_end)))
+)
+
+==================
+tests and arithmetic
+==================
+
+[[ -f $f && $x == *.@(jpg|png) ]]
+[[ $s =~ ^[0-9]+$ ]]
+[ "$a" -eq 1 ]
+(( n++ ))
+
+---
+
+(program
+  (test_command (binary_expression left: (unary_expression operator: (test_operator) (simple_expansion (variable_name))) right: (binary_expression left: (simple_expansion (variable_name)) right: (extglob_pattern))))
+  (test_command (binary_expression left: (simple_expansion (variable_name)) right: (regex)))
+  (test_command (binary_expression left: (string (simple_expansion (variable_name))) operator: (test_operator) right: (number)))
+  (compound_statement (postfix_expression (variable_name)))
+)
+
+==================
+nixpkgs placeholders and number bases
+==================
+
+@prog@ --flag "$@"
+export NIX_@salt@=1
+echo $((10#$n))
+
+---
+
+(program
+  (command name: (command_name (word)) argument: (word) argument: (string (simple_expansion (special_variable_name))))
+  (declaration_command (word))
+  (command name: (command_name (word)) argument: (arithmetic_expansion (number (simple_expansion (variable_name)))))
+)
+
+==================
+extglob case patterns
+==================
+
+case $p in
+  --a | \
+  ?(-)-b) ;;
+  -${o}@([xy]|z*)) ;;
+  @(help|[h?])) ;;
+esac
+
+---
+
+(program
+  (case_statement value: (simple_expansion (variable_name)) (case_item value: (extglob_pattern) value: (extglob_pattern)) (case_item value: (extglob_pattern) value: (expansion (variable_name)) value: (extglob_pattern)) (case_item value: (extglob_pattern)))
+)
+
+==================
+here-strings after compound commands, operators in expansion words
+==================
+
+while read -r l; do :; done <<< "$x"
+echo "${2:+ (from $2)}"
+
+---
+
+(program
+  (redirected_statement body: (while_statement condition: (command name: (command_name (word)) argument: (word) argument: (word)) body: (do_group (command name: (command_name (word))))) (herestring_redirect (string (simple_expansion (variable_name)))))
+  (command name: (command_name (word)) argument: (string (expansion (variable_name) (concatenation (word) (simple_expansion (variable_name)) (word)))))
+)

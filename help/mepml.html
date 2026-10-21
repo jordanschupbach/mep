@@ -823,7 +823,10 @@ echo hello from fish
 interpreter and libraries need not be installed. Its value is the packages
 to bring in (<code>nix-shell -p</code>); a <code>.nix</code> file, or a directory holding a
 <code>shell.nix</code>, enters that shell instead; <code>nix-shell=yes</code> enters the
-document directory's own <code>shell.nix</code>:</p>
+document directory's own <code>shell.nix</code>. A flake reference (one word with a
+<code>#</code>, such as <code>nix-shell</code>".#analysis"= or <code>nix-shell</code>"github:me/env#py"=)
+enters that flake's dev shell with <code>nix develop</code>; <code>.</code> is the document's
+directory:</p>
 <pre>```{python, nix-shell="python3 python3Packages.numpy"}
 import numpy as np
 print(np.arange(5) ** 2)

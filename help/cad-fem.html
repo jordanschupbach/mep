@@ -26,8 +26,8 @@ cannot do.</p>
 agent over the RPC socket as <code>cad.*</code> and <code>fem.*</code>, from an MCP client as
 <code>mep_part_*</code> and <code>mep_fem_*</code>, and from the command line with no display at
 all:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep</span> <span class="tok-cyan">--cad-fem</span> study.json out.json
-<span class="tok-blue">mep</span> <span class="tok-cyan">--cad-export</span> part.step part.stl</code></pre></div>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep</span> <span class="tok-red">--cad-fem</span> study.json out.json
+<span class="tok-blue">mep</span> <span class="tok-red">--cad-export</span> part.step part.stl</code></pre></div>
 <p>A script is a list of calls. Name one with <code>as</code> and later calls refer to
 its result with <code>$name.field</code>:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">js</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="js">[

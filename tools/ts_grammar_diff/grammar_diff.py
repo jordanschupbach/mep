@@ -137,6 +137,24 @@ LANGUAGES = {
         oracle=None,
         tokens=['#|', '|#', '#\\', '#+', '#-', ',@', '`', '|', '\\', '#(', "#'", ';', ':'],
     ),
+    'bash': dict(
+        globs=['*.sh', '*.bash'],
+        # bash-completion (large, dense, every expansion form), git's test
+        # suite (heredocs everywhere), bash's own examples and tests,
+        # nixpkgs' setup hooks and builders, bats, asdf and dehydrated.
+        sources=[('bash-completion.src', ['*/completions/[!M]*', '*/bash_completion', '*.sh', '*.bash']),
+                 ('git.src', ['*/t/*.sh', '*.sh']),
+                 ('bash.src', ['*/examples/*', '*/tests/*.sub', '*/tests/*.tests', '*.sh']),
+                 ('@nixpkgs', ['*.sh']),
+                 ('bats.src', ['*.bash', '*.sh', '*/libexec/*', '*/bin/*']),
+                 ('asdf-vm.src', ['*.bash', '*.sh']),
+                 ('dehydrated.src', ['*/dehydrated', '*.sh'])],
+        # extglob on: `@(a|b)` is a parse error without it, and scripts
+        # that use it turn it on at the top.
+        oracle=['bash', '-O', 'extglob', '-n', '{}'],
+        tokens=['<<EOF\n', '\nEOF\n', '<<-', '$(', '$((', '))', '${', '}', '[[', ']]', '`', 'esac', ';;', 'fi',
+                'done', '=~', '@(', "$'", '\\\n'],
+    ),
     'org': dict(
         globs=['*.org'],
         # Emacs's Org manual and friends, and four Org packages' docs and

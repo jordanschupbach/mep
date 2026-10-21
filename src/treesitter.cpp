@@ -42,6 +42,7 @@
 #include "markdown_queries.h"
 #include "markdown_inline_queries.h"
 #include "commonlisp_queries.h"
+#include "bash_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -64,6 +65,7 @@ const TSLanguage *tree_sitter_org(void);        // mep's own: grammars/tree-sitt
 const TSLanguage *tree_sitter_markdown(void);   // mep's own: grammars/tree-sitter-markdown
 const TSLanguage *tree_sitter_markdown_inline(void);  // mep's own: grammars/tree-sitter-markdown_inline
 const TSLanguage *tree_sitter_commonlisp(void);       // mep's own: grammars/tree-sitter-commonlisp
+const TSLanguage *tree_sitter_bash(void);             // mep's own: grammars/tree-sitter-bash
 }
 
 // The process-wide caches below -- parse trees and row answers per key,
@@ -157,6 +159,11 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"lsp", {tree_sitter_commonlisp, kHighlightsCommonlisp}},
         {"cl", {tree_sitter_commonlisp, kHighlightsCommonlisp}},
         {"asd", {tree_sitter_commonlisp, kHighlightsCommonlisp}},
+        // Shell scripts. zsh is not bash, but close enough for a highlighter
+        // (the same pairing the dynamically loaded grammar had).
+        {"sh", {tree_sitter_bash, kHighlightsBash}},
+        {"bash", {tree_sitter_bash, kHighlightsBash}},
+        {"zsh", {tree_sitter_bash, kHighlightsBash}},
     };
     return table;
 }
@@ -201,6 +208,9 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"lsp", {tree_sitter_commonlisp, kFoldsCommonlisp}},
         {"cl", {tree_sitter_commonlisp, kFoldsCommonlisp}},
         {"asd", {tree_sitter_commonlisp, kFoldsCommonlisp}},
+        {"sh", {tree_sitter_bash, kFoldsBash}},
+        {"bash", {tree_sitter_bash, kFoldsBash}},
+        {"zsh", {tree_sitter_bash, kFoldsBash}},
     };
     return table;
 }
@@ -246,6 +256,9 @@ const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
         {"lsp", {tree_sitter_commonlisp, kStructureCommonlisp}},
         {"cl", {tree_sitter_commonlisp, kStructureCommonlisp}},
         {"asd", {tree_sitter_commonlisp, kStructureCommonlisp}},
+        {"sh", {tree_sitter_bash, kStructureBash}},
+        {"bash", {tree_sitter_bash, kStructureBash}},
+        {"zsh", {tree_sitter_bash, kStructureBash}},
     };
     return table;
 }
@@ -339,9 +352,6 @@ const char *TsxHighlights() {
  */
 const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
     static const std::unordered_map<std::string, DynLangEntry> table = {
-        {"sh", {"bash", kHighlightsBash}},
-        {"bash", {"bash", kHighlightsBash}},
-        {"zsh", {"bash", kHighlightsBash}},
         {"cs", {"c_sharp", kHighlightsCSharp}},
         {"css", {"css", kHighlightsCss}},
         // mepml style sheets are CSS in syntax (docs/mepml-spec/style.md).

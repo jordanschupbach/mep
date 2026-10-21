@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "bash",
+      "camelcase": "Bash",
+      "scope": "source.bash",
+      "path": ".",
+      "file-types": ["sh", "bash", "zsh"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Bash, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

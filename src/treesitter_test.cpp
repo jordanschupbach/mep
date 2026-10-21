@@ -834,6 +834,95 @@ void TestCommonLisp() {
 }
 
 // ---------------------------------------------------------------------------
+// Bash: mep's own grammar (grammars/tree-sitter-bash), compiled in
+// ---------------------------------------------------------------------------
+
+void TestBash() {
+    for (const char *ft : {"sh", "bash", "zsh"}) {
+        CHECK(TreesitterHasGrammar(ft));
+        CHECK(TreesitterHasFoldQuery(ft));
+        CHECK(TreesitterHasStructureQuery(ft));
+    }
+    const std::string src =
+        "#!/usr/bin/env bash\n"
+        "# Deploy script.\n"
+        "readonly VERSION=1.2\n"
+        "export PREFIX=/usr\n"
+        "count=0\n"
+        "greet() {\n"
+        "  local name=${1:-world}\n"
+        "  echo \"hello $name\" >&2\n"
+        "  return 0\n"
+        "}\n"
+        "function cleanup {\n"
+        "  rm -rf \"$tmp\" || true\n"
+        "}\n"
+        "for f in *.txt; do\n"
+        "  if [[ -f $f && $f =~ ^a ]]; then\n"
+        "    cat <<EOF\n"
+        "body $f\n"
+        "EOF\n"
+        "  fi\n"
+        "done\n"
+        "case $1 in\n"
+        "  start|run) greet --loud ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n";
+    ExpectCaptures("sh", src, "#!/usr", "comment keyword.directive");
+    ExpectCaptures("sh", src, "# Deploy", "comment");
+    ExpectCaptures("sh", src, "readonly", "keyword");
+    ExpectCaptures("sh", src, "VERSION", "variable");
+    ExpectCaptures("sh", src, "1.2", "");
+    ExpectCaptures("sh", src, "greet()", "function");
+    ExpectCaptures("sh", src, "local", "keyword");
+    ExpectCaptures("sh", src, "${1", "punctuation.special");
+    ExpectCaptures("sh", src, "echo", "function.call function.builtin");
+    ExpectCaptures("sh", src, "\"hello", "string");
+    ExpectCaptures("sh", src, "$name", "string punctuation.special");
+    ExpectCaptures("sh", src, ">&2", "operator");
+    ExpectCaptures("sh", src, "2\n  return", "number");
+    ExpectCaptures("sh", src, "return 0", "function.call keyword.return");
+    ExpectCaptures("sh", src, "function cleanup", "keyword.function");
+    ExpectCaptures("sh", src, "cleanup {", "function");
+    ExpectCaptures("sh", src, "rm -rf", "function.call");
+    ExpectCaptures("sh", src, "-rf", "variable.parameter");
+    ExpectCaptures("sh", src, "||", "operator");
+    ExpectCaptures("sh", src, "true", "function.call boolean");
+    ExpectCaptures("sh", src, "for f", "repeat");
+    ExpectCaptures("sh", src, "in *.txt", "repeat");
+    ExpectCaptures("sh", src, "if [[", "conditional");
+    ExpectCaptures("sh", src, "[[ -f", "punctuation.bracket");
+    ExpectCaptures("sh", src, "-f $f", "operator");
+    ExpectCaptures("sh", src, "=~", "operator");
+    ExpectCaptures("sh", src, "^a", "string.regexp");
+    ExpectCaptures("sh", src, "EOF\nbody", "label");
+    ExpectCaptures("sh", src, "body $f", "string");
+    ExpectCaptures("sh", src, "case $1", "conditional");
+    ExpectCaptures("sh", src, "$1 in", "punctuation.special");
+    ExpectCaptures("sh", src, "1 in", "variable variable.builtin");
+    ExpectCaptures("sh", src, "start|run", "string.regexp");
+    ExpectCaptures("sh", src, ";;", "punctuation.delimiter");
+    ExpectCaptures("sh", src, "exit 1", "function.call keyword.return");
+
+    // Functions, and the top-level settings a reader looks for: readonly/
+    // export declarations and ALL_CAPS assignments, not `count=0`.
+    ExpectOutline("sh", src,
+                  "0:variable:VERSION@2\n"
+                  "0:variable:PREFIX@3\n"
+                  "0:function:greet@5\n"
+                  "0:function:cleanup@10\n");
+    ExpectOutline("sh", "outer() {\n  inner() { :; }\n}\nX=1\n", "0:function:outer@0\n1:function:inner@1\n0:variable:X@3\n");
+
+    bool body = false, loop = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("sh", src)) {
+        body = body || (f.start_row == 5 && f.end_row == 9);
+        loop = loop || (f.start_row == 13 && f.end_row == 19);
+    }
+    CHECK(body);
+    CHECK(loop);
+}
+
+// ---------------------------------------------------------------------------
 // JavaScript: mep's own grammar (grammars/tree-sitter-javascript), compiled in
 // ---------------------------------------------------------------------------
 
@@ -1385,6 +1474,12 @@ void TestIncrementalRowsMatchWholeText() {
     std::string just;
     for (int i = 0; i < 50; i++)
         just += "r" + std::to_string(i) + " a='x':\n    echo {{a}} \\\n        -n\n\n";
+    // The scanner's state: here-documents waiting for their bodies, and
+    // the paren depth of an extglob pattern cut by an expansion.
+    std::string sh;
+    for (int i = 0; i < 50; i++)
+        sh += "f" + std::to_string(i) + "() {\n  cat <<EOF\nv $x " + std::to_string(i) +
+              "\nEOF\n  case $1 in @(a|${b})) echo \"s\" ;; esac\n}\n\n";
     const std::vector<Case> cases = {
         {"md", md,
          {{"A paragraph with *emphasis*", "A paragraph with *emph"},          // opens emphasis across lines
@@ -1452,6 +1547,12 @@ void TestIncrementalRowsMatchWholeText() {
           {"(f \"s9\" x))", "(f \"s9\" x)) |#"},                    // ...to a later close
           {"#| note |#\n  (f \"s20\"", "#| #| note |#\n  (f \"s20\""},  // nested: one close is not enough
           {"(f \"s30\" x)", "(f \"s30 x)"}}},                        // a string left open
+        {"sh", sh,
+         {{"v $x 3\nEOF", "v $x 3\nEOX"},                  // a here-document runs on...
+          {"v $x 9\nEOF", "v $x 9\nEOF\nEOX"},             // ...past a line that doesn't end it
+          {"cat <<EOF\nv $x 20", "cat <<-'EOF'\nv $x 20"},  // quoted, tab-stripping
+          {"echo \"s\" ;; esac\n}\n\nf30", "echo \"s ;; esac\n}\n\nf30"},  // a string left open
+          {"@(a|${b})) echo \"s\" ;; esac\n}\n\nf40", "@(a|${b}) echo \"s\" ;; esac\n}\n\nf40"}}},
         {"just", just,
          {{"r3 a='x':", "r3 a='x"},
           {"echo {{a}} \\\n        -n\n\nr9", "echo {{a}}\n        -n\n\nr9"},
@@ -1489,6 +1590,7 @@ int main() {
     TestLua();
     TestJavascript();
     TestCommonLisp();
+    TestBash();
     TestCpp();
     TestOrg();
     TestMarkdown();

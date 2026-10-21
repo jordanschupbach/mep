@@ -181,8 +181,10 @@ not know runs too when it has a <code>:cmd</code>:</p>
 the interpreter and libraries need not be installed: =:nix-shell python3
 python3Packages.numpy= brings those packages in (<code>nix-shell -p</code>), a
 <code>.nix</code> file or a directory holding a <code>shell.nix</code> enters that shell, and
-<code>:nix-shell yes</code> enters the run directory's own <code>shell.nix</code>. With <code>:cmd</code>,
-the command runs inside the shell.</p>
+<code>:nix-shell yes</code> enters the run directory's own <code>shell.nix</code>. A flake
+reference such as <code>:nix-shell .#analysis</code> enters that flake's dev shell
+with <code>nix develop</code> (<code>.</code> is the run directory). With <code>:cmd</code>, the command
+runs inside the shell.</p>
 <p><code>:eval no</code> matters for export: code blocks are executed as part of
 exporting, matching real org-mode's default, so a block you do not want run
 during a build needs to say so. <code>:exports</code> is the other half of that

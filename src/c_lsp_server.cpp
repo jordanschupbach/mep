@@ -53,6 +53,7 @@
 #endif
 
 #include "json.h"
+#include "c_format.h"
 #include "c_lsp.h"
 #include "rpc_framing.h"
 
@@ -242,6 +243,8 @@ public:
             Rename(msg.get("id"), params);
         } else if (method == "textDocument/signatureHelp") {
             Reply(msg.get("id"), SignatureHelp(params));
+        } else if (method == "textDocument/formatting") {
+            Reply(msg.get("id"), Formatting(params));
         } else if (method == "completionItem/resolve") {
             // Every item is already complete when it is offered; resolving
             // one is the identity.
@@ -341,6 +344,7 @@ private:
         caps["referencesProvider"] = true;
         caps["documentHighlightProvider"] = true;
         caps["renameProvider"] = rename;
+        caps["documentFormattingProvider"] = true;
 
         Json info = Json::Object();
         info["name"] = "mep-c-lsp";
@@ -500,6 +504,33 @@ private:
         for (size_t i = 0; i < syms.size(); i++) {
             if (syms[i].parent < 0) arr.push_back(SymbolNode(syms, children, lines, i));
         }
+        return arr;
+    }
+
+    /** @brief Answers `textDocument/formatting` with mep's C formatter (clang-format's LLVM layout): one
+     *         edit replacing the lines that changed, none when the formatter refuses the file. Like
+     *         clangd, the client's tabSize/insertSpaces are not the layout's: LLVM style indents by 2. */
+    Json Formatting(const Json &params) const {
+        const std::vector<std::string> &lines = Doc(params.get("textDocument").get("uri").as_string());
+        std::string text;
+        for (size_t k = 0; k < lines.size(); k++) text += lines[k] + (k + 1 < lines.size() ? "\n" : "");
+        const cfmt::Result r = cfmt::Format(text);
+        Json arr = Json::Array();
+        if (!r.ok || r.text == text) return arr;
+        const std::vector<std::string> got = SplitLines(r.text);
+        size_t head = 0;
+        while (head < lines.size() && head < got.size() && lines[head] == got[head]) head++;
+        size_t tail = 0;
+        while (tail < lines.size() - head && tail < got.size() - head &&
+               lines[lines.size() - 1 - tail] == got[got.size() - 1 - tail]) {
+            tail++;
+        }
+        std::string repl;
+        for (size_t k = head; k < got.size() - tail; k++) repl += got[k] + "\n";
+        Json j = Json::Object();
+        j["range"] = RangeLines(static_cast<int>(head), static_cast<int>(lines.size() - tail), 0);
+        j["newText"] = repl;
+        arr.push_back(j);
         return arr;
     }
 

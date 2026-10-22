@@ -1,0 +1,235 @@
+==================
+literals
+==================
+
+a = 'x' + '\n' + 0x1F + 0b1010_0101 + 1_000UL + 1.5e-3f + .5m + 2d;
+b = "text\t\"q\"" + @"C:\dir""x""" + "utf8"u8;
+c = null ?? true;
+
+---
+
+(compilation_unit
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (binary_expression
+            left: (binary_expression
+              left: (binary_expression
+                left: (binary_expression
+                  left: (binary_expression
+                    left: (binary_expression
+                      left: (character_literal
+                        (character_literal_content))
+                      right: (character_literal
+                        (escape_sequence)))
+                    right: (integer_literal))
+                  right: (integer_literal))
+                right: (integer_literal))
+              right: (real_literal))
+            right: (real_literal))
+          right: (real_literal)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (binary_expression
+            left: (string_literal
+              (string_literal_content)
+              (escape_sequence)
+              (escape_sequence)
+              (string_literal_content)
+              (escape_sequence))
+            right: (verbatim_string_literal))
+          right: (string_literal
+            (string_literal_content)
+            (string_literal_encoding))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (null_literal)
+          right: (boolean_literal))))))
+
+==================
+interpolated strings
+==================
+
+a = $"x = {x,5:N2}, {{literal}} {y}";
+b = $@"path {dir}\{file}";
+c = @$"quoted ""{name}""";
+d = $"{{{json}}}";
+e = $"";
+f = $"{when:HH:mm \"h\"}";
+g = $"{(cond ? $"{inner}" : "")}";
+
+---
+
+(compilation_unit
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)
+          (string_content)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_alignment_clause
+              (integer_literal))
+            (interpolation_format_clause)
+            (interpolation_brace))
+          (string_content)
+          (string_content)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_brace))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)
+          (string_content)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_brace))
+          (string_content)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_brace))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)
+          (string_content)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_brace))
+          (string_content)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)
+          (string_content)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_brace))
+          (string_content)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_format_clause)
+            (interpolation_brace))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)
+          (interpolation
+            (interpolation_brace)
+            (parenthesized_expression
+              (conditional_expression
+                condition: (identifier)
+                consequence: (interpolated_string_expression
+                  (interpolation_start)
+                  (interpolation
+                    (interpolation_brace)
+                    (identifier)
+                    (interpolation_brace)))
+                alternative: (string_literal)))
+            (interpolation_brace)))))))
+
+==================
+raw strings
+==================
+
+a = """
+    He said "hi".
+    """;
+b = $"""{x} and "{y}" """;
+c = $$"""{"key": {{value}}}""";
+d = $$"""{{{v}}}""";
+
+---
+
+(compilation_unit
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (raw_string_literal
+          (raw_string_start)
+          (raw_string_content)
+          (raw_string_end)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)
+          (interpolation_quote)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_brace))
+          (string_content)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_brace))
+          (string_content)
+          (interpolation_quote)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)
+          (interpolation_quote)
+          (string_content)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_brace))
+          (string_content)
+          (interpolation_quote)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (interpolated_string_expression
+          (interpolation_start)
+          (interpolation_quote)
+          (interpolation
+            (interpolation_brace)
+            (identifier)
+            (interpolation_brace))
+          (string_content)
+          (interpolation_quote))))))

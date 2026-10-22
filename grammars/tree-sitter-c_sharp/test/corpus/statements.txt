@@ -1,0 +1,244 @@
+==================
+top-level statements and local functions
+==================
+
+var total = Add(1, 2);
+Console.WriteLine(total);
+static int Add(int a, int b) => a + b;
+
+---
+
+(compilation_unit
+  (global_statement
+    (local_declaration_statement
+      (variable_declaration
+        type: (implicit_type)
+        (variable_declarator
+          name: (identifier)
+          (invocation_expression
+            function: (identifier)
+            arguments: (argument_list
+              (argument
+                (integer_literal))
+              (argument
+                (integer_literal))))))))
+  (global_statement
+    (expression_statement
+      (invocation_expression
+        function: (member_access_expression
+          expression: (identifier)
+          name: (identifier))
+        arguments: (argument_list
+          (argument
+            (identifier))))))
+  (global_statement
+    (local_function_statement
+      (modifier)
+      type: (predefined_type)
+      name: (identifier)
+      parameters: (parameter_list
+        (parameter
+          type: (predefined_type)
+          name: (identifier))
+        (parameter
+          type: (predefined_type)
+          name: (identifier)))
+      body: (arrow_expression_clause
+        (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+==================
+control flow
+==================
+
+void M(int[] xs)
+{
+    for (int i = 0, j = 1; i < xs.Length; i++, j--) continue;
+    foreach (var (a, b) in pairs) { }
+    await foreach (var item in stream) break;
+    while (true) { if (x) break; else if (y) continue; else return; }
+    do { x--; } while (x > 0);
+    switch (x) { case 1: case > 5 when y: break; default: goto case 1; }
+    try { throw new E(); } catch (E e) when (e.Code == 1) { throw; } catch { } finally { }
+    using (var r = Open()) { }
+    using var s = Open();
+    await using var t = Open();
+    lock (gate) { }
+    checked { x++; }
+    unsafe { fixed (byte* p = buf) { *p = 0; } }
+    yield return 1;
+    yield break;
+    label: x = 1;
+    ref int r2 = ref xs[0];
+}
+
+---
+
+(compilation_unit
+  (global_statement
+    (local_function_statement
+      type: (predefined_type)
+      name: (identifier)
+      parameters: (parameter_list
+        (parameter
+          type: (array_type
+            type: (predefined_type)
+            rank: (array_rank_specifier))
+          name: (identifier)))
+      body: (block
+        (for_statement
+          initializer: (variable_declaration
+            type: (predefined_type)
+            (variable_declarator
+              name: (identifier)
+              (integer_literal))
+            (variable_declarator
+              name: (identifier)
+              (integer_literal)))
+          condition: (binary_expression
+            left: (identifier)
+            right: (member_access_expression
+              expression: (identifier)
+              name: (identifier)))
+          update: (postfix_unary_expression
+            (identifier))
+          update: (postfix_unary_expression
+            (identifier))
+          body: (continue_statement))
+        (foreach_statement
+          type: (implicit_type)
+          left: (tuple_pattern
+            name: (identifier)
+            name: (identifier))
+          right: (identifier)
+          body: (block))
+        (foreach_statement
+          type: (implicit_type)
+          left: (identifier)
+          right: (identifier)
+          body: (break_statement))
+        (while_statement
+          condition: (boolean_literal)
+          body: (block
+            (if_statement
+              condition: (identifier)
+              consequence: (break_statement)
+              alternative: (if_statement
+                condition: (identifier)
+                consequence: (continue_statement)
+                alternative: (return_statement)))))
+        (do_statement
+          body: (block
+            (expression_statement
+              (postfix_unary_expression
+                (identifier))))
+          condition: (binary_expression
+            left: (identifier)
+            right: (integer_literal)))
+        (switch_statement
+          value: (identifier)
+          body: (switch_body
+            (switch_section
+              (constant_pattern
+                (integer_literal)))
+            (switch_section
+              (relational_pattern
+                (integer_literal))
+              (when_clause
+                (identifier))
+              (break_statement))
+            (switch_section
+              (goto_statement
+                (integer_literal)))))
+        (try_statement
+          body: (block
+            (throw_statement
+              (object_creation_expression
+                type: (identifier)
+                arguments: (argument_list))))
+          (catch_clause
+            (catch_declaration
+              type: (identifier)
+              name: (identifier))
+            (catch_filter_clause
+              (binary_expression
+                left: (member_access_expression
+                  expression: (identifier)
+                  name: (identifier))
+                right: (integer_literal)))
+            body: (block
+              (throw_statement)))
+          (catch_clause
+            body: (block))
+          (finally_clause
+            (block)))
+        (using_statement
+          (variable_declaration
+            type: (implicit_type)
+            (variable_declarator
+              name: (identifier)
+              (invocation_expression
+                function: (identifier)
+                arguments: (argument_list))))
+          body: (block))
+        (local_declaration_statement
+          (variable_declaration
+            type: (implicit_type)
+            (variable_declarator
+              name: (identifier)
+              (invocation_expression
+                function: (identifier)
+                arguments: (argument_list)))))
+        (local_declaration_statement
+          (variable_declaration
+            type: (implicit_type)
+            (variable_declarator
+              name: (identifier)
+              (invocation_expression
+                function: (identifier)
+                arguments: (argument_list)))))
+        (lock_statement
+          (identifier)
+          (block))
+        (checked_statement
+          (block
+            (expression_statement
+              (postfix_unary_expression
+                (identifier)))))
+        (unsafe_statement
+          (block
+            (fixed_statement
+              (variable_declaration
+                type: (pointer_type
+                  type: (predefined_type))
+                (variable_declarator
+                  name: (identifier)
+                  (identifier)))
+              (block
+                (expression_statement
+                  (assignment_expression
+                    left: (prefix_unary_expression
+                      (identifier))
+                    right: (integer_literal)))))))
+        (yield_statement
+          (integer_literal))
+        (yield_statement)
+        (labeled_statement
+          (identifier)
+          (expression_statement
+            (assignment_expression
+              left: (identifier)
+              right: (integer_literal))))
+        (local_declaration_statement
+          (variable_declaration
+            type: (ref_type
+              type: (predefined_type))
+            (variable_declarator
+              name: (identifier)
+              (ref_expression
+                (element_access_expression
+                  expression: (identifier)
+                  subscript: (bracketed_argument_list
+                    (argument
+                      (integer_literal))))))))))))

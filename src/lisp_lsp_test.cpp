@@ -831,24 +831,26 @@ void TestIndentation() {
     CheckIndent({
         "(case x",
         "  (:a (one)",
-        "   (two))",
+        "      (two))",
         "  (t 3))",
     });
     CheckIndent({
         "(alexandria:when-let ((x (foo)))",
         "  x)",
     });
-    // Lambda lists continue under the parameter after the last &keyword.
+    // Lambda lists continue two past the last &keyword (Emacs's
+    // lisp-lambda-list-keyword-parameter-indentation); `&allow-other-keys))'
+    // is not a keyword to its regexp, which wants a blank after it.
     CheckIndent({
         "(defgeneric create (regex &key case-insensitive",
-        "                               multi-line",
-        "                    &allow-other-keys))",
+        "                            multi-line",
+        "                            &allow-other-keys))",
     });
-    // LOOP: a form continuing a clause lines up under the clause's first form.
+    // LOOP: every line of an extended loop six past its paren, as Emacs does.
     CheckIndent({
         "(loop for x in list",
         "      do (print x)",
-        "         (print 2)",
+        "      (print 2)",
         "      collect x)",
     });
     CheckIndent({
@@ -869,9 +871,9 @@ void TestIndentation() {
     });
     CheckIndent({
         "(asdf:defsystem \"demo\"",
-        "  :depends-on (:alexandria)",
-        "  :components ((:file \"a\")",
-        "               (:file \"b\")))",
+        "    :depends-on (:alexandria)",
+        "    :components ((:file \"a\")",
+        "                 (:file \"b\")))",
     });
     CheckIndent({
         "(destructuring-bind",
@@ -897,17 +899,16 @@ void TestIndentation() {
     CHECK(LispIndentForLine({"(defun f (x)", ""}, 1) == 2);
     CHECK(LispIndentForLine({"(foo bar", ""}, 1) == 5);
     CHECK(LispIndentForLine({"(foo", ""}, 1) == 1);
-    CHECK(LispIndentForLine({"(a))) (b", ""}, 1) == 7);  // stray parens ignored
+    CHECK(LispIndentForLine({"(a))) (b", ""}, 1) == 0);  // stray parens close the form, as in Emacs
     CHECK(LispIndentForLine({"  (print \"abc", ""}, 1) == 2);  // inside a string: the previous margin
     CHECK(LispIndentForLine({"(a)", ""}, 1) == 0);
     CHECK(LispIndentForLine({}, 0) == 0);
-    CHECK(LispIndentDistinguishedArgs("DEFUN") == 2 && LispIndentDistinguishedArgs("WITH-FOO") == 1 &&
-          LispIndentDistinguishedArgs("DEFTEST") == 2 && LispIndentDistinguishedArgs("DEFVAR") == 1 &&
-          LispIndentDistinguishedArgs("CAR") == -1);
-    // Formatting is the same thing as edits.
-    const std::vector<LispLspTextEdit> edits = LispLspFormat({"(defun f ()", "1)", "  "});
-    CHECK(edits.size() == 2 && edits[0].range.line == 1 && edits[0].new_text == "  1)");
+    // Formatting is lisp_format.h's formatter, as one edit over the lines that changed.
+    const std::vector<LispLspTextEdit> edits = LispLspFormat({"(defun f ( )", "1", "  )", "(g)  "});
+    CHECK(edits.size() == 1 && edits[0].range.line == 0 && edits[0].range.end_line == 4 &&
+          edits[0].new_text == "(defun f ()\n  1)\n(g)\n");
     CHECK(LispLspFormat({"(defun f ()", "  1)"}).empty());
+    CHECK(LispLspFormat({"(defun f ()", "1"}).empty());  // an unclosed paren: left alone
 }
 
 // --- CLI ----------------------------------------------------------------------

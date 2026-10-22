@@ -1,0 +1,89 @@
+================================================================================
+Atoms
+================================================================================
+
+42 -1.5e3M 1/2 0xFF 2r1010 ##Inf
+:kw ::auto :ns/name ::alias/name :/
+"str\n" \a \newline \u00e9 nil true
+sym ns/sym clojure.core// /
+
+--------------------------------------------------------------------------------
+
+(source
+  (num_lit) (num_lit) (num_lit) (num_lit) (num_lit)
+  (sym_val_lit (sym_lit (sym_name)))
+  (kwd_lit (kwd_name)) (kwd_lit (kwd_name))
+  (kwd_lit (kwd_ns) (kwd_name)) (kwd_lit (kwd_ns) (kwd_name))
+  (kwd_lit (kwd_name))
+  (str_lit) (char_lit) (char_lit) (char_lit) (nil_lit) (bool_lit)
+  (sym_lit (sym_name)) (sym_lit (sym_ns) (sym_name)) (sym_lit (sym_ns) (sym_name))
+  (sym_lit (sym_name)))
+
+================================================================================
+A definition with metadata, a docstring and destructuring
+================================================================================
+
+(defn ^:private greet
+  "Says hello."
+  [{:keys [name]} & more]
+  (println (str "hello " name)))
+
+--------------------------------------------------------------------------------
+
+(source
+  (list_lit
+    (sym_lit (sym_name))
+    (sym_lit (meta_lit (kwd_lit (kwd_name))) (sym_name))
+    (str_lit)
+    (vec_lit
+      (map_lit (kwd_lit (kwd_name)) (vec_lit (sym_lit (sym_name))))
+      (sym_lit (sym_name))
+      (sym_lit (sym_name)))
+    (list_lit
+      (sym_lit (sym_name))
+      (list_lit (sym_lit (sym_name)) (str_lit) (sym_lit (sym_name))))))
+
+================================================================================
+Reader macros
+================================================================================
+
+#{1 2} #(* % %) #"\d+" #'f @a 'q `(x ~y ~@z) #_ignored kept
+#?(:clj 1 :cljs 2) [#?@(:clj [3])] #:p{:a 1} #inst "2020" #=(+ 1 2)
+
+--------------------------------------------------------------------------------
+
+(source
+  (set_lit (num_lit) (num_lit))
+  (anon_fn_lit (sym_lit (sym_name)) (sym_lit (sym_name)) (sym_lit (sym_name)))
+  (regex_lit)
+  (var_quoting_lit (sym_lit (sym_name)))
+  (derefing_lit (sym_lit (sym_name)))
+  (quoting_lit (sym_lit (sym_name)))
+  (syn_quoting_lit
+    (list_lit
+      (sym_lit (sym_name))
+      (unquoting_lit (sym_lit (sym_name)))
+      (unquote_splicing_lit (sym_lit (sym_name)))))
+  (dis_expr (sym_lit (sym_name)))
+  (sym_lit (sym_name))
+  (read_cond_lit (kwd_lit (kwd_name)) (num_lit) (kwd_lit (kwd_name)) (num_lit))
+  (vec_lit (splicing_read_cond_lit (kwd_lit (kwd_name)) (vec_lit (num_lit))))
+  (ns_map_lit (kwd_lit (kwd_name)) (kwd_lit (kwd_name)) (num_lit))
+  (tagged_or_ctor_lit (sym_lit (sym_name)) (str_lit))
+  (evaling_lit (list_lit (sym_lit (sym_name)) (num_lit) (num_lit))))
+
+================================================================================
+Comments
+================================================================================
+
+#!/usr/bin/env bb
+; a comment
+(a ; inside
+ b)
+
+--------------------------------------------------------------------------------
+
+(source
+  (comment)
+  (comment)
+  (list_lit (sym_lit (sym_name)) (comment) (sym_lit (sym_name))))

@@ -196,6 +196,15 @@ enumeration constants are the document outline, so [[file:structure-symbols.html
 from the server. Folding covers every braced block, each =#if= group, the
 =#include= block at the top, and runs of comment lines.
 
+* Formatting
+
+=textDocument/formatting= is answered with mep's own C formatter -- the
+same one =gf= runs, clang-format's LLVM layout without clang-format (see
+[[file:formatting.html][Formatting]]) -- as one edit over the lines that
+changed. Like clangd, the client's tab settings are not the layout's:
+LLVM style indents by two spaces. A file the formatter refuses gets no
+edits.
+
 * What it does not do
 
 - *No preprocessing.* See the opening sections.
@@ -213,8 +222,6 @@ from the server. Folding covers every braced block, each =#if= group, the
   among them -- see [[file:cpp-lsp.html][The C++ language server]]. A project whose
   headers are all C can hand =h= over with
   =mep.lsp_servers.c_ls.filetypes = {'c', 'h'}=.
-- *No formatting.* =mep.lsp_format= falls through to the configured
-  formatter for C; the server does not claim the capability.
 
 * Turning it off
 

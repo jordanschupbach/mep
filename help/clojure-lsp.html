@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Clojure language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Clojure language server</h1>
+<h1>What it is</h1>
+<p>Clojure files get a language server of their own, <code>mep-clojure-lsp</code>, built
+and shipped with mep. Open a <code>.clj</code>, <code>.cljs</code>, <code>.cljc</code>, <code>.cljd</code>, <code>.edn</code> or
+<code>.bb</code> file and it attaches by itself -- nothing to install, *no JVM is
+started and nothing is evaluated*. It reads the file with mep's own
+Clojure reader and knows <code>clojure.core</code> and the namespaces that ship with
+Clojure (<code>clojure.string</code>, <code>clojure.set</code>, <code>clojure.walk</code>, ...) from a table
+generated from Clojure itself: every var's arglists, docstring, the
+version it was added in, and whether it is deprecated or private.</p>
+<p>On start it indexes the workspace's <code>.clj</code>, <code>.cljc</code>, <code>.cljs</code> and <code>.bb</code>
+files -- each one's namespace and vars, with their arglists and
+docstrings -- so definition, hover, completion after <code>alias/</code> and argument
+counts reach across files. An open file is re-indexed as you type.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>The same read errors as Clojure</h1>
+<p>Its reader errors are the ones the JVM's reader raises, worded the same
+way, at the same place: the reader is checked against Clojure's own
+(<code>clojure.core/read</code> with reader conditionals allowed) on 4,755 files --
+the 1,777 files of mep's Clojure corpus (Clojure's and ClojureScript's own
+source, clj-kondo, clojure-lsp, babashka, rewrite-clj...) and damaged
+copies of them -- and agrees on 4,754. That covers unmatched and unclosed
+delimiters, bad numbers and tokens (<code>08</code>, <code>1.2.3</code>, <code>\abc</code>), string and
+character escapes, regexes, metadata, nested <code>#()</code>, <code>##Inf</code>-style values,
+namespaced maps, a map with an odd number of forms or a duplicate key, and
+the rules of <code>#?</code> and <code>#?@</code>.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td>(reader codes)</td><td>error</td><td>what the JVM's reader says, in its words: <code>eof</code>, <code>unmatched-delimiter</code>, <code>invalid-number</code>, <code>invalid-token</code>, <code>string-escape</code>, <code>odd-map</code>, <code>duplicate-key</code>, <code>read-cond</code>, ...</td></tr>
+<tr><td><code>reader-conditional</code></td><td>error</td><td>a <code>#?</code> in a <code>.clj</code> file, which <code>load</code> reads without them</td></tr>
+<tr><td><code>def-shape</code>, <code>defn-shape</code>, <code>fn-shape</code></td><td>error</td><td>a <code>def=/=defn=/=fn</code> the compiler rejects: no name, no parameter vector</td></tr>
+<tr><td><code>binding-shape</code></td><td>error</td><td><code>let</code>, <code>loop</code>, <code>for</code>, <code>doseq</code>... without a vector, or with an odd one</td></tr>
+<tr><td><code>if-shape</code></td><td>error</td><td><code>if</code> with too few or too many forms</td></tr>
+<tr><td><code>duplicate-case-test</code></td><td>error</td><td>the same constant twice in a <code>case</code></td></tr>
+<tr><td><code>unresolved-symbol</code></td><td>error</td><td>a name nothing defines, binds or refers (calibrated, below)</td></tr>
+<tr><td><code>unresolved-namespace</code></td><td>error</td><td><code>alias/x</code> with no such alias</td></tr>
+<tr><td><code>unresolved-var</code></td><td>error</td><td><code>str/no-such-fn</code> in a namespace the server knows</td></tr>
+<tr><td><code>use-before-definition</code></td><td>error</td><td>a var used above its <code>def</code> in the same file</td></tr>
+<tr><td><code>invalid-arity</code></td><td>error</td><td>a call with a number of arguments none of the arglists takes</td></tr>
+<tr><td><code>private-var</code></td><td>warning</td><td><code>ns/x</code> naming a var its namespace keeps private</td></tr>
+<tr><td><code>namespace-name-mismatch</code></td><td>warning</td><td><code>(ns a.b-c)</code> in a file that is not <code>a/b_c.clj</code></td></tr>
+<tr><td><code>inline-def</code></td><td>warning</td><td>a <code>def</code> inside a function body</td></tr>
+<tr><td><code>unused-binding</code></td><td>warning</td><td>a <code>let=/=fn</code> local never read (<code>_x</code> is how to say "on purpose")</td></tr>
+<tr><td><code>unused-private-var</code></td><td>warning</td><td>a <code>defn-</code> or <code>^:private</code> var the file never uses</td></tr>
+<tr><td><code>unused-namespace</code></td><td>warning</td><td>a <code>:require</code> whose alias and refers are never used</td></tr>
+<tr><td><code>unused-referred-var</code></td><td>warning</td><td>a <code>:refer</code> name never used</td></tr>
+<tr><td><code>duplicate-require</code></td><td>warning</td><td>the same namespace required twice</td></tr>
+<tr><td><code>redefined-var</code></td><td>warning</td><td>the same var defined twice in the file</td></tr>
+<tr><td><code>misplaced-docstring</code></td><td>warning</td><td><code>(defn f [x] "doc" ...)</code>: the string is the body, not the doc</td></tr>
+<tr><td><code>deprecated-var</code></td><td>warning</td><td>a var Clojure marks deprecated (<code>replicate</code>, <code>agent-errors</code>...)</td></tr>
+<tr><td><code>redundant-do</code></td><td>hint</td><td><code>(do x)</code>: a <code>do</code> wrapping a single form</td></tr>
+<tr><td><code>not-empty</code></td><td>hint</td><td><code>(not (empty? x))</code> -- <code>(seq x)</code> says it</td></tr>
+</table>
+<p>The errors are the compiler's: a file with one would not load. The checks
+were calibrated against <code>clj-kondo</code> on the same 1,777 files, and on that
+code -- which compiles -- the error checks report next to nothing.</p>
+<h2>Calibration</h2>
+<p>The name checks only run where the server can see the whole picture:</p>
+<ul>
+<li>On Clojure code: a <code>.clj</code> or <code>.bb</code> file, or the <code>:clj</code> and <code>:default</code> branches of a <code>.cljc</code> one. Not on ClojureScript (<code>cljs.core</code> and <code>js/</code> interop are not in its tables) and not in an <code>.edn</code> file, which is data.</li>
+<li>Macros are not expanded. <code>clojure.core</code>'s are known form by form (what <code>let</code>, <code>fn</code>, <code>for</code>, <code>defrecord</code>, <code>case</code>, <code>-&gt;</code>, <code>doto</code>... bind and evaluate). A call it cannot identify -- a library's macro -- turns the name checks off inside it, and every symbol written in a vector among its arguments counts as bound there (<code>go-loop [x 1]</code>, <code>are [x y]</code>), the common shape of a macro that binds names.</li>
+<li>A file that =:use=s or =:refer :all=s a namespace the server does not know, or that has more than five names it cannot place, depends on a context it cannot see (code =load=ed into another namespace, a macro library) and gets no <code>unresolved-*</code> at all.</li>
+</ul>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> shows a var's arglists, docstring, namespace and the version it was added in (and its deprecation); a special form's; a local's binding.</li>
+<li><b>Completion</b> offers the locals in scope first, then the file's own vars, referred names, <code>clojure.core</code> and the special forms; after <code>alias/</code>, that namespace's public vars (core's from the table, the project's from the index); after <code>:</code>, the keywords the file uses; inside <code>(:require [</code>, namespace names.</li>
+<li><b>Signature help</b> shows the arglists of the function being called, with the arity that fits and the argument being typed highlighted.</li>
+<li><b>Go to definition</b> follows a local to its binding, a var to its <code>def</code> -- in this file or another one of the project. <b>References</b>, <b>highlights</b> and <b>rename</b> cover a local (in its scope) or one of the file's own vars; a core var or a keyword cannot be renamed.</li>
+<li>The <b>outline</b> lists the namespace, then each definition, with a protocol's methods and a record's fields under it.</li>
+<li><b>Folding</b> covers every multi-line form and runs of comment lines.</li>
+<li><b>Formatting</b> is mep's Clojure formatter, the one <code>gf</code> runs: <code>cljfmt</code>'s layout. See <a href="formatting.html">Formatting</a>. A file that does not read is left alone.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-clojure-lsp</span> <span class="tok-red">--lint</span> src/**/*.clj
+<span class="tok-blue">cat</span> core.clj | <span class="tok-blue">mep-clojure-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>src/app/core.clj:12:9: warning: unused binding tmp [unused-binding]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+Each file is read on its own, without the project index. With no
+arguments, <code>mep-clojure-lsp</code> is the language server on stdio.</p>
+<h1>Using clojure-lsp instead</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.clojure_lsp.filetypes = <span class="tok-blue">{</span><span class="tok-green">'clj'</span>, <span class="tok-green">'cljs'</span>, <span class="tok-green">'cljc'</span>, <span class="tok-green">'cljd'</span>, <span class="tok-green">'edn'</span>, <span class="tok-green">'bb'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.clojure_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+<p><code>clojure-lsp</code> (with <code>clj-kondo</code> inside it) reads the project's classpath
+and so knows its libraries; mep's server needs no JVM, no <code>deps.edn</code> and no
+network.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="clojure-mode.html">Clojure mode</a> -- a REPL beside the file.</li>
+<li><a href="run-button.html">Running the current file</a>.</li>
+</ul>
+</body>
+</html>

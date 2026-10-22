@@ -493,7 +493,7 @@ private:
         return out;
     }
 
-    /** @brief Answers `textDocument/formatting`: re-indentation only. */
+    /** @brief Answers `textDocument/formatting`: mep's Common Lisp formatter, as one edit. */
     Json Formatting(const Json &params) const {
         Json arr = Json::Array();
         for (const LispLspTextEdit &e : LispLspFormat(Doc(UriOf(params)))) {

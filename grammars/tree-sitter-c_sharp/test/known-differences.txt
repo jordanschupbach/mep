@@ -1,0 +1,107 @@
+# Corpus files whose trees differ from tree-sitter-c-sharp 0.23.5's (the
+# grammar mep loaded dynamically before this one), each reviewed: in every
+# one this grammar follows Roslyn and the old one did not. Roslyn accepts all
+# of them, so the oracle cannot tell; see README.md, "Where it differs".
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff (grammar-diff).
+
+# `{{{x}}}` in a regular or verbatim interpolated string: an escaped brace
+# and then an interpolation. The old scanner took any brace run longer than
+# the string's `$`s for text, so the interpolation (and often the rest of
+# the string) was read as string_content, without an error.
+*/BTCPayServer/HostedServices/Webhooks/WebhookSender.cs                                              # escaped brace before an interpolation
+*/ICSharpCode.ILSpyX/MermaidDiagrammer/Factory.BuildTypes.cs                                         # escaped brace before an interpolation
+*/WalletWasabi/Tor/Control/Messages/CircuitStatus/CircuitInfo.cs                                     # escaped brace before an interpolation
+*/WalletWasabi/Tor/Control/Messages/Events/OrEvents/OrConnEvent.cs                                   # escaped brace before an interpolation
+*/WalletWasabi/Tor/Control/Messages/Events/StatusEvents/StatusEvent.cs                               # escaped brace before an interpolation
+*/WalletWasabi/Tor/Control/Messages/StreamStatus/StreamInfo.cs                                       # escaped brace before an interpolation
+*/osu.Game/Skinning/Components/BeatmapAttributeText.cs                                               # escaped brace before an interpolation
+*/src/Analyzers/CSharp/Tests/MakeLocalFunctionStatic/MakeLocalFunctionStaticTests.cs                 # escaped brace before an interpolation
+*/src/Compilers/CSharp/Portable/BoundTree/Formatting.cs                                              # escaped brace before an interpolation
+*/src/Compilers/CSharp/Portable/FlowAnalysis/NullableWalker.cs                                       # escaped brace before an interpolation
+*/src/Compilers/CSharp/Portable/Symbols/Synthesized/GeneratedNameParser.cs                           # escaped brace before an interpolation
+*/src/Compilers/CSharp/Portable/Utilities/ValueSetFactory.EnumeratedValueSet.cs                      # escaped brace before an interpolation
+*/src/Compilers/CSharp/Test/Emit2/Emit/NumericIntPtrTests.cs                                         # escaped brace before an interpolation
+*/src/Compilers/CSharp/Test/Semantic/Semantics/NativeIntegerTests.cs                                 # escaped brace before an interpolation
+*/src/Compilers/Core/CodeAnalysisTest/Analyzers/AnalyzerConfigTests.cs                               # escaped brace before an interpolation
+*/src/Compilers/Core/Portable/Operations/Operation.cs                                                # escaped brace before an interpolation
+*/src/Compilers/Test/Core/Compilation/CompilationDifference.cs                                       # escaped brace before an interpolation
+*/src/Compilers/Test/Core/Diagnostics/DiagnosticDescription.cs                                       # escaped brace before an interpolation
+*/src/OmniSharp.Abstractions/Mef/OmniSharpEndpointMetadata.cs                                        # escaped brace before an interpolation
+*/tests/OmniSharp.Roslyn.CSharp.Tests/CompletionFacts.cs                                             # escaped brace before an interpolation
+
+# A verbatim interpolated string whose text ends in an escaped quote,
+# `$@"...""{x}"""`: the old scanner counted the closing run of quotes like a
+# raw string's, so the string ran on past its end.
+*/WalletWasabi.Fluent/ViewModels/SearchBar/Sources/TransactionsSearchSource.cs                       # verbatim "" before the closing quote
+*/osu.Game/Overlays/BeatmapSet/BeatmapSetHeaderContent.cs                                            # verbatim "" before the closing quote
+*/osu.Game/Overlays/BeatmapSet/MetadataSectionSource.cs                                              # verbatim "" before the closing quote
+*/osu.Game/Overlays/BeatmapSet/MetadataSectionUserTags.cs                                            # verbatim "" before the closing quote
+*/src/Compilers/CSharp/Portable/BoundTree/BoundNode_Source.cs                                        # verbatim "" before the closing quote
+*/src/Compilers/CSharp/Test/CommandLine/CommandLineTests.cs                                          # verbatim "" before the closing quote
+*/src/Compilers/CSharp/Test/Semantic/Semantics/InterceptorsTests.cs                                  # verbatim "" before the closing quote
+*/src/Compilers/Core/CodeAnalysisTest/AnalyzerAssemblyLoaderTests.cs                                 # verbatim "" before the closing quote
+*/src/Compilers/Core/CodeAnalysisTest/Analyzers/AnalyzerFileReferenceTests.cs                        # verbatim "" before the closing quote
+*/src/Compilers/Shared/BuildServerConnection.cs                                                      # verbatim "" before the closing quote
+*/src/Compilers/Test/Core/Diagnostics/CommonDiagnosticAnalyzers.cs                                   # verbatim "" before the closing quote
+*/src/Compilers/Test/Core/TestableCompiler.cs                                                        # verbatim "" before the closing quote
+
+# `$""`, an empty interpolated string: the old scanner opened it without
+# recording it, and its quotes were errors.
+*/src/Compilers/CSharp/Portable/Syntax/CSharpSyntaxNode.cs                                           # empty interpolated string
+*/src/Compilers/CSharp/Test/Semantic/Utilities/ValueSetTests.cs                                      # empty interpolated string
+*/src/Compilers/Core/Portable/ConstantValueSpecialized.cs                                            # empty interpolated string
+
+# An escape sequence in an interpolation's format, `{d:HH \"h\"}`.
+*/osu.Game/Graphics/DateTooltip.cs                                                                   # escape in a format clause
+
+# List patterns starting with a slice, `[.., x]`, and slices with a pattern,
+# `.. var rest`: the old grammar read `[..` as a collection expression of a
+# range (an error, or a wrong tree).
+*/BTCPayServer/DerivationSchemeParser.cs                                                             # list pattern slice
+*/ICSharpCode.Decompiler/IL/Transforms/AssignVariableNames.cs                                        # list pattern slice
+*/src/Analyzers/CSharp/Analyzers/NewLines/ArrowExpressionClausePlacement/ArrowExpressionClausePlacementDiagnosticAnalyzer.cs # list pattern slice
+*/src/Analyzers/CSharp/Analyzers/NewLines/ConditionalExpressionPlacement/ConditionalExpressionPlacementDiagnosticAnalyzer.cs # list pattern slice
+*/src/Analyzers/CSharp/Analyzers/UseCollectionExpression/UseCollectionExpressionHelpers.cs           # list pattern slice
+*/src/Analyzers/CSharp/CodeFixes/AddInheritdoc/AddInheritdocCodeFixProvider.cs                       # list pattern slice
+*/src/Analyzers/CSharp/CodeFixes/ConvertNamespace/ConvertNamespaceTransform.cs                       # list pattern slice
+*/src/Analyzers/CSharp/CodeFixes/ConvertToRecord/ConvertToRecordEngine.cs                            # list pattern slice
+*/src/Analyzers/CSharp/CodeFixes/UseCollectionExpression/CSharpCollectionExpressionRewriter.cs       # list pattern slice
+*/src/Analyzers/CSharp/CodeFixes/UseCollectionInitializer/CSharpUseCollectionInitializerCodeFixProvider_CollectionInitializer.cs # list pattern slice
+*/src/Analyzers/CSharp/CodeFixes/UseExplicitArrayInExpressionTree/CSharpUseExplicitArrayInExpressionTreeCodeFixProvider.cs # list pattern slice
+*/src/Analyzers/CSharp/CodeFixes/UsePrimaryConstructor/CSharpUsePrimaryConstructorCodeFixProvider.cs # list pattern slice
+*/src/Analyzers/CSharp/CodeFixes/UsePrimaryConstructor/CSharpUsePrimaryConstructorCodeFixProvider_DocComments.cs # list pattern slice
+*/src/Analyzers/Core/CodeFixes/UseObjectInitializer/AbstractUseObjectInitializerCodeFixProvider.cs   # list pattern slice
+*/src/Compilers/CSharp/Portable/Binder/Semantics/Conversions/Conversions.cs                          # list pattern slice
+*/src/Compilers/CSharp/Portable/CodeGen/EmitExpression.cs                                            # list pattern slice
+*/src/Compilers/CSharp/Portable/Lowering/Instrumentation/ModuleCancellationInstrumenter.cs           # list pattern slice
+*/src/Compilers/CSharp/Portable/Parser/LanguageParser.cs                                             # list pattern slice
+*/src/Compilers/CSharp/Portable/Symbols/AnonymousTypes/AnonymousTypeManager.Templates.cs             # list pattern slice
+*/src/Compilers/CSharp/Portable/Symbols/AnonymousTypes/SynthesizedSymbols/AnonymousType.DelegateTemplateSymbol.cs # list pattern slice
+
+# Pointer indirection of something other than a name: `*(p + i) = x`,
+# `*(int*)p`, `*p++` (which is `*(p++)`; the old grammar read `(*p)++`).
+*/ICSharpCode.Decompiler.Tests/TestCases/ILPretty/Unsafe.cs                                          # pointer indirection
+*/ICSharpCode.Decompiler.Tests/TestCases/Pretty/CS73_StackAllocInitializers.cs                       # pointer indirection
+*/ICSharpCode.Decompiler.Tests/TestCases/Pretty/CompoundAssignmentTest.cs                            # pointer indirection
+*/ICSharpCode.Decompiler.Tests/TestCases/Pretty/PointerArithmetic.cs                                 # pointer indirection
+*/ICSharpCode.Decompiler.Tests/TestCases/Pretty/UnsafeCode.cs                                        # pointer indirection
+*/OpenRA.Mods.Cnc/FileFormats/BlowfishKeyProvider.cs                                                 # pointer indirection
+*/OpenRA.Mods.Cnc/FileFormats/LZOCompression.cs                                                      # pointer indirection
+*/OpenRA.Mods.Common/Widgets/ColorMixerWidget.cs                                                     # pointer indirection
+*/OpenRA.Mods.Common/Widgets/HueSliderWidget.cs                                                      # pointer indirection
+*/WalletWasabi/Helpers/ByteHelpers.cs                                                                # pointer indirection
+*/src/Compilers/Core/Portable/Collections/Boxes.cs                                                   # pointer indirection
+*/src/Compilers/Core/Portable/DiaSymReader/Utilities/ComMemoryStream.cs                              # pointer indirection
+*/src/Compilers/Core/Rebuild/CompilationOptionsReader.cs                                             # pointer indirection
+*/src/Compilers/Test/Core/Metadata/DynamicAnalysisDataReader.cs                                      # pointer indirection
+
+# Contextual words used as names: an attribute target (`[type]` is a
+# collection expression) and `with` (`var with = ...`).
+*/MediaBrowser.MediaEncoding/Subtitles/SubtitleEditParser.cs                                         # contextual word as a name
+*/Pinta/MacInterop/Carbon.cs                                                                         # contextual word as a name
+*/src/Analyzers/Core/CodeFixes/ImplementInterface/ImplementInterfaceGenerator_Property.cs            # contextual word as a name
+*/src/Compilers/CSharp/Test/Semantic/Semantics/RecordStructTests.cs                                  # contextual word as a name
+*/src/Compilers/Test/Core/Compilation/ControlFlowGraphVerifier.cs                                    # contextual word as a name
+
+# `delegate*<ref readonly T, R>` (C# 12).
+*/ICSharpCode.Decompiler.Tests/TestCases/Pretty/FunctionPointers.cs                                  # ref readonly function pointer parameter

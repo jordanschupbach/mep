@@ -169,11 +169,13 @@ that:
 - *Rename* works for locals and for names this file defines, including
   their quoted mentions and declarations; a CL symbol or another
   package's cannot be renamed.
-- *Formatting* is re-indentation only: standard Lisp indentation (body
-  forms 2 past the open paren, ordinary arguments aligned with the first
-  one), applied to leading whitespace. Nothing else on a line changes,
-  and nothing inside a string or a =#| |#= comment moves. The same
-  indenter drives the Enter key in Lisp buffers.
+- *Formatting* is mep's Common Lisp formatter, the one =gf= runs: the
+  indentation Emacs's =common-lisp-indent-function= gives, no space just
+  inside parens, a lone close paren joined to the line before, no
+  trailing blanks (see [[file:formatting.html][Formatting]]). Nothing
+  inside a string or a =#| |#= comment moves, and a file that does not
+  read gets no edits. The same indentation rules drive the Enter key in
+  Lisp buffers.
 - The *outline* lists =defun=, =defmacro=, =defgeneric=, =defmethod=
   (with its specializers), =defvar=, =defparameter=, =defconstant=,
   =defclass= and =defstruct= (with their slots), =define-condition=,

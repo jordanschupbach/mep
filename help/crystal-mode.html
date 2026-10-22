@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crystal mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="38">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Crystal mode</h1>
+<h1>Opening it</h1>
+<p><code>&lt;leader&gt;uu</code> (or <code>&lt;leader&gt;lu</code>) in a <code>.cr</code> file. The tab becomes a Crystal
+workspace: your source, a console below it, and panels showing what the
+console's session holds.</p>
+<h1>The console</h1>
+<p>Crystal is compiled, and the <code>crystal</code> mep finds (the one nixpkgs ships)
+has no interpreter -- <code>crystal i</code> says it was built without one. So the
+console is mep's own, in the way <code>icr</code> works: *every input is compiled
+together with the session so far, and the whole program is run again*.</p>
+<ul>
+<li>Each input that compiles and runs is kept. One that does not compile is dropped, with the compiler's message; so is one that raises or exits with a failure status, or that you stop with <code>Ctrl-C</code>.</li>
+<li>When the program runs again, the earlier inputs' output (and their standard input) goes to <code>/dev/null</code>, so you only see what the new input prints, then its value: <code>cr[3]&gt; words.size</code> answers <code>=&gt; 4</code>.</li>
+<li>Definitions -- classes, structs, modules, enums, methods, macros, <code>record</code>, <code>alias</code>, <code>lib</code>, constants, <code>require</code> -- are placed ahead of the statements, the way Crystal hoists them anyway. A definition-only input is only type-checked, not run, and answers <code>defined Point</code>.</li>
+<li>Errors name what you typed: <code>In [7]:1:9</code> is console input 7, line 1; for code sent from a file, the file and its own line numbers.</li>
+</ul>
+<p>It is a real Crystal program each time, so anything Crystal does works --
+<code>require "json"=, shards in the project's =lib/</code>, C bindings -- but it has
+the costs of the approach:</p>
+<ul>
+<li><b>Each statement takes about a second.</b> Measured here (Crystal 1.19.1, warm cache): 1.1-1.4 s for a statement, 0.7 s for a definition, ~1.5 s for the first input of a fresh cache -- type-checking the whole program again is most of it. Linking would be another second: the console links with <code>lld</code> when <code>ld.lld</code> is on the <code>PATH</code> (it is in mep's dev shell), and without it a statement takes about 2 s. A dim <code>compiling...</code> shows while it works.</li>
+<li><b>Earlier inputs run again every time.</b> Their side effects happen again (silently): the clock and random numbers move, files are re-read and rewritten, a <code>sleep</code> sleeps again. The Session panel shows exactly what is replayed; <code>:undo</code> and <code>:reset</code> trim it.</li>
+<li><b>Standard input is not replayed.</b> <code>name = gets</code> reads a line from the console when you type it, but on every later run it reads end-of-file, so <code>name</code> is <code>nil</code> from then on.</li>
+<li><b>A method's body is only type-checked when something calls it</b>, so a broken definition is accepted and the error shows up with its first call. Defining it again (the same name and number of arguments) replaces it -- for code sent from a file the earlier version is dropped, in the console Crystal's own rule applies: the last definition wins.</li>
+<li>Compiler warnings are not shown (they would repeat for every replayed input).</li>
+</ul>
+<p>The console runs under <code>rlwrap</code> when it is on the <code>PATH</code>, for line editing
+and a history kept across sessions. <code>Ctrl-C</code> stops a running input (and
+drops it); at the prompt it abandons what was typed. <code>Ctrl-D</code> leaves.</p>
+<p>The console itself is a small Crystal program (it parses your input with
+the compiler's own parser) that mep builds the first time, into
+<code>~/.cache/mep/crystal-ui/&lt;version&gt;/</code>: the first opening takes about five
+seconds longer, once per Crystal version. The generated session program is
+compiled there too, so the compiler's object cache stays warm from one
+session to the next.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>send the top-level block at the cursor (a class, a method, a statement)</td></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>save the file and load it into the console</td></tr>
+<tr><td><code>gh</code></td><td>documentation for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>:help NAME</code></td><td>the same, from the console</td></tr>
+<tr><td><code>:run FILE</code></td><td>load a file the way <code>&lt;leader&gt;rr</code> does</td></tr>
+<tr><td><code>:undo</code></td><td>drop the last kept input</td></tr>
+<tr><td><code>:reset</code></td><td>forget the whole session</td></tr>
+<tr><td><code>:session</code></td><td>print what is kept</td></tr>
+<tr><td><code>:?</code></td><td>list these commands</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> takes the block around the cursor: from the nearest line above
+it that starts something at column 0 (not an <code>end</code>, a comment, or a line
+continuing the one before) to just before the next one, with the doc
+comments and annotations right above it. Sending a method or class from
+the file again replaces the version the session had.</p>
+<p><code>&lt;leader&gt;rr</code> loads the whole file. Loading it again replaces everything an
+earlier load of it kept, in place, so the inputs you typed after it still
+see its definitions and variables.</p>
+<p><code>gh</code> looks up a type (<code>String</code>), a method (<code>split</code>), a method of a type
+(<code>String#split</code>, <code>File.read</code>), or a method called on a session variable
+(<code>words.map</code>: the variable's type from the Variables panel, then what that
+type inherits and includes -- <code>Array</code> gets <code>Indexable</code>, <code>Enumerable</code>,
+<code>Iterable</code>). The documentation is the standard library's own doc comments,
+read from its sources on your machine (<code>crystal env CRYSTAL_PATH</code>, so a
+project's shards in <code>lib/</code> too); no network. For a type it lists the type's
+methods. A name the session defines shows its source first.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Variables</td><td>the session's variables, each with its type (<code>typeof</code>) and value (<code>inspect</code>)</td></tr>
+<tr><td>Definitions</td><td>the types, methods, macros and constants the session defines, with where they came from</td></tr>
+<tr><td>Inspect</td><td>a variable's value, pretty-printed, with its type</td></tr>
+<tr><td>Session</td><td>the inputs kept, in the order they are replayed</td></tr>
+<tr><td>History</td><td>everything typed or sent, newest first; click one to send it again</td></tr>
+<tr><td>Help</td><td>documentation, from <code>gh</code> or <code>:help</code></td></tr>
+</table>
+<p>Clicking a Variables row shows that value in Inspect. Clicking a
+Definitions row goes to it in its file, or, for one typed in the console,
+shows its source in Help.</p>
+<p>The variables are the ones the session's inputs assign at their top level
+(not inside a block or a method). The program writes the panels' files at
+the end of every run.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.crystal_ui_rlwrap = <span class="tok-cyan">true</span>        <span class="tok-comment">-- false: never run the console under rlwrap</span>
+<span class="tok-cyan">mep</span>.opt.crystal_ui_fast_link = <span class="tok-cyan">true</span>     <span class="tok-comment">-- false: link with the compiler's default linker, not lld</span>
+<span class="tok-cyan">mep</span>.opt.crystal_ui_info_share = <span class="tok-cyan">0.3</span>
+<span class="tok-cyan">mep</span>.opt.crystal_ui_bottom_share = <span class="tok-cyan">0.4</span>
+<span class="tok-cyan">mep</span>.opt.crystal_ui_bottom_info_share = <span class="tok-cyan">0.4</span></code></pre></div>
+<p>With <code>crystal_ui_fast_link</code> the program is linked by <code>lld</code> with the
+library directories the compiler names added as run paths; if a library is
+still not found when it starts, the console falls back to the default
+linker for the rest of the session.</p>
+<h1>Editing Crystal</h1>
+<p>These work in any Crystal file, with or without the mode open:</p>
+<ul>
+<li><b>Highlighting, folds and the outline</b> come from mep's Crystal grammar (see <a href="syntax.html">Syntax highlighting</a>).</li>
+<li><b>Diagnostics, completion and hover</b> come from the Crystal language server (see <a href="lsp.html">Language servers</a>).</li>
+</ul>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+</ul>
+</body>
+</html>

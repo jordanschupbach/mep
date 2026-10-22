@@ -3,6 +3,8 @@
 // hover and signature help in bash_lsp_completion.cpp.
 #include "bash_lsp.h"
 
+#include "bash_format.h"
+
 #include <algorithm>
 #include <cstring>
 #include <map>
@@ -315,350 +317,37 @@ std::vector<BashLspTextEdit> BashLspRename(const std::vector<std::string> &lines
 
 // --- Formatting ------------------------------------------------------------
 
-namespace {
-
-class IndentCollector : public BashVisitor {
-public:
-    std::vector<BashRange> regions;   // +1 for lines starting inside
-    std::vector<std::pair<int, int>> protect;  // line spans to leave alone
-    // Continuations, kept apart because files differ on them: bash-completion
-    // indents a pipeline after `&&` one level, git's tests keep an `&&` chain
-    // flat. Each with the line it continues.
-    struct Continuation {
-        BashRange range;
-        int from_line;
-        bool pipe;  // after `|` (else after `&&`/`||`)
-    };
-    std::vector<Continuation> continuations;
-
-    // A block body goes in a level -- unless it starts on the same line as
-    // the keyword or brace that opens it (`(cd x &&` newline `make)`), when
-    // its other lines continue that line, and the continuation rules apply.
-    const BashCommand *current_ = nullptr;
-    void Body(const std::shared_ptr<BashList> &b) {
-        if (!b || b->items.empty()) return;
-        if (current_) {
-            int opener_line = current_->range.line;
-            for (const BashRange &k : current_->keywords) {
-                if (k.line < b->range.line || (k.line == b->range.line && k.col < b->range.col)) opener_line = k.line;
-            }
-            if (opener_line == b->range.line) return;
-        }
-        regions.push_back(b->range);
-    }
-
-    // A pipeline after `&&`/`||`, or a command after `|`, that starts on a
-    // later line continues its list: it, and everything in it, goes one
-    // level in.
-    void Continuations(const BashList &list) {
-        for (const BashAndOr &ao : list.items) {
-            for (size_t k = 1; k < ao.pipelines.size(); k++) {
-                if (ao.pipelines[k].range.line > ao.range.line) {
-                    continuations.push_back(Continuation{ao.pipelines[k].range, ao.range.line, false});
-                }
-            }
-            for (const BashPipeline &pl : ao.pipelines) {
-                for (size_t k = 1; k < pl.commands.size(); k++) {
-                    if (pl.commands[k].range.line > pl.range.line) {
-                        continuations.push_back(Continuation{pl.commands[k].range, pl.range.line, true});
-                    }
-                }
-            }
-        }
-    }
-    void Lists(const BashCommand &c) {
-        for (const auto &b : c.bodies) {
-            if (b) Continuations(*b);
-        }
-        for (const BashCaseItem &ci : c.case_items) {
-            if (ci.body) Continuations(*ci.body);
-        }
-    }
-
-    bool Command(const BashCommand &c, const BashCommand *) override {
-        Lists(c);
-        current_ = &c;
-        switch (c.kind) {
-            case BashCommandKind::If:
-                for (size_t k = 0; k < c.bodies.size(); k++) {
-                    const bool else_body = c.has_else && k + 1 == c.bodies.size();
-                    if (k % 2 == 1 || else_body) Body(c.bodies[k]);
-                }
-                break;
-            case BashCommandKind::While:
-            case BashCommandKind::Until:
-                if (c.bodies.size() > 1) Body(c.bodies[1]);
-                break;
-            case BashCommandKind::For:
-            case BashCommandKind::Select:
-            case BashCommandKind::ForArith:
-            case BashCommandKind::Group:
-            case BashCommandKind::Subshell:
-                if (!c.bodies.empty()) Body(c.bodies[0]);
-                break;
-            case BashCommandKind::Case:
-                for (const BashCaseItem &ci : c.case_items) {
-                    regions.push_back(ci.range);
-                    // `pat) cmd &&` newline `cmd2 ;;`: a body starting on the
-                    // pattern's line is continued, not indented as a block.
-                    if (ci.body && !ci.body->items.empty() && ci.body->range.line > ci.range.line) Body(ci.body);
-                }
-                break;
-            case BashCommandKind::Cond:
-            case BashCommandKind::Arith:
-                // `[[ a &&` newline `b ]]`: the lines after the first go in a level.
-                if (c.range.end_line > c.range.line) {
-                    BashRange r = c.range;
-                    r.line += 1;
-                    r.col = 0;
-                    regions.push_back(r);
-                }
-                break;
-            case BashCommandKind::Simple:
-                for (const BashAssignment &a : c.assignments) {
-                    if (a.is_array && !a.elements.empty()) {
-                        BashRange r = a.elements.front().range;
-                        r.end_line = a.elements.back().range.end_line;
-                        r.end_col = a.elements.back().range.end_col;
-                        regions.push_back(r);
-                    }
-                }
-                break;
-            default:
-                break;
-        }
-        for (const BashRedirect &r : c.redirects) {
-            // The body's range ends at the start of the delimiter line, so
-            // this covers the body and the delimiter.
-            if (r.heredoc) protect.emplace_back(r.body_range.line, r.body_range.end_line);
-        }
-        return true;
-    }
-
-    void Part(const BashWordPart &p, const BashCommand *) override {
-        if (p.body) Continuations(*p.body);
-        switch (p.kind) {
-            case BashPartKind::CommandSub:
-            case BashPartKind::ProcessSub:
-                if (!p.backquoted && p.body && !p.body->items.empty() && p.body->range.line > p.range.line) {
-                    regions.push_back(p.body->range);
-                }
-                break;
-            case BashPartKind::DoubleQuoted:
-            case BashPartKind::SingleQuoted:
-            case BashPartKind::AnsiC:
-            case BashPartKind::Locale:
-            case BashPartKind::Literal:
-                // A string running over lines: what follows its first line
-                // is the string's content.
-                if (p.range.end_line > p.range.line) protect.emplace_back(p.range.line + 1, p.range.end_line);
-                break;
-            default:
-                break;
-        }
-        if (p.backquoted && p.range.end_line > p.range.line) protect.emplace_back(p.range.line + 1, p.range.end_line);
-    }
-};
-
-bool StartsWithWord(const std::string &s, size_t at, const char *word) {
-    const size_t n = std::strlen(word);
-    if (s.compare(at, n, word) != 0) return false;
-    if (at + n >= s.size()) return true;
-    const char c = s[at + n];
-    return std::strchr(" \t;&|()<>", c) != nullptr;
-}
-
-bool IsCloserLine(const std::string &s, int at) {
-    const size_t a = static_cast<size_t>(at);
-    // Not else/elif: a comment before them introduces that branch.
-    for (const char *w : {"fi", "done", "esac", "}"}) {
-        if (StartsWithWord(s, a, w)) return true;
-    }
-    return s.compare(a, 1, ")") == 0;  // `;;` is at the item body's level: a comment before it goes there too
-}
-
-// Does a line end with a backslash continuing its command onto the next?
-// (Continuations after `|`, `&&` and `||` come from the tree.)
-bool ContinuesNext(const std::string &s) {
-    size_t e = s.size();
-    while (e > 0 && (s[e - 1] == ' ' || s[e - 1] == '\t')) e--;
-    if (e == 0 || s[e - 1] != '\\') return false;
-    // An even run of backslashes is escaped backslashes, not a continuation.
-    size_t n = 0;
-    while (n < e && s[e - 1 - n] == '\\') n++;
-    if (n % 2 == 0) return false;
-    // `cmd | \`: the operator continues the list; the tree has that one.
-    size_t p = e - 1;
-    while (p > 0 && (s[p - 1] == ' ' || s[p - 1] == '\t')) p--;
-    if (p > 0 && s[p - 1] == '|') return false;
-    return !(p > 1 && s[p - 1] == '&' && s[p - 2] == '&');
-}
-
-}  // namespace
-
-namespace {
-
-// One round of re-indentation; the conventions it reads off the file (the
-// indent unit, how continuations are indented) can shift once its own
-// output is what it reads, so BashLspFormat runs it to a fixed point.
-std::vector<BashLspTextEdit> FormatOnce(const std::vector<std::string> &lines) {
+// mep's Bash formatter (bash_format.h), the same one `gf` runs: one edit
+// replacing the lines that changed.
+std::vector<BashLspTextEdit> BashLspFormat(const std::vector<std::string> &lines, const std::string &default_indent) {
+    std::string text;
+    for (const std::string &l : lines) text += l + "\n";
+    bashfmt::Options opt;
+    if (!default_indent.empty()) opt.default_indent = default_indent;
+    const bashfmt::Result r = bashfmt::Format(text, opt);
     std::vector<BashLspTextEdit> out;
-    const auto ix = BuildIndex(lines);
-    if (ix->parse.has_syntax_error) return out;
-    const std::vector<std::string> &ls = ix->lines;
-    IndentCollector ic;
-    ic.Continuations(ix->parse.program);
-    BashWalk(ix->parse.program, ic);
-    // The file's own convention for continuations: indented a level past the
-    // line they continue, or level with it -- by how its lines are now.
-    {
-        auto indent_of = [&](int line) {
-            const std::string &t = ls[static_cast<size_t>(line)];
-            int w = 0;
-            for (char ch : t) {
-                if (ch == ' ') {
-                    w++;
-                } else if (ch == '\t') {
-                    w += 8 - w % 8;
-                } else {
-                    break;
-                }
-            }
-            return w;
-        };
-        int flat[2] = {0, 0}, deeper[2] = {0, 0};
-        for (const IndentCollector::Continuation &c : ic.continuations) {
-            const int a = indent_of(c.from_line), b = indent_of(c.range.line);
-            if (b == a) flat[c.pipe]++;
-            if (b > a) deeper[c.pipe]++;
-        }
-        for (const IndentCollector::Continuation &c : ic.continuations) {
-            if (flat[c.pipe] > deeper[c.pipe] && flat[c.pipe] >= 2) continue;  // one is not yet a convention
-            ic.regions.push_back(c.range);
-        }
+    if (!r.ok || r.text == text) return out;
+    std::vector<std::string> got;
+    size_t p = 0;
+    while (p < r.text.size()) {
+        const size_t nl = r.text.find('\n', p);
+        got.push_back(r.text.substr(p, nl == std::string::npos ? std::string::npos : nl - p));
+        if (nl == std::string::npos) break;
+        p = nl + 1;
     }
-    std::vector<bool> fixed(ls.size(), false);
-    for (const auto &[a, b] : ic.protect) {
-        for (int k = std::max(a, 0); k <= b && k < static_cast<int>(ls.size()); k++) fixed[static_cast<size_t>(k)] = true;
+    size_t head = 0;
+    while (head < lines.size() && head < got.size() && lines[head] == got[head]) head++;
+    size_t tail = 0;
+    while (tail < lines.size() - head && tail < got.size() - head &&
+           lines[lines.size() - 1 - tail] == got[got.size() - 1 - tail]) {
+        tail++;
     }
-    const int n = static_cast<int>(ls.size());
-    std::vector<int> depth(ls.size(), -1);
-    std::vector<int> base(ls.size(), -1);  // without a continuation's extra level
-    for (int k = 0; k < n; k++) {
-        const int f = FirstNonBlank(ls[static_cast<size_t>(k)]);
-        if (f < 0 || fixed[static_cast<size_t>(k)]) continue;
-        int d = 0;
-        for (const BashRange &r : ic.regions) {
-            if (BashRangeContains(r, k, f)) d++;
-        }
-        const std::string &s = ls[static_cast<size_t>(k)];
-        if (s.compare(static_cast<size_t>(f), 2, ";;") == 0 || s.compare(static_cast<size_t>(f), 2, ";&") == 0) d++;
-        base[static_cast<size_t>(k)] = d;
-        if (k > 0 && !fixed[static_cast<size_t>(k - 1)] && ContinuesNext(ls[static_cast<size_t>(k - 1)]) &&
-            ls[static_cast<size_t>(k - 1)][static_cast<size_t>(std::max(0, FirstNonBlank(ls[static_cast<size_t>(k - 1)])))] != '#') {
-            d++;
-        }
-        depth[static_cast<size_t>(k)] = d;
-    }
-    // A comment line takes the depth of the code after it -- unless that
-    // closes a block, when it belongs with the code before it.
-    for (int k = 0; k < n; k++) {
-        const int f = FirstNonBlank(ls[static_cast<size_t>(k)]);
-        if (f < 0 || fixed[static_cast<size_t>(k)] || ls[static_cast<size_t>(k)][static_cast<size_t>(f)] != '#') continue;
-        if (k == 0 && ix->has_shebang) continue;
-        int next = k + 1;
-        while (next < n && (FirstNonBlank(ls[static_cast<size_t>(next)]) < 0 ||
-                            (ls[static_cast<size_t>(next)][static_cast<size_t>(FirstNonBlank(ls[static_cast<size_t>(next)]))] == '#' &&
-                             !fixed[static_cast<size_t>(next)]))) {
-            next++;
-        }
-        int prev = k - 1;
-        while (prev >= 0 && (FirstNonBlank(ls[static_cast<size_t>(prev)]) < 0 ||
-                             ls[static_cast<size_t>(prev)][static_cast<size_t>(FirstNonBlank(ls[static_cast<size_t>(prev)]))] == '#' ||
-                             fixed[static_cast<size_t>(prev)])) {
-            prev--;
-        }
-        const bool next_closes = next < n && IsCloserLine(ls[static_cast<size_t>(next)], FirstNonBlank(ls[static_cast<size_t>(next)]));
-        if (next >= n) {
-            depth[static_cast<size_t>(k)] = 0;  // after the last command: top level
-        } else if (!next_closes && base[static_cast<size_t>(next)] >= 0) {
-            depth[static_cast<size_t>(k)] = base[static_cast<size_t>(next)];
-        } else if (prev >= 0 && base[static_cast<size_t>(prev)] >= 0) {
-            depth[static_cast<size_t>(k)] = base[static_cast<size_t>(prev)];
-        }
-    }
-    // The indent unit: tabs if the file indents with tabs, else the width
-    // its first-level lines use most, else four spaces.
-    int tab_lines = 0, space_lines = 0;
-    char first_indent = 0;
-    std::map<int, int> widths;
-    for (int k = 0; k < n; k++) {
-        const std::string &s = ls[static_cast<size_t>(k)];
-        if (fixed[static_cast<size_t>(k)] || s.empty()) continue;
-        if (s[0] == '\t') tab_lines++;
-        if (s[0] == ' ') space_lines++;
-        if (!first_indent && (s[0] == '\t' || s[0] == ' ') && FirstNonBlank(s) >= 0) first_indent = s[0];
-        if (depth[static_cast<size_t>(k)] == 1 && s[0] == ' ') {
-            const int f = FirstNonBlank(s);
-            if (f > 0 && f <= 8) widths[f]++;
-        }
-    }
-    std::string unit = "    ";
-    if (tab_lines > space_lines || (tab_lines == space_lines && first_indent == '\t')) {
-        unit = "\t";
-    } else if (!widths.empty()) {
-        int best = 4, count = 0;
-        for (const auto &[w, c] : widths) {
-            if (c > count) {
-                best = w;
-                count = c;
-            }
-        }
-        unit = std::string(static_cast<size_t>(best), ' ');
-    }
-    for (int k = 0; k < n; k++) {
-        const std::string &s = ls[static_cast<size_t>(k)];
-        if (fixed[static_cast<size_t>(k)]) continue;
-        const int f = FirstNonBlank(s);
-        std::string want;
-        if (f < 0) {
-            if (s.empty()) continue;
-            want = "";  // a line of only blanks
-        } else {
-            if (depth[static_cast<size_t>(k)] < 0) continue;
-            for (int d = 0; d < depth[static_cast<size_t>(k)]; d++) want += unit;
-            want += s.substr(static_cast<size_t>(f));
-        }
-        if (want == s) continue;
-        BashLspTextEdit e;
-        e.range.line = k;
-        e.range.col = 0;
-        e.range.end_line = k;
-        e.range.end_col = static_cast<int>(s.size());
-        e.new_text = want;
-        out.push_back(e);
-    }
-    return out;
-}
-
-}  // namespace
-
-std::vector<BashLspTextEdit> BashLspFormat(const std::vector<std::string> &lines) {
-    std::vector<std::string> cur = lines;
-    for (int round = 0; round < 4; round++) {
-        const std::vector<BashLspTextEdit> edits = FormatOnce(cur);
-        if (edits.empty()) break;
-        for (const BashLspTextEdit &e : edits) cur[static_cast<size_t>(e.range.line)] = e.new_text;
-    }
-    std::vector<BashLspTextEdit> out;
-    for (size_t k = 0; k < lines.size() && k < cur.size(); k++) {
-        if (cur[k] == lines[k]) continue;
-        BashLspTextEdit e;
-        e.range.line = e.range.end_line = static_cast<int>(k);
-        e.range.col = 0;
-        e.range.end_col = static_cast<int>(lines[k].size());
-        e.new_text = cur[k];
-        out.push_back(e);
-    }
+    BashLspTextEdit e;
+    e.range.line = static_cast<int>(head);
+    e.range.col = 0;
+    e.range.end_line = static_cast<int>(lines.size() - tail);
+    e.range.end_col = 0;
+    for (size_t k = head; k < got.size() - tail; k++) e.new_text += got[k] + "\n";
+    out.push_back(e);
     return out;
 }

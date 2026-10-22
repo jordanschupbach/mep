@@ -27,9 +27,9 @@
 //     `local` (or with declare/typeset) inside a function belongs to that
 //     function; every other name is global.
 //   - Aliases are not expanded, and `eval`'d strings are not read.
-//   - Formatting is re-indentation only: leading whitespace, from the
-//     structure, nothing else touched; here-document bodies and lines
-//     inside multi-line strings are left exactly as they are.
+//   - Formatting is mep's Bash formatter (bash_format.h, shfmt's layout),
+//     the one `gf` runs; here-document bodies and the inside of strings are
+//     never touched.
 //
 // Positions are 0-based lines and 0-based byte columns (`positionEncoding:
 // "utf-8"`), as everywhere in mep's own servers.
@@ -202,10 +202,11 @@ std::vector<BashLspTextEdit> BashLspRename(const std::vector<std::string> &lines
 // --- Formatting ---------------------------------------------------------
 
 /**
- * @brief Re-indents the script by its structure, keeping its indent unit (tabs, or the space width it uses
- *        most); one whole-line edit per changed line. Nothing is changed when the script has a syntax error.
+ * @brief Formats the script with mep's Bash formatter (bash_format.h): one edit replacing the changed lines,
+ *        none when it is already formatted or cannot be (a syntax error).
+ * @param default_indent the indent unit for a script with no indented code to take one from ("" for tabs)
  */
-std::vector<BashLspTextEdit> BashLspFormat(const std::vector<std::string> &lines);
+std::vector<BashLspTextEdit> BashLspFormat(const std::vector<std::string> &lines, const std::string &default_indent = "");
 
 // --- Vocabulary (bash_lsp_vocab.cpp; exposed for tests) -----------------
 

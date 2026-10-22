@@ -74,6 +74,10 @@ prog julia                                        user       code blocks
 prog java                                         user       code blocks
 prog netcoredbg                                   user       a debug adapter
 prog claude                                       user       the agent panel's CLI
+prog sbcl                                         user       the Common Lisp mode's console (mep.opt.lisp_ui_cmd)
+prog bb                                           user       babashka: the Clojure run button and the Clojure mode's console
+prog clojure                                      user       the Clojure mode's console when bb is missing (mep.opt.clojure_ui_cmd)
+prog nix                                          user       org-babel :nix-shell blocks with a flake ref
 prog copilot-language-server                      user       a language server
 prog intelephense                                 user       a language server
 prog svelteserver                                 user       a language server

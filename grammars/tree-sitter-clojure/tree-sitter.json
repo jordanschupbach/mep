@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "clojure",
+      "camelcase": "Clojure",
+      "scope": "source.clojure",
+      "path": ".",
+      "file-types": ["clj", "cljs", "cljc", "cljd", "edn", "bb"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Clojure, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

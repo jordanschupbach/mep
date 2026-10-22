@@ -1,0 +1,165 @@
+#+TITLE: The C# language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="16">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+C# files get a language server of their own, =mep-csharp-lsp=, built and
+shipped with mep. Open a =.cs= file and it attaches by itself -- nothing to
+install, *no .NET SDK needed and no compiler run*. It reads the file with
+mep's translation of Roslyn's own lexer and parser, and knows the .NET base
+class library from a table generated from its reference assemblies and XML
+documentation: every public type of the namespaces everyday code imports
+(=System=, =System.Collections.Generic=, =System.Linq=, =System.IO=,
+=System.Text=, =System.Threading.Tasks=, =System.Net.Http=,
+=System.Text.Json= and the rest -- 1,874 types), with its base type and
+interfaces, and every member's signature and doc summary (21,895 members),
+extension methods included.
+
+On start it indexes the workspace's =.cs= files -- =bin/=, =obj/= and
+hidden directories skipped -- for the types and members each one declares,
+so definition, hover, completion and signature help reach across files. An
+open file is re-indexed as you type.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* Roslyn's own syntax errors
+
+The parser is a translation of Roslyn's (=Lexer.cs=, =LanguageParser.cs=,
+=DirectiveParser.cs=, =DocumentationCommentParser.cs= and the rest,
+at the commit the .NET 10 SDK's compiler was built from: C# 14 and the
+preview features), method for method. It builds Roslyn's syntax tree --
+the same node kinds, the same spans, the same missing tokens and skipped
+text -- and reports Roslyn's syntax errors: the same =CSxxxx= code, the
+same wording, at the same place, as =dotnet build= would. Preprocessor
+directives are evaluated as an editor without a project sees them: no
+symbols defined, so =#if DEBUG= code is disabled text.
+
+It is checked against Roslyn itself, tree for tree, by diffing a dump of
+every node, token, trivia and diagnostic: on the 17,828 files of mep's C#
+corpus (Roslyn's compiler and tests, jellyfin, osu!, OpenRA, Pinta, ILSpy,
+BTCPay, WalletWasabi, OmniSharp and the other C# projects nixpkgs
+packages -- 5.5 million lines) every tree is identical, and so is every
+one of 24,000 damaged copies of them (deleted spans and lines, truncations,
+stray punctuation, keywords, quotes, interpolations and directives
+spliced in), errors and all. Under AddressSanitizer the parser has read
+all of those, and the server's features have run on thousands of them,
+without a crash or a hang.
+
+* What it reports
+
+| Code     | Severity | What it means                                                                 |
+|----------+----------+-------------------------------------------------------------------------------|
+| =CSxxxx= | error    | Roslyn's syntax error (the other checks wait until it is fixed)               |
+| =CS1030= | warning  | a =#warning= directive                                                        |
+| =CS0168= | warning  | a local (or a =catch= variable) is declared and never used                    |
+| =CS0219= | warning  | a local is assigned a constant and never read                                 |
+| =CS0162= | warning  | unreachable code: after a =return=, =throw=, =break=, =continue=, =goto=, or a loop that never ends |
+| =CS0164= | warning  | a label no =goto= names                                                       |
+| =CS8321= | warning  | a local function that is never called                                        |
+| =CS0169= | warning  | a private field never used                                                    |
+| =CS0414= | warning  | a private field assigned a constant and never read                            |
+| =CS0642= | warning  | a mistaken empty statement: =if (x);=, =while (x); { ... }=                   |
+| =CS0105= | warning  | the same =using= twice                                                        |
+| =CS1717= | warning  | =x = x;= on a local, parameter or field                                       |
+| =CS1718= | warning  | =x == x= on a local, parameter or field                                       |
+| =CS8019= | hint     | a =using= of a base-library namespace nothing in the file uses                |
+| =IDE0051= | hint    | a private method nothing in the file calls                                    |
+| =IDE0060= | hint    | a parameter never used (not in overrides, interface members, event handlers)  |
+
+Each warning is Roslyn's own -- the same code and words, and the same
+rules: a write that is not a constant (=int x = F();=) counts as a use, as
+does an =out x= argument; an unreachable =throw= is not reported; a loop's
+empty body is a mistake only when a block follows it. =#pragma warning
+disable= and =restore= are honoured, and a name that code under a false
+=#if= mentions is not reported unused. Unused things are tagged as such, so
+the editor dims them.
+
+** Calibration
+
+On the 1,727 corpus files that compile on their own (checked by compiling
+each one with Roslyn against the reference assemblies), every warning mep
+reports is one the compiler reports too -- 27 of them, no others. It misses
+some: fields with attributes (often filled by reflection or serializers, so
+mep stays quiet about them), and code only types make unreachable (a
+=switch= on a =bool= with both cases). Over the whole corpus, 5.5 million
+lines of code that builds, =--lint= prints 36 warnings -- unread and
+unused fields and variables, two dead labels in a test fixture, the
+unreachable statement after them -- each one checked and real. The hints
+(2,214 unused parameters, 939 =using= directives, 168 private methods) are
+style and do not make =--lint= fail.
+
+What it does not report: anything that needs the compiler's binder -- an
+unknown name, a type mismatch, overload resolution, definite assignment,
+nullability. =dotnet build= is the check for those.
+
+* What else it does
+
+- *Hover* shows a member's signature (every overload) and doc summary --
+  the file's, the workspace's or the base library's -- a type's declaration
+  and doc, a local's or parameter's type (written, or inferred from
+  =var x = new T()=, a literal, a call whose return type is known, a
+  =foreach= over a typed collection).
+- *Completion*: after =x.=, the members of =x='s type, walking its base
+  types and interfaces, with the extension methods of the imported
+  namespaces (=list.= offers LINQ's =Select= and =Where=, with their element
+  type); after a type name, its static members and nested types; after a
+  namespace, its namespaces and types. Otherwise the locals and parameters
+  in scope, the enclosing types' members, the types the usings bring in,
+  namespaces and keywords. Inside a comment or a string: nothing.
+- *Signature help* shows every overload of the method, constructor
+  (=new T(=) or indexer being called, the argument being typed highlighted.
+- *Go to definition* follows a local or parameter to its declaration, a
+  member or type to its declaration in this file or another of the
+  workspace.
+- *References*, *highlights* and *rename* cover a local, parameter,
+  label or local function (in its scope) and a type or member the file
+  declares (every use of that name in the file).
+- The *outline* lists namespaces, types, members (methods with their
+  parameters, constructors, properties, indexers, fields, events,
+  operators), enum members and local functions.
+- *Folding* covers every multi-line declaration, block, initializer,
+  argument list and switch, =#region= to =#endregion=, runs of =using=
+  directives, doc comments and runs of comment lines.
+- *Formatting* is mep's C# formatter, the one =gf= runs: a port of
+  Roslyn's formatting engine over this server's parser, in
+  =dotnet format whitespace='s layout. See [[file:formatting.html][Formatting]].
+
+* Linting from the command line
+
+#+begin_src sh
+mep-csharp-lsp --lint src/**/*.cs
+cat Program.cs | mep-csharp-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+src/App.cs:12:13: warning: The variable 'tmp' is assigned but its value is never used [CS0219]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+Each file is read on its own, without the workspace index. With no
+arguments, =mep-csharp-lsp= is the language server on stdio.
+
+* Using OmniSharp instead
+
+#+begin_src lua
+mep.lsp_servers.omnisharp.filetypes = {'cs'}
+mep.lsp_servers.csharp_ls.filetypes = {}
+#+end_src
+
+=OmniSharp= loads the project into Roslyn's workspace, so it knows every
+type of every referenced package and reports the compiler's full set of
+errors -- at the cost of a .NET install, a project that restores, and the
+memory and time that takes. mep's server needs nothing installed and
+answers at once.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:csharp-mode.html][C# mode]] -- a console beside the file.
+- [[file:run-button.html][Running the current file]].

@@ -538,6 +538,9 @@ mep_grammar(markdown Markdown)
 mep_grammar(markdown_inline MarkdownInline)
 mep_grammar(commonlisp Commonlisp)
 mep_grammar(bash Bash)
+mep_grammar(clojure Clojure)
+mep_grammar(crystal Crystal)
+mep_grammar(c_sharp CSharp)
 
 # Regenerating a grammar needs neither the tree-sitter CLI nor Node
 # (tools/ts_generate/README.md): mep-ts-generate runs grammar.js on mep's
@@ -768,6 +771,47 @@ set(MEP_GIT_SOURCES
     src/git/cli.cpp
     src/git/proc.cpp
 )
+
+# mep's port of the Crystal compiler's lexer and parser, and of its
+# formatter: shared by mep (mep.format_crystal) and mep-crystal-lsp.
+if(NOT DEFINED MEP_CRYSTAL_SYNTAX_SOURCES)
+    set(MEP_CRYSTAL_SYNTAX_SOURCES src/crystal_syntax.cpp src/crystal_ast.cpp src/crystal_parser.cpp)
+endif()
+if(NOT DEFINED MEP_CRYSTAL_FORMAT_SOURCES)
+    set(MEP_CRYSTAL_FORMAT_SOURCES src/crystal_format.cpp src/crystal_format_visit.cpp src/crystal_format_call.cpp)
+endif()
+
+# mep's own C# parser: a method-for-method translation of Roslyn's lexer and
+# parsers (src/csharp_lexer*.cpp, csharp_parser_*.cpp, csharp_directive_parser.cpp,
+# csharp_doc_parser.cpp over the green trees of csharp_syntax.cpp; the node
+# factories and kind/error tables generated from Roslyn's own Syntax.xml,
+# SyntaxKind.cs and resources by tools/gen_csharp_syntax.py and committed).
+# The same trees and syntax errors as Roslyn, checked against it on a corpus
+# (tools/csharp_oracle). Shared by mep-csharp-lsp and mep (the C# formatter below).
+if(NOT DEFINED MEP_CSHARP_SYNTAX_SOURCES)
+set(MEP_CSHARP_SYNTAX_SOURCES src/csharp_syntax.cpp src/csharp_syntax_factory.cpp src/csharp_syntax_facts.cpp
+    src/csharp_syntax_parser.cpp src/csharp_lexer.cpp src/csharp_lexer_xml.cpp src/csharp_lexer_string.cpp
+    src/csharp_directives.cpp src/csharp_directive_parser.cpp src/csharp_doc_parser.cpp src/csharp_parser_a.cpp
+    src/csharp_parser_b.cpp src/csharp_parser_c.cpp src/csharp_parser_d.cpp src/csharp_parser_e.cpp
+    src/csharp_parser_f.cpp src/csharp_parser_f2.cpp src/csharp_parser.cpp)
+endif()
+# mep's own C# formatter (csharp_format.h): a port of Roslyn's formatting
+# engine and C# rules (attribution in csharp_format_internal.h) over the
+# parser above; shared by mep (mep.format_csharp), mep-csharp-lsp and
+# mep-csharp-format-test.
+if(NOT DEFINED MEP_CSHARP_FORMAT_SOURCES)
+    set(MEP_CSHARP_FORMAT_SOURCES src/csharp_format.cpp src/csharp_format_engine.cpp src/csharp_format_trivia.cpp
+        src/csharp_format_rules.cpp)
+endif()
+
+# mep's own C formatter (c_format.h): clang-format's lexer, unwrapped-line
+# parser, token annotator, line-break search and whitespace pass, ported
+# and restricted to C (attribution in c_format_internal.h). Dependency-free;
+# shared by mep (mep.format_c), mep-c-lsp and mep-c-format-test.
+set(MEP_C_FORMAT_SOURCES src/c_format.cpp src/c_format_lexer.cpp src/c_format_parser.cpp
+    src/c_format_annotator.cpp src/c_format_indenter.cpp src/c_format_line_formatter.cpp
+    src/c_format_whitespace.cpp)
+
 add_library(mep_core STATIC
     src/vterm.cpp
     src/regex.cpp
@@ -976,10 +1020,31 @@ add_library(mep_core STATIC
     src/cpp_format.cpp
     src/maxima_format.cpp
     src/maxima_ast.cpp
-    # Common Lisp indentation for Enter-key auto-indent (editor.cpp); the
-    # same rules mep-lisp-lsp's formatter uses, with no dependency on the
-    # Lisp reader or the COMMON-LISP name table.
+    # mep's own Bash formatter (mep.format_bash), over the Bash language
+    # server's parser.
+    src/bash_format.cpp
+    src/bash_parse.cpp
+    # mep's own Clojure formatter (mep.format_clojure), over its reader.
+    src/clojure_format.cpp
+    src/clojure_reader.cpp
+    # mep's own C formatter (mep.format_c): a port of clang-format's
+    # pipeline in its LLVM style.
+    ${MEP_C_FORMAT_SOURCES}
+    # mep's own Crystal formatter (mep.format_crystal): a port of the
+    # compiler's, over mep's port of its lexer and parser.
+    ${MEP_CRYSTAL_SYNTAX_SOURCES}
+    ${MEP_CRYSTAL_FORMAT_SOURCES}
+    # mep's own C# formatter (mep.format_csharp): a port of Roslyn's
+    # formatting engine, over mep's port of Roslyn's parser.
+    ${MEP_CSHARP_SYNTAX_SOURCES}
+    ${MEP_CSHARP_FORMAT_SOURCES}
+    # Common Lisp indentation for Enter-key auto-indent (editor.cpp), over
+    # mep's own Common Lisp formatter (mep.format_lisp, Emacs's
+    # common-lisp-indent-function layout) -- the same code mep-lisp-lsp
+    # formats with, and no dependency on the Lisp reader or the
+    # COMMON-LISP name table.
     src/lisp_indent.cpp
+    src/lisp_format.cpp
     src/math_tex.cpp
     src/math_speech.cpp
     src/math_markup.cpp
@@ -2171,7 +2236,8 @@ add_dependencies(tests mep-cpp-lsp-test)
 # by default rather than EXCLUDE_FROM_ALL because kBuiltinLsp's `c_ls` entry
 # spawns it out of mep's own bin directory, and skipped on Emscripten, which
 # cannot spawn a subprocess at all.
-set(MEP_C_LSP_SOURCES src/c_lsp.cpp src/c_lsp_vocab.cpp src/c_lsp_std_names.cpp src/c_ast.cpp)
+set(MEP_C_LSP_SOURCES src/c_lsp.cpp src/c_lsp_vocab.cpp src/c_lsp_std_names.cpp src/c_ast.cpp
+    ${MEP_C_FORMAT_SOURCES})
 if(NOT EMSCRIPTEN)
     add_executable(mep-c-lsp src/c_lsp_server.cpp ${MEP_C_LSP_SOURCES})
     target_include_directories(mep-c-lsp PRIVATE src)
@@ -2231,7 +2297,7 @@ add_dependencies(tests mep-maxima-lsp-test)
 # kBuiltinLsp's `lisp_ls` entry spawns it out of mep's own bin directory,
 # skipped on Emscripten.
 set(MEP_LISP_LSP_SOURCES src/lisp_lsp.cpp src/lisp_lsp_vocab.cpp src/lisp_lsp_cl_names.cpp src/lisp_reader.cpp
-    src/lisp_indent.cpp)
+    src/lisp_indent.cpp src/lisp_format.cpp)
 if(NOT EMSCRIPTEN)
     add_executable(mep-lisp-lsp src/lisp_lsp_server.cpp ${MEP_LISP_LSP_SOURCES})
     target_include_directories(mep-lisp-lsp PRIVATE src)
@@ -2257,7 +2323,7 @@ add_dependencies(tests mep-lisp-lsp-test)
 # kBuiltinLsp's `bash_ls` entry spawns it out of mep's own bin directory,
 # skipped on Emscripten.
 set(MEP_BASH_LSP_SOURCES src/bash_lsp.cpp src/bash_lsp_diagnostics.cpp src/bash_lsp_completion.cpp
-    src/bash_lsp_index.cpp src/bash_lsp_vocab.cpp src/bash_parse.cpp)
+    src/bash_lsp_index.cpp src/bash_lsp_vocab.cpp src/bash_parse.cpp src/bash_format.cpp)
 if(NOT EMSCRIPTEN)
     add_executable(mep-bash-lsp src/bash_lsp_server.cpp ${MEP_BASH_LSP_SOURCES})
     target_include_directories(mep-bash-lsp PRIVATE src)
@@ -2473,6 +2539,153 @@ target_include_directories(mep-maxima-format-test PRIVATE src)
 target_compile_options(mep-maxima-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-maxima-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-maxima-format-test)
+
+# mep's own Bash formatter (bash_format.cpp), over the Bash language
+# server's parser. `--format FILE...` prints each file formatted, for
+# checking it against a corpus.
+add_executable(mep-bash-format-test EXCLUDE_FROM_ALL src/bash_format_test.cpp src/bash_format.cpp
+               src/bash_parse.cpp)
+target_include_directories(mep-bash-format-test PRIVATE src)
+target_compile_options(mep-bash-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-bash-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-bash-format-test)
+
+# mep's own Clojure language server and linter: the wire half
+# (src/clojure_lsp_server.cpp, also `mep-clojure-lsp --lint FILE...`) over
+# the analysis (src/clojure_lsp*.cpp), a hand-written reader whose errors
+# are the JVM reader's (src/clojure_reader.cpp), the generated vocabulary
+# of clojure.core and the namespaces shipped with it
+# (src/clojure_lsp_core_names.cpp, from tools/gen_clojure_vocab.clj and a
+# real Clojure, committed so building mep never needs a JVM), and the
+# cljfmt-shaped formatter (src/clojure_format.cpp). No mep_core; built by
+# default because kBuiltinLsp's `clojure_ls` entry spawns it.
+set(MEP_CLOJURE_LSP_SOURCES src/clojure_lsp.cpp src/clojure_lsp_analysis.cpp src/clojure_lsp_diagnostics.cpp
+    src/clojure_lsp_core_names.cpp src/clojure_reader.cpp src/clojure_format.cpp)
+if(NOT EMSCRIPTEN)
+    add_executable(mep-clojure-lsp src/clojure_lsp_server.cpp ${MEP_CLOJURE_LSP_SOURCES})
+    target_include_directories(mep-clojure-lsp PRIVATE src)
+    target_compile_options(mep-clojure-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-clojure-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-clojure-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The reader, analysis and features driven directly; `--read-check` reads
+# the files named on stdin and prints each one's first reader error, as
+# tools/clojure_reader_check.clj does with the JVM's reader.
+add_executable(mep-clojure-lsp-test EXCLUDE_FROM_ALL src/clojure_lsp_test.cpp ${MEP_CLOJURE_LSP_SOURCES})
+target_include_directories(mep-clojure-lsp-test PRIVATE src)
+target_compile_options(mep-clojure-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-clojure-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-clojure-lsp-test)
+
+# mep's own Crystal language server and linter: the wire half
+# (src/crystal_lsp_server.cpp, also `mep-crystal-lsp --lint FILE...`) over
+# the analysis (src/crystal_lsp*.cpp), mep's port of the Crystal compiler's
+# lexer and parser (MEP_CRYSTAL_SYNTAX_SOURCES: the compiler's syntax
+# errors, word for word), the standard library's API table
+# (src/crystal_lsp_stdlib.cpp, generated by tools/gen_crystal_vocab.py from
+# `crystal docs` and committed, so building mep never needs Crystal), and
+# the formatter (MEP_CRYSTAL_FORMAT_SOURCES). No mep_core; built by default
+# because kBuiltinLsp's `crystal_ls` entry spawns it.
+set(MEP_CRYSTAL_LSP_SOURCES src/crystal_lsp.cpp src/crystal_lsp_analysis.cpp src/crystal_lsp_diagnostics.cpp
+    src/crystal_lsp_format.cpp src/crystal_lsp_stdlib.cpp ${MEP_CRYSTAL_SYNTAX_SOURCES} ${MEP_CRYSTAL_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-crystal-lsp src/crystal_lsp_server.cpp ${MEP_CRYSTAL_LSP_SOURCES})
+    target_include_directories(mep-crystal-lsp PRIVATE src)
+    target_compile_options(mep-crystal-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-crystal-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-crystal-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The parser, analysis and features driven directly; `--parse FILE...`
+# prints each file's tree in tools/crystal_ast_dump.cr's format (the
+# compiler-checked oracle for the parser).
+add_executable(mep-crystal-lsp-test EXCLUDE_FROM_ALL src/crystal_lsp_test.cpp ${MEP_CRYSTAL_LSP_SOURCES})
+target_include_directories(mep-crystal-lsp-test PRIVATE src)
+target_compile_options(mep-crystal-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-crystal-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-crystal-lsp-test)
+
+# The Crystal formatter (a port of `crystal tool format`); `--format
+# FILE...` prints each file formatted, for comparing with the compiler's
+# formatter on a corpus.
+add_executable(mep-crystal-format-test EXCLUDE_FROM_ALL src/crystal_format_test.cpp ${MEP_CRYSTAL_SYNTAX_SOURCES}
+               ${MEP_CRYSTAL_FORMAT_SOURCES})
+target_include_directories(mep-crystal-format-test PRIVATE src)
+target_compile_options(mep-crystal-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-crystal-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-crystal-format-test)
+
+# (MEP_CSHARP_SYNTAX_SOURCES, mep's port of Roslyn's C# parser, is defined
+# with the formatter sources near the top: mep links it too.)
+
+find_package(Threads REQUIRED)
+
+# mep's own C# language server and linter: the wire half
+# (src/csharp_lsp_server.cpp, also `mep-csharp-lsp --lint FILE...`) over the
+# analysis (src/csharp_lsp*.cpp), the parser above (Roslyn's syntax errors,
+# word for word), and the .NET base class library's API table
+# (src/csharp_lsp_bcl.cpp, generated by tools/csharp_vocab from the SDK's
+# reference assemblies and XML docs and committed, so building mep never
+# needs .NET). No mep_core; built by default because kBuiltinLsp's
+# `csharp_ls` entry spawns it.
+set(MEP_CSHARP_LSP_SOURCES src/csharp_lsp.cpp src/csharp_lsp_analysis.cpp src/csharp_lsp_types.cpp
+    src/csharp_lsp_diagnostics.cpp src/csharp_lsp_bcl.cpp ${MEP_CSHARP_SYNTAX_SOURCES} ${MEP_CSHARP_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-csharp-lsp src/csharp_lsp_server.cpp ${MEP_CSHARP_LSP_SOURCES})
+    target_include_directories(mep-csharp-lsp PRIVATE src)
+    target_compile_options(mep-csharp-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-csharp-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    target_link_libraries(mep-csharp-lsp PRIVATE Threads::Threads)
+    install(TARGETS mep-csharp-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The parser, analysis and features driven directly; `--parse FILE...` prints
+# each file's tree in tools/csharp_oracle/DUMP.md's format (the oracle for
+# the parser is Roslyn itself: `csharp-oracle dump`).
+add_executable(mep-csharp-lsp-test EXCLUDE_FROM_ALL src/csharp_lsp_test.cpp ${MEP_CSHARP_LSP_SOURCES})
+target_include_directories(mep-csharp-lsp-test PRIVATE src)
+target_compile_options(mep-csharp-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-csharp-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+target_link_libraries(mep-csharp-lsp-test PRIVATE Threads::Threads)
+add_dependencies(tests mep-csharp-lsp-test)
+
+# The C# formatter (a port of Roslyn's, `dotnet format whitespace`'s layout):
+# cases from Roslyn's own formatting tests; `--format FILE...` prints each
+# file formatted, for comparing with `csharp-oracle format` on a corpus.
+add_executable(mep-csharp-format-test EXCLUDE_FROM_ALL src/csharp_format_test.cpp ${MEP_CSHARP_SYNTAX_SOURCES}
+               ${MEP_CSHARP_FORMAT_SOURCES})
+target_include_directories(mep-csharp-format-test PRIVATE src)
+target_compile_options(mep-csharp-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-csharp-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+target_link_libraries(mep-csharp-format-test PRIVATE Threads::Threads)
+add_dependencies(tests mep-csharp-format-test)
+
+# The Clojure formatter (cljfmt's layout); `--format FILE...` prints each
+# file formatted, for comparing with cljfmt on a corpus.
+add_executable(mep-clojure-format-test EXCLUDE_FROM_ALL src/clojure_format_test.cpp src/clojure_format.cpp
+               src/clojure_reader.cpp)
+target_include_directories(mep-clojure-format-test PRIVATE src)
+target_compile_options(mep-clojure-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-clojure-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-clojure-format-test)
+
+# The Common Lisp formatter (Emacs's common-lisp-indent-function layout);
+# `--format FILE...` prints each file formatted, for comparing with Emacs
+# on a corpus (tools/cl_format_compare.py).
+add_executable(mep-lisp-format-test EXCLUDE_FROM_ALL src/lisp_format_test.cpp src/lisp_format.cpp)
+target_include_directories(mep-lisp-format-test PRIVATE src)
+target_compile_options(mep-lisp-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-lisp-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-lisp-format-test)
+
+# The C formatter (clang-format's LLVM layout); `--format FILE...` prints
+# each file formatted, for comparing with clang-format on a corpus.
+add_executable(mep-c-format-test EXCLUDE_FROM_ALL src/c_format_test.cpp ${MEP_C_FORMAT_SOURCES})
+target_include_directories(mep-c-format-test PRIVATE src)
+target_compile_options(mep-c-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-c-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-c-format-test)
 
 # The dependency-free spell checker (spell.cpp): edit-distance/Soundex
 # helpers, case-insensitive IsMisspelled with its skip rules and personal

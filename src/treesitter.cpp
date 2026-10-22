@@ -43,6 +43,9 @@
 #include "markdown_inline_queries.h"
 #include "commonlisp_queries.h"
 #include "bash_queries.h"
+#include "clojure_queries.h"
+#include "crystal_queries.h"
+#include "c_sharp_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -66,6 +69,9 @@ const TSLanguage *tree_sitter_markdown(void);   // mep's own: grammars/tree-sitt
 const TSLanguage *tree_sitter_markdown_inline(void);  // mep's own: grammars/tree-sitter-markdown_inline
 const TSLanguage *tree_sitter_commonlisp(void);       // mep's own: grammars/tree-sitter-commonlisp
 const TSLanguage *tree_sitter_bash(void);             // mep's own: grammars/tree-sitter-bash
+const TSLanguage *tree_sitter_clojure(void);          // mep's own: grammars/tree-sitter-clojure
+const TSLanguage *tree_sitter_crystal(void);          // mep's own: grammars/tree-sitter-crystal
+const TSLanguage *tree_sitter_c_sharp(void);          // mep's own: grammars/tree-sitter-c_sharp
 }
 
 // The process-wide caches below -- parse trees and row answers per key,
@@ -164,6 +170,16 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"sh", {tree_sitter_bash, kHighlightsBash}},
         {"bash", {tree_sitter_bash, kHighlightsBash}},
         {"zsh", {tree_sitter_bash, kHighlightsBash}},
+        // Clojure, ClojureScript, .cljc for both, ClojureDart, EDN data, and
+        // babashka scripts.
+        {"clj", {tree_sitter_clojure, kHighlightsClojure}},
+        {"cljs", {tree_sitter_clojure, kHighlightsClojure}},
+        {"cljc", {tree_sitter_clojure, kHighlightsClojure}},
+        {"cljd", {tree_sitter_clojure, kHighlightsClojure}},
+        {"edn", {tree_sitter_clojure, kHighlightsClojure}},
+        {"bb", {tree_sitter_clojure, kHighlightsClojure}},
+        {"cr", {tree_sitter_crystal, kHighlightsCrystal}},
+        {"cs", {tree_sitter_c_sharp, kHighlightsCSharp}},
     };
     return table;
 }
@@ -211,6 +227,14 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"sh", {tree_sitter_bash, kFoldsBash}},
         {"bash", {tree_sitter_bash, kFoldsBash}},
         {"zsh", {tree_sitter_bash, kFoldsBash}},
+        {"clj", {tree_sitter_clojure, kFoldsClojure}},
+        {"cljs", {tree_sitter_clojure, kFoldsClojure}},
+        {"cljc", {tree_sitter_clojure, kFoldsClojure}},
+        {"cljd", {tree_sitter_clojure, kFoldsClojure}},
+        {"edn", {tree_sitter_clojure, kFoldsClojure}},
+        {"bb", {tree_sitter_clojure, kFoldsClojure}},
+        {"cr", {tree_sitter_crystal, kFoldsCrystal}},
+        {"cs", {tree_sitter_c_sharp, kFoldsCSharp}},
     };
     return table;
 }
@@ -259,6 +283,14 @@ const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
         {"sh", {tree_sitter_bash, kStructureBash}},
         {"bash", {tree_sitter_bash, kStructureBash}},
         {"zsh", {tree_sitter_bash, kStructureBash}},
+        {"clj", {tree_sitter_clojure, kStructureClojure}},
+        {"cljs", {tree_sitter_clojure, kStructureClojure}},
+        {"cljc", {tree_sitter_clojure, kStructureClojure}},
+        {"cljd", {tree_sitter_clojure, kStructureClojure}},
+        {"edn", {tree_sitter_clojure, kStructureClojure}},
+        {"bb", {tree_sitter_clojure, kStructureClojure}},
+        {"cr", {tree_sitter_crystal, kStructureCrystal}},
+        {"cs", {tree_sitter_c_sharp, kStructureCSharp}},
     };
     return table;
 }
@@ -352,7 +384,6 @@ const char *TsxHighlights() {
  */
 const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
     static const std::unordered_map<std::string, DynLangEntry> table = {
-        {"cs", {"c_sharp", kHighlightsCSharp}},
         {"css", {"css", kHighlightsCss}},
         // mepml style sheets are CSS in syntax (docs/mepml-spec/style.md).
         {"mepss", {"css", kHighlightsCss}},
@@ -397,10 +428,6 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"vim", {"vim", kHighlightsVim}},
         {"xml", {"xml", kHighlightsXml}},
         {"cmake", {"cmake", kHighlightsCmake}},
-        {"clj", {"clojure", kHighlightsClojure}},
-        {"cljs", {"clojure", kHighlightsClojure}},
-        {"cljc", {"clojure", kHighlightsClojure}},
-        {"edn", {"clojure", kHighlightsClojure}},
         {"dart", {"dart", kHighlightsDart}},
         {"dockerfile", {"dockerfile", kHighlightsDockerfile}},
         {"graphql", {"graphql", kHighlightsGraphql}},
@@ -425,7 +452,6 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"for", {"fortran", kHighlightsFortran}},
         {"d", {"d", kHighlightsD}},
         {"nim", {"nim", kHighlightsNim}},
-        {"cr", {"crystal", kHighlightsCrystal}},
         // .m is MATLAB/Octave here, not Objective-C (no ObjC grammar is
         // wired up at all).
         {"m", {"matlab", kHighlightsMatlab}},
@@ -470,7 +496,6 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicStructureQueryTable(
         {"rs", {"rust", kStructureRust}},
         {"java", {"java", kStructureJava}},
         {"rb", {"ruby", kStructureRuby}},
-        {"cs", {"c_sharp", kStructureCSharp}},
         {"php", {"php", kStructurePhp}},
         {"ts", {"typescript", kStructureTypescript}},
         {"mts", {"typescript", kStructureTypescript}},

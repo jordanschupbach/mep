@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "crystal",
+      "camelcase": "Crystal",
+      "scope": "source.crystal",
+      "path": ".",
+      "file-types": ["cr"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Crystal, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

@@ -76,8 +76,10 @@ liquidprompt, ...).
 These work in any shell script, with or without the mode open:
 
 - *Highlighting, folds and the outline* come from mep's own Bash grammar.
-- *Diagnostics, completion, hover, rename and formatting* come from
+- *Diagnostics, completion, hover and rename* come from
   [[file:bash-lsp.html][mep's own Bash language server]].
+- *=gf=* formats the script with mep's own Bash formatter, in =shfmt='s
+  layout (see [[file:formatting.html][Formatting]]).
 
 * See also
 

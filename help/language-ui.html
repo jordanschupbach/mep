@@ -34,6 +34,9 @@ layout rather than accumulating panels.</p>
 <tr><td>C, C++</td><td><a href="c-mode.html">C and C++ mode</a></td></tr>
 <tr><td>Common Lisp</td><td><a href="lisp-mode.html">Common Lisp mode</a></td></tr>
 <tr><td>Bash</td><td><a href="bash-mode.html">Bash mode</a></td></tr>
+<tr><td>Clojure</td><td><a href="clojure-mode.html">Clojure mode</a></td></tr>
+<tr><td>Crystal</td><td><a href="crystal-mode.html">Crystal mode</a></td></tr>
+<tr><td>C#</td><td><a href="csharp-mode.html">C# mode</a></td></tr>
 </table>
 <p>Each shares the same shape: a console, a Help tab, and panels specific to
 the language.</p>
@@ -41,7 +44,7 @@ the language.</p>
 <p><code>gh</code> ("go help") opens documentation for the symbol under the cursor. What
 answers depends on where you are:</p>
 <ul>
-<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++, <code>DESCRIBE</code> for Common Lisp, <code>help</code> and <code>man</code> for Bash;</li>
+<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++, <code>DESCRIBE</code> for Common Lisp, <code>help</code> and <code>man</code> for Bash, <code>doc</code> for Clojure, the standard library's doc comments for Crystal, the .NET reference documentation for C#;</li>
 <li>otherwise, the LSP hover popup, the same one <code>K</code> opens.</li>
 </ul>
 <p><code>&lt;leader&gt;hs</code> and <code>:MepGoHelp</code> do the same thing.</p>

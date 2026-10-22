@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The C# language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="16">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The C# language server</h1>
+<h1>What it is</h1>
+<p>C# files get a language server of their own, <code>mep-csharp-lsp</code>, built and
+shipped with mep. Open a <code>.cs</code> file and it attaches by itself -- nothing to
+install, <b>no .NET SDK needed and no compiler run</b>. It reads the file with
+mep's translation of Roslyn's own lexer and parser, and knows the .NET base
+class library from a table generated from its reference assemblies and XML
+documentation: every public type of the namespaces everyday code imports
+(<code>System</code>, <code>System.Collections.Generic</code>, <code>System.Linq</code>, <code>System.IO</code>,
+<code>System.Text</code>, <code>System.Threading.Tasks</code>, <code>System.Net.Http</code>,
+<code>System.Text.Json</code> and the rest -- 1,874 types), with its base type and
+interfaces, and every member's signature and doc summary (21,895 members),
+extension methods included.</p>
+<p>On start it indexes the workspace's <code>.cs</code> files -- <code>bin/</code>, <code>obj/</code> and
+hidden directories skipped -- for the types and members each one declares,
+so definition, hover, completion and signature help reach across files. An
+open file is re-indexed as you type.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>Roslyn's own syntax errors</h1>
+<p>The parser is a translation of Roslyn's (<code>Lexer.cs</code>, <code>LanguageParser.cs</code>,
+<code>DirectiveParser.cs</code>, <code>DocumentationCommentParser.cs</code> and the rest,
+at the commit the .NET 10 SDK's compiler was built from: C# 14 and the
+preview features), method for method. It builds Roslyn's syntax tree --
+the same node kinds, the same spans, the same missing tokens and skipped
+text -- and reports Roslyn's syntax errors: the same <code>CSxxxx</code> code, the
+same wording, at the same place, as <code>dotnet build</code> would. Preprocessor
+directives are evaluated as an editor without a project sees them: no
+symbols defined, so <code>#if DEBUG</code> code is disabled text.</p>
+<p>It is checked against Roslyn itself, tree for tree, by diffing a dump of
+every node, token, trivia and diagnostic: on the 17,828 files of mep's C#
+corpus (Roslyn's compiler and tests, jellyfin, osu!, OpenRA, Pinta, ILSpy,
+BTCPay, WalletWasabi, OmniSharp and the other C# projects nixpkgs
+packages -- 5.5 million lines) every tree is identical, and so is every
+one of 24,000 damaged copies of them (deleted spans and lines, truncations,
+stray punctuation, keywords, quotes, interpolations and directives
+spliced in), errors and all. Under AddressSanitizer the parser has read
+all of those, and the server's features have run on thousands of them,
+without a crash or a hang.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>CSxxxx</code></td><td>error</td><td>Roslyn's syntax error (the other checks wait until it is fixed)</td></tr>
+<tr><td><code>CS1030</code></td><td>warning</td><td>a <code>#warning</code> directive</td></tr>
+<tr><td><code>CS0168</code></td><td>warning</td><td>a local (or a <code>catch</code> variable) is declared and never used</td></tr>
+<tr><td><code>CS0219</code></td><td>warning</td><td>a local is assigned a constant and never read</td></tr>
+<tr><td><code>CS0162</code></td><td>warning</td><td>unreachable code: after a <code>return</code>, <code>throw</code>, <code>break</code>, <code>continue</code>, <code>goto</code>, or a loop that never ends</td></tr>
+<tr><td><code>CS0164</code></td><td>warning</td><td>a label no <code>goto</code> names</td></tr>
+<tr><td><code>CS8321</code></td><td>warning</td><td>a local function that is never called</td></tr>
+<tr><td><code>CS0169</code></td><td>warning</td><td>a private field never used</td></tr>
+<tr><td><code>CS0414</code></td><td>warning</td><td>a private field assigned a constant and never read</td></tr>
+<tr><td><code>CS0642</code></td><td>warning</td><td>a mistaken empty statement: <code>if (x);</code>, <code>while (x); { ... }</code></td></tr>
+<tr><td><code>CS0105</code></td><td>warning</td><td>the same <code>using</code> twice</td></tr>
+<tr><td><code>CS1717</code></td><td>warning</td><td><code>x = x;</code> on a local, parameter or field</td></tr>
+<tr><td><code>CS1718</code></td><td>warning</td><td><code>x =</code> x= on a local, parameter or field</td></tr>
+<tr><td><code>CS8019</code></td><td>hint</td><td>a <code>using</code> of a base-library namespace nothing in the file uses</td></tr>
+<tr><td><code>IDE0051</code></td><td>hint</td><td>a private method nothing in the file calls</td></tr>
+<tr><td><code>IDE0060</code></td><td>hint</td><td>a parameter never used (not in overrides, interface members, event handlers)</td></tr>
+</table>
+<p>Each warning is Roslyn's own -- the same code and words, and the same
+rules: a write that is not a constant (<code>int x = F();</code>) counts as a use, as
+does an <code>out x</code> argument; an unreachable <code>throw</code> is not reported; a loop's
+empty body is a mistake only when a block follows it. =#pragma warning
+disable= and <code>restore</code> are honoured, and a name that code under a false
+<code>#if</code> mentions is not reported unused. Unused things are tagged as such, so
+the editor dims them.</p>
+<h2>Calibration</h2>
+<p>On the 1,727 corpus files that compile on their own (checked by compiling
+each one with Roslyn against the reference assemblies), every warning mep
+reports is one the compiler reports too -- 27 of them, no others. It misses
+some: fields with attributes (often filled by reflection or serializers, so
+mep stays quiet about them), and code only types make unreachable (a
+<code>switch</code> on a <code>bool</code> with both cases). Over the whole corpus, 5.5 million
+lines of code that builds, <code>--lint</code> prints 36 warnings -- unread and
+unused fields and variables, two dead labels in a test fixture, the
+unreachable statement after them -- each one checked and real. The hints
+(2,214 unused parameters, 939 <code>using</code> directives, 168 private methods) are
+style and do not make <code>--lint</code> fail.</p>
+<p>What it does not report: anything that needs the compiler's binder -- an
+unknown name, a type mismatch, overload resolution, definite assignment,
+nullability. <code>dotnet build</code> is the check for those.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> shows a member's signature (every overload) and doc summary -- the file's, the workspace's or the base library's -- a type's declaration and doc, a local's or parameter's type (written, or inferred from <code>var x = new T()</code>, a literal, a call whose return type is known, a <code>foreach</code> over a typed collection).</li>
+<li><b>Completion</b>: after <code>x.</code>, the members of <code>x</code>'s type, walking its base types and interfaces, with the extension methods of the imported namespaces (<code>list.</code> offers LINQ's <code>Select</code> and <code>Where</code>, with their element type); after a type name, its static members and nested types; after a namespace, its namespaces and types. Otherwise the locals and parameters in scope, the enclosing types' members, the types the usings bring in, namespaces and keywords. Inside a comment or a string: nothing.</li>
+<li><b>Signature help</b> shows every overload of the method, constructor (<code>new T(</code>) or indexer being called, the argument being typed highlighted.</li>
+<li><b>Go to definition</b> follows a local or parameter to its declaration, a member or type to its declaration in this file or another of the workspace.</li>
+<li><b>References</b>, <b>highlights</b> and <b>rename</b> cover a local, parameter, label or local function (in its scope) and a type or member the file declares (every use of that name in the file).</li>
+<li>The <b>outline</b> lists namespaces, types, members (methods with their parameters, constructors, properties, indexers, fields, events, operators), enum members and local functions.</li>
+<li><b>Folding</b> covers every multi-line declaration, block, initializer, argument list and switch, <code>#region</code> to <code>#endregion</code>, runs of <code>using</code> directives, doc comments and runs of comment lines.</li>
+<li><b>Formatting</b> is mep's C# formatter, the one <code>gf</code> runs: a port of Roslyn's formatting engine over this server's parser, in <code>dotnet format whitespace</code>'s layout. See <a href="formatting.html">Formatting</a>.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-csharp-lsp</span> <span class="tok-red">--lint</span> src/**/*.cs
+<span class="tok-blue">cat</span> Program.cs | <span class="tok-blue">mep-csharp-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>src/App.cs:12:13: warning: The variable 'tmp' is assigned but its value is never used [CS0219]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+Each file is read on its own, without the workspace index. With no
+arguments, <code>mep-csharp-lsp</code> is the language server on stdio.</p>
+<h1>Using OmniSharp instead</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.omnisharp.filetypes = <span class="tok-blue">{</span><span class="tok-green">'cs'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.csharp_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+<p><code>OmniSharp</code> loads the project into Roslyn's workspace, so it knows every
+type of every referenced package and reports the compiler's full set of
+errors -- at the cost of a .NET install, a project that restores, and the
+memory and time that takes. mep's server needs nothing installed and
+answers at once.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="csharp-mode.html">C# mode</a> -- a console beside the file.</li>
+<li><a href="run-button.html">Running the current file</a>.</li>
+</ul>
+</body>
+</html>

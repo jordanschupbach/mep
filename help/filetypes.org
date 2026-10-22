@@ -8,7 +8,7 @@
 | Filetype     | Syntax        | Language server              | Formatter      | Runs with |
 |--------------+---------------+------------------------------+----------------+-----------|
 | C++          | Treesitter    | =mep-cpp-lsp=, =clangd=      | built in       | =c++=     |
-| C            | Treesitter    | =mep-c-lsp=, =clangd=        | =clang-format= | =cc=      |
+| C            | Treesitter    | =mep-c-lsp=, =clangd=        | built in       | =cc=      |
 | Python       | Treesitter    | =mep-python-lsp=, =pyright=  | built in       | =python3= |
 | Lua          | Treesitter    | =lua-language-server=        | LSP            |           |
 | R            | Treesitter    | R's =languageserver=         | built in       | =Rscript= |
@@ -16,7 +16,7 @@
 | Markdown     | Treesitter    | =marksman=                   | LSP            |           |
 | Org          | Treesitter    | =mep-org-lsp=                |                |           |
 | Maxima       | per-line lexer | =mep-maxima-lsp=            | built in       | =maxima=  |
-| Common Lisp  | Treesitter    | =mep-lisp-lsp=               | LSP (indent)   | =sbcl=    |
+| Common Lisp  | Treesitter    | =mep-lisp-lsp=               | built in       | =sbcl=    |
 | mepml        | Treesitter    | =mep-mepml-lsp=              | LSP (tables)   |           |
 | Go           | grammar via =just fetch-grammars= | =gopls=  | LSP            |           |
 | Rust         | grammar via =just fetch-grammars= | =rust-analyzer= | LSP     |           |

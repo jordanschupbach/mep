@@ -1,0 +1,147 @@
+#+TITLE: Crystal mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="38">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+=<leader>uu= (or =<leader>lu=) in a =.cr= file. The tab becomes a Crystal
+workspace: your source, a console below it, and panels showing what the
+console's session holds.
+
+* The console
+
+Crystal is compiled, and the =crystal= mep finds (the one nixpkgs ships)
+has no interpreter -- =crystal i= says it was built without one. So the
+console is mep's own, in the way =icr= works: *every input is compiled
+together with the session so far, and the whole program is run again*.
+
+- Each input that compiles and runs is kept. One that does not compile is
+  dropped, with the compiler's message; so is one that raises or exits
+  with a failure status, or that you stop with =Ctrl-C=.
+- When the program runs again, the earlier inputs' output (and their
+  standard input) goes to =/dev/null=, so you only see what the new input
+  prints, then its value: =cr[3]> words.size= answers ==> 4=.
+- Definitions -- classes, structs, modules, enums, methods, macros,
+  =record=, =alias=, =lib=, constants, =require= -- are placed ahead of the
+  statements, the way Crystal hoists them anyway. A definition-only input
+  is only type-checked, not run, and answers =defined Point=.
+- Errors name what you typed: =In [7]:1:9= is console input 7, line 1;
+  for code sent from a file, the file and its own line numbers.
+
+It is a real Crystal program each time, so anything Crystal does works --
+=require "json"=, shards in the project's =lib/=, C bindings -- but it has
+the costs of the approach:
+
+- *Each statement takes about a second.* Measured here (Crystal 1.19.1,
+  warm cache): 1.1-1.4 s for a statement, 0.7 s for a definition, ~1.5 s
+  for the first input of a fresh cache -- type-checking the whole program
+  again is most of it. Linking would be another second: the console links
+  with =lld= when =ld.lld= is on the =PATH= (it is in mep's dev shell),
+  and without it a statement takes about 2 s. A dim
+  =compiling...= shows while it works.
+- *Earlier inputs run again every time.* Their side effects happen again
+  (silently): the clock and random numbers move, files are re-read and
+  rewritten, a =sleep= sleeps again. The Session panel shows exactly what
+  is replayed; =:undo= and =:reset= trim it.
+- *Standard input is not replayed.* =name = gets= reads a line from the
+  console when you type it, but on every later run it reads end-of-file,
+  so =name= is =nil= from then on.
+- *A method's body is only type-checked when something calls it*, so a
+  broken definition is accepted and the error shows up with its first
+  call. Defining it again (the same name and number of arguments) replaces
+  it -- for code sent from a file the earlier version is dropped, in the
+  console Crystal's own rule applies: the last definition wins.
+- Compiler warnings are not shown (they would repeat for every replayed
+  input).
+
+The console runs under =rlwrap= when it is on the =PATH=, for line editing
+and a history kept across sessions. =Ctrl-C= stops a running input (and
+drops it); at the prompt it abandons what was typed. =Ctrl-D= leaves.
+
+The console itself is a small Crystal program (it parses your input with
+the compiler's own parser) that mep builds the first time, into
+=~/.cache/mep/crystal-ui/<version>/=: the first opening takes about five
+seconds longer, once per Crystal version. The generated session program is
+compiled there too, so the compiler's object cache stays warm from one
+session to the next.
+
+* Working in it
+
+| Key / command        | Does                                                          |
+|----------------------+---------------------------------------------------------------|
+| =<leader>re=         | send the top-level block at the cursor (a class, a method, a statement) |
+| =<leader>rr=         | save the file and load it into the console                    |
+| =gh=                 | documentation for the name under the cursor, in the Help panel |
+| =:help NAME=         | the same, from the console                                    |
+| =:run FILE=          | load a file the way =<leader>rr= does                         |
+| =:undo=              | drop the last kept input                                      |
+| =:reset=             | forget the whole session                                      |
+| =:session=           | print what is kept                                            |
+| =:?=                 | list these commands                                           |
+
+=<leader>re= takes the block around the cursor: from the nearest line above
+it that starts something at column 0 (not an =end=, a comment, or a line
+continuing the one before) to just before the next one, with the doc
+comments and annotations right above it. Sending a method or class from
+the file again replaces the version the session had.
+
+=<leader>rr= loads the whole file. Loading it again replaces everything an
+earlier load of it kept, in place, so the inputs you typed after it still
+see its definitions and variables.
+
+=gh= looks up a type (=String=), a method (=split=), a method of a type
+(=String#split=, =File.read=), or a method called on a session variable
+(=words.map=: the variable's type from the Variables panel, then what that
+type inherits and includes -- =Array= gets =Indexable=, =Enumerable=,
+=Iterable=). The documentation is the standard library's own doc comments,
+read from its sources on your machine (=crystal env CRYSTAL_PATH=, so a
+project's shards in =lib/= too); no network. For a type it lists the type's
+methods. A name the session defines shows its source first.
+
+* The panels
+
+| Panel       | Shows                                                               |
+|-------------+---------------------------------------------------------------------|
+| Variables   | the session's variables, each with its type (=typeof=) and value (=inspect=) |
+| Definitions | the types, methods, macros and constants the session defines, with where they came from |
+| Inspect     | a variable's value, pretty-printed, with its type                   |
+| Session     | the inputs kept, in the order they are replayed                     |
+| History     | everything typed or sent, newest first; click one to send it again  |
+| Help        | documentation, from =gh= or =:help=                                 |
+
+Clicking a Variables row shows that value in Inspect. Clicking a
+Definitions row goes to it in its file, or, for one typed in the console,
+shows its source in Help.
+
+The variables are the ones the session's inputs assign at their top level
+(not inside a block or a method). The program writes the panels' files at
+the end of every run.
+
+* Options
+
+#+begin_src lua
+mep.opt.crystal_ui_rlwrap = true        -- false: never run the console under rlwrap
+mep.opt.crystal_ui_fast_link = true     -- false: link with the compiler's default linker, not lld
+mep.opt.crystal_ui_info_share = 0.3
+mep.opt.crystal_ui_bottom_share = 0.4
+mep.opt.crystal_ui_bottom_info_share = 0.4
+#+end_src
+
+With =crystal_ui_fast_link= the program is linked by =lld= with the
+library directories the compiler names added as run paths; if a library is
+still not found when it starts, the console falls back to the default
+linker for the rest of the session.
+
+* Editing Crystal
+
+These work in any Crystal file, with or without the mode open:
+
+- *Highlighting, folds and the outline* come from mep's Crystal grammar
+  (see [[file:syntax.html][Syntax highlighting]]).
+- *Diagnostics, completion and hover* come from the Crystal language
+  server (see [[file:lsp.html][Language servers]]).
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.

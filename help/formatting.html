@@ -23,16 +23,23 @@ stale copy from disk.</p>
 <tr><td>Python</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>R</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Maxima</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
-<tr><td>C</td><td><code>clang-format</code></td></tr>
+<tr><td>Shell (<code>.sh</code>, <code>.bash</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Clojure (<code>.clj</code>, <code>.cljs</code>, <code>.cljc</code>, <code>.edn</code>, ...)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>C</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Common Lisp (<code>.lisp</code>, <code>.lsp</code>, <code>.cl</code>, <code>.asd</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Crystal (<code>.cr</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>C# (<code>.cs</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
 </table>
 <p>That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.</p>
-<p>C++, Python, R and Maxima need nothing installed at all: all four
-formatters are built into mep, so <code>gf</code> on a <code>.cpp</code>, <code>.h</code>, <code>.py</code>, <code>.R</code> or
-<code>.mac</code> buffer works on a machine with no <code>clang-format</code>, no <code>black</code>, no
-<code>air</code> and no Python, R or Maxima toolchain, and answers instantly because
+<p>C, C++, Python, R, Maxima, shell scripts, Clojure, Common Lisp, Crystal
+and C# need nothing installed at all: all ten formatters are built into
+mep, so <code>gf</code> on a <code>.c</code>, <code>.cpp</code>, <code>.h</code>, <code>.py</code>, <code>.R</code>, <code>.mac</code>, <code>.sh</code>, <code>.clj</code>,
+<code>.lisp</code>, <code>.cr</code> or <code>.cs</code> buffer works on a machine with no <code>clang-format</code>,
+no <code>black</code>, no <code>air</code>, no <code>shfmt</code>, no <code>cljfmt</code>, no Emacs and no Python, R,
+Maxima, JVM, Lisp, Crystal or .NET toolchain, and answers instantly because
 nothing is spawned.</p>
 <h1>Org code blocks</h1>
 <p>In an <code>.org</code> file <code>gf</code> formats <b>code</b>, never the prose around it.</p>
@@ -128,6 +135,88 @@ the deliberate differences above.</p>
 <p>To go back to <code>clang-format</code> instead, replace the entry with an ordinary
 argv one:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.cpp = <span class="tok-blue">{</span><span class="tok-green">'clang-format'</span>, <span class="tok-green">'--assume-filename={}'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The C formatter</h1>
+<p>C files are laid out exactly the way <code>clang-format</code> lays them out in its
+default LLVM style, by mep itself -- no <code>clang-format</code> binary, no libclang.
+It is a port of <code>clang-format</code>'s own pipeline, cut down to C: the same
+lexer, the same parser into lines, the same token annotation, the same
+penalty-based search for where to break a long line, the same whitespace
+pass. It is also what <a href="c-lsp.html">mep's C language server</a> formats
+with.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">c</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="c"><span class="tok-purple">#include</span> <span class="tok-green">&lt;stdio.h&gt;</span>
+<span class="tok-purple">struct</span> <span class="tok-orange">point</span>{<span class="tok-orange">int</span> x;<span class="tok-orange">int</span> y;};
+<span class="tok-purple">static</span> <span class="tok-orange">int</span> <span class="tok-blue">sum</span>(<span class="tok-purple">const</span> <span class="tok-purple">struct</span> <span class="tok-orange">point</span>*<span class="tok-red">pts</span>,<span class="tok-orange">int</span> <span class="tok-red">n</span>,<span class="tok-orange">int</span> <span class="tok-red">scale</span>){
+<span class="tok-orange">int</span> total=<span class="tok-cyan">0</span>;
+<span class="tok-purple">for</span>(<span class="tok-orange">int</span> i=<span class="tok-cyan">0</span>;i&lt;n;i++)total+=pts[i].x*scale+pts[i].y;
+<span class="tok-purple">switch</span>(scale){<span class="tok-purple">case</span> <span class="tok-cyan">0</span>:<span class="tok-purple">return</span> <span class="tok-cyan">0</span>;<span class="tok-purple">default</span>:<span class="tok-purple">break</span>;}
+<span class="tok-purple">return</span> total;}
+<span class="tok-purple">#define</span> <span class="tok-blue">SQUARE</span>(<span class="tok-red">x</span>) ((x)*(x)) // squares x</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">c</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="c"><span class="tok-purple">#include</span> <span class="tok-green">&lt;stdio.h&gt;</span>
+<span class="tok-purple">struct</span> <span class="tok-orange">point</span> {
+  <span class="tok-orange">int</span> x;
+  <span class="tok-orange">int</span> y;
+};
+<span class="tok-purple">static</span> <span class="tok-orange">int</span> <span class="tok-blue">sum</span>(<span class="tok-purple">const</span> <span class="tok-purple">struct</span> <span class="tok-orange">point</span> *<span class="tok-red">pts</span>, <span class="tok-orange">int</span> <span class="tok-red">n</span>, <span class="tok-orange">int</span> <span class="tok-red">scale</span>) {
+  <span class="tok-orange">int</span> total = <span class="tok-cyan">0</span>;
+  <span class="tok-purple">for</span> (<span class="tok-orange">int</span> i = <span class="tok-cyan">0</span>; i &lt; n; i++)
+    total += pts[i].x * scale + pts[i].y;
+  <span class="tok-purple">switch</span> (scale) {
+  <span class="tok-purple">case</span> <span class="tok-cyan">0</span>:
+    <span class="tok-purple">return</span> <span class="tok-cyan">0</span>;
+  <span class="tok-purple">default</span>:
+    <span class="tok-purple">break</span>;
+  }
+  <span class="tok-purple">return</span> total;
+}
+<span class="tok-purple">#define</span> <span class="tok-blue">SQUARE</span>(<span class="tok-red">x</span>) ((x) * (x)) // squares x</code></pre></div>
+<p>Two-space indents, an 80-column margin, <code>int *p</code> with the star on the name,
+braces on the line that opens them, <code>case</code> labels at the <code>switch</code>'s own
+indent, a short function kept on one line, continuation lines aligned after
+the open bracket, runs of trailing comments lined up, the backslashes of a
+multi-line <code>#define</code> lined up at the margin, comments that run past it
+reflowed and long strings split. Every <code>#if</code> / <code>#else</code> branch is laid out,
+not just the first.</p>
+<p>On the 841 C files of mep's corpus that <code>clang-format</code> finishes (Lua,
+CPython, SQLite's shell, tree-sitter), <b>every one</b> comes out byte-identical
+to <code>clang-format --style</code>"\{BasedOnStyle: LLVM, SortIncludes: Never\}"= --
+about 700,000 lines. The one difference by design:</p>
+<ul>
+<li><b>=#include= lines are never reordered.</b> LLVM style sorts them within each block; in C the order of includes can matter.</li>
+</ul>
+<p>Like <code>clang-format</code>, a handful of files only settle on a second <code>gf</code> (8 of
+the 841 -- the same 8 for both, with the same second result).</p>
+<h2>It will not rewrite code it cannot prove it preserved</h2>
+<p>The result is lexed again and compared with the input token for token:
+only whitespace may differ, plus what reflowing a comment or splitting a
+string changes -- the words of every comment and the bytes of every string
+stay the same, in order -- and no token may move into or out of a
+preprocessor directive. A <code>#define</code>'s name keeps its <code>(</code> attached or
+detached, since that space decides whether the macro takes arguments. If
+the check fails, <code>gf</code> leaves the buffer exactly as it was and names the
+line.</p>
+<p>Each combination of <code>#if</code> branches is a pass over the whole file, so a file
+with very many of them costs that many passes. <code>clang-format</code> has the same
+cost and no limit: on SQLite's 9 MB amalgamation (<code>sqlite3.c</code>) it runs for
+minutes and takes tens of gigabytes. mep counts the combinations on the
+first pass and refuses up front, with a message, when the file is too large
+for them; anything up to about a megabyte with a hundred-odd combinations
+(SQLite's <code>shell.c</code>) is still formatted.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.c.width = <span class="tok-cyan">100</span>        <span class="tok-comment">-- ColumnLimit, default 80</span>
+<span class="tok-cyan">mep</span>.format_languages.c.indent = <span class="tok-cyan">4</span>         <span class="tok-comment">-- IndentWidth, default 2</span>
+<span class="tok-cyan">mep</span>.format_languages.c.tabs = <span class="tok-cyan">true</span>        <span class="tok-comment">-- UseTab: ForIndentation; a tab is</span>
+                                          <span class="tok-comment">-- `indent` columns, 8 when unset</span>
+<span class="tok-cyan">mep</span>.format_languages.c.case_indent = <span class="tok-cyan">true</span> <span class="tok-comment">-- IndentCaseLabels</span></code></pre></div>
+<p>A project's own <code>.clang-format</code> is not read. To use <code>clang-format</code> itself
+(and with it the project's <code>.clang-format</code>), replace the entry with an
+ordinary argv one:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.c = <span class="tok-blue">{</span><span class="tok-green">'clang-format'</span>, <span class="tok-green">'--assume-filename={}'</span><span class="tok-blue">}</span></code></pre></div>
+<p><code>.h</code> files go to the C++ formatter, which is what a header is in a C++
+project; in a C project, send them here instead:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.h = <span class="tok-cyan">mep</span>.format_languages.c</code></pre></div>
+<p>The port follows <code>clang-format</code> (part of LLVM, Apache License 2.0 with LLVM
+exceptions); <code>src/c_format_internal.h</code> carries the attribution.</p>
 <h1>The Python formatter</h1>
 <p>Python is formatted by mep itself. Nothing is spawned, nothing has to be on
 <code>PATH</code>, and <code>gf</code> works the same in a fresh checkout as on a fully set-up
@@ -191,6 +280,277 @@ usually data. A long conditional breaks before <code>then</code> and <code>else<
 than layout: a statement's terminator (<code>;</code> displays the result, <code>$</code> does
 not), a string's escapes, and the spelling of a loop clause (<code>for i : 1</code>
 and <code>for i from 1</code> are the same loop, and each is left as it was written).</p>
+<h1>The Bash formatter</h1>
+<p>Shell scripts are laid out the way <code>shfmt</code> lays them out, by mep itself:
+the same parser mep's <a href="bash-lsp.html">Bash language server</a> uses
+reads the script, and the tree is printed back.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">greet</span> () {
+  <span class="tok-purple">local</span> name=$<span class="tok-cyan">1</span>
+    <span class="tok-purple">if</span> [ -n <span class="tok-green">"$name"</span> ]
+    <span class="tok-purple">then</span>
+  <span class="tok-blue">echo</span> <span class="tok-green">"hi $name"</span>;
+  <span class="tok-purple">fi</span>
+}
+<span class="tok-purple">for</span> x <span class="tok-purple">in</span> a b;<span class="tok-purple">do</span> <span class="tok-blue">greet</span> $x;<span class="tok-purple">done</span></code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">greet</span>() {
+  <span class="tok-purple">local</span> name=$<span class="tok-cyan">1</span>
+  <span class="tok-purple">if</span> [ -n <span class="tok-green">"$name"</span> ]; <span class="tok-purple">then</span>
+    <span class="tok-blue">echo</span> <span class="tok-green">"hi $name"</span>
+  <span class="tok-purple">fi</span>
+}
+<span class="tok-purple">for</span> x <span class="tok-purple">in</span> a b; <span class="tok-purple">do</span> <span class="tok-blue">greet</span> $x; <span class="tok-purple">done</span></code></pre></div>
+<ul>
+<li><code>then</code> and <code>do</code> go on the line that opens the block, one statement per line inside it; a block written on one line with a single statement in each body (<code>[[ -f x ]] || { echo no; exit 1; }</code> has two, so it opens up) stays on one line.</li>
+<li>Single spaces between words and around <code>|</code>, <code>&amp;&amp;</code> and <code>;;</code>; <code>name()</code>; redirections tight to their target (<code>&gt;file</code>, <code>2&gt;&amp;1</code>), and moved after the arguments unless written right after the command name, as <code>shfmt</code> does.</li>
+<li>Arithmetic re-spaced: <code>$((a + 1))</code>, <code>((i++))</code>, <code>for ((i = 0; i &lt; n; i++))</code>.</li>
+<li>Backquotes become <code>$(...)</code>.</li>
+<li>A line broken after <code>&amp;&amp;</code>, <code>||</code> or <code>|</code>, or with a backslash inside a command, stays broken there, one level in.</li>
+<li>Comments stay where they are, a run of trailing comments is lined up, and at most one blank line is kept between statements.</li>
+<li>Here-document bodies are kept byte for byte (a <code>&lt;&lt;-</code> body, whose leading tabs bash strips, is re-indented when the file indents with tabs).</li>
+</ul>
+<p>The indent unit is the file's own -- tabs, or the width of spaces its
+blocks are indented by -- and so is whether <code>case</code> patterns sit a level
+inside the <code>case</code>. A file with nothing indented yet gets tabs.</p>
+<p>On the 3,432 scripts of mep's Bash test corpus (bash-completion, git's test
+suite, bash's examples and tests, every <code>.sh</code> in nixpkgs), with tabs, 96% of
+files come out byte-identical to <code>shfmt</code>'s output and 99.9% of lines. The
+rest are deliberate:</p>
+<ul>
+<li><b>Array subscripts are left as written.</b> <code>shfmt</code> re-spaces <code>a[i+1]</code> as arithmetic, which for an associative array changes the key: <code>[x86_64-linux]</code> becomes <code>[x86_64 - linux]</code>. nixpkgs has update scripts that <code>shfmt</code> breaks that way.</li>
+<li><b>=${x/pat}= is not rewritten</b> to <code>${x/pat/}</code>, and nothing inside <code>${...}</code> is re-spaced.</li>
+<li><b>Here-document bodies are not formatted</b>, not even the <code>$(...)</code> in them.</li>
+<li>*Backquotes holding nested backquotes, or written right after a <code>$</code>, stay backquotes.*</li>
+</ul>
+<h2>It will not rewrite a script it cannot prove it preserved</h2>
+<p>The result is parsed again and compared with the original, command by
+command and word by word, comments and here-document bodies included; only
+the layout may differ. A script that does not parse, or a layout that would
+change anything else, leaves the buffer exactly as it was and says why --
+with the line, for a syntax error.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.sh.indent = <span class="tok-cyan">2</span>              <span class="tok-comment">-- two spaces, whatever the file uses ('\t' for tabs)</span>
+<span class="tok-cyan">mep</span>.format_languages.sh.case_indent = <span class="tok-cyan">true</span>      <span class="tok-comment">-- case patterns a level inside `case`</span></code></pre></div>
+<p>To use <code>shfmt</code> instead:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.sh = <span class="tok-blue">{</span><span class="tok-green">'shfmt'</span>, <span class="tok-green">'--filename'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.format_languages.bash = <span class="tok-cyan">mep</span>.format_languages.sh</code></pre></div>
+<h1>The Clojure formatter</h1>
+<p>Clojure files are laid out the way <code>cljfmt</code> lays them out with its default
+options, by mep itself -- no JVM, no <code>cljfmt</code> binary. It also runs for
+<code>.cljs</code>, <code>.cljc</code>, <code>.cljd</code>, <code>.edn</code> and <code>.bb</code> files, and is what
+<a href="clojure-lsp.html">mep's Clojure language server</a> formats with.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">clojure</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="clojure">(<span class="tok-purple">defn</span> <span class="tok-blue">greet</span> [<span class="tok-red">name</span>]
+(<span class="tok-purple">let</span> [msg (<span class="tok-blue">str</span> <span class="tok-green">"hi "</span> name)
+]
+( <span class="tok-blue">println</span> msg )
+))</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">clojure</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="clojure">(<span class="tok-purple">defn</span> <span class="tok-blue">greet</span> [<span class="tok-red">name</span>]
+  (<span class="tok-purple">let</span> [msg (<span class="tok-blue">str</span> <span class="tok-green">"hi "</span> name)]
+    (<span class="tok-blue">println</span> msg)))</code></pre></div>
+<ul>
+<li>Indentation is recomputed from the forms: a call's arguments line up under its first argument (or sit one column in when none is on the head's line); the body of <code>defn</code>, <code>let</code>, <code>when</code>, <code>fn</code>, <code>cond-&gt;</code>, <code>deftype</code>... sits two columns in, as <code>cljfmt</code>'s indentation table says, and so does that of any <code>def...</code> or <code>with-...</code> form; a collection's elements line up under its first. Top-level forms start at column 0.</li>
+<li>No space just inside brackets -- <code>( foo )</code> is <code>(foo)</code> -- and a closing bracket left alone on its line joins the line before it.</li>
+<li>One space between forms that touch, <code>(foo(bar))</code> becoming <code>(foo (bar))</code>.</li>
+<li>No trailing whitespace; runs of blank lines become one.</li>
+</ul>
+<p>Like <code>cljfmt</code>, it never breaks or joins lines otherwise, never touches the
+text of a string or a comment, and leaves a line that starts with a
+comment where it is. It does not wrap, so it has no <code>width</code>.</p>
+<p>On the 1,772 files of mep's Clojure corpus that read (Clojure's and
+ClojureScript's own source, clj-kondo, clojure-lsp, babashka,
+rewrite-clj...), 97% come out byte-identical to <code>cljfmt</code>'s output and
+99.95% of lines. The rest are <code>cljfmt</code>'s own corners -- the indentation of
+some forms inside <code>#?(...)</code> reader conditionals and syntax-quoted
+templates, lines holding nothing but commas.</p>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>The result is read again and its tokens compared with the input's; only
+whitespace may differ. A file that does not read (an unclosed paren, an odd
+map) leaves the buffer exactly as it was, and <code>gf</code> says why, with the line.</p>
+<h2>Using cljfmt instead</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.clj = <span class="tok-blue">{</span><span class="tok-green">'cljfmt'</span>, <span class="tok-green">'fix'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span>
+<span class="tok-purple">for</span> _, e <span class="tok-purple">in</span> <span class="tok-blue">ipairs</span>(<span class="tok-blue">{</span><span class="tok-green">'cljs'</span>, <span class="tok-green">'cljc'</span>, <span class="tok-green">'cljd'</span>, <span class="tok-green">'edn'</span>, <span class="tok-green">'bb'</span><span class="tok-blue">}</span>) <span class="tok-purple">do</span>
+  <span class="tok-cyan">mep</span>.format_languages[e] = <span class="tok-cyan">mep</span>.format_languages.clj
+<span class="tok-purple">end</span></code></pre></div>
+<h1>The Common Lisp formatter</h1>
+<p>Common Lisp has no <code>cljfmt</code> or <code>black</code>; the layout every Lisp programmer's
+tools agree on is Emacs's -- <code>lisp-mode</code> with <code>common-lisp-indent-function</code>,
+what SLIME and Sly set up. mep computes that indentation itself, rule for
+rule, with no Emacs and no Lisp image. It runs for <code>.lisp</code>, <code>.lsp</code>, <code>.cl</code>
+and <code>.asd</code> files, the Enter key's auto-indent in those buffers uses the same
+rules, and it is what
+<a href="lisp-lsp.html">mep's Common Lisp language server</a> formats with.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lisp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lisp">(<span class="tok-purple">defun</span> <span class="tok-blue">greet</span> (<span class="tok-red">name</span>)
+(<span class="tok-purple">let</span> ((msg (<span class="tok-blue">format</span> <span class="tok-cyan">nil</span> <span class="tok-green">"hi ~a"</span> name)))
+  ( <span class="tok-blue">print</span> msg )
+    )
+)
+(<span class="tok-purple">defmacro</span> <span class="tok-blue">with-thing</span> ((<span class="tok-red">var</span>) <span class="tok-purple">&amp;body</span> <span class="tok-red">body</span>)
+`(<span class="tok-purple">let</span> ((,var <span class="tok-cyan">1</span>))
+,@body))</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lisp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lisp">(<span class="tok-purple">defun</span> <span class="tok-blue">greet</span> (<span class="tok-red">name</span>)
+  (<span class="tok-purple">let</span> ((msg (<span class="tok-blue">format</span> <span class="tok-cyan">nil</span> <span class="tok-green">"hi ~a"</span> name)))
+    (<span class="tok-blue">print</span> msg)))
+(<span class="tok-purple">defmacro</span> <span class="tok-blue">with-thing</span> ((<span class="tok-red">var</span>) <span class="tok-purple">&amp;body</span> <span class="tok-red">body</span>)
+  `(<span class="tok-purple">let</span> ((,var <span class="tok-cyan">1</span>))
+     ,@body))</code></pre></div>
+<ul>
+<li>Indentation as <code>common-lisp-indent-function</code> computes it: the specs of <code>defun</code>, <code>let</code>, <code>flet</code>, <code>case</code>, <code>destructuring-bind</code>, <code>handler-case</code>, <code>loop</code>, <code>tagbody</code>, <code>do</code>...; any <code>def...</code> form indented like <code>defun</code> and any <code>with-...</code> or <code>do-...</code> form like a body form; package prefixes ignored; a call's arguments under the first one, a quoted list's elements under its first, a keyword under the keyword above it.</li>
+<li>No space just inside parens -- <code>( foo )</code> is <code>(foo)</code> -- and a close paren alone on its line joins the line before, unless that line ends in a <code>;</code> comment or the paren carries a comment of its own.</li>
+<li>No trailing whitespace, at most two blank lines in a row, a final newline and no blank lines after it; indentation is spaces.</li>
+</ul>
+<p>The text of strings, <code>|...|</code> symbols, comments, character literals such as
+<code>#\(</code> and <code>#+feature</code> expressions is never touched, and lines are never
+broken or joined otherwise. It does not wrap, so it has no <code>width</code>.</p>
+<p>On the 1,521 files of mep's Common Lisp corpus (SBCL and the libraries
+packaged with it) that Emacs indents, 1,519 come out byte-identical to
+Emacs's <code>indent-region</code> with the same whitespace rules -- every line of
+701,176 -- and each is a fixed point. Where it differs from Emacs, on
+purpose: a line inside a <code>#|...|#</code> comment keeps its indentation (Emacs
+re-indents a block comment as code); a line holding only a single-=;=
+comment keeps its column (Emacs sends it to column 40); and a <code>defmethod</code>'s
+qualifiers are counted from the form itself, where Emacs, on a file not yet
+indented, can find the wrong enclosing form and indent the body as the
+lambda list.</p>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>The result is read again and its tokens compared with the input's; only
+whitespace may differ. A file that does not read -- an unclosed paren or
+string -- leaves the buffer exactly as it was, and <code>gf</code> says why, with the
+line.</p>
+<h2>Options</h2>
+<p>Your own macros indent as calls until told otherwise. <code>indent</code> adds or
+replaces specs, keyed by the operator's lower-case name without a package:
+a number of distinguished arguments before a body, a cl-indent list, or
+the name of an operator to indent like.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.lisp.indent = <span class="tok-blue">{</span>
+  [<span class="tok-green">'with-connection'</span>] = <span class="tok-green">'1'</span>,          <span class="tok-comment">-- (with-connection (c db) body...)</span>
+  [<span class="tok-green">'define-route'</span>] = <span class="tok-green">'defun'</span>,
+  [<span class="tok-green">'my-case'</span>] = <span class="tok-green">'case'</span>,
+  [<span class="tok-green">'do-rows'</span>] = <span class="tok-green">'(4 &amp;body)'</span>,
+<span class="tok-blue">}</span></code></pre></div>
+<h1>The Crystal formatter</h1>
+<p>Crystal has one layout -- <code>crystal tool format</code>'s, which takes no options
+-- and mep produces it itself, with no <code>crystal</code> binary: the formatter is a
+port of the compiler's own (<code>formatter.cr</code>, Crystal 1.19), running on mep's
+port of the compiler's lexer and parser. It is also what
+<a href="crystal-lsp.html">mep's Crystal language server</a> formats with.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">crystal</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="crystal"><span class="tok-purple">class</span> <span class="tok-orange">Greeter</span>
+<span class="tok-purple">def</span> <span class="tok-blue">initialize</span>(@name : <span class="tok-orange">String</span>)
+<span class="tok-purple">end</span>
+<span class="tok-purple">def</span> <span class="tok-blue">greet</span>( <span class="tok-red">times</span>=<span class="tok-cyan">1</span> )
+times.<span class="tok-blue">times</span>{|<span class="tok-red">i</span>| <span class="tok-blue">puts</span> <span class="tok-green">"hi #{@name}"</span> }
+<span class="tok-purple">end</span>
+<span class="tok-purple">end</span></code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">crystal</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="crystal"><span class="tok-purple">class</span> <span class="tok-orange">Greeter</span>
+  <span class="tok-purple">def</span> <span class="tok-blue">initialize</span>(@name : <span class="tok-orange">String</span>)
+  <span class="tok-purple">end</span>
+
+  <span class="tok-purple">def</span> <span class="tok-blue">greet</span>(<span class="tok-red">times</span> = <span class="tok-cyan">1</span>)
+    times.<span class="tok-blue">times</span> { |<span class="tok-red">i</span>| <span class="tok-blue">puts</span> <span class="tok-green">"hi #{@name}"</span> }
+  <span class="tok-purple">end</span>
+<span class="tok-purple">end</span></code></pre></div>
+<p>Everything <code>crystal tool format</code> does, it does: two-space indentation,
+spacing around operators, =,= and block braces, one blank line between
+definitions, <code>when ... then</code> rows, <code>=&gt;</code> columns in a hash literal and
+trailing comments lined up, heredoc bodies moved with their start, the
+<code>```crystal</code> examples inside doc comments formatted too, and macro bodies
+formatted where the code between the tags is Crystal on its own.</p>
+<p>All 1,128 single-line cases of the compiler's formatter spec give the
+compiler's answer. On mep's Crystal corpus (4,602 files: the compiler and
+standard library, crystalline, ameba, invidious, mint, shards and the other
+Crystal projects nixpkgs packages), every file comes out byte-identical to
+<code>crystal tool format</code>, and so do 4,454 of 4,456 copies with their
+indentation and spacing scrambled; formatting twice changes nothing.</p>
+<p>The one difference is deliberate: a string literal that spans lines keeps
+the trailing spaces of its lines. They are part of the string's value, and
+<code>crystal tool format</code> strips them anyway, which changes the program.</p>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>The result is parsed again and its tree compared with the input's, node
+for node, and its comments with the input's, in order. A file that does not
+parse leaves the buffer as it was, and <code>gf</code> gives the compiler's own syntax
+error, worded the same, with its line.</p>
+<h2>Using crystal tool format instead</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.cr = <span class="tok-blue">{</span><span class="tok-green">'crystal'</span>, <span class="tok-green">'tool'</span>, <span class="tok-green">'format'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The C# formatter</h1>
+<p>mep lays C# out the way <code>dotnet format whitespace</code> does with no
+<code>.editorconfig</code> -- four-space indentation, braces on their own lines, its
+spacing rules -- and it does so itself, with no .NET: the formatter is a
+port of Roslyn's own formatting engine (the C# formatting rules and the
+engine that applies them, at the commit the .NET 10 SDK's <code>dotnet format</code>
+was built from), running on mep's port of Roslyn's parser, whose trees are
+Roslyn's own. It is also what
+<a href="csharp-lsp.html">mep's C# language server</a> formats with.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">csharp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="csharp"><span class="tok-purple">namespace</span> <span class="tok-orange">Shapes</span>{
+<span class="tok-purple">public</span> <span class="tok-purple">class</span> <span class="tok-orange">Polygon</span> {
+  <span class="tok-orange">int</span> sides=<span class="tok-cyan">3</span>;
+<span class="tok-purple">public</span>  <span class="tok-orange">int</span> Sides{<span class="tok-purple">get</span>{<span class="tok-purple">return</span> sides;}<span class="tok-purple">set</span>{sides=value;}}
+<span class="tok-purple">public</span> <span class="tok-orange">double</span> <span class="tok-blue">Angle</span>( ){
+<span class="tok-purple">if</span>(sides&lt;<span class="tok-cyan">3</span>){<span class="tok-purple">throw</span> <span class="tok-purple">new</span> System.<span class="tok-orange">ArgumentException</span>(<span class="tok-green">"too few sides"</span>);}
+    <span class="tok-purple">return</span> <span class="tok-cyan">180.0</span>*(sides-<span class="tok-cyan">2</span>)/sides;
+    }
+}
+}</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">csharp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="csharp"><span class="tok-purple">namespace</span> <span class="tok-orange">Shapes</span>
+{
+    <span class="tok-purple">public</span> <span class="tok-purple">class</span> <span class="tok-orange">Polygon</span>
+    {
+        <span class="tok-orange">int</span> sides = <span class="tok-cyan">3</span>;
+        <span class="tok-purple">public</span> <span class="tok-orange">int</span> Sides { <span class="tok-purple">get</span> { <span class="tok-purple">return</span> sides; } <span class="tok-purple">set</span> { sides = value; } }
+        <span class="tok-purple">public</span> <span class="tok-orange">double</span> <span class="tok-blue">Angle</span>()
+        {
+            <span class="tok-purple">if</span> (sides &lt; <span class="tok-cyan">3</span>) { <span class="tok-purple">throw</span> <span class="tok-purple">new</span> System.<span class="tok-orange">ArgumentException</span>(<span class="tok-green">"too few sides"</span>); }
+            <span class="tok-purple">return</span> <span class="tok-cyan">180.0</span> * (sides - <span class="tok-cyan">2</span>) / sides;
+        }
+    }
+}</code></pre></div>
+<p>Like Roslyn's, it fixes whitespace and indentation and nothing else: it
+moves braces of types, members and blocks onto their own lines, but keeps a
+block, property or statement the author wrote on one line on one line; it
+spaces operators, commas, casts and keywords, indents blocks, switch
+sections, embedded statements, lambdas, initializers, collection
+expressions, patterns and query clauses, re-indents comments, doc comments
+and <code>#region</code> lines with the code, puts other directives at column 0, and
+leaves <code>#pragma warning disable format</code> regions alone. It never joins or
+breaks lines to fit a width, and it keeps the user's own indentation of a
+continued argument or expression.</p>
+<p>All 324 of Roslyn's own formatting tests that are a plain input and
+expected text (<code>AssertFormatAsync</code>, default options) give Roslyn's answer.
+On mep's C# corpus (17,828 files: Roslyn's compilers, analyzers and tests,
+jellyfin, osu!, OpenRA, Pinta, ILSpy, ArchiSteamFarm, OmniSharp and more),
+every file comes out byte-identical to <code>dotnet format whitespace</code> but one,
+and so do all 17,828 copies with their indentation and spacing scrambled.
+Formatting twice changes nothing on every file of the corpus; on 613 of the
+scrambled copies a second pass moves a continued argument's contents again
+-- exactly as Roslyn's own second pass does.</p>
+<p>Like <code>dotnet format</code>, a file with syntax errors is still formatted (the
+space next to a missing token is left as it is), and a byte-order mark is
+kept. The one difference is deliberate: a file that is not valid UTF-8 is
+refused -- <code>dotnet format</code> reads it with replacement characters and writes
+them back, losing the original bytes (the one corpus file is Shift-JIS).</p>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>The result is parsed again and compared with the input's tree: every node
+and token, the same syntax errors, the same comments and directives up to
+whitespace. If anything else differs, the buffer is left as it was and <code>gf</code>
+says where.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.cs.indent = <span class="tok-cyan">2</span>      <span class="tok-comment">-- indent_size, default 4</span>
+<span class="tok-cyan">mep</span>.format_languages.cs.tabs = <span class="tok-cyan">true</span>     <span class="tok-comment">-- indent_style = tab (indent columns wide)</span></code></pre></div>
+<p>These are <code>dotnet format</code>'s <code>indent_size</code> and <code>indent_style</code>; with them set
+the output still matches <code>dotnet format</code> given the same <code>.editorconfig</code>.
+The other Roslyn options (<code>csharp_new_line_before_open_brace</code> and the rest)
+are at their defaults: a project's <code>.editorconfig</code> is not read.</p>
+<h2>Using dotnet format instead</h2>
+<p><code>dotnet format</code> formats files in a folder rather than a stream, so it runs
+in file mode on a copy:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.cs = <span class="tok-blue">{</span><span class="tok-green">'sh'</span>, <span class="tok-green">'-c'</span>,
+  <span class="tok-green">'d=${XDG_CACHE_HOME:-$HOME/.cache}/mep/dotnet-format &amp;&amp; mkdir -p "$d" &amp;&amp; '</span>
+    .. <span class="tok-green">'cp "$1" "$d/buffer.cs" &amp;&amp; dotnet format whitespace --folder "$d" --include buffer.cs &amp;&amp; '</span>
+    .. <span class="tok-green">'cp "$d/buffer.cs" "$1"'</span>,
+  <span class="tok-green">'sh'</span>, <span class="tok-green">'{}'</span>, mode = <span class="tok-green">'file'</span><span class="tok-blue">}</span></code></pre></div>
+<p>An <code>.editorconfig</code> in that directory is what it reads its options from.</p>
 <h1>The R formatter</h1>
 <p>mep's R formatter follows the tidyverse style: two-space indent, spaces
 around binary operators (but not around <code>^</code>, <code>:</code>, <code>::</code>, <code>$</code> or <code>@</code>), <code>&lt;-</code>
@@ -231,9 +591,12 @@ token, against the input -- finds a difference it did not intend.</p>
 nearest <code>air.toml</code> rather than from <code>width</code> above.</p>
 <h1>Line width</h1>
 <p>The built-in formatters wrap at <b>100 columns</b> for C++, <b>88</b> for Python and
-<b>80</b> for R -- <code>width</code> in each one's table entry, and the subsections above
-change it. <code>clang-format</code>, if you put it back for C or C++, takes its margin
-from the project's own <code>.clang-format</code> instead.</p>
+<b>80</b> for C and R -- <code>width</code> in each one's table entry, and the subsections
+above change it. The Bash one does not wrap: like <code>shfmt</code>, it keeps a
+script's own line breaks, and so do the Clojure, Common Lisp, Crystal and
+C# ones.
+<code>clang-format</code>, if you put it back for C or C++, takes its margin from the
+project's own <code>.clang-format</code> instead.</p>
 <h1>Adding one</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.js = <span class="tok-blue">{</span><span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
 <span class="tok-cyan">mep</span>.format_languages.ts = <span class="tok-cyan">mep</span>.format_languages.js</code></pre></div>
@@ -242,7 +605,7 @@ from the project's own <code>.clang-format</code> instead.</p>
 <ul>
 <li><b>filter</b> (the default): the buffer is written to the formatter's stdin and its stdout replaces the buffer. <code>\{\}</code> is the buffer's real absolute filename.</li>
 <li><b>file</b>: add <code>mode = 'file'=, and =\{\}</code> is a temporary file the formatter edits in place.</li>
-<li><b>builtin</b>: no program at all -- =\{builtin = 'format_python', name = '...', width = 88\}= names a <code>mep.*</code> function taking the text and a width and returning the formatted text, which runs in-process. This is how the C++, Python and R entries are wired.</li>
+<li><b>builtin</b>: no program at all -- =\{builtin = 'format_python', name = '...', width = 88\}= names a <code>mep.*</code> function taking the text and a width and returning the formatted text, which runs in-process. This is how every built-in entry above is wired.</li>
 </ul>
 <p>Entries are looked up by <b>bare extension</b>, so every extension of a language
 needs its own key -- which is why the built-in table aliases <code>.h</code>, <code>.cc</code>,

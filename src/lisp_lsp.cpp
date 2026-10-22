@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "lisp_indent.h"
+#include "lisp_format.h"
 #include "lisp_lsp_cl_names.h"
 
 // --- The COMMON-LISP table ---------------------------------------------
@@ -3909,17 +3909,33 @@ LispLspSignature LispLspSignatureHelp(const std::vector<std::string> &lines, int
 // --- Formatting -------------------------------------------------------
 
 std::vector<LispLspTextEdit> LispLspFormat(const std::vector<std::string> &lines) {
+    std::string text;
+    for (const std::string &l : lines) text += l + "\n";
+    const lispfmt::Result r = lispfmt::Format(text);
     std::vector<LispLspTextEdit> out;
-    const std::vector<std::string> fixed = LispReindent(lines);
-    for (size_t i = 0; i < lines.size() && i < fixed.size(); i++) {
-        if (lines[i] == fixed[i]) continue;
-        LispLspTextEdit e;
-        e.range.line = static_cast<int>(i);
-        e.range.col = 0;
-        e.range.end_line = static_cast<int>(i);
-        e.range.end_col = static_cast<int>(lines[i].size());
-        e.new_text = fixed[i];
-        out.push_back(e);
+    if (!r.ok || r.text == text) return out;
+    std::vector<std::string> got;
+    size_t p = 0;
+    while (p < r.text.size()) {
+        const size_t nl = r.text.find('\n', p);
+        got.push_back(r.text.substr(p, nl == std::string::npos ? std::string::npos : nl - p));
+        if (nl == std::string::npos) break;
+        p = nl + 1;
     }
+    // One edit, over the lines from the first that changed to the last.
+    size_t head = 0;
+    while (head < lines.size() && head < got.size() && lines[head] == got[head]) head++;
+    size_t tail = 0;
+    while (tail < lines.size() - head && tail < got.size() - head &&
+           lines[lines.size() - 1 - tail] == got[got.size() - 1 - tail]) {
+        tail++;
+    }
+    LispLspTextEdit e;
+    e.range.line = static_cast<int>(head);
+    e.range.col = 0;
+    e.range.end_line = static_cast<int>(lines.size() - tail);
+    e.range.end_col = 0;
+    for (size_t k = head; k < got.size() - tail; k++) e.new_text += got[k] + "\n";
+    out.push_back(e);
     return out;
 }

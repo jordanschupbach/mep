@@ -1,0 +1,187 @@
+==================
+heredocs: interpolating, quoted, two on one line
+==================
+
+a = <<-EOS
+  hello #{name}
+  \tdone
+  EOS
+b = <<-'RAW'
+  no #{interp} \n here
+  RAW
+puts <<-A, <<-B
+  first
+  A
+  second
+  B
+
+---
+
+(expressions
+  (assign lhs: (identifier) rhs: (heredoc_start))
+  (heredoc_body (literal_content) (interpolation (identifier)) (literal_content) (escape_sequence) (literal_content) (heredoc_end))
+  (assign lhs: (identifier) rhs: (heredoc_start))
+  (heredoc_body (literal_content) (heredoc_end))
+  (call method: (identifier) arguments: (argument_list (heredoc_start) (heredoc_start)))
+  (heredoc_body (literal_content) (heredoc_end))
+  (heredoc_body (literal_content) (heredoc_end))
+)
+
+==================
+string interpolation, escapes, chained strings, commands
+==================
+
+"a#{b}c#{"d#{e}"}f"
+"escapes \n \t \u{1F600} \x41 \101 \q"
+"joined " \
+"string"
+`echo #{cmd}`
+
+---
+
+(expressions
+  (string (literal_content) (interpolation (identifier)) (literal_content) (interpolation (string (literal_content) (interpolation (identifier)))) (literal_content))
+  (string (literal_content) (escape_sequence) (literal_content) (escape_sequence) (literal_content) (escape_sequence) (literal_content) (escape_sequence) (literal_content) (escape_sequence) (literal_content) (escape_sequence))
+  (chained_string (string (literal_content)) (string (literal_content)))
+  (command (literal_content) (interpolation (identifier)))
+)
+
+==================
+percent literals with any delimiter
+==================
+
+%w(a b\ c)
+%i[x y]
+%q{no #{interp} {nested}}
+%Q<yes #{1}>
+%(paren (nested) #{2})
+%r|a/b|i
+%x(ls -l)
+%w{}
+
+---
+
+(expressions
+  (array (string (literal_content)) (string (literal_content) (escape_sequence) (literal_content)))
+  (array (symbol (literal_content)) (symbol (literal_content)))
+  (string (literal_content))
+  (string (literal_content) (interpolation (integer)))
+  (string (literal_content) (interpolation (integer)))
+  (regex (literal_content) (regex_modifier))
+  (command (literal_content))
+  (array)
+)
+
+==================
+regex versus division
+==================
+
+x = a / b
+y = a/b
+z = foo /re/
+r = /a\/b #{c}/imx
+q = 10 // 3
+m = x % 2
+
+---
+
+(expressions
+  (assign lhs: (identifier) rhs: (call receiver: (identifier) method: (operator) arguments: (argument_list (identifier))))
+  (assign lhs: (identifier) rhs: (call receiver: (identifier) method: (operator) arguments: (argument_list (identifier))))
+  (assign lhs: (identifier) rhs: (call method: (identifier) arguments: (argument_list (regex (literal_content)))))
+  (assign lhs: (identifier) rhs: (regex (literal_content) (interpolation (identifier)) (regex_modifier)))
+  (assign lhs: (identifier) rhs: (call receiver: (integer) method: (operator) arguments: (argument_list (integer))))
+  (assign lhs: (identifier) rhs: (call receiver: (identifier) method: (operator) arguments: (argument_list (integer))))
+)
+
+==================
+symbols versus the ternary operator
+==================
+
+:sym
+:sym?
+:sym=
+:+
+:[]=
+:"quoted sym"
+a ? b : c
+x ? :y : :z
+h = {a: 1, "b": 2}
+
+---
+
+(expressions
+  (symbol (literal_content))
+  (symbol (literal_content))
+  (symbol (literal_content))
+  (symbol (literal_content))
+  (symbol (literal_content))
+  (symbol (literal_content))
+  (conditional cond: (identifier) then: (identifier) else: (identifier))
+  (conditional cond: (identifier) then: (symbol (literal_content)) else: (symbol (literal_content)))
+  (assign lhs: (identifier) rhs: (named_tuple (named_expr name: (identifier) (integer)) (named_expr name: (string (literal_content)) (integer))))
+)
+
+==================
+tuples, named tuples, hashes and arrays with of
+==================
+
+t = {name: "x", age: 3}
+u = {1, "two", :three}
+h = {"k" => 1} of String => Int32
+v = {} of Symbol => Int32
+w = [] of Int32
+NamedTuple(a: Int32, b: String)
+
+---
+
+(expressions
+  (assign lhs: (identifier) rhs: (named_tuple (named_expr name: (identifier) (string (literal_content))) (named_expr name: (identifier) (integer))))
+  (assign lhs: (identifier) rhs: (tuple (integer) (string (literal_content)) (symbol (literal_content))))
+  (assign lhs: (identifier) rhs: (hash (hash_entry (string (literal_content)) (integer)) of_key: (constant) of_value: (constant)))
+  (assign lhs: (identifier) rhs: (hash of_key: (constant) of_value: (constant)))
+  (assign lhs: (identifier) rhs: (array of: (constant)))
+  (generic_instance_type (constant) params: (param_list (named_type name: (identifier) (constant)) (named_type name: (identifier) (constant))))
+)
+
+==================
+pseudo-constants, chars and number suffixes
+==================
+
+__FILE__
+__LINE__
+__DIR__
+'a'
+'\n'
+'\u{1F600}'
+'\u0041'
+1_i64
+1_000_u32
+0xFF
+0b1010
+0o17
+1.5f32
+1e10
+2.5_f64
+-3
+
+---
+
+(expressions
+  (pseudo_constant)
+  (pseudo_constant)
+  (pseudo_constant)
+  (char (literal_content))
+  (char (escape_sequence))
+  (char (escape_sequence))
+  (char (escape_sequence))
+  (integer)
+  (integer)
+  (integer)
+  (integer)
+  (integer)
+  (float)
+  (float)
+  (float)
+  (integer)
+)

@@ -496,10 +496,17 @@ private:
         return out;
     }
 
-    /** @brief Answers `textDocument/formatting`: re-indentation only. */
+    /** @brief Answers `textDocument/formatting` with mep's Bash formatter; the client's tab settings are the
+     *         indent unit for a script that has no indented code to take one from. */
     Json Formatting(const Json &params) const {
+        const Json &opts = params.get("options");
+        std::string unit;
+        if (opts.get("insertSpaces").as_bool(false)) {
+            const int n = opts.get("tabSize").as_int(4);
+            unit = std::string(static_cast<size_t>(n > 0 && n <= 16 ? n : 4), ' ');
+        }
         Json arr = Json::Array();
-        for (const BashLspTextEdit &e : BashLspFormat(Doc(UriOf(params)))) {
+        for (const BashLspTextEdit &e : BashLspFormat(Doc(UriOf(params)), unit)) {
             Json j = Json::Object();
             j["range"] = RangeOf(e.range);
             j["newText"] = e.new_text;

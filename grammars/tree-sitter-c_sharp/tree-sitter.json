@@ -1,0 +1,21 @@
+{
+  "grammars": [
+    {
+      "name": "c_sharp",
+      "camelcase": "CSharp",
+      "scope": "source.cs",
+      "path": ".",
+      "file-types": ["cs", "csx"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "^(cs|csharp|c_sharp)$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "C#, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

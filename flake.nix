@@ -170,7 +170,7 @@
 
         tsGrammars = pkgs.tree-sitter.withPlugins (
           p: with p; [
-            tree-sitter-c-sharp
+            # (C# is compiled in: grammars/tree-sitter-c_sharp.)
             tree-sitter-css
             tree-sitter-go
             tree-sitter-haskell
@@ -198,7 +198,6 @@
             tree-sitter-make
             tree-sitter-vim
             tree-sitter-cmake
-            tree-sitter-clojure
             tree-sitter-dart
             tree-sitter-dockerfile
             tree-sitter-graphql
@@ -211,7 +210,7 @@
             # every babel-supported language also gets real syntax
             # highlighting inside its `#+begin_src` blocks, not just the
             # ones that already had a grammar for some other reason.
-            tree-sitter-crystal
+            # (Crystal, added with them, is compiled in: grammars/tree-sitter-crystal.)
             tree-sitter-fortran
             tree-sitter-perl
             tree-sitter-nim
@@ -396,7 +395,7 @@
             # start (not on PATH?)" toast. Keep in sync with the
             # install(TARGETS ...) lines in CMakeLists.txt.
             for tool in mep-org-lsp mep-mepml-lsp mep-r-lsp mep-python-lsp \
-                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-lisp-lsp mep-bash-lsp mep-mepml mep-tex; do
+                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-lisp-lsp mep-bash-lsp mep-clojure-lsp mep-mepml mep-tex; do
               install -Dm755 "$tool" "$out/bin/$tool"
             done
             # :Browser's web view on Linux (gui_embed_webview_x11.cpp finds

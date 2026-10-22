@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (256)
+* The bindings (262)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -97,7 +97,13 @@ that it does nothing.
 | =mep.fold_create= | creates a fold over a line range |
 | =mep.fold_list= | the current buffer's folds, as a table of {start_row, end_row, closed, provider} |
 | =mep.fold_toggle= | opens or closes the fold at the cursor |
+| =mep.format_bash= | the text formatted as Bash, or nil plus an error message |
+| =mep.format_c= | the text formatted as C, or nil plus an error message |
+| =mep.format_clojure= | the text formatted as Clojure, or nil plus an error message |
 | =mep.format_cpp= | formats C++ with mep's own in-house formatter, or returns nil plus a reason |
+| =mep.format_crystal= | the text formatted as Crystal, or nil plus an error message |
+| =mep.format_csharp= | the text formatted as C#, or nil plus an error message |
+| =mep.format_lisp= | the text formatted as Common Lisp, or nil plus an error message |
 | =mep.format_maxima= | the text formatted as Maxima, or nil plus an error message |
 | =mep.format_python= | formats Python with mep's own in-house formatter, or returns nil plus a reason |
 | =mep.format_r= | the text formatted as R, or nil plus an error message |

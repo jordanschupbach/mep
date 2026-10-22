@@ -1,0 +1,616 @@
+==================
+operators, casts, conditional access, ranges
+==================
+
+x = (int)y + a * -b % c;
+y = a?.b?[0] ?? throw new InvalidOperationException();
+z = arr[^1] + arr[1..^2].Length;
+w = (a, b: 2);
+v = x is int n && n > 0 ? n : default;
+u = sizeof(int) + typeof(List<>).Name.Length + nameof(x).Length;
+t ??= new() { A = 1 };
+s = x switch { > 0 and < 10 => "small", null => "none", _ => "big" };
+r = p with { X = 1 };
+q = checked(a + b);
+o = a!.B;
+
+---
+
+(compilation_unit
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (cast_expression
+            type: (predefined_type)
+            value: (identifier))
+          right: (binary_expression
+            left: (binary_expression
+              left: (identifier)
+              right: (prefix_unary_expression
+                (identifier)))
+            right: (identifier))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (conditional_access_expression
+            condition: (conditional_access_expression
+              condition: (identifier)
+              (member_binding_expression
+                name: (identifier)))
+            (element_binding_expression
+              (argument
+                (integer_literal))))
+          right: (throw_expression
+            (object_creation_expression
+              type: (identifier)
+              arguments: (argument_list)))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (element_access_expression
+            expression: (identifier)
+            subscript: (bracketed_argument_list
+              (argument
+                (prefix_unary_expression
+                  (integer_literal)))))
+          right: (member_access_expression
+            expression: (element_access_expression
+              expression: (identifier)
+              subscript: (bracketed_argument_list
+                (argument
+                  (range_expression
+                    (integer_literal)
+                    (prefix_unary_expression
+                      (integer_literal))))))
+            name: (identifier))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (tuple_expression
+          (argument
+            (identifier))
+          (argument
+            name: (identifier)
+            (integer_literal))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (conditional_expression
+          condition: (binary_expression
+            left: (is_pattern_expression
+              expression: (identifier)
+              pattern: (declaration_pattern
+                type: (predefined_type)
+                name: (identifier)))
+            right: (binary_expression
+              left: (identifier)
+              right: (integer_literal)))
+          consequence: (identifier)
+          alternative: (default_expression)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (binary_expression
+            left: (sizeof_expression
+              type: (predefined_type))
+            right: (member_access_expression
+              expression: (member_access_expression
+                expression: (typeof_expression
+                  type: (generic_name
+                    (identifier)
+                    (type_argument_list)))
+                name: (identifier))
+              name: (identifier)))
+          right: (member_access_expression
+            expression: (invocation_expression
+              function: (identifier)
+              arguments: (argument_list
+                (argument
+                  (identifier))))
+            name: (identifier))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (implicit_object_creation_expression
+          (argument_list)
+          (initializer_expression
+            (assignment_expression
+              left: (identifier)
+              right: (integer_literal)))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (switch_expression
+          (identifier)
+          (switch_expression_arm
+            (and_pattern
+              left: (relational_pattern
+                (integer_literal))
+              right: (relational_pattern
+                (integer_literal)))
+            (string_literal
+              (string_literal_content)))
+          (switch_expression_arm
+            (constant_pattern
+              (null_literal))
+            (string_literal
+              (string_literal_content)))
+          (switch_expression_arm
+            (discard)
+            (string_literal
+              (string_literal_content)))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (with_expression
+          (identifier)
+          (with_initializer
+            (identifier)
+            (integer_literal))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (checked_expression
+          (binary_expression
+            left: (identifier)
+            right: (identifier))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (member_access_expression
+          expression: (postfix_unary_expression
+            (identifier))
+          name: (identifier))))))
+
+==================
+lambdas, anonymous methods, object and collection creation
+==================
+
+f = x => x + 1;
+g = async (int a, b) => { await Task.Delay(a); };
+h = static () => 0;
+k = int (x) => x;
+l = delegate (int a) { return a; };
+m = new { Name = "n", x.Count };
+n = new[] { 1, 2 };
+o = new List<int>(3) { 1, 2 };
+p = [1, .. rest, 3];
+q = stackalloc int[] { 1, 2 };
+
+---
+
+(compilation_unit
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (lambda_expression
+          parameters: (implicit_parameter)
+          body: (binary_expression
+            left: (identifier)
+            right: (integer_literal))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (lambda_expression
+          (modifier)
+          parameters: (parameter_list
+            (parameter
+              type: (predefined_type)
+              name: (identifier))
+            (parameter
+              name: (identifier)))
+          body: (block
+            (expression_statement
+              (await_expression
+                (invocation_expression
+                  function: (member_access_expression
+                    expression: (identifier)
+                    name: (identifier))
+                  arguments: (argument_list
+                    (argument
+                      (identifier)))))))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (lambda_expression
+          (modifier)
+          parameters: (parameter_list)
+          body: (integer_literal)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (lambda_expression
+          type: (predefined_type)
+          parameters: (parameter_list
+            (parameter
+              name: (identifier)))
+          body: (identifier)))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (anonymous_method_expression
+          parameters: (parameter_list
+            (parameter
+              type: (predefined_type)
+              name: (identifier)))
+          (block
+            (return_statement
+              (identifier)))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (anonymous_object_creation_expression
+          (identifier)
+          (string_literal
+            (string_literal_content))
+          (member_access_expression
+            expression: (identifier)
+            name: (identifier))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (implicit_array_creation_expression
+          (initializer_expression
+            (integer_literal)
+            (integer_literal))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (object_creation_expression
+          type: (generic_name
+            (identifier)
+            (type_argument_list
+              (predefined_type)))
+          arguments: (argument_list
+            (argument
+              (integer_literal)))
+          initializer: (initializer_expression
+            (integer_literal)
+            (integer_literal))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (collection_expression
+          (collection_element
+            (expression_element
+              (integer_literal)))
+          (collection_element
+            (spread_element
+              (identifier)))
+          (collection_element
+            (expression_element
+              (integer_literal)))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (stackalloc_expression
+          type: (array_type
+            type: (predefined_type)
+            rank: (array_rank_specifier))
+          (initializer_expression
+            (integer_literal)
+            (integer_literal)))))))
+
+==================
+patterns
+==================
+
+a = o is string { Length: > 0 } s;
+b = o is not null;
+c = p is (1, _) or Point(X: 0, Y: var y);
+d = list is [1, .., var last];
+e = list is [.., > 0];
+f = list is [first, .. var middle, _];
+g = o is { Inner.Name: "x" };
+h = o is (int or long) and not 0;
+
+---
+
+(compilation_unit
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (is_pattern_expression
+          expression: (identifier)
+          pattern: (recursive_pattern
+            type: (predefined_type)
+            (property_pattern_clause
+              (subpattern
+                (identifier)
+                (relational_pattern
+                  (integer_literal))))
+            name: (identifier))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (is_pattern_expression
+          expression: (identifier)
+          pattern: (negated_pattern
+            (constant_pattern
+              (null_literal)))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (is_pattern_expression
+          expression: (identifier)
+          pattern: (or_pattern
+            left: (constant_pattern
+              (tuple_expression
+                (argument
+                  (integer_literal))
+                (argument
+                  (identifier))))
+            right: (constant_pattern
+              (invocation_expression
+                function: (identifier)
+                arguments: (argument_list
+                  (argument
+                    name: (identifier)
+                    (integer_literal))
+                  (argument
+                    name: (identifier)
+                    (declaration_expression
+                      type: (implicit_type)
+                      name: (identifier)))))))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (is_pattern_expression
+          expression: (identifier)
+          pattern: (list_pattern
+            (constant_pattern
+              (integer_literal))
+            (declaration_pattern
+              type: (implicit_type)
+              name: (identifier)))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (is_pattern_expression
+          expression: (identifier)
+          pattern: (list_pattern
+            (relational_pattern
+              (integer_literal)))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (is_pattern_expression
+          expression: (identifier)
+          pattern: (list_pattern
+            (constant_pattern
+              (identifier))
+            (declaration_pattern
+              type: (implicit_type)
+              name: (identifier))
+            (discard))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (is_pattern_expression
+          expression: (identifier)
+          pattern: (recursive_pattern
+            (property_pattern_clause
+              (subpattern
+                (member_access_expression
+                  expression: (identifier)
+                  name: (identifier))
+                (constant_pattern
+                  (string_literal
+                    (string_literal_content))))))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (is_pattern_expression
+          expression: (identifier)
+          pattern: (and_pattern
+            left: (parenthesized_pattern
+              (or_pattern
+                left: (type_pattern
+                  type: (predefined_type))
+                right: (type_pattern
+                  type: (predefined_type))))
+            right: (negated_pattern
+              (constant_pattern
+                (integer_literal)))))))))
+
+==================
+query expressions
+==================
+
+var q = from c in customers
+        join o in orders on c.Id equals o.CustomerId into g
+        let total = g.Sum(x => x.Amount)
+        where total > 100
+        orderby total descending, c.Name
+        select new { c.Name, total };
+
+---
+
+(compilation_unit
+  (global_statement
+    (local_declaration_statement
+      (variable_declaration
+        type: (implicit_type)
+        (variable_declarator
+          name: (identifier)
+          (query_expression
+            (from_clause
+              name: (identifier)
+              (identifier))
+            (join_clause
+              (identifier)
+              (identifier)
+              (member_access_expression
+                expression: (identifier)
+                name: (identifier))
+              (member_access_expression
+                expression: (identifier)
+                name: (identifier))
+              (join_into_clause
+                (identifier)))
+            (let_clause
+              (identifier)
+              (invocation_expression
+                function: (member_access_expression
+                  expression: (identifier)
+                  name: (identifier))
+                arguments: (argument_list
+                  (argument
+                    (lambda_expression
+                      parameters: (implicit_parameter)
+                      body: (member_access_expression
+                        expression: (identifier)
+                        name: (identifier)))))))
+            (where_clause
+              (binary_expression
+                left: (identifier)
+                right: (integer_literal)))
+            (order_by_clause
+              (identifier)
+              (member_access_expression
+                expression: (identifier)
+                name: (identifier)))
+            (select_clause
+              (anonymous_object_creation_expression
+                (member_access_expression
+                  expression: (identifier)
+                  name: (identifier))
+                (identifier)))))))))
+
+==================
+pointers: indirection of any unary expression
+==================
+
+*(p + i) = 0;
+*p++ = 1;
+x = *(int*)ptr;
+y = (a) * (b + 1);
+z = &x;
+
+---
+
+(compilation_unit
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (prefix_unary_expression
+          (parenthesized_expression
+            (binary_expression
+              left: (identifier)
+              right: (identifier))))
+        right: (integer_literal))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (prefix_unary_expression
+          (postfix_unary_expression
+            (identifier)))
+        right: (integer_literal))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (prefix_unary_expression
+          (cast_expression
+            type: (pointer_type
+              type: (predefined_type))
+            value: (identifier))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (binary_expression
+          left: (parenthesized_expression
+            (identifier))
+          right: (parenthesized_expression
+            (binary_expression
+              left: (identifier)
+              right: (integer_literal)))))))
+  (global_statement
+    (expression_statement
+      (assignment_expression
+        left: (identifier)
+        right: (prefix_unary_expression
+          (identifier))))))
+
+==================
+contextual keywords as names
+==================
+
+var with = 1;
+var type = [type];
+f(field, [property]);
+var from = 1;
+
+---
+
+(compilation_unit
+  (global_statement
+    (local_declaration_statement
+      (variable_declaration
+        type: (implicit_type)
+        (variable_declarator
+          name: (identifier)
+          (integer_literal)))))
+  (global_statement
+    (local_declaration_statement
+      (variable_declaration
+        type: (implicit_type)
+        (variable_declarator
+          name: (identifier)
+          (collection_expression
+            (collection_element
+              (expression_element
+                (identifier))))))))
+  (global_statement
+    (expression_statement
+      (invocation_expression
+        function: (identifier)
+        arguments: (argument_list
+          (argument
+            (identifier))
+          (argument
+            (collection_expression
+              (collection_element
+                (expression_element
+                  (identifier)))))))))
+  (global_statement
+    (local_declaration_statement
+      (variable_declaration
+        type: (implicit_type)
+        (variable_declarator
+          name: (identifier)
+          (integer_literal))))))

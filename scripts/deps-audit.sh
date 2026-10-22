@@ -8,7 +8,10 @@
 # The program scan is a heuristic over src/: argv literals handed to
 # job_start/RunProcess/Spawn/posix_spawnp/execvp (and their wrappers), and
 # Lua/C++ tables that look like an argv (a word followed by a '-flag').
-# Tests, smoke drivers and benchmarks are skipped.
+# Tests, smoke drivers and benchmarks are skipped, and so are the language
+# servers' vocabulary tables (*_vocab.cpp, *_core_names.cpp), whose
+# `{"read", "-r", ...}` rows document a builtin's options (or a var's
+# arglist) rather than run anything.
 set -eu
 cd "$(dirname "$0")/.."
 bin=${1:-build/native/mep}
@@ -48,7 +51,7 @@ fi
 
 echo "Programs mep's own code runs:"
 progs=$(find src -name '*.cpp' -o -name '*.mm' -o -name '*.h' |
-    grep -v -e '_test\.cpp$' -e '_smoke_main\.cpp$' -e 'bench' |
+    grep -v -e '_test\.cpp$' -e '_smoke_main\.cpp$' -e 'bench' -e '_vocab\.cpp$' -e '_core_names\.cpp$' |
     xargs grep -hoE "(job_start|_run|Spawn|SpawnTask|RunProcess|_action|_cmd)\(\s*\{\s*['\"][a-zA-Z0-9_.+/-]+['\"]|\{\s*'[a-z][a-zA-Z0-9_.+-]*'\s*,\s*'-|\{\s*\"[a-z][a-zA-Z0-9_.+-]*\"\s*,\s*\"-|(posix_spawnp|execvp)\([^,\"]*,?\s*\"[a-z][^\"]*\"" |
     grep -oE "['\"][a-zA-Z0-9_.+/-]+['\"]" | tr -d "'\"" | sort -u)
 for p in $progs; do report prog "$p"; done

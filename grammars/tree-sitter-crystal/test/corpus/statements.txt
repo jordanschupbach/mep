@@ -1,0 +1,247 @@
+==================
+annotations, procs and blocks
+==================
+
+obj = Foo.new
+@[Link("m")]
+@[Deprecated]
+def old; end
+sq = ->(x : Int32) { x * x }
+add = ->(a : Int32, b : Int32) : Int32 do
+  a + b
+end
+m = ->obj.method(Int32)
+[1, 2].each do |x|
+  puts x
+end
+[1, 2].map { |x| x + 1 }
+[1, 2].map &.to_s
+[[1, 2]].each { |(a, b)| a }
+
+---
+
+(expressions
+  (assign lhs: (identifier) rhs: (call receiver: (constant) method: (identifier)))
+  (annotation (constant) arguments: (argument_list (string (literal_content))))
+  (annotation (constant))
+  (method_def name: (identifier))
+  (assign lhs: (identifier) rhs: (proc params: (param_list (param name: (identifier) type: (constant))) block: (block body: (expressions (call receiver: (identifier) method: (operator) arguments: (argument_list (identifier)))))))
+  (assign lhs: (identifier) rhs: (proc params: (param_list (param name: (identifier) type: (constant)) (param name: (identifier) type: (constant))) type: (constant) block: (block body: (expressions (call receiver: (identifier) method: (operator) arguments: (argument_list (identifier)))))))
+  (assign lhs: (identifier) rhs: (method_proc receiver: (identifier) method: (identifier) params: (param_list (constant))))
+  (call receiver: (array (integer) (integer)) method: (identifier) block: (block params: (param_list (param name: (identifier))) body: (expressions (call method: (identifier) arguments: (argument_list (identifier))))))
+  (call receiver: (array (integer) (integer)) method: (identifier) block: (block params: (param_list (param name: (identifier))) body: (expressions (call receiver: (identifier) method: (operator) arguments: (argument_list (integer))))))
+  (call receiver: (array (integer) (integer)) method: (identifier) arguments: (argument_list (block_argument (implicit_object_call method: (identifier)))))
+  (call receiver: (array (array (integer) (integer))) method: (identifier) block: (block params: (param_list (param name: (identifier)) (param name: (identifier))) body: (expressions (identifier))))
+)
+
+==================
+operators as method names
+==================
+
+struct Vec
+  def +(other : Vec) : Vec
+    self
+  end
+
+  def []=(k, v)
+  end
+
+  def <=>(other)
+    0
+  end
+
+  def -
+    self
+  end
+
+  def ==(o)
+    true
+  end
+end
+
+---
+
+(expressions
+  (struct_def name: (constant) body: (expressions (method_def name: (operator) params: (param_list (param name: (identifier) type: (constant))) type: (constant) body: (expressions (self))) (method_def name: (operator) params: (param_list (param name: (identifier)) (param name: (identifier)))) (method_def name: (operator) params: (param_list (param name: (identifier))) body: (expressions (integer))) (method_def name: (operator) body: (expressions (self))) (method_def name: (operator) params: (param_list (param name: (identifier))) body: (expressions (true)))))
+)
+
+==================
+suffix if, unless and rescue
+==================
+
+i = 0
+puts x if x
+puts y unless y
+foo rescue nil
+i += 1
+return unless ok
+raise "no" if bad
+
+---
+
+(expressions
+  (assign lhs: (identifier) rhs: (integer))
+  (modifier_if then: (call method: (identifier) arguments: (argument_list (identifier))) cond: (identifier))
+  (modifier_unless then: (call method: (identifier) arguments: (argument_list (identifier))) cond: (identifier))
+  (modifier_rescue (identifier) rescue: (nil))
+  (op_assign lhs: (identifier) (operator) rhs: (integer))
+  (modifier_unless then: (return) cond: (identifier))
+  (modifier_if then: (call method: (identifier) arguments: (argument_list (string (literal_content)))) cond: (identifier))
+)
+
+==================
+case/when, case/in and select
+==================
+
+case x
+when 1, 2 then :low
+when .positive?
+  :pos
+when String, Int32
+  :typed
+else
+  :other
+end
+
+case v
+in Int32
+  1
+in String
+  2
+end
+
+select
+when msg = ch.receive
+  msg
+when timeout(1.second)
+  nil
+end
+
+---
+
+(expressions
+  (case cond: (identifier) (when cond: (integer) cond: (integer) body: (expressions (symbol (literal_content)))) (when cond: (implicit_object_call method: (identifier)) body: (expressions (symbol (literal_content)))) (when cond: (constant) cond: (constant) body: (expressions (symbol (literal_content)))) (else body: (expressions (symbol (literal_content)))))
+  (case cond: (identifier) (in cond: (constant) body: (expressions (integer))) (in cond: (constant) body: (expressions (integer))))
+  (select (when cond: (assign lhs: (identifier) rhs: (call receiver: (identifier) method: (identifier))) body: (expressions (identifier))) (when cond: (call method: (identifier) arguments: (argument_list (call receiver: (integer) method: (identifier)))) body: (expressions (nil))))
+)
+
+==================
+lib and fun C bindings
+==================
+
+@[Link("c")]
+lib LibC
+  alias SizeT = UInt64
+  fun strlen(s : UInt8*) : SizeT
+  fun printf(format : UInt8*, ...) : Int32
+  fun my_exit = exit(status : Int32) : NoReturn
+  struct Point
+    x, y : Int32
+  end
+  union Data
+    i : Int32
+    f : Float64
+  end
+  type Handle = Void*
+  $errno : Int32
+  enum Color
+    Red
+    Green = 2
+  end
+end
+
+fun callback(x : Int32) : Int32
+  x
+end
+
+---
+
+(expressions
+  (annotation (constant) arguments: (argument_list (string (literal_content))))
+  (lib_def name: (constant) body: (expressions (alias name: (constant) type: (constant)) (fun_def name: (identifier) params: (param_list (fun_param name: (identifier) type: (pointer_type (constant)))) type: (constant)) (fun_def name: (identifier) params: (param_list (fun_param name: (identifier) type: (pointer_type (constant)))) type: (constant)) (fun_def name: (identifier) real_name: (identifier) params: (param_list (fun_param name: (identifier) type: (constant))) type: (constant)) (c_struct_def name: (constant) body: (expressions (c_struct_fields name: (identifier) name: (identifier) type: (constant)))) (union_def name: (constant) body: (expressions (union_fields name: (identifier) type: (constant)) (union_fields name: (identifier) type: (constant)))) (type_def name: (constant) type: (pointer_type (constant))) (global_var name: (identifier) type: (constant)) (enum_def name: (constant) body: (expressions (constant) (const_assign lhs: (constant) rhs: (integer))))))
+  (fun_def name: (identifier) params: (param_list (fun_param name: (identifier) type: (constant))) type: (constant) body: (expressions (identifier)))
+)
+
+==================
+modules, classes, enums, visibility
+==================
+
+require "json"
+
+module Geometry
+  VERSION = "1.0"
+
+  abstract class Shape
+    abstract def area : Float64
+  end
+
+  class Circle(T) < Shape
+    include Comparable(Circle)
+    extend Helpers
+
+    getter radius : T
+
+    def initialize(@radius : T)
+    end
+
+    def self.unit : Circle
+      new(1)
+    end
+
+    private def secret
+    end
+
+    protected def guard
+    end
+  end
+
+  enum Kind : UInt8
+    Small
+    Large
+  end
+
+  annotation Marker
+  end
+end
+
+---
+
+(expressions
+  (require (string (literal_content)))
+  (module_def name: (constant) body: (expressions (const_assign lhs: (constant) rhs: (string (literal_content))) (class_def name: (constant) body: (expressions (abstract_method_def name: (identifier) type: (constant)))) (class_def name: (generic_type (constant) params: (param_list (constant))) superclass: (constant) body: (expressions (include (generic_instance_type (constant) params: (param_list (constant)))) (extend (constant)) (call method: (identifier) arguments: (argument_list (type_declaration var: (identifier) type: (constant)))) (method_def name: (identifier) params: (param_list (param name: (instance_var) type: (constant)))) (method_def class: (self) name: (identifier) type: (constant) body: (expressions (call method: (identifier) arguments: (argument_list (integer))))) (visibility_modifier visibility: (private) (method_def name: (identifier))) (visibility_modifier visibility: (protected) (method_def name: (identifier))))) (enum_def name: (constant) type: (constant) body: (expressions (constant) (constant))) (annotation_def name: (constant))))
+)
+
+==================
+exceptions, yield, multiple assignment
+==================
+
+begin
+  risky
+rescue e : ArgumentError | KeyError
+  handle e
+rescue
+  other
+else
+  fine
+ensure
+  cleanup
+end
+
+def each
+  yield 1
+  with self yield 2
+end
+
+x = uninitialized Int32
+a, b = 1, 2
+*c, d = [1, 2, 3]
+
+---
+
+(expressions
+  (begin body: (expressions (identifier)) rescue: (rescue variable: (identifier) type: (union_type (constant) (constant)) body: (expressions (call method: (identifier) arguments: (argument_list (identifier))))) rescue: (rescue body: (expressions (identifier))) else: (else body: (expressions (identifier))) ensure: (ensure body: (expressions (identifier))))
+  (method_def name: (identifier) body: (expressions (yield (argument_list (integer))) (yield with: (self) (argument_list (integer)))))
+  (assign lhs: (identifier) rhs: (uninitialized_var (constant)))
+  (assign lhs: (identifier) lhs: (identifier) rhs: (integer) rhs: (integer))
+  (assign lhs: (splat (identifier)) lhs: (identifier) rhs: (array (integer) (integer) (integer)))
+)

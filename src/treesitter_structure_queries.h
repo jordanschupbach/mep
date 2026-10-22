@@ -76,16 +76,6 @@ static const char *kStructureRuby = R"TSQ(
 (singleton_method name: (identifier) @name) @definition.method
 )TSQ";
 
-static const char *kStructureCSharp = R"TSQ(
-(namespace_declaration name: (_) @name) @definition.namespace
-(interface_declaration name: (identifier) @name) @definition.interface
-(class_declaration name: (identifier) @name) @definition.class
-(struct_declaration name: (identifier) @name) @definition.struct
-(enum_declaration name: (identifier) @name) @definition.enum
-(constructor_declaration name: (identifier) @name) @definition.method
-(method_declaration name: (identifier) @name) @definition.method
-)TSQ";
-
 static const char *kStructurePhp = R"TSQ(
 (namespace_definition name: (_) @name) @definition.namespace
 (interface_declaration name: (name) @name) @definition.interface

@@ -1,0 +1,151 @@
+#+TITLE: The Crystal language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="15">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Crystal files get a language server of their own, =mep-crystal-lsp=,
+built and shipped with mep. Open a =.cr= file and it attaches by itself --
+nothing to install, and *the compiler is never run*. It reads the file
+with mep's port of the Crystal compiler's own lexer and parser, and knows
+the standard library from a table generated from its API documentation:
+every type with its ancestors, every method's arguments, return type and
+doc comment, every constant.
+
+On start it indexes the workspace's =.cr= files -- =lib/= shards included
+-- for the types, methods, macros and constants each one defines, so
+definition, hover, completion and signature help reach across files. An
+open file is re-indexed as you type.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* The compiler's own syntax errors
+
+The parser is a translation of the compiler's (=parser.cr=, =lexer.cr=,
+=ast.cr=, Crystal 1.19), method for method, so a syntax error is the one
+=crystal build= gives, worded the same, at the same line and column. It
+is checked against the real parser, tree for tree: on the 2,211 files of
+the compiler, standard library and spec suite, and the 4,602 files of
+mep's Crystal corpus (the Crystal source again, plus crystalline, ameba,
+invidious, mint, lucky-cli, shards, gi-crystal and the other Crystal
+projects nixpkgs packages, with their bundled shards), every tree is
+identical -- every node and every location -- and of the parser spec suite's 1,747
+cases (1,329 programs and 418 syntax errors) it agrees on 1,746. The one
+it misses is a regex the compiler hands to PCRE2 to validate (=/foo)/=):
+mep does not check regex syntax. It survives damaged input too: 33,000
+mangled copies of the corpus under AddressSanitizer, no crash, no hang.
+
+While a file does not parse -- most of the time it is being edited --
+the server keeps working on the rest of it: the line with the error is set
+aside and the remainder read again, so the outline, completion and
+navigation do not go blank at the first missing =end=.
+
+* What it reports
+
+| Code                     | Severity | What it means                                                       |
+|--------------------------+----------+---------------------------------------------------------------------|
+| =syntax=                 | error    | the compiler's syntax error (the other checks wait until it is fixed) |
+| =parser-warning=         | warning  | one of the parser's own warnings (=x: Int32= without a space...)    |
+| =require-not-found=      | error    | =require "./x"= names no file (=x.cr=, =x/x.cr=, or a =*= directory) |
+| =unused-variable=        | warning  | a local is assigned and never read                                  |
+| =unused-variable=        | hint     | ... a part of =a, b = ...=, a =rescue ex=, an =out x= never read     |
+| =unused-argument=        | hint     | a method's parameter is never used (=_name= says it is on purpose)  |
+| =unused-block-parameter= | hint     | a block's parameter is never used                                   |
+| =shadowed-variable=      | hint     | a block parameter hides a local of the same name                    |
+| =unreachable-code=       | warning  | code after a =return=, =break=, =next=, =raise=, =exit=             |
+
+Unused things are tagged as such, so the editor dims them. Names used
+inside macro code (={{ }}=, ={% %}=) are not seen, so a scope holding
+macro code gets no unused-name checks at all.
+
+** Calibration
+
+On the 2,210 files of Crystal's compiler, standard library and specs
+(480,780 lines), all code the compiler accepts, =--lint= prints 17
+warnings -- assignments that are never read, a few of them test fixtures
+that assign on purpose -- and one error, a =require "../signal"= in the
+wasm32 port that names a file that does not exist. The hints (1,592 unused
+arguments, 181 unused block parameters, 116 shadowing parameters) are
+style, and do not make =--lint= fail. On the 4,602 files of the corpus
+(about a million lines) it prints 84 unused assignments and 12 unreachable
+statements -- each one checked is real -- 4 of the parser's own warnings,
+and 7 requires of files a project generates at build time.
+
+A local that only an ECR template uses (Kemal's =render=, =ECR.embed=, a
+=templated= helper) is expanded into the method by a macro, out of sight:
+a method that renders a template gets no unused-variable checks.
+
+What it does not report: anything that needs the whole program's type
+inference -- an undefined method, a type mismatch, a missing overload.
+The compiler's =crystal build --no-codegen= is the check for those.
+
+* What else it does
+
+- *Hover* shows a method's signature (every overload) and doc comment --
+  the file's, the workspace's or the standard library's -- a type's
+  declaration and doc, a local's type where it can be seen (a literal,
+  =T.new=, a declaration or restriction, a method with a written return
+  type), an instance variable's declared type.
+- *Completion*: after =x.=, the methods of =x='s type, walking its
+  ancestors (=Array(Int32)= gets =Indexable= and =Enumerable='s too); after
+  a type name, its class methods and =new=; after =A::=, what =A=
+  contains; after =@=, the type's instance variables. Otherwise the locals
+  in scope, the enclosing type's methods, the file's and the workspace's
+  methods and types, the standard library's top-level methods and types,
+  and the keywords. A receiver whose type is not visible gets every method
+  name known.
+- *Signature help* shows the overloads of the method being called, the
+  argument being typed highlighted; =Foo.new(= shows =initialize='s
+  parameters.
+- *Go to definition* follows a local to its first binding, an instance
+  variable to its declaration, a method or type to its definition in this
+  file or another one of the workspace.
+- *References*, *highlights* and *rename* cover a local (in its scope), an
+  instance or class variable (in its type), and a method or type this file
+  defines (every use of that name in the file).
+- The *outline* lists modules, classes, structs, enums and their members,
+  libs and their funs, methods (=self.= for class methods), macros,
+  constants, and the accessors =getter=, =property=, =setter= and
+  =record= make.
+- *Folding* covers every multi-line definition, block, control structure
+  and literal, and runs of comment lines.
+- *Formatting* is mep's Crystal formatter, the one =gf= runs: =crystal
+  tool format='s layout. See [[file:formatting.html][Formatting]].
+
+* Linting from the command line
+
+#+begin_src sh
+mep-crystal-lsp --lint src/**/*.cr
+cat app.cr | mep-crystal-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+src/app.cr:12:5: warning: Useless assignment to variable 'tmp' [unused-variable]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+Each file is read on its own, without the workspace index. With no
+arguments, =mep-crystal-lsp= is the language server on stdio.
+
+* Using crystalline instead
+
+#+begin_src lua
+mep.lsp_servers.crystalline.filetypes = {'cr'}
+mep.lsp_servers.crystal_ls.filetypes = {}
+#+end_src
+
+=crystalline= runs the compiler's semantic pass over the program, so it
+knows types everywhere and reports type errors -- at the cost of the
+compiler's time and memory on every change. mep's server needs nothing
+installed and answers at once.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:crystal-mode.html][Crystal mode]] -- a console beside the file.
+- [[file:run-button.html][Running the current file]].

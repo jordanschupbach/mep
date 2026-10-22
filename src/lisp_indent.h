@@ -4,52 +4,27 @@
 #include <string>
 #include <vector>
 
-// Standard Common Lisp indentation, as Emacs/SLIME's lisp-mode does it,
-// over plain text. Two callers: mep's Enter-key auto-indent asks for one
-// line's column (LispIndentForLine), and mep's own Common Lisp language
-// server re-indents a whole document for textDocument/formatting
-// (LispReindent).
+// Standard Common Lisp indentation -- Emacs's, as lisp-mode with
+// common-lisp-indent-function computes it -- over plain lines, for mep's
+// Enter-key auto-indent (LispIndentForLine) and for re-indenting a whole
+// document without the formatter's whitespace rules (LispReindent).
 //
-// Deliberately its own translation unit with no dependency on the reader
-// (lisp_reader.h) or the generated COMMON-LISP name table: the editor
-// links this file alone, and the text above the cursor is usually
-// incomplete -- an open `(defun` with no close paren is the normal state
-// of a line being typed -- so this counts open forms with a small
-// character scanner rather than parsing anything.
+// Both are thin entry points into lisp_format.cpp, which holds the one
+// copy of the rules (lisp_format.h lists them): what Enter gives a new
+// line is what `gf' and mep-lisp-lsp's formatting give it. Neither needs
+// the Lisp reader or the COMMON-LISP name table, and both take any text
+// -- the text above the cursor is usually incomplete, an open `(defun'
+// with no close paren being the normal state of a line being typed.
 //
-// The rules, in order:
-//   - A line outside every form is at column 0.
-//   - A line inside a string or a `#|...|#` comment is not code: the
-//     formatter leaves it alone, and LispIndentForLine answers with the
-//     previous line's indentation (what typing on in a docstring wants).
-//   - Inside a form whose operator has distinguished arguments -- `defun`
-//     and any other `def...` (2: name, lambda list; `defvar`/`defpackage`/
-//     `defstruct` 1), `let`/`when`/`unless`/`lambda`/`flet`/`labels`/
-//     `dolist`/`handler-case`/... (1), `destructuring-bind`/
-//     `multiple-value-bind`/`with-slots`/`do` (2), any `with-...` or
-//     `do-...` macro (1) -- a distinguished argument on its own line is
-//     indented 4 past the open paren (6 for a binding form's variable
-//     list, as SLIME does) and every body form 2.
-//   - `(cond` with no clause on its line puts the clauses 2 in; LOOP
-//     lines up a form that continues a clause (`do (a)` / `(b)`) under
-//     that clause's first form; a lambda list continues under the
-//     parameter after its last &keyword.
-//   - Inside an ordinary call, arguments align with the first argument
-//     when it is on the operator's line, and otherwise with the operator
-//     itself (1 past the open paren).
-//   - A list whose first element is not a symbol (`((a 1) (b 2))`, a
-//     `cond` clause), a quoted list, a vector, a lambda list or a binding
-//     list aligns its elements with its first element.
-//   - flet/labels/macrolet definitions and handler-case/restart-case
-//     clauses indent their bodies like a defun: 2 past their own paren.
-//
-// Columns are byte columns, as everywhere else in mep's LSP code.
+// Columns are byte columns for ASCII margins, as everywhere else in mep's
+// LSP code (a tab in a line above counts to the next multiple of eight,
+// as Emacs counts it).
 
 /**
- * @brief The column a line should be indented to, given only the lines above it.
+ * @brief The column a line should be indented to, as Emacs's TAB would indent it.
  * @param lines the document's text, one entry per line (no trailing newlines)
- * @param line the 0-based line to indent; lines at and after it are never read except for that
- *             line's own current indentation, used when it starts inside a string or block comment
+ * @param line the 0-based line to indent; lines after it are never read, and its own text counts only as it
+ *             does to Emacs (a line starting with `:key` or `&key` lines up differently)
  * @return the column to indent to: 0 at top level; the previous line's indentation inside a string or `#|` comment
  */
 int LispIndentForLine(const std::vector<std::string> &lines, int line);
@@ -57,16 +32,10 @@ int LispIndentForLine(const std::vector<std::string> &lines, int line);
 /**
  * @brief Re-indents a whole document with LispIndentForLine's rules, touching nothing but leading whitespace.
  * @param lines the document's text, one entry per line
- * @return the re-indented lines, same count. Lines that start inside a string or a block comment, and
- *         lines that start with a `;;;` or single-`;` comment, are returned unchanged; whitespace-only lines
- *         become empty.
+ * @return the re-indented lines, same count. Lines that start inside a string or a block comment are returned
+ *         unchanged; `;;;` and single-`;` comment lines, and the line a multi-line `#|` comment starts on, keep
+ *         their column (a tab in their margin becoming spaces); whitespace-only lines become empty.
  */
 std::vector<std::string> LispReindent(const std::vector<std::string> &lines);
-
-/**
- * @brief The number of distinguished arguments an operator takes for indentation, or -1 for an ordinary call.
- * @param upper_name the operator's canonical (upper-case) name with no package prefix, e.g. "DESTRUCTURING-BIND"
- */
-int LispIndentDistinguishedArgs(const std::string &upper_name);
 
 #endif  // MEP_LISP_INDENT_H

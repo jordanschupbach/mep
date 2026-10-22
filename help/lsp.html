@@ -133,8 +133,8 @@ typing, on opening a file and on switching back to one -- and on
 <code>:MepLspSemanticTokens</code>. <code>mep.lsp_semantic_auto = false</code> stops the
 automatic refresh, leaving the command.</p>
 <h1>Servers mep knows about</h1>
-<p>Forty-one. Each is used when its command is on <code>$PATH</code>; the org, R,
-Python, C++, C, Maxima, Common Lisp and Bash ones ship with mep itself:</p>
+<p>Forty-two. Each is used when its command is on <code>$PATH</code>; the org, R,
+Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal and C# ones ship with mep itself:</p>
 <table>
 <tr><th>Language</th><th>Command</th></tr>
 <tr><td>C++</td><td><code>mep-cpp-lsp</code> (ships with mep), or <code>clangd</code></td></tr>
@@ -147,7 +147,7 @@ Python, C++, C, Maxima, Common Lisp and Bash ones ship with mep itself:</p>
 <tr><td>Java</td><td><code>jdtls</code></td></tr>
 <tr><td>Ruby</td><td><code>solargraph</code></td></tr>
 <tr><td>PHP</td><td><code>intelephense</code></td></tr>
-<tr><td>C#</td><td><code>OmniSharp</code></td></tr>
+<tr><td>C#</td><td><code>mep-csharp-lsp</code> (ships with mep), or <code>OmniSharp</code></td></tr>
 <tr><td>Haskell</td><td><code>haskell-language-server-wrapper</code></td></tr>
 <tr><td>OCaml</td><td><code>ocamllsp</code></td></tr>
 <tr><td>Zig</td><td><code>zls</code></td></tr>
@@ -158,10 +158,10 @@ Python, C++, C, Maxima, Common Lisp and Bash ones ship with mep itself:</p>
 <tr><td>Fortran</td><td><code>fortls</code></td></tr>
 <tr><td>Scala</td><td><code>metals</code></td></tr>
 <tr><td>Nim</td><td><code>nimlsp</code></td></tr>
-<tr><td>Crystal</td><td><code>crystalline</code></td></tr>
+<tr><td>Crystal</td><td><code>mep-crystal-lsp</code> (ships with mep), or <code>crystalline</code></td></tr>
 <tr><td>D</td><td><code>serve-d</code></td></tr>
 <tr><td>Julia</td><td>Julia's <code>LanguageServer</code></td></tr>
-<tr><td>Clojure</td><td><code>clojure-lsp</code></td></tr>
+<tr><td>Clojure</td><td><code>mep-clojure-lsp</code> (ships with mep), or <code>clojure-lsp</code></td></tr>
 <tr><td>Common Lisp</td><td><code>mep-lisp-lsp</code> (ships with mep)</td></tr>
 <tr><td>Kotlin</td><td><code>kotlin-language-server</code></td></tr>
 <tr><td>Svelte</td><td><code>svelteserver</code></td></tr>
@@ -179,22 +179,25 @@ Python, C++, C, Maxima, Common Lisp and Bash ones ship with mep itself:</p>
 <tr><td>mepml</td><td><code>mep-mepml-lsp</code> (ships with mep)</td></tr>
 </table>
 <p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
-<h1>The nine mep brings itself</h1>
+<h1>The twelve mep brings itself</h1>
 <p><code>mep-org-lsp</code>, <code>mep-r-lsp</code>, <code>mep-python-lsp</code>, <code>mep-cpp-lsp</code>, <code>mep-c-lsp</code>,
-<code>mep-maxima-lsp</code>, <code>mep-lisp-lsp</code>, <code>mep-bash-lsp</code> and <code>mep-mepml-lsp</code> are
-mep's own servers, built and installed alongside <code>mep</code>, so org, R, Python,
-C++, C, Maxima, Common Lisp, shell and mepml files get diagnostics and
+<code>mep-maxima-lsp</code>, <code>mep-lisp-lsp</code>, <code>mep-bash-lsp</code>, <code>mep-clojure-lsp</code>,
+<code>mep-crystal-lsp</code>, <code>mep-csharp-lsp</code> and <code>mep-mepml-lsp</code> are mep's own servers, built and installed alongside <code>mep</code>,
+so org, R, Python, C++, C, Maxima, Common Lisp, shell, Clojure, Crystal, C# and mepml files get diagnostics and
 completion with nothing to install. See
 <a href="org-lsp.html">The org language server</a>, <a href="r-lsp.html">The R language server</a>,
 <a href="python-lsp.html">The Python language server</a>, <a href="cpp-lsp.html">The C++ language server</a>,
 <a href="c-lsp.html">The C language server</a>, <a href="maxima-lsp.html">The Maxima language server</a>,
 <a href="lisp-lsp.html">The Common Lisp language server</a>,
-<a href="bash-lsp.html">The Bash language server</a> and
+<a href="bash-lsp.html">The Bash language server</a>,
+<a href="clojure-lsp.html">The Clojure language server</a>,
+<a href="crystal-lsp.html">The Crystal language server</a>,
+<a href="csharp-lsp.html">The C# language server</a> and
 <a href="mepml-lsp.html">The mepml language server</a>.</p>
-<p>Python, C++, C and Bash are the languages where mep's own server is
-preferred over an external one out of the box: <code>pyright</code>, <code>clangd</code> and
-<code>bash-language-server</code> stay registered but claim no filetype of their own, and one line in
-<code>init.lua</code> swaps either back. <code>.h</code> goes to the C++ server, which reads C
+<p>Python, C++, C, Bash, Clojure, Crystal and C# are the languages where mep's own server is
+preferred over an external one out of the box: <code>pyright</code>, <code>clangd</code>,
+<code>bash-language-server</code>, <code>clojure-lsp</code>, <code>crystalline</code> and <code>OmniSharp</code> stay registered but claim no filetype of their own, and one line in
+<code>init.lua</code> swaps any of them back. <code>.h</code> goes to the C++ server, which reads C
 as well; a project whose headers are all C can hand it over with
 <code>mep.lsp_servers.c_ls.filetypes = {'c', 'h'}</code>.</p>
 <p>The R one never starts R: it parses the language itself, so a <code>.R</code> file

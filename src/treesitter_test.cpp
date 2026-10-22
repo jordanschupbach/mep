@@ -923,6 +923,309 @@ void TestBash() {
 }
 
 // ---------------------------------------------------------------------------
+// Clojure: mep's own grammar (grammars/tree-sitter-clojure), compiled in
+// ---------------------------------------------------------------------------
+
+void TestClojure() {
+    for (const char *ft : {"clj", "cljs", "cljc", "cljd", "edn", "bb"}) {
+        CHECK(TreesitterHasGrammar(ft));
+        CHECK(TreesitterHasFoldQuery(ft));
+        CHECK(TreesitterHasStructureQuery(ft));
+    }
+    const std::string src =
+        "#!/usr/bin/env bb\n"
+        "(ns demo.core\n"
+        "  (:require [clojure.string :as str]))\n"
+        "(def ^:dynamic *depth* 3)\n"
+        "(defrecord Point [x y])\n"
+        "(defn- greet\n"
+        "  \"Says hello.\"\n"
+        "  [name & more]\n"
+        "  (when-not (str/blank? name)\n"
+        "    (println (format \"hi %s\" name) \\a #\"\\d+\" nil true 1.5)))\n"
+        "(defmacro unless [c & body] `(if ~c nil (do ~@body)))\n"
+        "#_(ignored form)\n"
+        "(map #(* % %) (range 10))\n"
+        "(.toUpperCase s) (String. \"x\") (Math/sqrt 2.0)\n";
+    ExpectCaptures("clj", src, "#!/usr", "comment");
+    ExpectCaptures("clj", src, "ns demo", "variable function.call keyword");
+    ExpectCaptures("clj", src, "demo.core", "variable module");
+    ExpectCaptures("clj", src, ":require", "constant");
+    ExpectCaptures("clj", src, "clojure.string", "variable");
+    ExpectCaptures("clj", src, "^:dynamic", "variable punctuation.special");
+    ExpectCaptures("clj", src, ":dynamic", "variable constant attribute");
+    ExpectCaptures("clj", src, "*depth*", "variable variable.builtin variable");
+    ExpectCaptures("clj", src, "Point", "variable type");
+    ExpectCaptures("clj", src, "greet", "variable function");
+    ExpectCaptures("clj", src, "\"Says", "string string.documentation");
+    ExpectCaptures("clj", src, "name &", "variable variable.parameter");
+    ExpectCaptures("clj", src, "& more", "variable variable.parameter operator");
+    ExpectCaptures("clj", src, "when-not", "variable function.call conditional");
+    ExpectCaptures("clj", src, "str/blank?", "variable module");
+    ExpectCaptures("clj", src, "blank?", "variable function.call");
+    ExpectCaptures("clj", src, "println", "variable function.call function.builtin");
+    ExpectCaptures("clj", src, "\\a ", "character");
+    ExpectCaptures("clj", src, "#\"\\d", "string.regexp punctuation.special");
+    ExpectCaptures("clj", src, "nil true", "constant.builtin");
+    ExpectCaptures("clj", src, "true 1.5", "boolean");
+    ExpectCaptures("clj", src, "1.5)", "number");
+    ExpectCaptures("clj", src, "unless", "variable function.macro");
+    ExpectCaptures("clj", src, "`(if", "punctuation.special");
+    ExpectCaptures("clj", src, "~@body", "punctuation.special");
+    ExpectCaptures("clj", src, "#_(ignored", "comment");
+    ExpectCaptures("clj", src, "% %", "variable variable.parameter");
+    ExpectCaptures("clj", src, "range", "variable function.call function.builtin");
+    ExpectCaptures("clj", src, ".toUpperCase", "variable function.call function.method.call");
+    ExpectCaptures("clj", src, "String.", "variable function.call constructor");
+    ExpectCaptures("clj", src, "Math/", "variable module type");
+
+    ExpectOutline("clj", src,
+                  "0:module:demo.core@1\n"
+                  "0:variable:*depth*@3\n"
+                  "0:struct:Point@4\n"
+                  "0:function:greet@5\n"
+                  "0:macro:unless@10\n");
+
+    bool defn = false, ns = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("clj", src)) {
+        defn = defn || (f.start_row == 5 && f.end_row == 9);
+        ns = ns || (f.start_row == 1 && f.end_row == 2);
+    }
+    CHECK(defn);
+    CHECK(ns);
+}
+
+// ---------------------------------------------------------------------------
+// Crystal: mep's own grammar (grammars/tree-sitter-crystal), compiled in
+// ---------------------------------------------------------------------------
+
+void TestCrystal() {
+    CHECK(TreesitterHasGrammar("cr"));
+    CHECK(TreesitterHasFoldQuery("cr"));
+    CHECK(TreesitterHasStructureQuery("cr"));
+    const std::string src =
+        "require \"json\"\n"
+        "\n"
+        "# A shape.\n"
+        "module Geometry\n"
+        "  VERSION = \"1.0\"\n"
+        "\n"
+        "  @[Deprecated]\n"
+        "  abstract class Shape(T) < Base\n"
+        "    getter name : String\n"
+        "\n"
+        "    def area(scale : Float64 = 1.0) : Float64\n"
+        "      x = @radius * 2 if scale > 0\n"
+        "      puts \"r=#{x} \\n\", :sym, 'c', /a+b/i, nil, true, 0x1F_u8\n"
+        "      [1, 2].map(&.to_s).each do |s|\n"
+        "        yield s\n"
+        "      end\n"
+        "      %w(a b).size.as(Int32)\n"
+        "    end\n"
+        "\n"
+        "    macro emit(name)\n"
+        "      def {{name.id}}; end\n"
+        "    end\n"
+        "  end\n"
+        "\n"
+        "  enum Color\n"
+        "    Red\n"
+        "    Green\n"
+        "  end\n"
+        "end\n"
+        "\n"
+        "lib LibC\n"
+        "  fun strlen(s : UInt8*) : Int32\n"
+        "end\n";
+    ExpectCaptures("cr", src, "require", "keyword.import");
+    ExpectCaptures("cr", src, "\"json\"", "string");
+    ExpectCaptures("cr", src, "# A shape", "comment");
+    ExpectCaptures("cr", src, "module", "keyword.type");
+    ExpectCaptures("cr", src, "Geometry", "type type.definition");
+    ExpectCaptures("cr", src, "VERSION", "type constant");
+    ExpectCaptures("cr", src, "@[", "attribute");
+    ExpectCaptures("cr", src, "Deprecated", "type attribute");
+    ExpectCaptures("cr", src, "abstract", "keyword.modifier");
+    ExpectCaptures("cr", src, "Shape", "type type type.definition");
+    // A generic's parameter is a type, though it looks like an ALL_CAPS value.
+    ExpectCaptures("cr", src, "T)", "type type");
+    ExpectCaptures("cr", src, "Base", "type");
+    ExpectCaptures("cr", src, "getter", "variable function.call function.builtin");
+    ExpectCaptures("cr", src, "String", "type type.builtin");
+    ExpectCaptures("cr", src, "def area", "keyword.function");
+    ExpectCaptures("cr", src, "area", "variable function.method");
+    ExpectCaptures("cr", src, "scale :", "variable variable.parameter");
+    ExpectCaptures("cr", src, "1.0)", "number.float");
+    ExpectCaptures("cr", src, "@radius", "variable.member");
+    ExpectCaptures("cr", src, "if scale", "keyword.conditional");
+    ExpectCaptures("cr", src, "scale > 0", "variable");
+    ExpectCaptures("cr", src, "puts", "variable function.call function.builtin");
+    ExpectCaptures("cr", src, "\"r=", "string");
+    ExpectCaptures("cr", src, "#{x}", "string punctuation.special");
+    ExpectCaptures("cr", src, "\\n", "string string.escape");
+    ExpectCaptures("cr", src, ":sym", "string.special.symbol");
+    ExpectCaptures("cr", src, "'c'", "character");
+    ExpectCaptures("cr", src, "/a+b/", "string.regexp");
+    ExpectCaptures("cr", src, "i, nil", "string.regexp character.special");
+    ExpectCaptures("cr", src, "nil", "constant.builtin");
+    ExpectCaptures("cr", src, "true", "boolean");
+    ExpectCaptures("cr", src, "0x1F_u8", "number");
+    ExpectCaptures("cr", src, "map", "variable function.call");
+    ExpectCaptures("cr", src, ".to_s", "variable function.call");
+    ExpectCaptures("cr", src, "do |", "keyword");
+    ExpectCaptures("cr", src, "|s|", "punctuation.bracket");
+    ExpectCaptures("cr", src, "s|", "variable variable.parameter");
+    ExpectCaptures("cr", src, "yield", "keyword.return");
+    // %w(...)'s delimiters are the literal's, not brackets.
+    ExpectCaptures("cr", src, "%w(", "punctuation.bracket string");
+    ExpectCaptures("cr", src, "a b)", "string");
+    ExpectCaptures("cr", src, ").size", "punctuation.bracket string");
+    ExpectCaptures("cr", src, "as(", "variable function.call keyword.operator");
+    ExpectCaptures("cr", src, "Int32)\n", "type type.builtin");
+    ExpectCaptures("cr", src, "macro", "keyword.function");
+    ExpectCaptures("cr", src, "emit", "variable function.macro");
+    ExpectCaptures("cr", src, "{{", "punctuation.special");
+    ExpectCaptures("cr", src, "enum", "keyword.type");
+    ExpectCaptures("cr", src, "Red", "type constant");
+    ExpectCaptures("cr", src, "lib", "keyword.type");
+    ExpectCaptures("cr", src, "LibC", "type module");
+    ExpectCaptures("cr", src, "fun", "keyword.function");
+    ExpectCaptures("cr", src, "strlen", "variable function");
+    ExpectCaptures("cr", src, "*)", "operator type.builtin");
+
+    // Types nest their methods, macros, constants and enum members.
+    ExpectOutline("cr", src,
+                  "0:module:Geometry@3\n"
+                  "1:variable:VERSION@4\n"
+                  "1:class:Shape@7\n"
+                  "2:method:area@10\n"
+                  "2:macro:emit@19\n"
+                  "1:enum:Color@24\n"
+                  "2:variable:Red@25\n"
+                  "2:variable:Green@26\n"
+                  "0:namespace:LibC@30\n"
+                  "1:function:strlen@31\n");
+    ExpectOutline("cr", "struct P\n  x : Int32\n  private def f; end\n  def self.g : Int32\n    1\n  end\nend\nalias Cb = Int32 -> Nil\n",
+                  "0:struct:P@0\n1:method:f@2\n1:method:g@3\n0:type:Cb@7\n");
+
+    bool klass = false, method = false, block = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("cr", src)) {
+        klass = klass || (f.start_row == 7 && f.end_row == 22);
+        method = method || (f.start_row == 10 && f.end_row == 17);
+        block = block || (f.start_row == 13 && f.end_row == 15);
+    }
+    CHECK(klass);
+    CHECK(method);
+    CHECK(block);
+}
+
+// ---------------------------------------------------------------------------
+// C#: mep's own grammar (grammars/tree-sitter-c_sharp), compiled in
+// ---------------------------------------------------------------------------
+
+void TestCSharp() {
+    CHECK(TreesitterHasGrammar("cs"));
+    CHECK(TreesitterHasFoldQuery("cs"));
+    CHECK(TreesitterHasStructureQuery("cs"));
+    const std::string src =
+        "using System;\n"
+        "\n"
+        "namespace Demo\n"
+        "{\n"
+        "    /// A shape.\n"
+        "    [Serializable]\n"
+        "    public sealed class Shape<T> : Base where T : struct\n"
+        "    {\n"
+        "        public const int Max = 10;\n"
+        "        public string Name { get; init; } = \"x\";\n"
+        "\n"
+        "        public Shape(int count) { }\n"
+        "\n"
+        "        public async Task<int> RunAsync(int n)\n"
+        "        {\n"
+        "            var list = new List<int> { 1, 2 };\n"
+        "            foreach (var item in list) Console.WriteLine($\"{item:N2} \\n {{x}}\");\n"
+        "            if (n is > 0 and < 9 or [.., 1]) return await Task.FromResult(n);\n"
+        "            return nameof(n).Length + 'c' + 0x1F;\n"
+        "        }\n"
+        "    }\n"
+        "\n"
+        "    public enum Color { Red, Green }\n"
+        "    public record Point(int X, int Y);\n"
+        "}\n"
+        "#if DEBUG\n"
+        "#endif\n";
+    ExpectCaptures("cs", src, "using", "include");
+    ExpectCaptures("cs", src, "System", "variable module");
+    ExpectCaptures("cs", src, "namespace", "keyword");
+    ExpectCaptures("cs", src, "Demo", "variable module");
+    ExpectCaptures("cs", src, "/// A shape.", "comment");
+    ExpectCaptures("cs", src, "Serializable", "variable attribute");
+    ExpectCaptures("cs", src, "public", "keyword.modifier");
+    ExpectCaptures("cs", src, "class", "keyword");
+    ExpectCaptures("cs", src, "Shape", "variable type.definition");
+    ExpectCaptures("cs", src, "T>", "variable type.definition");
+    ExpectCaptures("cs", src, "Base", "variable type");
+    ExpectCaptures("cs", src, "where", "keyword");
+    ExpectCaptures("cs", src, "int Max", "type.builtin");
+    ExpectCaptures("cs", src, "Max", "variable variable.member");
+    ExpectCaptures("cs", src, "Name", "variable property");
+    ExpectCaptures("cs", src, "get", "keyword");
+    ExpectCaptures("cs", src, "\"x\"", "string");
+    ExpectCaptures("cs", src, "Shape(int", "variable constructor");
+    ExpectCaptures("cs", src, "count", "variable variable.parameter");
+    ExpectCaptures("cs", src, "async", "keyword keyword.modifier");
+    ExpectCaptures("cs", src, "Task<int>", "variable type");
+    ExpectCaptures("cs", src, "RunAsync", "variable function.method");
+    ExpectCaptures("cs", src, "var", "keyword");
+    ExpectCaptures("cs", src, "new", "keyword.operator");
+    ExpectCaptures("cs", src, "List", "variable type");
+    ExpectCaptures("cs", src, "foreach", "repeat");
+    ExpectCaptures("cs", src, "WriteLine", "variable variable.member function.method.call");
+    ExpectCaptures("cs", src, "$\"", "string string");
+    ExpectCaptures("cs", src, "{item", "string punctuation.special");
+    ExpectCaptures("cs", src, ":N2", "string string.special");
+    ExpectCaptures("cs", src, "\\n", "string string.escape");
+    ExpectCaptures("cs", src, "{{x}}", "string");
+    ExpectCaptures("cs", src, "if", "conditional");
+    ExpectCaptures("cs", src, "is >", "keyword.operator");
+    ExpectCaptures("cs", src, "and", "keyword.operator");
+    ExpectCaptures("cs", src, "..", "operator");
+    ExpectCaptures("cs", src, "return await", "keyword.return");
+    ExpectCaptures("cs", src, "await", "keyword.operator");
+    ExpectCaptures("cs", src, "FromResult", "variable variable.member function.method.call");
+    ExpectCaptures("cs", src, "nameof", "variable function.call keyword.operator");
+    ExpectCaptures("cs", src, "'c'", "character");
+    ExpectCaptures("cs", src, "0x1F", "number");
+    ExpectCaptures("cs", src, "Red", "variable constant");
+    ExpectCaptures("cs", src, "#if", "keyword.directive");
+    ExpectCaptures("cs", src, "DEBUG", "variable constant.macro");
+
+    // Namespaces nest their types, types their members.
+    ExpectOutline("cs", src,
+                  "0:namespace:Demo@2\n"
+                  "1:class:Shape@6\n"
+                  "2:variable:Max@8\n"
+                  "2:variable:Name@9\n"
+                  "2:method:Shape@11\n"
+                  "2:method:RunAsync@13\n"
+                  "1:enum:Color@22\n"
+                  "2:variable:Red@22\n"
+                  "2:variable:Green@22\n"
+                  "1:class:Point@23\n");
+    ExpectOutline("cs", "interface I { void M(); int P { get; } }\nstruct S { static S operator +(S a, S b) => a; }\n",
+                  "0:interface:I@0\n1:method:M@0\n1:variable:P@0\n0:struct:S@1\n1:method:+@1\n");
+
+    bool klass = false, method = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("cs", src)) {
+        klass = klass || (f.start_row == 5 && f.end_row == 20);
+        method = method || (f.start_row == 13 && f.end_row == 19);
+    }
+    CHECK(klass);
+    CHECK(method);
+}
+
+// ---------------------------------------------------------------------------
 // JavaScript: mep's own grammar (grammars/tree-sitter-javascript), compiled in
 // ---------------------------------------------------------------------------
 
@@ -1480,6 +1783,19 @@ void TestIncrementalRowsMatchWholeText() {
     for (int i = 0; i < 50; i++)
         sh += "f" + std::to_string(i) + "() {\n  cat <<EOF\nv $x " + std::to_string(i) +
               "\nEOF\n  case $1 in @(a|${b})) echo \"s\" ;; esac\n}\n\n";
+    // Crystal's scanner keeps the open delimited literals (strings,
+    // %-literals) and the heredocs waiting for their bodies; macro bodies
+    // are text it reads.
+    std::string cr;
+    for (int i = 0; i < 50; i++)
+        cr += "def f" + std::to_string(i) + "(x)\n  s = <<-EOS\n    v #{x} " + std::to_string(i) +
+              "\n    EOS\n  t = %w(a b) + [\"s#{x}\"]\n  {% if flag?(:a) %}y{% end %}\nend\n\n";
+    // C#'s scanner keeps the open interpolated strings (their `$` count,
+    // quotes and braces) and the open raw string's quote count.
+    std::string cs;
+    for (int i = 0; i < 50; i++)
+        cs += "void F" + std::to_string(i) + "(int x)\n{\n    var s = $\"v {x} " + std::to_string(i) +
+              " {{y}}\";\n    var r = $$\"\"\"\n        {\"k\": {{x}}}\n        \"\"\";\n    var v = @\"a\"\"b\";\n}\n\n";
     const std::vector<Case> cases = {
         {"md", md,
          {{"A paragraph with *emphasis*", "A paragraph with *emph"},          // opens emphasis across lines
@@ -1557,6 +1873,20 @@ void TestIncrementalRowsMatchWholeText() {
          {{"r3 a='x':", "r3 a='x"},
           {"echo {{a}} \\\n        -n\n\nr9", "echo {{a}}\n        -n\n\nr9"},
           {"\n\nr20", "\nr20"}}},
+        {"cr", cr,
+         {{"v #{x} 3\n    EOS", "v #{x} 3\n    EOX"},                    // a heredoc runs on to the next EOS
+          {"12\n    EOS\n  t = %w(a b)", "12\n    EOS\n  t = %w(a b"},     // a %-literal left open
+          {"20\n    EOS\n  t = %w(a b) + [\"s#{x}\"]", "20\n    EOS\n  t = %w(a b) + [\"s#{x}]"},  // a string
+          {"30\n    EOS\n  t = %w(a b) + [\"s#{x}\"]\n  {% if flag?(:a) %}y{% end %}",
+           "30\n    EOS\n  t = %w(a b) + [\"s#{x}\"]\n  {% if flag?(:a) %}y{% en %}"},  // a macro block left open
+          {"def f40(x)\n  s = <<-EOS", "def f40(x)\n  s = <<-'EOS'"}}},          // quoted: no interpolation
+        {"cs", cs,
+         {{"$\"v {x} 3 {{y}}\";", "$\"v {x} 3 {{y}};"},                // an interpolated string left open
+          {"$\"v {x} 9 {{y}}\"", "$\"v {x 9 {{y}}\""},                 // an interpolation left open
+          {"$$\"\"\"\n        {\"k\": {{x}}}\n        \"\"\";\n    var v = @\"a\"\"b\";\n}\n\nvoid F20",
+           "$$\"\"\"\n        {\"k\": {{x}}}\n        \"\";\n    var v = @\"a\"\"b\";\n}\n\nvoid F20"},  // a raw string runs on
+          {"var s = $\"v {x} 30", "var s = $$\"v {x} 30"},              // braces now need two
+          {"@\"a\"\"b\";\n}\n\nvoid F40", "@\"a\"b\";\n}\n\nvoid F40"}}},  // a verbatim string ends early
     };
     for (const Case &c : cases) {
         if (!TreesitterHasGrammar(c.ft)) continue;
@@ -1591,6 +1921,9 @@ int main() {
     TestJavascript();
     TestCommonLisp();
     TestBash();
+    TestClojure();
+    TestCrystal();
+    TestCSharp();
     TestCpp();
     TestOrg();
     TestMarkdown();

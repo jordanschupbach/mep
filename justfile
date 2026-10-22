@@ -240,6 +240,9 @@ markdown_inline-grammar: (grammar-generate "markdown_inline")
 javascript-grammar: (grammar-generate "javascript")
 commonlisp-grammar: (grammar-generate "commonlisp")
 bash-grammar: (grammar-generate "bash")
+clojure-grammar: (grammar-generate "clojure")
+crystal-grammar: (grammar-generate "crystal")
+c_sharp-grammar: (grammar-generate "c_sharp")
 
 # Replacing a vendored tree-sitter grammar with mep's own: the tools in
 # tools/ts_grammar_diff (README there; plans/TREESITTER_GRAMMAR_PLAN.md).
@@ -263,6 +266,82 @@ grammar-fuzz name *args:
 # Bytes left inside ERROR nodes on damaged copies, old grammar vs new.
 grammar-recovery name *args:
     env -u LD_LIBRARY_PATH python3 -I tools/ts_grammar_diff/grammar_diff.py recovery {{name}} {{args}}
+
+# Regenerate src/crystal_lsp_stdlib.cpp (the Crystal language server's stdlib
+# table) from `crystal docs` over the stdlib's docs_main.cr, as the official
+# API docs are built. The LLVM_* variables stand in for llvm-config, which
+# docs_main.cr's `require "./llvm"` asks for; nothing is linked.
+crystal-vocab:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    std=$(env -u LD_LIBRARY_PATH crystal env CRYSTAL_PATH | tr ':' '\n' | grep -v '^lib$' | tail -1)
+    ver=$(env -u LD_LIBRARY_PATH crystal --version | sed -n 's/^Crystal \([^ ]*\).*/\1/p')
+    llvm=$(env -u LD_LIBRARY_PATH crystal --version | sed -n 's/^LLVM: //p')
+    out=$(mktemp -d /dev/shm/crystal-docs.XXXXXX)
+    trap 'rm -rf "$out"' EXIT
+    env -u LD_LIBRARY_PATH LLVM_CONFIG=true LLVM_VERSION="$llvm" LLVM_TARGETS=X86 LLVM_LDFLAGS=" " \
+        crystal docs "$std/docs_main.cr" --project-name=Crystal --project-version="$ver" -o "$out"
+    python3 -I tools/gen_crystal_vocab.py "$out/index.json" --version "$ver" -o src/crystal_lsp_stdlib.cpp
+
+# Build the Crystal parser oracle (tools/crystal_ast_dump.cr, format in
+# tools/crystal_ast_dump.md): dumps the AST the real Crystal parser builds
+# for each file, for diffing against mep's C++ port. Needs `crystal` on PATH;
+# `require "compiler/crystal/syntax"` comes from its installed stdlib dir.
+# Usage: build/crystal-ast-dump/crystal-ast-dump FILE... | --stdin-list | --schema
+crystal-ast-dump:
+    mkdir -p build/crystal-ast-dump
+    env -u LD_LIBRARY_PATH crystal build --release --no-debug tools/crystal_ast_dump.cr -o build/crystal-ast-dump/crystal-ast-dump
+    @echo "  build/crystal-ast-dump/crystal-ast-dump"
+
+# Build the C# oracle (tools/csharp_oracle): Roslyn's own parser and
+# formatter, the copies the .NET SDK ships, for `grammar-diff c_sharp
+# --oracle`, for diffing mep-csharp-lsp's parser and mep's C# formatter.
+# Needs `dotnet` on PATH; works offline.
+# Usage: dotnet build/csharp-oracle/csharp-oracle.dll check|dump FILE... | --stdin-list
+# (dump's format: tools/csharp_oracle/DUMP.md, what `mep-csharp-lsp-test --parse`
+# prints; also `compile REF_DIR FILE...` / `compile-each REF_DIR` for the lints'
+# calibration, `unicode-categories` for csharp-syntax-gen, and `format FILE` /
+# `format --out DIR FILE...|--stdin-list` -- what `dotnet format whitespace`
+# writes with no .editorconfig -- against `mep-csharp-format-test --format`).
+csharp-oracle:
+    env -u LD_LIBRARY_PATH dotnet build tools/csharp_oracle -c Release -o build/csharp-oracle
+    @echo "  build/csharp-oracle/csharp-oracle.dll"
+
+# Regenerate src/csharp_lsp_bcl.cpp (mep-csharp-lsp's table of the .NET base
+# class library) from the SDK's reference assemblies and XML docs, read with
+# the SDK's own Roslyn (tools/csharp_vocab). Needs `dotnet`; works offline.
+csharp-vocab:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdk=$(dirname "$(readlink -f "$(command -v dotnet)")")
+    ref=$(ls -d "$sdk"/packs/Microsoft.NETCore.App.Ref/*/ref/net* | sort -V | tail -1)
+    env -u LD_LIBRARY_PATH dotnet build tools/csharp_vocab -c Release -o build/csharp-vocab
+    env -u LD_LIBRARY_PATH dotnet build/csharp-vocab/csharp-vocab.dll "$ref" src/csharp_lsp_bcl.cpp
+
+# Regenerate mep's C# syntax tables (src/csharp_syntax_kinds.inc,
+# csharp_errors.inc, csharp_syntax_factory.{h,cpp}, csharp_unicode.inc) from
+# Roslyn's own Syntax.xml, SyntaxKind.cs, ErrorCode.cs and resources, at the
+# commit the SDK's compiler was built from (fetched once into
+# build/cs-lsp-roslyn), and .NET's own Unicode categories.
+csharp-syntax-gen: csharp-oracle
+    #!/usr/bin/env bash
+    set -euo pipefail
+    commit=$(env -u LD_LIBRARY_PATH strings "$(dirname "$(readlink -f "$(command -v dotnet)")")"/sdk/*/Roslyn/bincore/Microsoft.CodeAnalysis.CSharp.dll | sed -n 's/.*+\([0-9a-f]\{40\}\)$/\1/p' | head -1)
+    dir=build/cs-lsp-roslyn
+    if [ ! -f "$dir/src/Syntax/Syntax.xml" ]; then
+        mkdir -p "$dir/src"
+        base="https://raw.githubusercontent.com/dotnet/dotnet/$commit/src/roslyn/src/Compilers/CSharp/Portable"
+        for f in Syntax/Syntax.xml Syntax/SyntaxKind.cs Errors/ErrorCode.cs CSharpResources.resx; do
+            mkdir -p "$dir/src/$(dirname $f)"; curl -sf -o "$dir/src/$f" "$base/$f"
+        done
+        for d in Parser Syntax; do
+            tree=$(curl -sf "https://api.github.com/repos/dotnet/dotnet/contents/src/roslyn/src/Compilers/CSharp/Portable/$d?ref=$commit" | python3 -c 'import json,sys; print(" ".join(e["name"] for e in json.load(sys.stdin) if e["type"] == "file"))')
+            mkdir -p "$dir/src/$d"
+            for f in $tree; do curl -sf -o "$dir/src/$d/$f" "$base/$d/$f"; done
+        done
+    fi
+    env -u LD_LIBRARY_PATH dotnet build/csharp-oracle/csharp-oracle.dll unicode-categories > "$dir/unicode_categories.txt"
+    python3 -I tools/gen_csharp_syntax.py "$dir/src" "$dir/unicode_categories.txt"
 
 # mep-tex's TeX bundle (nix/tex-bundle.nix, tools/tex_bundle.py): the TeX
 # Live packages mep's own engine reads, so builtin TeX compiles need no TeX
@@ -525,7 +604,7 @@ test: build-native
     ./{{native_build_dir}}/mep-check-help {{native_build_dir}}/mep --strict
     echo "== deps-audit"
     scripts/deps-audit.sh {{native_build_dir}}/mep
-    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-org-ts-test mep-ts-corpus-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-org-ts-test mep-ts-corpus-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-clojure-lsp-test mep-crystal-lsp-test mep-csharp-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-bash-format-test mep-clojure-format-test mep-crystal-format-test mep-csharp-format-test mep-c-format-test mep-lisp-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then

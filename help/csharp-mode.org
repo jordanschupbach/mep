@@ -1,0 +1,167 @@
+#+TITLE: C# mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="39">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+=<leader>uu= (or =<leader>lu=) in a =.cs= or =.csx= file. The tab becomes a
+C# workspace: your source, a console below it, and panels showing what the
+console's session holds.
+
+* The console
+
+The .NET SDK has no C# REPL of its own (=csi= and the C# scripting package
+are not part of it), but it ships the C# compiler, Roslyn, and Roslyn
+compiles interactive code natively. So the console is mep's own, built the
+way C# Interactive is: *every input is a submission* -- compiled on top of
+the ones before it, loaded into the running session, and run once.
+
+- Variables, =using= directives, methods, classes, records and enums persist
+  from input to input. Nothing is ever re-run.
+- An expression without a closing =;= prints its value: =cs[3]> x * 10=
+  answers ==> 40=. Values are shown the way C# Interactive shows them:
+  =List<int>(3) { 1, 2, 3 }=, ="text"=, =Point { X = 1, Y = 2 }= for a record,
+  =Counter { N = 2 }= for an object without its own =ToString=.
+- =await= works at the top level. So do =#r "path/to/Library.dll"= and
+  =#load "script.csx"=.
+- An input that does not compile is dropped, with Roslyn's own diagnostics
+  naming what you typed: =[7](1,1): error CS0103: The name 'y' does not
+  exist in the current context= is console input 7, line 1, column 1; for
+  code sent from a file, the file and its own line numbers. Warnings show
+  too (in yellow) but do not stop it.
+- An input that throws is dropped too, with the exception and the frames in
+  your code: =at <top level> in [10]:line 1=. Anything it did before it
+  threw stays done.
+- An unfinished input (an open brace, a =class= header, an =if= without its
+  body) gets a =...>= prompt until it is complete -- Roslyn decides, with
+  =SyntaxFactory.IsCompleteSubmission=.
+- Defining something again (a class, a method, a variable) shadows the
+  earlier one for every later input; earlier inputs keep the one they were
+  compiled against, as in C# Interactive.
+
+The default usings are the ones a new console project gets (=System=,
+=System.Collections.Generic=, =System.IO=, =System.Linq=,
+=System.Net.Http=, =System.Threading=, =System.Threading.Tasks=) plus
+=System.Text=. Nullable reference types are off, as in C# Interactive.
+
+*How fast*, measured here (.NET SDK 10.0.302, Roslyn 5.6):
+
+- The first time, mep builds the console -- a small .NET program, against
+  the SDK's own copy of Roslyn, no NuGet, no network -- into
+  =~/.cache/mep/csharp-ui/<sdk version>/=: about 4 seconds, once per SDK
+  version.
+- After that the prompt is up in about 0.2 s. The console warms the
+  compiler up in the background for the next second and a half; an input
+  typed before that is done takes about half a second.
+- Then *10-50 ms per input*, mostly 10-25 ms -- a statement, an expression,
+  a class. Loading a 50-line file with =<leader>rr= takes about 0.25 s.
+- The first =gh= or =:help= reads the reference documentation: 0.3 s; later
+  ones about 50 ms.
+
+The console runs under =rlwrap= when it is on the =PATH=, for line editing
+and a history kept across sessions. =Ctrl-C= while an input runs gives the
+prompt back and drops the input -- but .NET cannot stop a thread, so the
+code itself runs on in the background until it finishes; for a runaway
+loop, close the mode and open it again (=<leader>uu= twice) for a fresh
+console. At the prompt =Ctrl-C= abandons what was typed. =Ctrl-D= leaves.
+=Console.ReadLine()= in your code reads from the console.
+
+* Working in it
+
+| Key / command          | Does                                                          |
+|------------------------+---------------------------------------------------------------|
+| =<leader>re=           | send the statement or member at the cursor (a class, a method, a statement) |
+| =<leader>rr=           | save the file and run it in the console                       |
+| =gh=                   | documentation for the name under the cursor, in the Help panel |
+| =:help NAME=           | the same, from the console                                    |
+| =:run FILE=            | run a file the way =<leader>rr= does                          |
+| =:undo=                | drop the last kept input (what it did stays done)             |
+| =:reset=               | forget the whole session                                      |
+| =:session=             | print what is kept                                            |
+| =:?=                   | list these commands                                           |
+
+=<leader>re= takes the top-level piece of the file around the cursor, as
+Roslyn parses it: a statement, a class (or record, struct, interface,
+enum) with everything in it, a method, a =using=. Comments and doc comments
+right above it come along, and so do the file's =using= directives, so the
+code compiles as it does in the file. Inside a class it sends the whole
+class. The console prints which lines it took (=# rich.cs:39-42=).
+
+=<leader>rr= runs the whole file as one submission, the way =dotnet run=
+would run it:
+
+- Top-level statements run, in order; the classes and records declared
+  below them are already there when they do.
+- A classic program -- no top-level statements, a =static Main= in some
+  class -- has its =Main= called after the file loads (with no arguments;
+  =args= is empty, as it is at the top level). Its exit code is shown when
+  it is not 0.
+- A namespace (=namespace Demo { ... }= or =namespace Demo;=) is unwrapped:
+  console code cannot declare one, so its types are declared at the top
+  level, and a =using= of the file's own namespace is left out.
+- The directives of a file-based app (=#:package=, =#:sdk=, =#:property=)
+  are not supported: the console says so and ignores them. The same goes
+  for =#r "nuget: ..."=; =#r= a =.dll= by its path instead.
+- Running the file again replaces its classes and methods for every later
+  input; variables declared again start over.
+
+=gh= looks up a type (=StringBuilder=, =System.Text.Json.JsonSerializer=,
+=int=), a member (=string.Split=, =Console.WriteLine=, =Math.Sqrt=), a
+member of a session variable's type (=words.Length=, =list.Add=), an
+extension method on it (=xs.Select= finds =Enumerable.Select=), a bare
+member name (=WriteLine=: every one in the namespaces the session uses), or
+a namespace (=System.Linq= lists its types). Overloads are listed simplest
+first, each with its signature, summary, parameters, return value and
+exceptions; for a type, its members. The documentation is the XML
+documentation in the SDK's reference pack
+(=packs/Microsoft.NETCore.App.Ref/<version>/ref/net10.0/*.xml=), read through
+Roslyn's symbols, so signatures print as C#; no network. A name the session
+defines shows its source first.
+
+* The panels
+
+| Panel       | Shows                                                               |
+|-------------+---------------------------------------------------------------------|
+| Variables   | the session's variables, each with its declared type and value     |
+| Definitions | the types, members, methods and usings the session defines, with where they came from |
+| Inspect     | a variable's value laid out one item or member per line, with its type |
+| Session     | the inputs kept, in order                                           |
+| History     | everything typed or sent, newest first; click one to send it again  |
+| Help        | documentation, from =gh= or =:help=                                 |
+
+Clicking a Variables row shows that value in Inspect. Clicking a
+Definitions row goes to it in its file, or, for one typed in the console,
+shows its source in Help.
+
+The variables are the ones the session's inputs declare at their top level
+(a =var= in a loop or a lambda is its own). A lazy sequence -- a LINQ query
+kept in a variable, an iterator -- is not run to fill the panels (it would
+run again after every input): the Variables row says =(not enumerated)=;
+evaluate it, or keep =.ToList()= of it, to see its items. A value is
+re-read after every input, so the panels show what it is now.
+
+* Options
+
+#+begin_src lua
+mep.opt.csharp_ui_rlwrap = true         -- false: never run the console under rlwrap
+mep.opt.csharp_ui_info_share = 0.3
+mep.opt.csharp_ui_bottom_share = 0.4
+mep.opt.csharp_ui_bottom_info_share = 0.4
+#+end_src
+
+The console needs the .NET SDK (=dotnet=) on the =PATH=; it is in mep's dev
+shell.
+
+* Editing C#
+
+These work in any C# file, with or without the mode open:
+
+- *Highlighting, folds and the outline* come from mep's C# grammar
+  (see [[file:syntax.html][Syntax highlighting]]).
+- *Diagnostics, completion and hover* come from the C# language server
+  (see [[file:lsp.html][Language servers]]).
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.

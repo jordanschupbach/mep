@@ -1,0 +1,79 @@
+#+TITLE: Clojure mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="37">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+=<leader>uu= (or =<leader>lu=) in a =.clj=, =.cljc= or =.bb= file. The tab
+becomes a Clojure workspace: your source, a REPL below it, and panels
+showing what the REPL's namespace holds.
+
+The REPL is babashka (=bb=) when it is on your =PATH= -- it starts at once
+-- and otherwise the JVM's =clojure -M=. If =rlwrap= is there too, the
+console runs under it, for line editing and history.
+
+* Working in it
+
+| Key / call                | Does                                                         |
+|---------------------------+--------------------------------------------------------------|
+| =<leader>re=              | evaluate the top-level form at the cursor, in its namespace  |
+| =<leader>rr=              | load the whole file, then move the REPL into its namespace   |
+| =gh=                      | documentation for the name under the cursor, in the Help panel |
+| =(mep-ui/help 'x)=        | the same, from the console                                   |
+| =(mep-ui/view x)=         | pretty-print a value, with its type, in the Inspect panel (and return it) |
+| =(mep-ui/run "file.clj")= | load a file the way =<leader>rr= does                        |
+
+=<leader>re= is the editor half of CIDER's =C-c C-c=: it finds the form
+that opens at column 0 above the cursor and evaluates it in the namespace
+the nearest =(ns ...)= above it names -- so redefining one function of a
+file does not define it in =user= instead. Until the file has been loaded
+once that namespace does not exist yet; the form is then evaluated in the
+REPL's current namespace, and the console says so.
+
+=<leader>rr= moves the REPL into the file's namespace even when loading
+stops at an error, so what did load can be tried at the prompt.
+
+* The panels
+
+| Panel      | Shows                                                               |
+|------------+---------------------------------------------------------------------|
+| Vars       | what the REPL's current namespace defines: functions and macros with their arglists, atoms and refs with their value, other vars with their value |
+| Inspect    | the last value given to =mep-ui/view=, pretty-printed, with its class |
+| Namespaces | the current namespace, its aliases, and every loaded namespace     |
+| History    | the forms the REPL has evaluated, newest first; click one to run it again |
+| Help       | =doc= of a name, plus its source when it comes from a file on disk; for a name that is not one, the names containing it (=apropos=) |
+
+Clicking a Vars row inspects that var's value.
+
+The panels refresh after every evaluation: the REPL is =clojure.main/repl=
+with a prompt hook, which also names the current namespace, =demo.core=>=.
+
+* Editing Clojure
+
+These work in any Clojure buffer, with or without the mode open:
+
+- *Highlighting, folds and the outline* come from mep's own Clojure grammar.
+- *Diagnostics, completion, hover, go-to-definition and rename* come from
+  [[file:clojure-lsp.html][mep's own Clojure language server]].
+- *=gf=* formats the file with mep's own Clojure formatter, in =cljfmt='s
+  layout (see [[file:formatting.html][Formatting]]).
+
+* Options
+
+#+begin_src lua
+mep.opt.clojure_ui_cmd = {'clojure', '-M'}   -- the REPL; the init file is passed as its last argument
+mep.opt.clojure_ui_rlwrap = true              -- false: never wrap the console in rlwrap
+mep.opt.clojure_ui_info_share = 0.3
+mep.opt.clojure_ui_bottom_share = 0.4
+mep.opt.clojure_ui_bottom_info_share = 0.4
+#+end_src
+
+The command has to run a script given as its last argument, as =bb= and
+=clojure -M= do -- ={'clojure', '-M:dev'}= adds a =deps.edn= alias's
+dependencies, for one.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the shared machinery.
+- [[file:clojure-lsp.html][The Clojure language server]] -- diagnostics and the =--lint= command.

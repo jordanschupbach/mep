@@ -1,0 +1,122 @@
+==================
+directives anywhere, #if blocks between members and statements
+==================
+
+#nullable enable
+#pragma warning disable CS0168, IDE0051
+#define TRACE
+#region Members
+class C
+{
+#if DEBUG
+    void Log() { }
+#elif TRACE
+    void Trace() { }
+#else
+    void None() { }
+#endif
+
+    void M()
+    {
+#if DEBUG
+        Log();
+#endif
+    }
+}
+#endregion
+#line 200 "Generated.cs"
+#line default
+
+---
+
+(compilation_unit
+  (preproc_nullable)
+  (preproc_pragma
+    (identifier)
+    (identifier))
+  (preproc_define
+    (preproc_arg))
+  (preproc_region
+    content: (preproc_arg))
+  (class_declaration
+    name: (identifier)
+    body: (declaration_list
+      (preproc_if
+        condition: (identifier)
+        (method_declaration
+          returns: (predefined_type)
+          name: (identifier)
+          parameters: (parameter_list)
+          body: (block))
+        alternative: (preproc_elif
+          condition: (identifier)
+          (method_declaration
+            returns: (predefined_type)
+            name: (identifier)
+            parameters: (parameter_list)
+            body: (block))
+          alternative: (preproc_else
+            (method_declaration
+              returns: (predefined_type)
+              name: (identifier)
+              parameters: (parameter_list)
+              body: (block)))))
+      (method_declaration
+        returns: (predefined_type)
+        name: (identifier)
+        parameters: (parameter_list)
+        body: (block
+          (preproc_if
+            condition: (identifier)
+            (expression_statement
+              (invocation_expression
+                function: (identifier)
+                arguments: (argument_list))))))))
+  (preproc_endregion)
+  (preproc_line
+    (integer_literal)
+    (string_literal
+      (string_literal_content)))
+  (preproc_line))
+
+==================
+#if around an enum member and an attribute
+==================
+
+enum E
+{
+    A,
+#if X
+    B
+#endif
+}
+
+[A]
+#if X
+[B]
+#endif
+class D { }
+
+---
+
+(compilation_unit
+  (enum_declaration
+    name: (identifier)
+    body: (enum_member_declaration_list
+      (enum_member_declaration
+        name: (identifier))
+      (preproc_if
+        condition: (identifier)
+        (enum_member_declaration
+          name: (identifier)))))
+  (class_declaration
+    (attribute_list
+      (attribute
+        name: (identifier)))
+    (preproc_if_in_attribute_list
+      condition: (identifier)
+      (attribute_list
+        (attribute
+          name: (identifier))))
+    name: (identifier)
+    body: (declaration_list)))

@@ -49,9 +49,10 @@
 //     code for any other feature is read for its definitions and uses,
 //     but no name check runs inside it and its definitions do not count
 //     as redefinitions.
-//   - Formatting is re-indentation only (lisp_indent.h): standard
-//     Lisp indentation applied to leading whitespace, nothing else on a
-//     line touched, and nothing inside a string or `#|` comment moved.
+//   - Formatting is mep's own Common Lisp formatter (lisp_format.h):
+//     Emacs's common-lisp-indent-function layout plus a few whitespace
+//     rules, nothing inside a string or `#|` comment touched, and a file
+//     that does not read left alone.
 //
 // Positions are 0-based lines and 0-based *byte* columns, not UTF-16 code
 // units -- what mep's own LSP client consumes, and what
@@ -284,9 +285,9 @@ LispLspSignature LispLspSignatureHelp(const std::vector<std::string> &lines, int
 // --- Formatting -------------------------------------------------------
 
 /**
- * @brief Re-indents a document (lisp_indent.h's rules) and returns one whole-line edit per line that changed.
+ * @brief Formats the document with mep's Common Lisp formatter (lisp_format.h): one edit replacing the changed
+ *        lines, none when it is already formatted or cannot be (an unclosed paren or string).
  * @param lines the document's text, one entry per line
- * @return the edits in document order; empty when the document is already indented
  */
 std::vector<LispLspTextEdit> LispLspFormat(const std::vector<std::string> &lines);
 

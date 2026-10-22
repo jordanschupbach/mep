@@ -74,14 +74,19 @@ bool HasLabel(const std::vector<BashLspCompletionItem> &items, const std::string
     return false;
 }
 
-std::string Formatted(const std::string &text) {
-    Lines lines = L(text);
-    for (const BashLspTextEdit &e : BashLspFormat(lines)) lines[static_cast<size_t>(e.range.line)] = e.new_text;
+// Applies the formatting edit (whole lines, end-exclusive) to `text`.
+std::string Formatted(const std::string &text, const std::string &unit = "    ") {
+    const Lines lines = L(text);
+    const std::vector<BashLspTextEdit> edits = BashLspFormat(lines, unit);
     std::string out;
-    for (size_t k = 0; k < lines.size(); k++) {
-        if (k) out += "\n";
-        out += lines[k];
+    size_t k = 0;
+    for (const BashLspTextEdit &e : edits) {
+        for (; k < static_cast<size_t>(e.range.line); k++) out += lines[k] + "\n";
+        out += e.new_text;
+        k = static_cast<size_t>(e.range.end_line);
     }
+    for (; k < lines.size(); k++) out += lines[k] + "\n";
+    if (!out.empty()) out.pop_back();
     return out;
 }
 
@@ -475,26 +480,24 @@ void TestNavigation() {
 // --- Formatting -------------------------------------------------------------------
 
 void TestFormat() {
-    CHECK(Formatted("if a; then\nb\nfi") == "if a; then\n    b\nfi");
-    // The file's own unit: two spaces, from the lines already indented one level.
+    // mep's Bash formatter (bash_format_test.cpp has the layout in detail):
+    // the client's unit for a file with no indentation of its own...
+    CHECK(Formatted("if a\nthen\nb\nfi") == "if a; then\n    b\nfi");
+    CHECK(Formatted("if a; then\nb\nfi", "") == "if a; then\n\tb\nfi");
+    // ...and the file's own when it has some.
     CHECK(Formatted("f() {\n  a\n      b\n}") == "f() {\n  a\n  b\n}");
     CHECK(Formatted("f() {\n\ta\n        b\n}") == "f() {\n\ta\n\tb\n}");
-    CHECK(Formatted("case $x in\na)\necho\n;;\n*) z ;;\nesac") ==
-          "case $x in\n    a)\n        echo\n        ;;\n    *) z ;;\nesac");
-    CHECK(Formatted("for i in 1; do\nfor j in 2; do\necho\ndone\ndone") ==
-          "for i in 1; do\n    for j in 2; do\n        echo\n    done\ndone");
-    // Continuation lines: one level past the command...
+    CHECK(Formatted("x=1;y=2\nfor i in 1; do\nfor j in 2; do\necho\ndone\ndone") ==
+          "x=1\ny=2\nfor i in 1; do\n    for j in 2; do\n        echo\n    done\ndone");
     CHECK(Formatted("cmd --a \\\n--b |\nsort") == "cmd --a \\\n    --b |\n    sort");
-    // ...unless the file keeps its && chains level, as git's tests do.
-    CHECK(Formatted("f() {\n\ta &&\n\tb &&\n\tc\n}") == "f() {\n\ta &&\n\tb &&\n\tc\n}");
-    CHECK(BashLspFormat(L("f() {\n\ta &&\n\t\tb &&\n\tc\n}")).size() == 1);
-    // A comment goes with the code after it -- or before a closing keyword.
-    CHECK(Formatted("if a; then\n# why\nb\n# end\nfi") == "if a; then\n    # why\n    b\n    # end\nfi");
     // Here-document bodies and multi-line strings are not touched.
     CHECK(Formatted("f() {\ncat <<EOF\n  keep\nEOF\necho \"a\n  b\"\n}") ==
           "f() {\n    cat <<EOF\n  keep\nEOF\n    echo \"a\n  b\"\n}");
-    // A multi-line $( ... ).
-    CHECK(Formatted("x=$(\nfoo\n)") == "x=$(\n    foo\n)");
+    // One edit, covering only the lines that changed.
+    const std::vector<BashLspTextEdit> e = BashLspFormat(L("a\nif x\nthen\n:\nfi\nb"), "  ");
+    CHECK(e.size() == 1);
+    CHECK(e[0].range.line == 1 && e[0].range.end_line == 4);
+    CHECK(e[0].new_text == "if x; then\n  :\n");
     // A syntax error: nothing is changed.
     CHECK(BashLspFormat(L("if a; then\nb")).empty());
     // Already formatted: no edits.

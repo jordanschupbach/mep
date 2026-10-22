@@ -113,12 +113,11 @@ unconditionally, so they hold back:
   global variables assigned at the top level, read-only ones as constants.
 - *Folding* covers compound commands, functions, here-documents,
   multi-line arrays and command substitutions, and runs of comment lines.
-- *Formatting* is re-indentation only, from the structure, in the file's
-  own indent unit (tabs, or the width its indented lines use most).
-  Continuation lines go one level in -- unless the file keeps its =&&=
-  chains level, as git's test suite does, which it follows. Here-document
-  bodies and the inside of multi-line strings are never touched, and a
-  file with a syntax error is left alone.
+- *Formatting* is mep's Bash formatter, the one =gf= runs:
+  =shfmt='s layout, in the file's own indent unit (the editor's tab
+  settings for a file with none yet). See
+  [[file:formatting.html][Formatting]]. A file with a syntax error is left
+  alone.
 
 * Linting from the command line
 

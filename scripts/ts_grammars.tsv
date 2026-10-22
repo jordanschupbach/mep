@@ -46,8 +46,6 @@
 # legwork), add a row here, add a highlights.scm to
 # src/treesitter_queries.h, and add a DynamicLanguageTable entry in
 # src/treesitter.cpp.
-bash	tree-sitter/tree-sitter-bash	v0.25.1
-c_sharp	tree-sitter/tree-sitter-c-sharp	v0.23.5
 css	tree-sitter/tree-sitter-css	v0.25.0
 go	tree-sitter/tree-sitter-go	v0.25.0
 haskell	tree-sitter/tree-sitter-haskell	v0.23.1
@@ -79,7 +77,6 @@ make	tree-sitter-grammars/tree-sitter-make	70613f3d812cbabbd7f38d104d60a409c4008
 vim	tree-sitter-grammars/tree-sitter-vim	3092fcd99eb87bbd0fc434aa03650ba58bd5b43b
 xml	tree-sitter-grammars/tree-sitter-xml	5000ae8f22d11fbe93939b05c1e37cf21117162d	xml
 cmake	uyha/tree-sitter-cmake	v0.7.4
-clojure	sogaiu/tree-sitter-clojure	e43eff80d17cf34852dcd92ca5e6986d23a7040f
 dart	usernobody14/tree-sitter-dart	0fc19c3a57b1109802af41d2b8f60d8835c5da3a
 dockerfile	camdencheek/tree-sitter-dockerfile	v0.2.0
 graphql	bkegley/tree-sitter-graphql	5e66e961eee421786bdda8495ed1db045e06b5fe
@@ -102,4 +99,3 @@ perl	ganezdragon/tree-sitter-perl	v1.1.1
 fortran	stadelmanma/tree-sitter-fortran	v0.5.1
 d	gdamore/tree-sitter-d	fb028c8f14f4188286c2eef143f105def6fbf24f
 nim	alaviss/tree-sitter-nim	ac72ba30d16edf0be021588a9301ede4accd6cf4
-crystal	crystal-lang-tools/tree-sitter-crystal	50ca9e6fcfb16a2cbcad59203cfd8ad650e25c49

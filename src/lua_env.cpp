@@ -25,6 +25,12 @@
 #include "git/git.h"
 #include "git/git_job.h"
 #include "maxima_format.h"
+#include "bash_format.h"
+#include "clojure_format.h"
+#include "crystal_format.h"
+#include "csharp_format.h"
+#include "c_format.h"
+#include "lisp_format.h"
 #include "r_format.h"
 #include "tcp_client.h"
 #include "test_drivers.h"
@@ -475,6 +481,240 @@ int l_format_maxima(lua_State *L) {
         lua_pushnil(L);
         lua_pushlstring(L, r.error.data(), r.error.size());
         lua_pushinteger(L, r.error_line);
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_bash(text[, width[, spec]]) -> the text formatted as Bash, or nil plus an error message
+//
+// mep's own Bash formatter (bash_format.h), the builtin behind `gf` in a
+// .sh/.bash buffer -- shfmt's layout, no shfmt. Bash has no line width to
+// wrap at, so `width` is unused; `spec` is the mep.format_languages entry,
+// whose `indent` ('\t', or a number of spaces) forces the indent unit and
+// whose `case_indent` (true/false) forces whether case patterns go a level
+// in -- both are otherwise read off the file. On a script it cannot parse,
+// or cannot lay out without changing, it returns nil, the reason and the
+// 1-based line, and the caller leaves the buffer alone.
+int l_format_bash(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    bashfmt::Options opt;
+    if (lua_istable(L, 3)) {
+        lua_getfield(L, 3, "indent");
+        if (lua_type(L, -1) == LUA_TNUMBER) {
+            const lua_Integer n = lua_tointeger(L, -1);
+            if (n > 0 && n <= 16) opt.indent = std::string(static_cast<size_t>(n), ' ');
+        } else if (lua_type(L, -1) == LUA_TSTRING) {
+            opt.indent = lua_tostring(L, -1);
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "case_indent");
+        if (lua_isboolean(L, -1)) opt.case_indent = lua_toboolean(L, -1) ? 1 : 0;
+        lua_pop(L, 1);
+    }
+    const bashfmt::Result r = bashfmt::Format(std::string_view(src, len), opt);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line > 0) {
+            lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_clojure(text[, width]) -> the text formatted as Clojure, or nil plus an error message
+//
+// mep's own Clojure formatter (clojure_format.h), the builtin behind `gf`
+// in a .clj/.cljs/.cljc/.edn/.bb buffer -- cljfmt's layout with its default
+// options, no cljfmt and no JVM. Like cljfmt it never re-breaks lines, so
+// `width` is unused. On a file that does not read, or a layout it cannot
+// prove kept every token, it returns nil, the reason and the 1-based line.
+int l_format_clojure(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    const cljfmt::Result r = cljfmt::Format(std::string_view(src, len));
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line > 0) {
+            lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_crystal(text) -> the text formatted as Crystal, or nil plus an error message
+//
+// mep's own Crystal formatter (crystal_format.h), the builtin behind `gf`
+// in a .cr buffer -- a port of `crystal tool format`, no crystal binary.
+// Crystal's formatter has no options and no line width. On a file that
+// does not parse (the compiler's own syntax error), or a result it cannot
+// prove is the same program, it returns nil, the reason and the 1-based line.
+int l_format_crystal(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    const crfmt::Result r = crfmt::Format(std::string_view(src, len));
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line > 0) {
+            lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_csharp(text[, width[, spec]]) -> the text formatted as C#, or nil plus an error message
+//
+// mep's own C# formatter (csharp_format.h), the builtin behind `gf` in a .cs
+// buffer -- a port of Roslyn's formatting engine, so `dotnet format
+// whitespace`'s layout with its default options, no .NET. `width` is
+// ignored: Roslyn's formatter fixes whitespace and indentation and never
+// re-wraps a line. `spec` is the mep.format_languages entry, whose `indent`
+// (columns, default 4) and `tabs` (true: indent with tabs, `indent`
+// columns wide) are dotnet format's indent_size / indent_style. On a file
+// it cannot lay out without changing it returns nil, the reason and the
+// 1-based line, and the caller leaves the buffer alone.
+int l_format_csharp(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    csfmt::Options opt;
+    if (lua_istable(L, 3)) {
+        lua_getfield(L, 3, "indent");
+        if (lua_type(L, -1) == LUA_TNUMBER) {
+            const lua_Integer n = lua_tointeger(L, -1);
+            if (n > 0 && n <= 16) opt.indent_size = opt.tab_size = static_cast<int>(n);
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "tabs");
+        if (lua_isboolean(L, -1)) opt.use_tabs = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+    }
+    const csfmt::Result r = csfmt::Format(std::string_view(src, len), opt);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line > 0) {
+            lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_c(text[, width[, spec]]) -> the text formatted as C, or nil plus an error message
+//
+// mep's own C formatter (c_format.h), the builtin behind `gf` in a .c
+// buffer -- clang-format's LLVM layout, no clang-format. `width` is the
+// column limit; `spec` is the mep.format_languages entry, whose `indent`
+// (a number of columns), `tabs` (true: one tab per level, `indent` --
+// default 8 -- columns wide) and `case_indent`
+// (true: case labels a level in from their switch) override the LLVM
+// defaults. On a file it cannot lay out without changing it returns nil,
+// the reason and the 1-based line, and the caller leaves the buffer alone.
+int l_format_c(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    cfmt::Options opt;
+    if (!lua_isnoneornil(L, 2)) {
+        const lua_Integer w = luaL_checkinteger(L, 2);
+        if (w > 0 && w <= 1000) opt.column_limit = static_cast<unsigned>(w);
+    }
+    if (lua_istable(L, 3)) {
+        lua_getfield(L, 3, "indent");
+        if (lua_type(L, -1) == LUA_TNUMBER) {
+            const lua_Integer n = lua_tointeger(L, -1);
+            if (n > 0 && n <= 16) opt.indent_width = static_cast<unsigned>(n);
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "tabs");
+        if (lua_isboolean(L, -1)) opt.use_tabs = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "case_indent");
+        if (lua_isboolean(L, -1)) opt.indent_case_labels = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        // One tab per level: a tab is `indent` columns wide, 8 when unset.
+        if (opt.use_tabs) {
+            lua_getfield(L, 3, "indent");
+            if (lua_type(L, -1) != LUA_TNUMBER) opt.indent_width = 8;
+            lua_pop(L, 1);
+            opt.tab_width = opt.indent_width;
+        }
+    }
+    const cfmt::Result r = cfmt::Format(std::string_view(src, len), opt);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line > 0) {
+            lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_lisp(text[, width[, spec]]) -> the text formatted as Common Lisp, or nil plus an error message
+//
+// mep's own Common Lisp formatter (lisp_format.h), the builtin behind `gf`
+// in a .lisp/.lsp/.cl/.asd buffer -- the indentation Emacs's
+// common-lisp-indent-function gives, no Emacs. It never re-breaks lines,
+// so `width` is unused; `spec` is the mep.format_languages entry, whose
+// `indent` table ({['my-macro'] = '1', ['with-foo'] = 'let', ...}, the
+// operator names lower-case and without a package) adds or replaces
+// indentation specs. On a file that does not read, or a layout it cannot
+// prove kept every token, it returns nil, the reason and the 1-based line.
+int l_format_lisp(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    lispfmt::Options opt;
+    if (lua_istable(L, 3)) {
+        lua_getfield(L, 3, "indent");
+        if (lua_istable(L, -1)) {
+            lua_pushnil(L);
+            while (lua_next(L, -2) != 0) {
+                if (lua_type(L, -2) == LUA_TSTRING) {
+                    const std::string name = lua_tostring(L, -2);
+                    if (lua_type(L, -1) == LUA_TNUMBER) {
+                        opt.indent[name] = std::to_string(lua_tointeger(L, -1));
+                    } else if (lua_type(L, -1) == LUA_TSTRING) {
+                        opt.indent[name] = lua_tostring(L, -1);
+                    }
+                }
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+    }
+    const lispfmt::Result r = lispfmt::Format(std::string_view(src, len), opt);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line > 0) {
+            lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
         return 3;
     }
     lua_pushlstring(L, r.text.data(), r.text.size());
@@ -16268,6 +16508,12 @@ const luaL_Reg kMepFuncs[] = {
     {"spell_fix_word", l_spell_fix_word},
     {"format_r", l_format_r},
     {"format_maxima", l_format_maxima},
+    {"format_bash", l_format_bash},
+    {"format_clojure", l_format_clojure},
+    {"format_crystal", l_format_crystal},
+    {"format_csharp", l_format_csharp},
+    {"format_c", l_format_c},
+    {"format_lisp", l_format_lisp},
     {"cursor", l_cursor},
     {"set_cursor", l_set_cursor},
     {"current_buffer", l_current_buffer},

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clojure mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="37">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Clojure mode</h1>
+<h1>Opening it</h1>
+<p><code>&lt;leader&gt;uu</code> (or <code>&lt;leader&gt;lu</code>) in a <code>.clj</code>, <code>.cljc</code> or <code>.bb</code> file. The tab
+becomes a Clojure workspace: your source, a REPL below it, and panels
+showing what the REPL's namespace holds.</p>
+<p>The REPL is babashka (<code>bb</code>) when it is on your <code>PATH</code> -- it starts at once
+-- and otherwise the JVM's <code>clojure -M</code>. If <code>rlwrap</code> is there too, the
+console runs under it, for line editing and history.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>evaluate the top-level form at the cursor, in its namespace</td></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>load the whole file, then move the REPL into its namespace</td></tr>
+<tr><td><code>gh</code></td><td>documentation for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>(mep-ui/help 'x)</code></td><td>the same, from the console</td></tr>
+<tr><td><code>(mep-ui/view x)</code></td><td>pretty-print a value, with its type, in the Inspect panel (and return it)</td></tr>
+<tr><td><code>(mep-ui/run "file.clj")</code></td><td>load a file the way <code>&lt;leader&gt;rr</code> does</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> is the editor half of CIDER's <code>C-c C-c</code>: it finds the form
+that opens at column 0 above the cursor and evaluates it in the namespace
+the nearest <code>(ns ...)</code> above it names -- so redefining one function of a
+file does not define it in <code>user</code> instead. Until the file has been loaded
+once that namespace does not exist yet; the form is then evaluated in the
+REPL's current namespace, and the console says so.</p>
+<p><code>&lt;leader&gt;rr</code> moves the REPL into the file's namespace even when loading
+stops at an error, so what did load can be tried at the prompt.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Vars</td><td>what the REPL's current namespace defines: functions and macros with their arglists, atoms and refs with their value, other vars with their value</td></tr>
+<tr><td>Inspect</td><td>the last value given to <code>mep-ui/view</code>, pretty-printed, with its class</td></tr>
+<tr><td>Namespaces</td><td>the current namespace, its aliases, and every loaded namespace</td></tr>
+<tr><td>History</td><td>the forms the REPL has evaluated, newest first; click one to run it again</td></tr>
+<tr><td>Help</td><td><code>doc</code> of a name, plus its source when it comes from a file on disk; for a name that is not one, the names containing it (<code>apropos</code>)</td></tr>
+</table>
+<p>Clicking a Vars row inspects that var's value.</p>
+<p>The panels refresh after every evaluation: the REPL is <code>clojure.main/repl</code>
+with a prompt hook, which also names the current namespace, <code>demo.core=&gt;</code>.</p>
+<h1>Editing Clojure</h1>
+<p>These work in any Clojure buffer, with or without the mode open:</p>
+<ul>
+<li><b>Highlighting, folds and the outline</b> come from mep's own Clojure grammar.</li>
+<li><b>Diagnostics, completion, hover, go-to-definition and rename</b> come from <a href="clojure-lsp.html">mep's own Clojure language server</a>.</li>
+<li><b>=gf=</b> formats the file with mep's own Clojure formatter, in <code>cljfmt</code>'s layout (see <a href="formatting.html">Formatting</a>).</li>
+</ul>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.clojure_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'clojure'</span>, <span class="tok-green">'-M'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- the REPL; the init file is passed as its last argument</span>
+<span class="tok-cyan">mep</span>.opt.clojure_ui_rlwrap = <span class="tok-cyan">true</span>              <span class="tok-comment">-- false: never wrap the console in rlwrap</span>
+<span class="tok-cyan">mep</span>.opt.clojure_ui_info_share = <span class="tok-cyan">0.3</span>
+<span class="tok-cyan">mep</span>.opt.clojure_ui_bottom_share = <span class="tok-cyan">0.4</span>
+<span class="tok-cyan">mep</span>.opt.clojure_ui_bottom_info_share = <span class="tok-cyan">0.4</span></code></pre></div>
+<p>The command has to run a script given as its last argument, as <code>bb</code> and
+<code>clojure -M</code> do -- <code>{'clojure', '-M:dev'}</code> adds a <code>deps.edn</code> alias's
+dependencies, for one.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the shared machinery.</li>
+<li><a href="clojure-lsp.html">The Clojure language server</a> -- diagnostics and the <code>--lint</code> command.</li>
+</ul>
+</body>
+</html>

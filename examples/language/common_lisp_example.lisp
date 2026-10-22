@@ -90,9 +90,9 @@
 
 (defun main ()
   (let ((shapes (handler-bind ((negative-size
-                                 (lambda (c)
-                                   (declare (ignore c))
-                                   (invoke-restart 'use-absolute-value))))
+                                (lambda (c)
+                                  (declare (ignore c))
+                                  (invoke-restart 'use-absolute-value))))
                   (list (make-circle "unit" 1)
                         (make-circle "flipped" -2)
                         (make-instance 'rectangle :name "door" :width 0.9 :height 2.1)))))
@@ -104,7 +104,7 @@
               for i from 0
               for a = (area s)
               when (or (null best) (> a best))
-                do (setf best a where i)
+              do (setf best a where i)
               finally (return (values (nth where shapes) where)))
       (format t "Largest: ~a (#~d)~%" biggest index))
     (maphash (lambda (class n) (format t "~(~a~): ~d~%" class n)) (tally shapes))

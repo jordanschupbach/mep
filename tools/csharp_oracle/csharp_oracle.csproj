@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- mep's C# oracle: Roslyn's own parser and formatter, the copies the .NET
+       SDK ships (no NuGet, works offline). See Program.cs.
+
+       Every Roslyn assembly comes from the SDK's dotnet-format tool folder:
+       it is the only place the SDK ships the Workspaces layer (the
+       formatting engine), and compiler and workspaces must be one build.
+       They are the same commit as the compiler in Roslyn/bincore. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>csharp-oracle</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RoslynDir>$(MSBuildBinPath)/DotnetTools/dotnet-format</RoslynDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.CodeAnalysis">
+      <HintPath>$(RoslynDir)/Microsoft.CodeAnalysis.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp">
+      <HintPath>$(RoslynDir)/Microsoft.CodeAnalysis.CSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis.Workspaces">
+      <HintPath>$(RoslynDir)/Microsoft.CodeAnalysis.Workspaces.dll</HintPath>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp.Workspaces">
+      <HintPath>$(RoslynDir)/Microsoft.CodeAnalysis.CSharp.Workspaces.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

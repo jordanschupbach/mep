@@ -30,6 +30,9 @@ layout rather than accumulating panels.
 | C, C++   | [[file:c-mode.html][C and C++ mode]]          |
 | Common Lisp | [[file:lisp-mode.html][Common Lisp mode]]   |
 | Bash        | [[file:bash-mode.html][Bash mode]]          |
+| Clojure     | [[file:clojure-mode.html][Clojure mode]]    |
+| Crystal     | [[file:crystal-mode.html][Crystal mode]]    |
+| C#          | [[file:csharp-mode.html][C# mode]]          |
 
 Each shares the same shape: a console, a Help tab, and panels specific to
 the language.
@@ -41,7 +44,8 @@ answers depends on where you are:
 
 - in a language UI mode, its own Help tab -- R's =help()=, Python's pydoc,
   =man= for C and C++, =DESCRIBE= for Common Lisp, =help= and =man= for
-  Bash;
+  Bash, =doc= for Clojure, the standard library's doc comments for
+  Crystal, the .NET reference documentation for C#;
 - otherwise, the LSP hover popup, the same one =K= opens.
 
 =<leader>hs= and =:MepGoHelp= do the same thing.

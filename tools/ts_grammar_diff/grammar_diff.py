@@ -41,6 +41,7 @@ import sys
 import tarfile
 import textwrap
 import threading
+import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -155,6 +156,53 @@ LANGUAGES = {
         tokens=['<<EOF\n', '\nEOF\n', '<<-', '$(', '$((', '))', '${', '}', '[[', ']]', '`', 'esac', ';;', 'fi',
                 'done', '=~', '@(', "$'", '\\\n'],
     ),
+    'clojure': dict(
+        globs=['*.clj', '*.cljs', '*.cljc', '*.edn', '*.bb'],
+        # Clojure libraries ship as source in their jars, so the tools'
+        # uberjars are a corpus: Clojure's own core, ClojureScript bits,
+        # clj-kondo, rewrite-clj, babashka's libraries, polylith, jet, cljfmt.
+        sources=[(f'{p}.src', ['*.clj', '*.cljs', '*.cljc', '*.edn', '*.bb'])
+                 for p in ['clojure-lsp', 'babashka-unwrapped', 'clj-kondo', 'polylith', 'jet', 'cljfmt', 'neil']],
+        dedupe=True,
+        # babashka's edamame: a reader that reads without evaluating, with
+        # every reader feature on (reader conditionals, `#=`, any tag).
+        oracle=['bb', str(Path(__file__).resolve().parent / 'clojure_read.clj'), '{}'],
+        tokens=['(', ')', '[', ']', '{', '}', '#{', '#(', '#?(', '#_', '^', '"', '\\', ':', '::', '@', '~@', '`', ';'],
+    ),
+    'crystal': dict(
+        globs=['*.cr'],
+        # The compiler and standard library (and their specs: every corner
+        # of the syntax), then the Crystal programs packaged in nixpkgs (rtfm
+        # vendors its shards, generated GTK bindings among them).
+        sources=[('crystal.src', ['*.cr'])] + [
+            (f'{p}.src', ['*.cr'])
+            for p in ['crystalline', 'ameba', 'ameba-ls', 'mint', 'invidious', 'lucky-cli', 'shards', 'oq',
+                      'crystal2nix', 'icr', 'thicket', 'kakoune-cr', 'gi-crystal', 'collision', 'blahaj', 'rtfm',
+                      'tmuxPlugins.fingers']],
+        dedupe=True,
+        # The formatter parses without type-checking: a syntax error is the
+        # parser's, and nothing else fails before formatting (crystal_check.sh).
+        oracle=['sh', str(Path(__file__).resolve().parent / 'crystal_check.sh'), '{}'],
+        tokens=['<<-EOS\n', '\nEOS\n', '%w(', '%(', '%q[', '%r{', '#{', '{{', '}}', '{%', '%}', ' end', 'do |x|',
+                ' ? ', ' : ', '/', '@[', '->', '::', "'"],
+    ),
+    'c_sharp': dict(
+        globs=['*.cs'],
+        # Roslyn's own compiler, workspaces and tests (every corner of the
+        # syntax, C# 13), then C# applications nixpkgs packages: a media
+        # server, games, a web app, a decompiler, a wallet, the OmniSharp
+        # language server.
+        sources=[('roslyn.src', ['src/Compilers/*.cs', 'src/Analyzers/*.cs'])] + [
+            (f'{p}.src', ['*.cs'])
+            for p in ['jellyfin', 'ArchiSteamFarm', 'osu-lazer', 'openra', 'pinta', 'omnisharp-roslyn', 'ilspycmd',
+                      'btcpayserver', 'depotdownloader', 'wasabibackend', 'inklecate', 'scarab']],
+        dedupe=True,
+        # Roslyn's parser, the copy the .NET SDK ships (tools/csharp_oracle;
+        # build it with `just csharp-oracle`): exit 1 on a syntax error.
+        oracle=['dotnet', str(REPO / 'build' / 'csharp-oracle' / 'csharp-oracle.dll'), 'check', '{}'],
+        tokens=['{', '}', '(', ')', ';', '<', '>', '=>', '$"', '@"', '"""', '#if', '#endif', '?', '?.', ':',
+                'where', 'async ', 'await ', '[', ']', 'new ', 'switch'],
+    ),
     'org': dict(
         globs=['*.org'],
         # Emacs's Org manual and friends, and four Org packages' docs and
@@ -259,6 +307,21 @@ def unpack(store_path, patterns, dest):
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
+    if zipfile.is_zipfile(src):
+        # A jar: Clojure libraries ship as source inside them. Regular
+        # files only, and no name that would land outside dest.
+        with zipfile.ZipFile(src) as z:
+            for info in z.infolist():
+                name = info.filename
+                if info.is_dir() or not matches(name, patterns):
+                    continue
+                parts = Path(name).parts
+                if Path(name).is_absolute() or '..' in parts or (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    continue
+                out = dest.joinpath(*parts)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(z.read(info))
+        return [str(p) for p in sorted(dest.rglob('*')) if p.is_file()]
     with tarfile.open(src) as tar:
         members = [m for m in tar.getmembers() if m.isfile() and matches(m.name, patterns)]
         tar.extractall(dest, members=members, filter='data')
@@ -325,6 +388,16 @@ def cmd_corpus(args):
         print(f'{attr}: {len(got)} files')
         files += got
     files = sorted(set(files))
+    if spec.get('dedupe'):
+        # The same library inside several jars: keep one copy of each text.
+        seen, kept = set(), []
+        for f in files:
+            digest = hashlib.sha256(Path(f).read_bytes()).hexdigest()
+            if digest not in seen:
+                seen.add(digest)
+                kept.append(f)
+        print(f'{len(files) - len(kept)} duplicate files dropped')
+        files = kept
     out = corpus_list(args.lang)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(''.join(f + '\n' for f in files))

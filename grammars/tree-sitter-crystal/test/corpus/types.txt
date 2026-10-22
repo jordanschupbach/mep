@@ -1,0 +1,25 @@
+==================
+type declarations: generics, unions, nilable, pointers, procs, tuples
+==================
+
+x : Array(Int32) = [] of Int32
+y : Int32 | Nil = nil
+z : String? = nil
+p : Pointer(UInt8)* = Pointer(UInt8).null
+alias Callback = Int32, String -> Bool
+t : {Int32, String} = {1, "a"}
+n : Int32.class = Int32
+s : StaticArray(UInt8, 4) = StaticArray(UInt8, 4).new(0)
+
+---
+
+(expressions
+  (type_declaration var: (identifier) type: (generic_instance_type (constant) params: (param_list (constant))) value: (array of: (constant)))
+  (type_declaration var: (identifier) type: (union_type (constant) (constant)) value: (nil))
+  (type_declaration var: (identifier) type: (nilable_type (constant)) value: (nil))
+  (type_declaration var: (identifier) type: (pointer_type (generic_instance_type (constant) params: (param_list (constant)))) value: (call receiver: (generic_instance_type (constant) params: (param_list (constant))) method: (identifier)))
+  (alias name: (constant) type: (proc_type (constant) (constant) return: (constant)))
+  (type_declaration var: (identifier) type: (tuple_type (constant) (constant)) value: (tuple (integer) (string (literal_content))))
+  (type_declaration var: (identifier) type: (class_type (constant)) value: (constant))
+  (type_declaration var: (identifier) type: (generic_instance_type (constant) params: (param_list (constant) (integer))) value: (call receiver: (generic_instance_type (constant) params: (param_list (constant) (integer))) method: (identifier) arguments: (argument_list (integer))))
+)

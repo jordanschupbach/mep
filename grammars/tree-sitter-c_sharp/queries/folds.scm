@@ -1,0 +1,43 @@
+; Fold ranges for mep's C# grammar: bodies of namespaces, types and members,
+; blocks, multi-line initializers and expressions, `#if` and `#region`.
+[
+  (namespace_declaration)
+  (class_declaration)
+  (struct_declaration)
+  (interface_declaration)
+  (enum_declaration)
+  (record_declaration)
+  (method_declaration)
+  (constructor_declaration)
+  (destructor_declaration)
+  (operator_declaration)
+  (conversion_operator_declaration)
+  (property_declaration)
+  (indexer_declaration)
+  (event_declaration)
+  (local_function_statement)
+  (accessor_declaration)
+  (block)
+  (switch_body)
+  (switch_section)
+  (switch_expression)
+  (initializer_expression)
+  (anonymous_object_creation_expression)
+  (collection_expression)
+  (lambda_expression)
+  (anonymous_method_expression)
+  (query_expression)
+  (argument_list)
+  (parameter_list)
+  (attribute_list)
+  (preproc_if)
+  (preproc_elif)
+  (preproc_else)
+  (raw_string_literal)
+  (verbatim_string_literal)
+  (interpolated_string_expression)
+  (comment)
+] @fold
+
+; Consecutive `using` directives fold together.
+(using_directive)+ @fold

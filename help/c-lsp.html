@@ -151,6 +151,13 @@ library, or one declared in another file.</p>
 enumeration constants are the document outline, so <a href="structure-symbols.html">the symbol views</a> work
 from the server. Folding covers every braced block, each <code>#if</code> group, the
 <code>#include</code> block at the top, and runs of comment lines.</p>
+<h1>Formatting</h1>
+<p><code>textDocument/formatting</code> is answered with mep's own C formatter -- the
+same one <code>gf</code> runs, clang-format's LLVM layout without clang-format (see
+<a href="formatting.html">Formatting</a>) -- as one edit over the lines that
+changed. Like clangd, the client's tab settings are not the layout's:
+LLVM style indents by two spaces. A file the formatter refuses gets no
+edits.</p>
 <h1>What it does not do</h1>
 <ul>
 <li><b>No preprocessing.</b> See the opening sections.</li>
@@ -158,7 +165,6 @@ from the server. Folding covers every braced block, each <code>#if</code> group,
 <li><b>One file plus its neighbours is the whole world.</b> =#include "x.h"= next to the file is read; <code>#include &lt;x.h&gt;</code> is known only if it is one of the standard or POSIX headers in the compiled-in table.</li>
 <li><b>No project-wide rename or references.</b> Both stop at the file's edge, which is why a rename that cannot see the other users is refused rather than half-done.</li>
 <li><b>No C++.</b> The C++ filetypes belong to mep's own C++ server, <code>.h</code> among them -- see <a href="cpp-lsp.html">The C++ language server</a>. A project whose headers are all C can hand <code>h</code> over with <code>mep.lsp_servers.c_ls.filetypes = {'c', 'h'}</code>.</li>
-<li><b>No formatting.</b> <code>mep.lsp_format</code> falls through to the configured formatter for C; the server does not claim the capability.</li>
 </ul>
 <h1>Turning it off</h1>
 <p>It is an ordinary entry in the server registry, so <code>init.lua</code> can drop

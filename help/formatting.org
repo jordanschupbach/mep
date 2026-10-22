@@ -17,17 +17,24 @@ stale copy from disk.
 | Python               | *built in* -- mep's own, nothing to install |
 | R                    | *built in* -- mep's own, nothing to install |
 | Maxima               | *built in* -- mep's own, nothing to install |
-| C                    | =clang-format=                            |
+| Shell (=.sh=, =.bash=) | *built in* -- mep's own, nothing to install |
+| Clojure (=.clj=, =.cljs=, =.cljc=, =.edn=, ...) | *built in* -- mep's own, nothing to install |
+| C                    | *built in* -- mep's own, nothing to install |
+| Common Lisp (=.lisp=, =.lsp=, =.cl=, =.asd=) | *built in* -- mep's own, nothing to install |
+| Crystal (=.cr=)      | *built in* -- mep's own, nothing to install |
+| C# (=.cs=)           | *built in* -- mep's own, nothing to install |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
 That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.
 
-C++, Python, R and Maxima need nothing installed at all: all four
-formatters are built into mep, so =gf= on a =.cpp=, =.h=, =.py=, =.R= or
-=.mac= buffer works on a machine with no =clang-format=, no =black=, no
-=air= and no Python, R or Maxima toolchain, and answers instantly because
+C, C++, Python, R, Maxima, shell scripts, Clojure, Common Lisp, Crystal
+and C# need nothing installed at all: all ten formatters are built into
+mep, so =gf= on a =.c=, =.cpp=, =.h=, =.py=, =.R=, =.mac=, =.sh=, =.clj=,
+=.lisp=, =.cr= or =.cs= buffer works on a machine with no =clang-format=,
+no =black=, no =air=, no =shfmt=, no =cljfmt=, no Emacs and no Python, R,
+Maxima, JVM, Lisp, Crystal or .NET toolchain, and answers instantly because
 nothing is spawned.
 
 * Org code blocks
@@ -177,6 +184,116 @@ argv one:
 mep.format_languages.cpp = {'clang-format', '--assume-filename={}'}
 #+end_src
 
+* The C formatter
+
+C files are laid out exactly the way =clang-format= lays them out in its
+default LLVM style, by mep itself -- no =clang-format= binary, no libclang.
+It is a port of =clang-format='s own pipeline, cut down to C: the same
+lexer, the same parser into lines, the same token annotation, the same
+penalty-based search for where to break a long line, the same whitespace
+pass. It is also what [[file:c-lsp.html][mep's C language server]] formats
+with.
+
+#+begin_src c
+#include <stdio.h>
+struct point{int x;int y;};
+static int sum(const struct point*pts,int n,int scale){
+int total=0;
+for(int i=0;i<n;i++)total+=pts[i].x*scale+pts[i].y;
+switch(scale){case 0:return 0;default:break;}
+return total;}
+#define SQUARE(x) ((x)*(x)) // squares x
+#+end_src
+
+becomes
+
+#+begin_src c
+#include <stdio.h>
+struct point {
+  int x;
+  int y;
+};
+static int sum(const struct point *pts, int n, int scale) {
+  int total = 0;
+  for (int i = 0; i < n; i++)
+    total += pts[i].x * scale + pts[i].y;
+  switch (scale) {
+  case 0:
+    return 0;
+  default:
+    break;
+  }
+  return total;
+}
+#define SQUARE(x) ((x) * (x)) // squares x
+#+end_src
+
+Two-space indents, an 80-column margin, =int *p= with the star on the name,
+braces on the line that opens them, =case= labels at the =switch='s own
+indent, a short function kept on one line, continuation lines aligned after
+the open bracket, runs of trailing comments lined up, the backslashes of a
+multi-line =#define= lined up at the margin, comments that run past it
+reflowed and long strings split. Every =#if= / =#else= branch is laid out,
+not just the first.
+
+On the 841 C files of mep's corpus that =clang-format= finishes (Lua,
+CPython, SQLite's shell, tree-sitter), *every one* comes out byte-identical
+to =clang-format --style="\{BasedOnStyle: LLVM, SortIncludes: Never\}"= --
+about 700,000 lines. The one difference by design:
+
+- *=#include= lines are never reordered.* LLVM style sorts them within each
+  block; in C the order of includes can matter.
+
+Like =clang-format=, a handful of files only settle on a second =gf= (8 of
+the 841 -- the same 8 for both, with the same second result).
+
+** It will not rewrite code it cannot prove it preserved
+
+The result is lexed again and compared with the input token for token:
+only whitespace may differ, plus what reflowing a comment or splitting a
+string changes -- the words of every comment and the bytes of every string
+stay the same, in order -- and no token may move into or out of a
+preprocessor directive. A =#define='s name keeps its =(= attached or
+detached, since that space decides whether the macro takes arguments. If
+the check fails, =gf= leaves the buffer exactly as it was and names the
+line.
+
+Each combination of =#if= branches is a pass over the whole file, so a file
+with very many of them costs that many passes. =clang-format= has the same
+cost and no limit: on SQLite's 9 MB amalgamation (=sqlite3.c=) it runs for
+minutes and takes tens of gigabytes. mep counts the combinations on the
+first pass and refuses up front, with a message, when the file is too large
+for them; anything up to about a megabyte with a hundred-odd combinations
+(SQLite's =shell.c=) is still formatted.
+
+** Options
+
+#+begin_src lua
+mep.format_languages.c.width = 100        -- ColumnLimit, default 80
+mep.format_languages.c.indent = 4         -- IndentWidth, default 2
+mep.format_languages.c.tabs = true        -- UseTab: ForIndentation; a tab is
+                                          -- `indent` columns, 8 when unset
+mep.format_languages.c.case_indent = true -- IndentCaseLabels
+#+end_src
+
+A project's own =.clang-format= is not read. To use =clang-format= itself
+(and with it the project's =.clang-format=), replace the entry with an
+ordinary argv one:
+
+#+begin_src lua
+mep.format_languages.c = {'clang-format', '--assume-filename={}'}
+#+end_src
+
+=.h= files go to the C++ formatter, which is what a header is in a C++
+project; in a C project, send them here instead:
+
+#+begin_src lua
+mep.format_languages.h = mep.format_languages.c
+#+end_src
+
+The port follows =clang-format= (part of LLVM, Apache License 2.0 with LLVM
+exceptions); =src/c_format_internal.h= carries the attribution.
+
 * The Python formatter
 
 Python is formatted by mep itself. Nothing is spawned, nothing has to be on
@@ -272,6 +389,399 @@ than layout: a statement's terminator (=;= displays the result, =$= does
 not), a string's escapes, and the spelling of a loop clause (=for i : 1=
 and =for i from 1= are the same loop, and each is left as it was written).
 
+* The Bash formatter
+
+Shell scripts are laid out the way =shfmt= lays them out, by mep itself:
+the same parser mep's [[file:bash-lsp.html][Bash language server]] uses
+reads the script, and the tree is printed back.
+
+#+begin_src sh
+greet () {
+  local name=$1
+    if [ -n "$name" ]
+    then
+  echo "hi $name";
+  fi
+}
+for x in a b;do greet $x;done
+#+end_src
+
+becomes
+
+#+begin_src sh
+greet() {
+  local name=$1
+  if [ -n "$name" ]; then
+    echo "hi $name"
+  fi
+}
+for x in a b; do greet $x; done
+#+end_src
+
+- =then= and =do= go on the line that opens the block, one statement per
+  line inside it; a block written on one line with a single statement in
+  each body (=[[ -f x ]] || { echo no; exit 1; }= has two, so it opens up)
+  stays on one line.
+- Single spaces between words and around =|=, =&&= and =;;=; =name()=;
+  redirections tight to their target (=>file=, =2>&1=), and moved after the
+  arguments unless written right after the command name, as =shfmt= does.
+- Arithmetic re-spaced: =$((a + 1))=, =((i++))=, =for ((i = 0; i < n; i++))=.
+- Backquotes become =$(...)=.
+- A line broken after =&&=, =||= or =|=, or with a backslash inside a
+  command, stays broken there, one level in.
+- Comments stay where they are, a run of trailing comments is lined up, and
+  at most one blank line is kept between statements.
+- Here-document bodies are kept byte for byte (a =<<-= body, whose leading
+  tabs bash strips, is re-indented when the file indents with tabs).
+
+The indent unit is the file's own -- tabs, or the width of spaces its
+blocks are indented by -- and so is whether =case= patterns sit a level
+inside the =case=. A file with nothing indented yet gets tabs.
+
+On the 3,432 scripts of mep's Bash test corpus (bash-completion, git's test
+suite, bash's examples and tests, every =.sh= in nixpkgs), with tabs, 96% of
+files come out byte-identical to =shfmt='s output and 99.9% of lines. The
+rest are deliberate:
+
+- *Array subscripts are left as written.* =shfmt= re-spaces =a[i+1]= as
+  arithmetic, which for an associative array changes the key:
+  =[x86_64-linux]= becomes =[x86_64 - linux]=. nixpkgs has update scripts
+  that =shfmt= breaks that way.
+- *=${x/pat}= is not rewritten* to =${x/pat/}=, and nothing inside =${...}=
+  is re-spaced.
+- *Here-document bodies are not formatted*, not even the =$(...)= in them.
+- *Backquotes holding nested backquotes, or written right after a =$=, stay
+  backquotes.*
+
+** It will not rewrite a script it cannot prove it preserved
+
+The result is parsed again and compared with the original, command by
+command and word by word, comments and here-document bodies included; only
+the layout may differ. A script that does not parse, or a layout that would
+change anything else, leaves the buffer exactly as it was and says why --
+with the line, for a syntax error.
+
+** Options
+
+#+begin_src lua
+mep.format_languages.sh.indent = 2              -- two spaces, whatever the file uses ('\t' for tabs)
+mep.format_languages.sh.case_indent = true      -- case patterns a level inside `case`
+#+end_src
+
+To use =shfmt= instead:
+
+#+begin_src lua
+mep.format_languages.sh = {'shfmt', '--filename', '{}'}
+mep.format_languages.bash = mep.format_languages.sh
+#+end_src
+
+* The Clojure formatter
+
+Clojure files are laid out the way =cljfmt= lays them out with its default
+options, by mep itself -- no JVM, no =cljfmt= binary. It also runs for
+=.cljs=, =.cljc=, =.cljd=, =.edn= and =.bb= files, and is what
+[[file:clojure-lsp.html][mep's Clojure language server]] formats with.
+
+#+begin_src clojure
+(defn greet [name]
+(let [msg (str "hi " name)
+]
+( println msg )
+))
+#+end_src
+
+becomes
+
+#+begin_src clojure
+(defn greet [name]
+  (let [msg (str "hi " name)]
+    (println msg)))
+#+end_src
+
+- Indentation is recomputed from the forms: a call's arguments line up
+  under its first argument (or sit one column in when none is on the
+  head's line); the body of =defn=, =let=, =when=, =fn=, =cond->=,
+  =deftype=... sits two columns in, as =cljfmt='s indentation table says,
+  and so does that of any =def...= or =with-...= form; a collection's
+  elements line up under its first. Top-level forms start at column 0.
+- No space just inside brackets -- =( foo )= is =(foo)= -- and a closing
+  bracket left alone on its line joins the line before it.
+- One space between forms that touch, =(foo(bar))= becoming =(foo (bar))=.
+- No trailing whitespace; runs of blank lines become one.
+
+Like =cljfmt=, it never breaks or joins lines otherwise, never touches the
+text of a string or a comment, and leaves a line that starts with a
+comment where it is. It does not wrap, so it has no =width=.
+
+On the 1,772 files of mep's Clojure corpus that read (Clojure's and
+ClojureScript's own source, clj-kondo, clojure-lsp, babashka,
+rewrite-clj...), 97% come out byte-identical to =cljfmt='s output and
+99.95% of lines. The rest are =cljfmt='s own corners -- the indentation of
+some forms inside =#?(...)= reader conditionals and syntax-quoted
+templates, lines holding nothing but commas.
+
+** It will not rewrite a file it cannot prove it preserved
+
+The result is read again and its tokens compared with the input's; only
+whitespace may differ. A file that does not read (an unclosed paren, an odd
+map) leaves the buffer exactly as it was, and =gf= says why, with the line.
+
+** Using cljfmt instead
+
+#+begin_src lua
+mep.format_languages.clj = {'cljfmt', 'fix', '-'}
+for _, e in ipairs({'cljs', 'cljc', 'cljd', 'edn', 'bb'}) do
+  mep.format_languages[e] = mep.format_languages.clj
+end
+#+end_src
+
+* The Common Lisp formatter
+
+Common Lisp has no =cljfmt= or =black=; the layout every Lisp programmer's
+tools agree on is Emacs's -- =lisp-mode= with =common-lisp-indent-function=,
+what SLIME and Sly set up. mep computes that indentation itself, rule for
+rule, with no Emacs and no Lisp image. It runs for =.lisp=, =.lsp=, =.cl=
+and =.asd= files, the Enter key's auto-indent in those buffers uses the same
+rules, and it is what
+[[file:lisp-lsp.html][mep's Common Lisp language server]] formats with.
+
+#+begin_src lisp
+(defun greet (name)
+(let ((msg (format nil "hi ~a" name)))
+  ( print msg )
+    )
+)
+(defmacro with-thing ((var) &body body)
+`(let ((,var 1))
+,@body))
+#+end_src
+
+becomes
+
+#+begin_src lisp
+(defun greet (name)
+  (let ((msg (format nil "hi ~a" name)))
+    (print msg)))
+(defmacro with-thing ((var) &body body)
+  `(let ((,var 1))
+     ,@body))
+#+end_src
+
+- Indentation as =common-lisp-indent-function= computes it: the specs of
+  =defun=, =let=, =flet=, =case=, =destructuring-bind=, =handler-case=,
+  =loop=, =tagbody=, =do=...; any =def...= form indented like =defun= and
+  any =with-...= or =do-...= form like a body form; package prefixes
+  ignored; a call's arguments under the first one, a quoted list's elements
+  under its first, a keyword under the keyword above it.
+- No space just inside parens -- =( foo )= is =(foo)= -- and a close paren
+  alone on its line joins the line before, unless that line ends in a =;=
+  comment or the paren carries a comment of its own.
+- No trailing whitespace, at most two blank lines in a row, a final newline
+  and no blank lines after it; indentation is spaces.
+
+The text of strings, =|...|= symbols, comments, character literals such as
+=#\(= and =#+feature= expressions is never touched, and lines are never
+broken or joined otherwise. It does not wrap, so it has no =width=.
+
+On the 1,521 files of mep's Common Lisp corpus (SBCL and the libraries
+packaged with it) that Emacs indents, 1,519 come out byte-identical to
+Emacs's =indent-region= with the same whitespace rules -- every line of
+701,176 -- and each is a fixed point. Where it differs from Emacs, on
+purpose: a line inside a =#|...|#= comment keeps its indentation (Emacs
+re-indents a block comment as code); a line holding only a single-=;=
+comment keeps its column (Emacs sends it to column 40); and a =defmethod='s
+qualifiers are counted from the form itself, where Emacs, on a file not yet
+indented, can find the wrong enclosing form and indent the body as the
+lambda list.
+
+** It will not rewrite a file it cannot prove it preserved
+
+The result is read again and its tokens compared with the input's; only
+whitespace may differ. A file that does not read -- an unclosed paren or
+string -- leaves the buffer exactly as it was, and =gf= says why, with the
+line.
+
+** Options
+
+Your own macros indent as calls until told otherwise. =indent= adds or
+replaces specs, keyed by the operator's lower-case name without a package:
+a number of distinguished arguments before a body, a cl-indent list, or
+the name of an operator to indent like.
+
+#+begin_src lua
+mep.format_languages.lisp.indent = {
+  ['with-connection'] = '1',          -- (with-connection (c db) body...)
+  ['define-route'] = 'defun',
+  ['my-case'] = 'case',
+  ['do-rows'] = '(4 &body)',
+}
+#+end_src
+
+* The Crystal formatter
+
+Crystal has one layout -- =crystal tool format='s, which takes no options
+-- and mep produces it itself, with no =crystal= binary: the formatter is a
+port of the compiler's own (=formatter.cr=, Crystal 1.19), running on mep's
+port of the compiler's lexer and parser. It is also what
+[[file:crystal-lsp.html][mep's Crystal language server]] formats with.
+
+#+begin_src crystal
+class Greeter
+def initialize(@name : String)
+end
+def greet( times=1 )
+times.times{|i| puts "hi #{@name}" }
+end
+end
+#+end_src
+
+becomes
+
+#+begin_src crystal
+class Greeter
+  def initialize(@name : String)
+  end
+
+  def greet(times = 1)
+    times.times { |i| puts "hi #{@name}" }
+  end
+end
+#+end_src
+
+Everything =crystal tool format= does, it does: two-space indentation,
+spacing around operators, =,= and block braces, one blank line between
+definitions, =when ... then= rows, ==>= columns in a hash literal and
+trailing comments lined up, heredoc bodies moved with their start, the
+=```crystal= examples inside doc comments formatted too, and macro bodies
+formatted where the code between the tags is Crystal on its own.
+
+All 1,128 single-line cases of the compiler's formatter spec give the
+compiler's answer. On mep's Crystal corpus (4,602 files: the compiler and
+standard library, crystalline, ameba, invidious, mint, shards and the other
+Crystal projects nixpkgs packages), every file comes out byte-identical to
+=crystal tool format=, and so do 4,454 of 4,456 copies with their
+indentation and spacing scrambled; formatting twice changes nothing.
+
+The one difference is deliberate: a string literal that spans lines keeps
+the trailing spaces of its lines. They are part of the string's value, and
+=crystal tool format= strips them anyway, which changes the program.
+
+** It will not rewrite a file it cannot prove it preserved
+
+The result is parsed again and its tree compared with the input's, node
+for node, and its comments with the input's, in order. A file that does not
+parse leaves the buffer as it was, and =gf= gives the compiler's own syntax
+error, worded the same, with its line.
+
+** Using crystal tool format instead
+
+#+begin_src lua
+mep.format_languages.cr = {'crystal', 'tool', 'format', '-'}
+#+end_src
+
+* The C# formatter
+
+mep lays C# out the way =dotnet format whitespace= does with no
+=.editorconfig= -- four-space indentation, braces on their own lines, its
+spacing rules -- and it does so itself, with no .NET: the formatter is a
+port of Roslyn's own formatting engine (the C# formatting rules and the
+engine that applies them, at the commit the .NET 10 SDK's =dotnet format=
+was built from), running on mep's port of Roslyn's parser, whose trees are
+Roslyn's own. It is also what
+[[file:csharp-lsp.html][mep's C# language server]] formats with.
+
+#+begin_src csharp
+namespace Shapes{
+public class Polygon {
+  int sides=3;
+public  int Sides{get{return sides;}set{sides=value;}}
+public double Angle( ){
+if(sides<3){throw new System.ArgumentException("too few sides");}
+    return 180.0*(sides-2)/sides;
+    }
+}
+}
+#+end_src
+
+becomes
+
+#+begin_src csharp
+namespace Shapes
+{
+    public class Polygon
+    {
+        int sides = 3;
+        public int Sides { get { return sides; } set { sides = value; } }
+        public double Angle()
+        {
+            if (sides < 3) { throw new System.ArgumentException("too few sides"); }
+            return 180.0 * (sides - 2) / sides;
+        }
+    }
+}
+#+end_src
+
+Like Roslyn's, it fixes whitespace and indentation and nothing else: it
+moves braces of types, members and blocks onto their own lines, but keeps a
+block, property or statement the author wrote on one line on one line; it
+spaces operators, commas, casts and keywords, indents blocks, switch
+sections, embedded statements, lambdas, initializers, collection
+expressions, patterns and query clauses, re-indents comments, doc comments
+and =#region= lines with the code, puts other directives at column 0, and
+leaves =#pragma warning disable format= regions alone. It never joins or
+breaks lines to fit a width, and it keeps the user's own indentation of a
+continued argument or expression.
+
+All 324 of Roslyn's own formatting tests that are a plain input and
+expected text (=AssertFormatAsync=, default options) give Roslyn's answer.
+On mep's C# corpus (17,828 files: Roslyn's compilers, analyzers and tests,
+jellyfin, osu!, OpenRA, Pinta, ILSpy, ArchiSteamFarm, OmniSharp and more),
+every file comes out byte-identical to =dotnet format whitespace= but one,
+and so do all 17,828 copies with their indentation and spacing scrambled.
+Formatting twice changes nothing on every file of the corpus; on 613 of the
+scrambled copies a second pass moves a continued argument's contents again
+-- exactly as Roslyn's own second pass does.
+
+Like =dotnet format=, a file with syntax errors is still formatted (the
+space next to a missing token is left as it is), and a byte-order mark is
+kept. The one difference is deliberate: a file that is not valid UTF-8 is
+refused -- =dotnet format= reads it with replacement characters and writes
+them back, losing the original bytes (the one corpus file is Shift-JIS).
+
+** It will not rewrite a file it cannot prove it preserved
+
+The result is parsed again and compared with the input's tree: every node
+and token, the same syntax errors, the same comments and directives up to
+whitespace. If anything else differs, the buffer is left as it was and =gf=
+says where.
+
+** Options
+
+#+begin_src lua
+mep.format_languages.cs.indent = 2      -- indent_size, default 4
+mep.format_languages.cs.tabs = true     -- indent_style = tab (indent columns wide)
+#+end_src
+
+These are =dotnet format='s =indent_size= and =indent_style=; with them set
+the output still matches =dotnet format= given the same =.editorconfig=.
+The other Roslyn options (=csharp_new_line_before_open_brace= and the rest)
+are at their defaults: a project's =.editorconfig= is not read.
+
+** Using dotnet format instead
+
+=dotnet format= formats files in a folder rather than a stream, so it runs
+in file mode on a copy:
+
+#+begin_src lua
+mep.format_languages.cs = {'sh', '-c',
+  'd=${XDG_CACHE_HOME:-$HOME/.cache}/mep/dotnet-format && mkdir -p "$d" && '
+    .. 'cp "$1" "$d/buffer.cs" && dotnet format whitespace --folder "$d" --include buffer.cs && '
+    .. 'cp "$d/buffer.cs" "$1"',
+  'sh', '{}', mode = 'file'}
+#+end_src
+
+An =.editorconfig= in that directory is what it reads its options from.
+
 * The R formatter
 
 mep's R formatter follows the tidyverse style: two-space indent, spaces
@@ -338,9 +848,12 @@ nearest =air.toml= rather than from =width= above.
 * Line width
 
 The built-in formatters wrap at *100 columns* for C++, *88* for Python and
-*80* for R -- =width= in each one's table entry, and the subsections above
-change it. =clang-format=, if you put it back for C or C++, takes its margin
-from the project's own =.clang-format= instead.
+*80* for C and R -- =width= in each one's table entry, and the subsections
+above change it. The Bash one does not wrap: like =shfmt=, it keeps a
+script's own line breaks, and so do the Clojure, Common Lisp, Crystal and
+C# ones.
+=clang-format=, if you put it back for C or C++, takes its margin from the
+project's own =.clang-format= instead.
 
 * Adding one
 
@@ -360,8 +873,8 @@ Three modes:
   edits in place.
 - *builtin*: no program at all -- =\{builtin = 'format_python', name = '...',
   width = 88\}= names a =mep.*= function taking the text and a width and
-  returning the formatted text, which runs in-process. This is how the C++,
-  Python and R entries are wired.
+  returning the formatted text, which runs in-process. This is how every
+  built-in entry above is wired.
 
 Entries are looked up by *bare extension*, so every extension of a language
 needs its own key -- which is why the built-in table aliases =.h=, =.cc=,

@@ -3,6 +3,7 @@
 #include "crystal_lsp_analysis.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <functional>
 
 #include "crystal_parser.h"

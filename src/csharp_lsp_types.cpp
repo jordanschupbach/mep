@@ -3,6 +3,7 @@
 // expressions as far as a reader can see them. See csharp_lsp_analysis.h.
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 

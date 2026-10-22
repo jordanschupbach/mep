@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 192 =<leader>= sequences registered at startup. Press
+All 193 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -41,6 +41,7 @@ the features live.
 | =<leader>ai= | AI: context picker | [[file:ai-commands.html][Ask the model]] |
 | =<leader>ak= | AI: API key command | [[file:ai-commands.html][Ask the model]] |
 | =<leader>al= | Toggle AI agents pane | [[file:ai-agents.html][The AI Agents sidebar]] |
+| =<leader>as= | APL symbols | -- |
 | =<leader>ax= | AI: toggle API use on/off | [[file:ai-commands.html][Ask the model]] |
 | =<leader>bB= | Toggle buffers sidebar | [[file:sidebars.html][Sidebars]] |
 | =<leader>bO= | Browse (external window) | [[file:browser.html][The browser pane]] |

@@ -46,6 +46,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <unordered_set>
 #include <fstream>
 #include <functional>
 #include <iterator>
@@ -5348,6 +5349,16 @@ int l_org_table_wrap_scan(lua_State *L) {
     return 0;
 }
 
+/**
+ * @brief Implements mep.org_table_wrap_stale(): whether a table's inline maths rendered since its layout was planned.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the flag).
+ */
+int l_org_table_wrap_stale(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->OrgTableWrapStale());
+    return 1;
+}
+
 // mep.md_toggle_checkbox()/mep.md_fold()/mep.md_table_align()/
 // mep.md_table_insert_row()/mep.md_table_insert_col(): kBuiltinMarkdown's
 // (main.cpp) checkbox toggle, fold computation, and GFM table commands --
@@ -5690,10 +5701,12 @@ int l_insert_typed_count(lua_State *L) {
 // hand (a local mep_ts_resolve_hl + mep.deco_add). `captures` is
 // mep.ts_captures's own 1-indexed output shape; `row_offset` is added
 // post-1-indexing (0 for a top-level call, a block's header row for an
-// org-embedded one).
+// org-embedded one). An optional `priority` (default 0) goes on every
+// decoration: org's src blocks are drawn over the document's own layer,
+// which lives in another namespace.
 /**
- * @brief Implements mep.ts_apply_captures(ns, captures, hl_map, row_offset): resolves each Treesitter capture to a highlight group via hl_map and adds a decoration for it.
- * @param L Lua state; arg 1 is the namespace id, arg 2 an array of capture spans (mep.ts_captures's shape), arg 3 a capture-name-to-highlight-group table, optional arg 4 a row offset added to each capture's row (default 0).
+ * @brief Implements mep.ts_apply_captures(ns, captures, hl_map[, row_offset[, priority]]): resolves each Treesitter capture to a highlight group via hl_map and adds a decoration for it.
+ * @param L Lua state; arg 1 is the namespace id, arg 2 an array of capture spans (mep.ts_captures's shape), arg 3 a capture-name-to-highlight-group table, optional arg 4 a row offset added to each capture's row (default 0), optional arg 5 the decorations' priority (default 0).
  * @return Number of values pushed (0).
  */
 int l_ts_apply_captures(lua_State *L) {
@@ -5701,6 +5714,7 @@ int l_ts_apply_captures(lua_State *L) {
     luaL_checktype(L, 2, LUA_TTABLE);
     luaL_checktype(L, 3, LUA_TTABLE);
     int row_offset = static_cast<int>(luaL_optinteger(L, 4, 0));
+    const int priority = static_cast<int>(luaL_optinteger(L, 5, 0));
 
     std::unordered_map<std::string, std::string> hl_map;
     lua_pushnil(L);
@@ -5742,6 +5756,7 @@ int l_ts_apply_captures(lua_State *L) {
             d.col_start = col_start;
             d.col_end = col_end;
             d.hl_group = it->second;
+            d.priority = priority;
             ed->AddDecoration(ns, d);
         }
     }
@@ -5852,6 +5867,108 @@ int l_get_lines(lua_State *L) {
         lua_pushlstring(L, l.data(), l.size());
         lua_rawseti(L, -2, i - first + 1);
     }
+    return 1;
+}
+
+namespace {
+/** @brief Removes every non-overlapping occurrence of `pat`, left to right (Lua's gsub(pat, '') for a literal). */
+std::string EraseAll(const std::string &s, const char *pat) {
+    const size_t n = std::strlen(pat);
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size();) {
+        if (s.compare(i, n, pat) == 0) {
+            i += n;
+            continue;
+        }
+        out += s[i++];
+    }
+    return out;
+}
+}  // namespace
+
+/**
+ * @brief Implements mep.in_mathzone(row, col): whether the text before a 1-indexed position is inside LaTeX maths.
+ * @param L Lua state; arg 1 the 1-indexed row, arg 2 the 1-indexed column (bytes before it are read).
+ * @return Number of values pushed (1: the flag).
+ *
+ * kBuiltinMathSnippets' mep_in_mathzone, rule for rule (its comment says
+ * what each rule is for): up to 500 rows back, a blank line or headline
+ * closes `$`/`\(`/`\[`, a maths environment's depth carries across them,
+ * `\\` and `\$` are dropped first. In Lua it walked every character of
+ * those rows, up to three times a keystroke, which under a table full of
+ * formulas was a large part of what typing cost.
+ */
+int l_in_mathzone(lua_State *L) {
+    static const std::unordered_set<std::string> kEnvs = {
+        "equation", "align",   "alignat", "gather",  "multline", "flalign",     "math",  "displaymath", "array",   "cases",
+        "matrix",   "pmatrix", "bmatrix", "Bmatrix", "vmatrix",  "Vmatrix",     "smallmatrix", "split", "aligned", "gathered"};
+    const int row = static_cast<int>(luaL_checkinteger(L, 1));
+    const lua_Integer col = luaL_checkinteger(L, 2);
+    Editor *ed = GetEditor(L);
+    bool inl = false, display = false;
+    int depth = 0;
+    auto alpha = [](char c) { return std::isalpha(static_cast<unsigned char>(c)) != 0; };
+    for (int r = std::max(1, row - 500); r <= row; r++) {
+        std::string line = ed->GetLineForLua(r - 1);
+        if (r == row) line = col - 1 <= 0 ? std::string() : line.substr(0, static_cast<size_t>(std::min<lua_Integer>(col - 1, static_cast<lua_Integer>(line.size()))));
+        size_t k = 0;
+        while (k < line.size() && std::isspace(static_cast<unsigned char>(line[k]))) k++;
+        size_t stars = 0;
+        while (stars < line.size() && line[stars] == '*') stars++;
+        if (k == line.size() || (stars > 0 && stars < line.size() && std::isspace(static_cast<unsigned char>(line[stars])))) {
+            inl = false;
+            display = false;
+        }
+        const std::string text = EraseAll(EraseAll(line, "\\\\"), "\\$");
+        const size_t n = text.size();
+        for (size_t i = text.find_first_of("$\\"); i < n; i = text.find_first_of("$\\", i)) {
+            if (text[i] == '$') {
+                if (i + 1 < n && text[i + 1] == '$') {
+                    display = !display;
+                    i += 2;
+                } else {
+                    inl = !inl;
+                    i += 1;
+                }
+                continue;
+            }
+            const char d = i + 1 < n ? text[i + 1] : '\0';
+            if (d == '(' || d == '[') {
+                display = true;
+                i += 2;
+                continue;
+            }
+            if (d == ')' || d == ']') {
+                display = false;
+                i += 2;
+                continue;
+            }
+            // `\kw{name}` or `\kw{name*}`: Lua's '^\\(%a+){(%a+)%*?}()'.
+            size_t j = i + 1;
+            while (j < n && alpha(text[j])) j++;
+            const std::string kw = text.substr(i + 1, j - i - 1);
+            bool matched = false;
+            if (!kw.empty() && j < n && text[j] == '{') {
+                size_t q = j + 1;
+                while (q < n && alpha(text[q])) q++;
+                const std::string name = text.substr(j + 1, q - j - 1);
+                if (!name.empty() && q < n && text[q] == '*') q++;
+                if (!name.empty() && q < n && text[q] == '}' && kEnvs.count(name)) {
+                    if (kw == "begin") {
+                        depth++;
+                        matched = true;
+                    } else if (kw == "end") {
+                        depth = std::max(0, depth - 1);
+                        matched = true;
+                    }
+                    if (matched) i = q + 1;
+                }
+            }
+            if (!matched) i += 1;
+        }
+    }
+    lua_pushboolean(L, inl || display || depth > 0);
     return 1;
 }
 
@@ -6647,7 +6764,7 @@ int l_org_latex_visible(lua_State *L) {
 }
 
 // mep.buf_add_latex_inline(row, col_start, col_end, path[, first_row,
-// last_row]) -- same 1-indexed/exclusive-col_end convention as
+// last_row[, variant, body]]) -- same 1-indexed/exclusive-col_end convention as
 // mep.deco_add's opts table. Appends one inline-math span
 // (Buffer::OrgLatexInlineSpan) for `row`; called once per match by
 // mep_org_latex_register_inline (kBuiltinOrgLatex). first_row/last_row
@@ -6664,8 +6781,50 @@ int l_buf_add_latex_inline(lua_State *L) {
     const char *path = luaL_checkstring(L, 4);
     int first_row = static_cast<int>(luaL_optinteger(L, 5, 0)) - 1;
     int last_row = static_cast<int>(luaL_optinteger(L, 6, 0)) - 1;
-    GetEditor(L)->AddOrgLatexInlineSpan(row, col_start, col_end, path, first_row, last_row);
+    // Optional 7/8: the render variant and the fragment's source, which
+    // the span is recorded as the render of (Editor::OrgLatexScanDelta).
+    size_t identity = 0;
+    if (lua_isstring(L, 7) && lua_isstring(L, 8)) identity = Editor::OrgLatexFragmentIdentity(lua_tostring(L, 7), lua_tostring(L, 8));
+    GetEditor(L)->AddOrgLatexInlineSpan(row, col_start, col_end, path, first_row, last_row, identity);
     return 0;
+}
+
+// mep.buf_latex_inline_list() -> the current buffer's inline-maths spans,
+// {row=, col_start=, col_end=, path=, first_row=, last_row=} (1-indexed,
+// col_end exclusive, as mep.buf_add_latex_inline takes them), by row then
+// column: the read side of the registry, for checking what the
+// incremental scan kept (tools/latex_scan_live_check.py).
+/**
+ * @brief Implements mep.buf_latex_inline_list(): lists the current buffer's registered inline-math spans.
+ * @param L Lua state.
+ * @return Number of values pushed (1: the array of spans, ordered by row then column).
+ */
+int l_buf_latex_inline_list(lua_State *L) {
+    std::vector<std::pair<int, const Buffer::OrgLatexInlineSpan *>> all;
+    for (const auto &[row, spans] : GetEditor(L)->CurrentBuffer().org_latex_inline)
+        for (const Buffer::OrgLatexInlineSpan &sp : spans) all.emplace_back(row, &sp);
+    std::sort(all.begin(), all.end(), [](const auto &a, const auto &b) {
+        return a.first != b.first ? a.first < b.first : a.second->col_start < b.second->col_start;
+    });
+    lua_createtable(L, static_cast<int>(all.size()), 0);
+    for (size_t i = 0; i < all.size(); i++) {
+        const Buffer::OrgLatexInlineSpan &sp = *all[i].second;
+        lua_createtable(L, 0, 6);
+        lua_pushinteger(L, all[i].first + 1);
+        lua_setfield(L, -2, "row");
+        lua_pushinteger(L, sp.col_start + 1);
+        lua_setfield(L, -2, "col_start");
+        lua_pushinteger(L, sp.col_end + 1);
+        lua_setfield(L, -2, "col_end");
+        lua_pushlstring(L, sp.path.data(), sp.path.size());
+        lua_setfield(L, -2, "path");
+        lua_pushinteger(L, (sp.first_row < 0 ? all[i].first : sp.first_row) + 1);
+        lua_setfield(L, -2, "first_row");
+        lua_pushinteger(L, (sp.last_row < 0 ? all[i].first : sp.last_row) + 1);
+        lua_setfield(L, -2, "last_row");
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
 }
 
 // mep.buf_clear_latex_inline(): clears the current buffer's whole inline-span
@@ -10382,8 +10541,9 @@ int l_org_literal_spans(lua_State *L) {
  * @param L Lua state.
  * @return Number of values pushed (1: a {blocks={{start_row=,end_row=,body=},...}, inlines={{body=,parts={{row=,col_start=,col_end=},...}},...}} table).
  */
-int l_org_latex_scan_fragments(lua_State *L) {
-    OrgLatexFragments result = GetEditor(L)->OrgLatexScanFragments();
+namespace {
+/** @brief Pushes a fragment scan as mep.org_latex_scan_fragments' {blocks=, inlines=} table. */
+void PushOrgLatexFragments(lua_State *L, const OrgLatexFragments &result) {
     lua_createtable(L, 0, 2);
     lua_createtable(L, static_cast<int>(result.blocks.size()), 0);
     for (size_t i = 0; i < result.blocks.size(); i++) {
@@ -10420,6 +10580,27 @@ int l_org_latex_scan_fragments(lua_State *L) {
         lua_rawseti(L, -2, static_cast<int>(i + 1));
     }
     lua_setfield(L, -2, "inlines");
+}
+}  // namespace
+
+int l_org_latex_scan_fragments(lua_State *L) {
+    PushOrgLatexFragments(L, GetEditor(L)->OrgLatexScanFragments());
+    return 1;
+}
+
+// mep.org_latex_scan_delta(cursor_row|nil, variant) -> the same shape as
+// mep.org_latex_scan_fragments, less every inline fragment whose render is
+// still registered where it is (Editor::OrgLatexScanDelta, which drops
+// every span that is not). `variant` is the render's size and backend.
+/**
+ * @brief Implements mep.org_latex_scan_delta(cursor_row, variant): the fragment scan, keeping the inline renders that are still right.
+ * @param L Lua state; arg 1 the 1-indexed row showing its source (nil for none), arg 2 the render variant string.
+ * @return Number of values pushed (1: {blocks=, inlines=}).
+ */
+int l_org_latex_scan_delta(lua_State *L) {
+    const int cursor_row = lua_isinteger(L, 1) ? static_cast<int>(lua_tointeger(L, 1)) - 1 : -1;
+    const std::string variant = luaL_optstring(L, 2, "");
+    PushOrgLatexFragments(L, GetEditor(L)->OrgLatexScanDelta(cursor_row, variant));
     return 1;
 }
 
@@ -16738,6 +16919,7 @@ const luaL_Reg kMepFuncs[] = {
     {"org_capture_expand_template", l_org_expand_capture_template},
     {"org_refile_move", l_org_refile_move},
     {"org_latex_scan_fragments", l_org_latex_scan_fragments},
+    {"org_latex_scan_delta", l_org_latex_scan_delta},
     {"org_literal_spans", l_org_literal_spans},
     {"org_bib_parse_files", l_org_bib_parse_files},
     {"org_roam_files_in", l_org_roam_files_in},
@@ -16857,9 +17039,11 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_alt_popup_toggle", l_mepml_alt_popup_toggle},
     {"mepml_alt_popup_visible", l_mepml_alt_popup_visible},
     {"org_table_wrap_scan", l_org_table_wrap_scan},
+    {"org_table_wrap_stale", l_org_table_wrap_stale},
     {"org_table_wrap_toggle", l_org_table_wrap_toggle},
     {"buf_add_latex_inline", l_buf_add_latex_inline},
     {"buf_clear_latex_inline", l_buf_clear_latex_inline},
+    {"buf_latex_inline_list", l_buf_latex_inline_list},
     {"buf_set_latex_preview", l_buf_set_latex_preview},
     {"buf_clear_latex_preview", l_buf_clear_latex_preview},
     {"font_size", l_font_size},
@@ -17001,6 +17185,7 @@ const luaL_Reg kMepFuncs[] = {
     {"buffer_save_epoch", l_buffer_save_epoch},
     {"now", l_now},
     {"clock", l_clock},
+    {"in_mathzone", l_in_mathzone},
     {"frame_stats", l_frame_stats},
     {"hook_profile", l_hook_profile},
     {"hook_stats", l_hook_stats},

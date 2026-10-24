@@ -1,6 +1,13 @@
 * TODO todo management
 
 
+
+
+
+
+
+* TODO Fix big table formatting with meple 
+* TODO Fix note notations in pdf highlighting (overlaps, text gets cut off, other stuff)
 * TODO fix test sidebar for mep
 * TODO Create basic music player
 * TODO Fix bindings in yt player

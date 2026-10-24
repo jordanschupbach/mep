@@ -28668,9 +28668,35 @@ bool Editor::ToggleOrgLatex() {
     return org_latex_visible_;
 }
 
+namespace {
+float LatexInlineBaselineOf(const std::string &png);
+
+// A maths render's size and baseline, by path. Its name is its content's
+// hash (mep_org_latex_render), so what is read once is right for good --
+// unlike ImagePixelSizeCached, which stats the file on every call to see
+// whether it changed. A scan re-registers every fragment in the document
+// on each edit, and two stats and an open per formula per keystroke was
+// what typing in a formula-heavy table paid. Only a complete read is kept.
+struct LatexRenderInfo {
+    int width = 0, height = 0;
+    float baseline = -1.0f;
+};
+const LatexRenderInfo &LatexRenderInfoOf(const std::string &path) {
+    static std::unordered_map<std::string, LatexRenderInfo> cache;
+    auto it = cache.find(path);
+    if (it != cache.end()) return it->second;
+    static LatexRenderInfo scratch;
+    scratch = LatexRenderInfo{};
+    ImagePixelSizeCached(path, &scratch.width, &scratch.height);
+    if (scratch.width <= 0 || scratch.height <= 0) return scratch;
+    scratch.baseline = LatexInlineBaselineOf(path);
+    return cache.emplace(path, scratch).first->second;
+}
+}  // namespace
+
 int Editor::LatexInlineDrawCols(const std::string &path) const {
-    int w = 0, h = 0;
-    ImagePixelSizeCached(path, &w, &h);
+    const LatexRenderInfo &info = LatexRenderInfoOf(path);
+    const int w = info.width, h = info.height;
     if (w <= 0 || h <= 0 || render_char_width_ <= 0.0 || render_line_height_ <= 0.0) return -1;
     // DrawPane's OrgLatexInlineCols, from the size (drawn 1:1).
     return std::max(1, static_cast<int>(std::ceil(static_cast<double>(w) / render_char_width_ - 0.05)));
@@ -28691,7 +28717,7 @@ float LatexInlineBaselineOf(const std::string &png) {
 }  // namespace
 
 void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path, int first_row,
-                                   int last_row) {
+                                   int last_row, size_t identity) {
     if (row < 0 || row >= Buf().LineCount()) return;
     // In a mepml table laid out for another width: lay it out again.
     {
@@ -28709,10 +28735,18 @@ void Editor::AddOrgLatexInlineSpan(int row, int col_start, int col_end, const st
     // replaced by tectonic's) takes its old span's place.
     Buffer::OrgLatexInlineSpan span{col_start, col_end, path, first_row < 0 ? row : first_row,
                                     last_row < 0 ? row : last_row};
+    span.identity = identity;
     if (!path.empty()) {
-        ImagePixelSizeCached(path, &span.width, &span.height);
-        span.baseline = LatexInlineBaselineOf(path);
+        const LatexRenderInfo &info = LatexRenderInfoOf(path);
+        span.width = info.width;
+        span.height = info.height;
+        span.baseline = info.baseline;
     }
+    // On a table row: its table is laid out around its renders' widths.
+    // (The rows OrgTableWrapScan last found tables on; a table typed since
+    // is planned by the edit's own scan.)
+    if (!path.empty() && row < static_cast<int>(org_table_wrap_math_rows_.size()) && org_table_wrap_math_rows_[static_cast<size_t>(row)])
+        org_table_wrap_math_stale_ = true;
     std::vector<Buffer::OrgLatexInlineSpan> &spans = Buf().org_latex_inline[row];
     for (Buffer::OrgLatexInlineSpan &sp : spans) {
         if (sp.col_start == col_start && sp.col_end == col_end) {
@@ -28728,6 +28762,71 @@ bool Editor::OrgLatexInlineRevealed(const Buffer &buf, const Buffer::OrgLatexInl
     const int first = span.first_row < 0 ? row : span.first_row;
     const int last = span.last_row < 0 ? row : span.last_row;
     return cursor_row >= first && cursor_row <= last;
+}
+
+size_t Editor::OrgLatexFragmentIdentity(const std::string &variant, const std::string &body) {
+    std::string key;
+    key.reserve(variant.size() + 1 + body.size());
+    key += variant;
+    key += '\x1f';
+    key += body;
+    return std::hash<std::string>{}(key);
+}
+
+OrgLatexFragments Editor::OrgLatexScanDelta(int cursor_row, const std::string &variant) {
+    OrgLatexFragments f = OrgLatexScanFragments();
+    if (IsMepmlBuffer()) {
+        ClearOrgLatexInlineSpans();
+        return f;
+    }
+    Buffer &b = Buf();
+    // The registry by where each span starts.
+    std::unordered_map<long long, Buffer::OrgLatexInlineSpan *> at;
+    at.reserve(b.org_latex_inline.size() * 4);
+    for (auto &[row, spans] : b.org_latex_inline)
+        for (Buffer::OrgLatexInlineSpan &sp : spans) at[(static_cast<long long>(row) << 32) | static_cast<unsigned>(sp.col_start)] = &sp;
+    std::unordered_set<const Buffer::OrgLatexInlineSpan *> keep;
+    std::vector<OrgLatexInlineFragment> todo;
+    std::vector<const Buffer::OrgLatexInlineSpan *> mine;
+    for (OrgLatexInlineFragment &frag : f.inlines) {
+        if (frag.parts.empty()) continue;
+        const int first = frag.parts.front().row - 1, last = frag.parts.back().row - 1;
+        bool settled = !(cursor_row >= first && cursor_row <= last);
+        const size_t identity = settled ? OrgLatexFragmentIdentity(variant, frag.body) : 0;
+        mine.clear();
+        for (size_t k = 0; settled && k < frag.parts.size(); ++k) {
+            const OrgLatexInlinePart &p = frag.parts[k];
+            auto it = at.find((static_cast<long long>(p.row - 1) << 32) | static_cast<unsigned>(p.col_start - 1));
+            const Buffer::OrgLatexInlineSpan *sp = it == at.end() ? nullptr : it->second;
+            // The render goes on the first part; the rest only conceal.
+            settled = sp != nullptr && sp->col_end == p.col_end - 1 && sp->first_row == first && sp->last_row == last &&
+                      sp->identity == identity && sp->path.empty() == (k != 0);
+            if (settled) mine.push_back(sp);
+        }
+        if (settled) keep.insert(mine.begin(), mine.end());
+        else todo.push_back(std::move(frag));
+    }
+    // Everything else goes -- seeding the preview popup from a render the
+    // cursor is now on, as ClearOrgLatexInlineSpans does.
+    const int cr = CurPane().cursor.row;
+    bool dropped = false;
+    for (auto it = b.org_latex_inline.begin(); it != b.org_latex_inline.end();) {
+        std::vector<Buffer::OrgLatexInlineSpan> &spans = it->second;
+        for (const Buffer::OrgLatexInlineSpan &sp : spans) {
+            if (keep.count(&sp) || !b.org_latex_preview.path.empty() || sp.path.empty()) continue;
+            const int lo = sp.first_row < 0 ? it->first : sp.first_row;
+            const int hi = sp.last_row < 0 ? it->first : sp.last_row;
+            if (cr >= lo && cr <= hi) b.org_latex_preview = Buffer::OrgLatexPreview{sp.path, lo, hi, sp.col_start, {}, {}};
+        }
+        const size_t before = spans.size();
+        spans.erase(std::remove_if(spans.begin(), spans.end(), [&](const Buffer::OrgLatexInlineSpan &sp) { return !keep.count(&sp); }),
+                    spans.end());
+        dropped = dropped || spans.size() != before;
+        it = spans.empty() ? b.org_latex_inline.erase(it) : std::next(it);
+    }
+    if (dropped && !b.org_table_wrap_rows.empty()) org_table_wrap_math_stale_ = true;
+    f.inlines = std::move(todo);
+    return f;
 }
 
 void Editor::ClearOrgLatexInlineSpans() {
@@ -28747,6 +28846,8 @@ void Editor::ClearOrgLatexInlineSpans() {
             if (!b.org_latex_preview.path.empty()) break;
         }
     }
+    // (A table laid out around them is planned again: OrgTableWrapStale.)
+    if (!b.org_table_wrap_rows.empty()) org_table_wrap_math_stale_ = true;
     b.org_latex_inline.clear();
 }
 
@@ -32773,7 +32874,29 @@ void Editor::ShiftFoldsForTextSwap(Buffer &buf, const std::vector<std::string> &
 // editor.h for the full rationale (the "text reverts to white while deleting
 // lines" symptom) and the at_row/count sign convention.
 void Editor::ShiftDecorationsForLineEdit(int at_row, int count) {
-    if (count == 0 || Buf().decorations.empty()) return;
+    if (count == 0) return;
+    // The inline-maths renders too, so a line opened or deleted above a
+    // table of formulas leaves them matching what the next LaTeX scan
+    // finds, and it keeps them (OrgLatexScanDelta) instead of rendering
+    // every one below the edit again.
+    // (Not mepml's: its layout keys its own records by row, and its scan
+    // registers every span afresh anyway.)
+    if (!Buf().org_latex_inline.empty() && !IsMepmlBuffer()) {
+        const int removed = count < 0 ? -count : 0;
+        auto moved = [&](int r) { return r >= at_row + removed ? r + count : r; };
+        std::unordered_map<int, std::vector<Buffer::OrgLatexInlineSpan>> shifted;
+        shifted.reserve(Buf().org_latex_inline.size());
+        for (auto &[row, spans] : Buf().org_latex_inline) {
+            if (removed > 0 && row >= at_row && row < at_row + removed) continue;
+            for (Buffer::OrgLatexInlineSpan &sp : spans) {
+                if (sp.first_row >= 0) sp.first_row = moved(sp.first_row);
+                if (sp.last_row >= 0) sp.last_row = moved(sp.last_row);
+            }
+            shifted[moved(row)] = std::move(spans);
+        }
+        Buf().org_latex_inline = std::move(shifted);
+    }
+    if (Buf().decorations.empty()) return;
     int n = Buf().LineCount();
     for (auto &ns_decos : Buf().decorations) {
         auto &decos = ns_decos.second;
@@ -38202,7 +38325,92 @@ bool Editor::ToggleOrgTableWrap() {
     return org_table_wrap_visible_;
 }
 
+namespace {
+// The bytes that stand in a laid-out org row's text for its formulas'
+// renders (Editor::OrgTableWrapScan), one per formula on the row, in
+// order: control characters no cell holds, none of them whitespace to a
+// trim or a wrap. A row with more formulas than this lays the rest out
+// as their source.
+constexpr char kOrgTableMathIds[] = "\x01\x02\x03\x04\x05\x06\x07\x08\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f";
+
+/**
+ * @brief Turns a laid-out row's formula placeholders into the runs its renders are drawn by, blanking them.
+ * @param entry The row's layout; its lines are edited in place and its runs appended to.
+ * @param maths The row's formulas, indexed as their placeholders are in kOrgTableMathIds.
+ *
+ * A placeholder the wrap had to split (a render wider than its whole
+ * column) is drawn on the first of its pieces, squeezed to it.
+ */
+void OrgTableMathRuns(Buffer::OrgTableWrapRow &entry, const std::vector<const Buffer::OrgLatexInlineSpan *> &maths) {
+    if (maths.empty()) return;
+    std::vector<bool> placed(maths.size(), false);
+    for (size_t li = 0; li < entry.lines.size(); ++li) {
+        std::string &t = entry.lines[li].text;
+        for (size_t i = 0; i < t.size();) {
+            const char *id = t[i] != '\0' ? std::strchr(kOrgTableMathIds, t[i]) : nullptr;
+            if (id == nullptr) {
+                ++i;
+                continue;
+            }
+            const size_t k = static_cast<size_t>(id - kOrgTableMathIds);
+            const char c = t[i];
+            size_t j = i;
+            while (j < t.size() && t[j] == c) t[j++] = ' ';
+            if (k < maths.size() && !placed[k]) {
+                placed[k] = true;
+                const Buffer::OrgLatexInlineSpan &sp = *maths[k];
+                OrgTableWrapRun run;
+                run.src_start = sp.col_start;
+                run.src_end = sp.col_end;
+                run.line = static_cast<int>(li);
+                run.col_start = static_cast<int>(i);
+                run.col_end = static_cast<int>(j);
+                run.verbatim = false;
+                run.math = sp.path;
+                run.math_height = sp.height;
+                run.math_baseline = sp.baseline;
+                entry.runs.push_back(std::move(run));
+            }
+            i = j;
+        }
+    }
+}
+}  // namespace
+
+namespace {
+/** @brief One inline-maths span's part of OrgTableMathSignature (summed, so order does not matter). */
+size_t OrgTableMathSpanHash(int row, const Buffer::OrgLatexInlineSpan &sp) {
+    size_t h = static_cast<size_t>(row) * 0x9e3779b97f4a7c15ull;
+    for (int v : {sp.col_start, sp.col_end, sp.width, sp.height, sp.path.empty() ? 0 : 1}) h = (h ^ static_cast<size_t>(v)) * 0x100000001b3ull;
+    return h;
+}
+}  // namespace
+
+size_t Editor::OrgTableMathSignature() const {
+    const Buffer &buf = Buf();
+    size_t sig = static_cast<size_t>(render_char_width_ * 1000.0);
+    for (const auto &[row, spans] : buf.org_latex_inline) {
+        if (row < 0 || row >= static_cast<int>(org_table_wrap_math_rows_.size()) || !org_table_wrap_math_rows_[static_cast<size_t>(row)])
+            continue;
+        for (const Buffer::OrgLatexInlineSpan &sp : spans) sig += OrgTableMathSpanHash(row, sp);
+    }
+    return sig;
+}
+
+bool Editor::OrgTableWrapStale() {
+    if (!org_table_wrap_math_stale_ || !org_table_wrap_visible_ || org_table_wrap_buffer_ != CurrentBufferId()) return false;
+    // A LaTeX scan clears every span and registers them all again, the
+    // same ones nearly always: only a change in what the tables were
+    // planned around is worth planning them again for.
+    if (OrgTableMathSignature() == org_table_wrap_math_sig_) {
+        org_table_wrap_math_stale_ = false;
+        return false;
+    }
+    return true;
+}
+
 void Editor::OrgTableWrapScan(bool force) {
+    org_table_wrap_math_stale_ = false;
     Buffer &buf = Buf();
     if (!org_table_wrap_visible_) {
         buf.org_table_wrap_rows.clear();
@@ -38258,6 +38466,7 @@ void Editor::OrgTableWrapScan(bool force) {
     org_table_wrap_sel_lo_ = sel_lo;
     org_table_wrap_sel_hi_ = sel_hi;
     buf.org_table_wrap_rows.clear();
+    org_table_wrap_math_rows_.assign(static_cast<size_t>(n), 0);
 
     // A `|`-heavy line inside a `#+begin_src`/`#+begin_example` block is
     // code or sample text, not a table -- the same exclusion (and the
@@ -38277,13 +38486,57 @@ void Editor::OrgTableWrapScan(bool force) {
         if (!first.is_row) continue;
         int end = row;
         while (end + 1 < n && ParseOrgTableRowImpl(buf.lines[static_cast<size_t>(end + 1)]).is_row) end++;
+        for (int r = row; r <= end; r++) org_table_wrap_math_rows_[static_cast<size_t>(r)] = 1;
         std::vector<OrgTableCells> parsed;
         parsed.reserve(static_cast<size_t>(end - row + 1));
+        // Each row's inline maths, by placeholder (kMathIds): what stands
+        // in the row's text for the columns its render draws across.
+        std::vector<std::vector<const Buffer::OrgLatexInlineSpan *>> row_maths(static_cast<size_t>(end - row + 1));
         int indent = 0;
         bool have_indent = false;
         for (int r = row; r <= end; r++) {
             const std::string &line = buf.lines[static_cast<size_t>(r)];
-            OrgTableRow pr = ParseOrgTableRowImpl(line);
+            // A formula is planned at its render's width, not its TeX's,
+            // exactly as a link is planned at its description's: `$\mathbf{w}_h$`
+            // draws in three columns, and budgeting fourteen for it wraps a
+            // table that fits. Its source is swapped for a run of one
+            // placeholder byte per drawn column -- one word, so the wrap
+            // keeps it together -- and the layout's runs put the render
+            // where that run lands (below).
+            std::string math_line;
+            if (!md_table && OrgLatexVisible()) {
+                auto it = buf.org_latex_inline.find(r);
+                if (it != buf.org_latex_inline.end()) {
+                    std::vector<const Buffer::OrgLatexInlineSpan *> spans;
+                    for (const Buffer::OrgLatexInlineSpan &sp : it->second) spans.push_back(&sp);
+                    std::sort(spans.begin(), spans.end(), [](const Buffer::OrgLatexInlineSpan *a, const Buffer::OrgLatexInlineSpan *b) {
+                        return a->col_start < b->col_start;
+                    });
+                    int pos = 0;
+                    for (const Buffer::OrgLatexInlineSpan *sp : spans) {
+                        if (row_maths[static_cast<size_t>(r - row)].size() >= sizeof kOrgTableMathIds - 1) break;
+                        if (sp->path.empty() || sp->col_start < pos || sp->col_end > static_cast<int>(line.size()) ||
+                            sp->col_end <= sp->col_start)
+                            continue;
+                        const std::string src = line.substr(static_cast<size_t>(sp->col_start), static_cast<size_t>(sp->col_end - sp->col_start));
+                        // Spans from before an edit, until the LaTeX scan
+                        // catches up, and a formula holding a `|` -- which
+                        // splits the cell in org as in every grid here --
+                        // keep their source.
+                        if ((src[0] != '$' && src[0] != '\\') || src.find('|') != std::string::npos) continue;
+                        const int cols = LatexInlineDrawCols(sp->path);
+                        if (cols <= 0) continue;
+                        if (math_line.empty()) math_line = line;
+                        const size_t at = static_cast<size_t>(
+                            sp->col_start + (static_cast<long>(math_line.size()) - static_cast<long>(line.size())));
+                        const char id = kOrgTableMathIds[row_maths[static_cast<size_t>(r - row)].size()];
+                        math_line.replace(at, src.size(), static_cast<size_t>(cols), id);
+                        row_maths[static_cast<size_t>(r - row)].push_back(sp);
+                        pos = sp->col_end;
+                    }
+                }
+            }
+            OrgTableRow pr = ParseOrgTableRowImpl(math_line.empty() ? line : math_line);
             OrgTableCells cells;
             cells.is_sep = pr.is_sep;
             // Planned from the cells as *drawn*, not as stored: a
@@ -38389,7 +38642,12 @@ void Editor::OrgTableWrapScan(bool force) {
         const int plan_width = (plan.rows.empty() || plan.rows.front().empty())
                                    ? 0
                                    : OrgTableDisplayWidth(plan.rows.front().front().text);
-        if (plan.wrapped || (plan_width > 0 && plan_width < stored_width)) {
+        // And a third: inline maths, which the stored row can only draw
+        // in the columns its TeX takes -- a render wider than that runs
+        // over the next `|` -- where the layout gives it its own.
+        const bool has_math = std::any_of(row_maths.begin(), row_maths.end(),
+                                          [](const std::vector<const Buffer::OrgLatexInlineSpan *> &m) { return !m.empty(); });
+        if (plan.wrapped || has_math || (plan_width > 0 && plan_width < stored_width)) {
             int cols = 0;
             for (int cw : plan.col_widths) cols += cw + 3;
             const int width = cols + 1;  // the trailing `|`
@@ -38423,11 +38681,14 @@ void Editor::OrgTableWrapScan(bool force) {
                 entry.indent = indent;
                 entry.width = width;
                 if (entry.lines.empty()) continue;
+                OrgTableMathRuns(entry, row_maths[static_cast<size_t>(r - row)]);
                 buf.org_table_wrap_rows[r] = std::move(entry);
             }
         }
         row = end;
     }
+    // What this plan was made around (OrgTableWrapStale).
+    org_table_wrap_math_sig_ = OrgTableMathSignature();
 }
 
 

@@ -3760,6 +3760,37 @@ bool IsLatexBlockOpen(const std::string &line) {
     return LatexKeywordLine(line, kKeyword) && Trim(line).size() == kKeyword.size() + 2;
 }
 
+/** @brief Checks whether a line is a standalone `#+begin_pseudocode` line (nothing after the keyword). */
+bool IsPseudocodeBlockOpen(const std::string &line) {
+    static const std::string kKeyword = "BEGIN_PSEUDOCODE";
+    return LatexKeywordLine(line, kKeyword) && Trim(line).size() == kKeyword.size() + 2;
+}
+
+/**
+ * @brief The display maths a `#+begin_pseudocode` block's body typesets as.
+ * @param inner The rows between the block's markers.
+ * @return One left-aligned array row per non-blank line, as `\[...\]`; "" for a body with none.
+ *
+ * The block is the wiki's own convention (the `pcode` snippet writes it):
+ * one LaTeX math-mode statement per line, indented with `\quad`, words in
+ * `\text{}`. Its exporter keeps the non-blank lines, strips any trailing
+ * `\\` so a row is not doubled, and sets them as the rows of a
+ * left-aligned array -- so the preview does the same, or it would show
+ * a different picture from the page.
+ */
+std::string PseudocodeDisplayBody(const std::vector<std::string> &inner) {
+    std::string rows;
+    for (const std::string &raw : inner) {
+        std::string l = Trim(raw);
+        if (l.size() >= 2 && l.compare(l.size() - 2, 2, "\\\\") == 0) l = Trim(l.substr(0, l.size() - 2));
+        if (l.empty()) continue;
+        if (!rows.empty()) rows += " \\\\\n";
+        rows += l;
+    }
+    if (rows.empty()) return "";
+    return "\\[\\begin{array}{l}\n" + rows + "\n\\end{array}\\]";
+}
+
 /** @brief Checks whether a line is a `#+BEGIN_SRC latex` line. */
 bool IsSrcLatexOpen(const std::string &line) {
     static const std::string kKeyword = "BEGIN_SRC";
@@ -3912,6 +3943,20 @@ OrgLatexFragments OrgLatexScan(const std::vector<std::string> &lines) {
     while (row <= n) {
         const std::string &line = line_at(row);
         const std::string trimmed = Trim(line);
+
+        // A pseudocode block is LaTeX in all but name: its whole body is
+        // one display, so it previews as one (PseudocodeDisplayBody).
+        if (IsPseudocodeBlockOpen(line)) {
+            std::vector<std::string> inner;
+            int j = row + 1;
+            while (j <= n && !LatexKeywordLine(line_at(j), "END_PSEUDOCODE")) inner.push_back(line_at(j++));
+            const std::string pseudo = j <= n ? PseudocodeDisplayBody(inner) : "";
+            if (!pseudo.empty()) out.blocks.push_back({row, j, pseudo});
+            // Never prose, rendered or not.
+            claim(row, j);
+            row = j + 1;
+            continue;
+        }
 
         // A `#+begin_X ... #+end_X` block that isn't itself LaTeX is
         // literal text, so nothing inside it is a math fragment: a `$` in

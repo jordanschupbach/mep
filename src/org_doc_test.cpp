@@ -1643,6 +1643,22 @@ int main() {
         CHECK(indented.blocks.size() == 1);
         CHECK(indented.blocks[0].body == "$$x = 1$$");
 
+        // A `#+begin_pseudocode` block is one display, set the way the
+        // wiki's exporter sets it: a left-aligned array of its non-blank
+        // lines, any trailing `\\` dropped. It used to be skipped as a
+        // literal block, so it showed as raw TeX.
+        const OrgLatexFragments pc = OrgLatexScan(
+            {"#+begin_pseudocode", "\\textbf{Repeat} \\\\", "", "\\quad x \\gets 1", "#+end_pseudocode", "after $y$ here"});
+        CHECK(pc.blocks.size() == 1);
+        CHECK(block_at(pc, 1) != nullptr);
+        CHECK(block_at(pc, 1)->end_row == 5);
+        CHECK(block_at(pc, 1)->body == "\\[\\begin{array}{l}\n\\textbf{Repeat} \\\\\n\\quad x \\gets 1\n\\end{array}\\]");
+        CHECK(pc.inlines.size() == 1);
+        // Unterminated or empty, it previews nothing -- and its `$` is still not prose.
+        CHECK(OrgLatexScan({"#+begin_pseudocode", "$a$ b"}).blocks.empty());
+        CHECK(OrgLatexScan({"#+begin_pseudocode", "$a$ b"}).inlines.empty());
+        CHECK(OrgLatexScan({"#+begin_pseudocode", "", "#+end_pseudocode"}).blocks.empty());
+
         // A fragment sharing its row with prose is inline, with the
         // columns the render is drawn into.
         const OrgLatexFragments mid = OrgLatexScan({"the value $x^2$ matters"});

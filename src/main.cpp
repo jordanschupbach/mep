@@ -16879,6 +16879,7 @@ const char *kBuiltinSyntax =
     // stays here since it's genuinely user-configurable data, passed into
     // mep.ts_apply_captures each call rather than read by C++ directly.
     "local mep_syntax_ns = nil\n"
+    "local mep_syntax_org_src_ns = nil\n"
     // Org src-block language injection: `mep.org_babel_langs` (see
     // kBuiltinOrgBabel) keys its table by the literal babel language tag a
     // `#+begin_src <lang>` header writes ("python", "c++", "csharp", ...),
@@ -16962,7 +16963,8 @@ const char *kBuiltinSyntax =
     "          local body = {}\n"
     "          for k = hdr + 1, endr - 1 do body[#body + 1] = lines[k] end\n"
     "          local captures = mep.ts_captures(embed_ft, table.concat(body, '\\n'))\n"
-    "          if captures then mep.ts_apply_captures(ns, captures, mep.ts_capture_hl, hdr) end\n"
+    // (Priority 1: drawn over the org layer, which is another namespace.)
+    "          if captures then mep.ts_apply_captures(ns, captures, mep.ts_capture_hl, hdr, 1) end\n"
     "        end\n"
     "        i = endr + 1\n"
     "      else\n"
@@ -17035,6 +17037,18 @@ const char *kBuiltinSyntax =
     // rewritten, where this used to clear the namespace and re-add every
     // span in the file (plans/PERFORMANCE_PLAN.md 2.2/2.3). Keyed per
     // buffer: treesitter.cpp keeps the most recently used few trees.
+    // org: the document's own grammar reconciled by row like a plain
+    // file, and each src block's language over it in a namespace of its
+    // own (ts_highlight_buffer's has to be used for nothing else). Both
+    // used to share one namespace, cleared and refilled from Lua on every
+    // keystroke -- every span in the file re-added, in a table full of
+    // maths several times the cost of the parse itself.
+    "  if ft == 'org' and mep.ts_highlight_buffer(mep_syntax_ns, 'org', mep.ts_capture_hl, 'buf:' .. mep.current_buffer() .. ':org') then\n"
+    "    if not mep_syntax_org_src_ns then mep_syntax_org_src_ns = mep.ns_create('syntax_org_src') end\n"
+    "    mep.ns_clear(mep_syntax_org_src_ns)\n"
+    "    mep_syntax_highlight_org_src_blocks(mep_syntax_org_src_ns, mep.get_lines())\n"
+    "    return\n"
+    "  end\n"
     "  local layered = (ft == 'ipynb' and mep.notebook_is_buffer()) or ft == 'org'\n"
     "    or ft:lower() == 'rmd'\n"
     "  if not layered then\n"
@@ -19371,6 +19385,10 @@ const char *kBuiltinOrgLinks =
     // changed rather than run every frame -- it is a whole-buffer line
     // walk, like the link scan beside it.
     "    mep.org_table_wrap_scan()\n"
+    // A formula's render landed on a table row: its table is planned
+    // around the render's width, so it is laid out again.
+    "  elseif mep.org_table_wrap_stale() then\n"
+    "    mep.org_table_wrap_scan(true)\n"
     "  end\n"
     "end)\n"
     // Follow the link under the cursor. `gx` is vim's own "open whatever
@@ -23495,6 +23513,7 @@ const char *kBuiltinOrgLatex =
     "  end\n"
     "  return mep_org_latex_dir\n"
     "end\n"
+    "local mep_org_latex_memo, mep_org_latex_memo_n = {}, 0\n"
     "local mep_org_latex_inflight = {}\n"
     // Fragments that failed to compile, by cache key -> the error. Without
     // it every rescan (one per debounced edit, anywhere in the buffer)
@@ -23596,23 +23615,49 @@ const char *kBuiltinOrgLatex =
     // (Editor::InlineMathTopOffset), and a cropped PNG does not say where
     // its baseline is: TeX measures the formula's box and logs it, and
     // `<key>.base` beside the PNG records the baseline's pixel row.
-    "  local inline = (tex_body:match('^%$[^$]') and tex_body:match('[^$]%$$'))\n"
-    "    or (tex_body:match('^\\\\%(') and tex_body:match('\\\\%)$'))\n"
-    "  local doc_body = inline and tex_body or mep_org_latex_display_body(tex_body)\n"
-    "  if inline then\n"
-    "    doc_body = '\\\\sbox0{' .. tex_body .. '}\\\\typeout{MEPBOX:\\\\the\\\\ht0:\\\\the\\\\dp0:}\\\\usebox0'\n"
+    // Everything below up to the cache lookup depends only on the
+    // fragment, the size and the backend, and a scan asks again for every
+    // fragment in the document on every edit: hashing each one's whole
+    // TeX in Lua and opening its PNG to see that it is there was most of
+    // the time a keystroke took in a table of a few hundred formulas. So
+    // it is worked out once per (size, backend, fragment), and a render
+    // seen on disk is remembered -- its name is its content's hash, so it
+    // never goes stale.
+    "  local memo_set_id = dpi .. '|' .. mep.tex_backend_key()\n"
+    "  local memo_set = mep_org_latex_memo[memo_set_id]\n"
+    "  if not memo_set then\n"
+    "    memo_set = {}\n"
+    "    mep_org_latex_memo[memo_set_id] = memo_set\n"
     "  end\n"
+    "  local memo = memo_set[tex_body]\n"
+    "  if not memo then\n"
+    // (Bounded: every keystroke inside a formula is a new fragment.)
+    "    mep_org_latex_memo_n = mep_org_latex_memo_n + 1\n"
+    "    if mep_org_latex_memo_n > 50000 then\n"
+    "      mep_org_latex_memo, mep_org_latex_memo_n = {[memo_set_id] = memo_set}, 1\n"
+    "      for k in pairs(memo_set) do memo_set[k] = nil end\n"
+    "    end\n"
+    "    local inline = (tex_body:match('^%$[^$]') and tex_body:match('[^$]%$$'))\n"
+    "      or (tex_body:match('^\\\\%(') and tex_body:match('\\\\%)$'))\n"
+    "    local doc_body = inline and tex_body or mep_org_latex_display_body(tex_body)\n"
+    "    if inline then\n"
+    "      doc_body = '\\\\sbox0{' .. tex_body .. '}\\\\typeout{MEPBOX:\\\\the\\\\ht0:\\\\the\\\\dp0:}\\\\usebox0'\n"
+    "    end\n"
     // The preamble is part of the key: a render cached under an older
     // preamble (one that cropped wide displays) must not be served. So are
     // the TeX backends (mep.tex_backend_key): switching engine re-renders.
-    "  local key = mep_org_latex_hash(MEP_ORG_LATEX_PREAMBLE .. '|' .. doc_body .. '|' .. dpi .. '|' .. mep.tex_backend_key())\n"
+    "    local key = mep_org_latex_hash(MEP_ORG_LATEX_PREAMBLE .. '|' .. doc_body .. '|' .. dpi .. '|' .. mep.tex_backend_key())\n"
+    "    memo = {inline = inline, doc_body = doc_body, key = key, png = mep_org_latex_cache_dir() .. '/' .. key .. '.png'}\n"
+    "    memo_set[tex_body] = memo\n"
+    "  end\n"
+    "  local inline, doc_body, key, png_path = memo.inline, memo.doc_body, memo.key, memo.png\n"
     "  local dir = mep_org_latex_cache_dir()\n"
-    "  local png_path = dir .. '/' .. key .. '.png'\n"
     "  if mep_org_latex_failed[key] then\n"
     "    on_done(nil, mep_org_latex_failed[key], true)\n"
     "    return\n"
     "  end\n"
-    "  if mep_org_babel_file_exists(png_path) then\n"
+    "  if memo.on_disk or mep_org_babel_file_exists(png_path) then\n"
+    "    memo.on_disk = true\n"
     "    on_done(png_path)\n"
     "    return\n"
     "  end\n"
@@ -23778,7 +23823,7 @@ const char *kBuiltinOrgLatex =
     // source fully visible instead of hiding half of it behind nothing.
     // Each part also carries the fragment's whole row range, so a cursor
     // on any of its rows reveals all of them (Editor::OrgLatexInlineRevealed).
-    "local function mep_org_latex_register_inline(frag)\n"
+    "local function mep_org_latex_register_inline(frag, variant)\n"
     "  local gen, buf = mep_org_latex_gen, mep.current_buffer()\n"
     "  mep_org_latex_render(frag.body, function(png_path, err, cached)\n"
     "    if not mep_org_latex_current(gen, buf) then return end\n"
@@ -23787,8 +23832,11 @@ const char *kBuiltinOrgLatex =
     "      return\n"
     "    end\n"
     "    local first, last = frag.parts[1].row, frag.parts[#frag.parts].row\n"
+    // (Recorded as the render of this source at this variant, so the next
+    // scan can keep it: Editor::OrgLatexScanDelta.)
     "    for i, part in ipairs(frag.parts) do\n"
-    "      mep.buf_add_latex_inline(part.row, part.col_start, part.col_end, i == 1 and png_path or '', first, last)\n"
+    "      mep.buf_add_latex_inline(part.row, part.col_start, part.col_end, i == 1 and png_path or '', first, last,\n"
+    "                               variant, frag.body)\n"
     "    end\n"
     "  end, frag.parts[1].row, function() return mep_org_latex_current(gen, buf) end)\n"
     "end\n"
@@ -23869,14 +23917,22 @@ const char *kBuiltinOrgLatex =
     "  mep_org_latex_deferred = nil\n"
     "  mep_org_latex_err_seen_scan = {}\n"
     "  mep.buf_clear_latex_rows()\n"
-    "  mep.buf_clear_latex_inline()\n"
     "  mep.fold_clear_provider('latex')\n"
-    "  if not mep.org_latex_visible() then return end\n"
-    "  if not mep_latex_preview_ft(mep.filename()) then return end\n"
-    "  local fragments = mep.org_latex_scan_fragments()\n"
+    "  if not mep.org_latex_visible() or not mep_latex_preview_ft(mep.filename()) then\n"
+    "    mep.buf_clear_latex_inline()\n"
+    "    return\n"
+    "  end\n"
     // (A mepml buffer in view mode defers nothing: the cursor's own
     // fragment is rendered like every other.)
     "  local cur = mep.org_plain_cursor_line_visible() and not mep.mepml_view() and mep.cursor() or nil\n"
+    // Incremental: an inline fragment whose render is already registered
+    // where it now is stays as it is, and only the rest come back here --
+    // a keystroke in a table of six hundred formulas re-registers the few
+    // on the edited row, not all of them (Editor::OrgLatexScanDelta). The
+    // variant is mep_org_latex_render's own: a zoom or a backend switch
+    // makes every render a different one.
+    "  local variant = math.floor(72 * mep.font_size() / 11 + 0.5) .. '|' .. mep.tex_backend_key()\n"
+    "  local fragments = mep.org_latex_scan_delta(cur, variant)\n"
     "  local previewed = false\n"
     "  local function defer(first, last, col, body)\n"
     "    if not (cur and cur >= first and cur <= last) then return false end\n"
@@ -23894,7 +23950,7 @@ const char *kBuiltinOrgLatex =
     "  end\n"
     "  for _, s in ipairs(fragments.inlines) do\n"
     "    if not defer(s.parts[1].row, s.parts[#s.parts].row, s.parts[1].col_start, s.body) then\n"
-    "      mep_org_latex_register_inline(s)\n"
+    "      mep_org_latex_register_inline(s, variant)\n"
     "    end\n"
     "  end\n"
     "  if not previewed then\n"
@@ -29123,13 +29179,6 @@ const char *kBuiltinMathSnippets =
     "  if #lines == 0 then lines[1] = 'No trigger has another trigger as a prefix.' end\n"
     "  mep.hover_show('Autosnippet prefix audit', table.concat(lines, '\\n'))\n"
     "end)\n"
-    "local mep_math_envs = {}\n"
-    "for _, e in ipairs({'equation', 'align', 'alignat', 'gather', 'multline',\n"
-    "    'flalign', 'math', 'displaymath', 'array', 'cases', 'matrix', 'pmatrix',\n"
-    "    'bmatrix', 'Bmatrix', 'vmatrix', 'Vmatrix', 'smallmatrix', 'split',\n"
-    "    'aligned', 'gathered'}) do\n"
-    "  mep_math_envs[e] = true\n"
-    "end\n"
     // Is the cursor in math? A text scan, not a syntax query -- org buffers are
     // treesitter-highlighted, not tex-syntax, so there is no math syntax group
     // to ask. Reads at most 500 rows back, the cursor row only up to the
@@ -29142,54 +29191,11 @@ const char *kBuiltinMathSnippets =
     // dollar) are dropped before scanning so neither reads as a delimiter.
     // Text inside \text{...} still counts as math: the risky triggers are
     // capitalized (Ind, Pr, Var) instead.
+    // (Scanned in C++, mep.in_mathzone -- the same rules, without
+    // walking every character of 500 rows in Lua on each keystroke.)
     "function mep_in_mathzone(row, col)\n"
     "  if not row then row, col = mep.cursor() end\n"
-    "  local first = math.max(1, row - 500)\n"
-    "  local inline, display, depth = false, false, 0\n"
-    "  for r = first, row do\n"
-    "    local line = mep.get_line(r) or ''\n"
-    "    if r == row then line = line:sub(1, col - 1) end\n"
-    "    if line:match('^%s*$') or line:match('^%*+%s') then\n"
-    "      inline, display = false, false\n"
-    "    end\n"
-    "    local text = line:gsub('\\\\\\\\', ''):gsub('\\\\%$', '')\n"
-    "    local i, n = 1, #text\n"
-    "    while i <= n do\n"
-    "      local c = text:sub(i, i)\n"
-    "      if c == '$' then\n"
-    "        if text:sub(i + 1, i + 1) == '$' then\n"
-    "          display = not display\n"
-    "          i = i + 2\n"
-    "        else\n"
-    "          inline = not inline\n"
-    "          i = i + 1\n"
-    "        end\n"
-    "      elseif c == '\\\\' then\n"
-    "        local d = text:sub(i + 1, i + 1)\n"
-    "        if d == '(' or d == '[' then\n"
-    "          display = true\n"
-    "          i = i + 2\n"
-    "        elseif d == ')' or d == ']' then\n"
-    "          display = false\n"
-    "          i = i + 2\n"
-    "        else\n"
-    "          local kw, name, e = text:match('^\\\\(%a+){(%a+)%*?}()', i)\n"
-    "          if kw == 'begin' and mep_math_envs[name] then\n"
-    "            depth = depth + 1\n"
-    "            i = e\n"
-    "          elseif kw == 'end' and mep_math_envs[name] then\n"
-    "            depth = math.max(0, depth - 1)\n"
-    "            i = e\n"
-    "          else\n"
-    "            i = i + 1\n"
-    "          end\n"
-    "        end\n"
-    "      else\n"
-    "        i = i + 1\n"
-    "      end\n"
-    "    end\n"
-    "  end\n"
-    "  return inline or display or depth > 0\n"
+    "  return mep.in_mathzone(row, col)\n"
     "end\n"
     "local function mep_autosnip_lines(body)\n"
     "  local lines = {}\n"
@@ -62240,11 +62246,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             conceal_runs.resize(kept);
         }
         /**
-         * @brief Maps one of this row's stored columns to the column it is drawn at.
-         * @param c The stored (raw-text) column.
-         * @return The drawn column, which is `c` itself when nothing on the row is concealed.
+         * @brief Maps one of this row's stored byte offsets to its byte in the row as drawn (disp_line).
+         * @param c The stored (raw-text) offset.
+         * @return The drawn offset, which is `c` itself when nothing on the row is concealed.
          */
-        auto DispCol = [&](int c) -> int {
+        auto DispByte = [&](int c) -> int {
             int shift = 0;
             for (const ConcealRun &r : conceal_runs) {
                 // Past the end of this run's reach (a table cell's own
@@ -62263,6 +62269,52 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 break;
             }
             return c - shift;
+        };
+        // disp_line's codepoint column for each of its bytes, built on
+        // first use for a row with concealment and non-ASCII text (empty
+        // otherwise: there a byte is a column).
+        int disp_ascii = -1;  // unknown / no / yes
+        std::vector<int> disp_byte_col;
+        /**
+         * @brief Maps one of this row's stored columns to the column it is drawn at.
+         * @param c The stored column (a byte offset, on a row with concealment).
+         * @return The drawn column, which is `c` itself when nothing on the row is concealed.
+         */
+        auto DispCol = [&](int c) -> int {
+            const int b = DispByte(c);
+            if (conceal_runs.empty() || b <= 0) return b;
+            // The runs are byte ranges and disp_line is the row's bytes
+            // with each run's blanked, so this is a byte of disp_line --
+            // and the text is drawn a codepoint per column. Handing the
+            // byte back as the column put everything after a `’` or an
+            // `é` two columns right of the glyphs it belongs to: a
+            // formula over the next word, an underline past its own.
+            if (disp_ascii < 0) {
+                disp_ascii = 1;
+                for (char ch : disp_line)
+                    if (static_cast<unsigned char>(ch) >= 0x80) {
+                        disp_ascii = 0;
+                        break;
+                    }
+            }
+            if (disp_ascii == 1) return b;
+            const int len = static_cast<int>(disp_line.size());
+            if (disp_byte_col.empty()) {
+                disp_byte_col.assign(static_cast<size_t>(len) + 1, 0);
+                int col = 0;
+                for (int i = 0; i < len;) {
+                    int cp_size = 0;
+                    gfx::GetCodepointNext(&disp_line[static_cast<size_t>(i)], &cp_size);
+                    cp_size = std::max(1, cp_size);
+                    for (int p = i; p < std::min(i + cp_size, len); p++) disp_byte_col[static_cast<size_t>(p)] = col;
+                    col++;
+                    i += cp_size;
+                }
+                disp_byte_col[static_cast<size_t>(len)] = col;
+            }
+            // (Past the end: the columns beyond it, one a byte.)
+            if (b >= len) return disp_byte_col[static_cast<size_t>(len)] + (b - len);
+            return disp_byte_col[static_cast<size_t>(b)];
         };
         // The row as drawn: each concealed span blanked to its
         // replacement's width. Column counts stand in for byte counts
@@ -63646,7 +63698,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // least the original [col_start, col_end), since anything short
         // of col_end is raw markup that would otherwise show through.
         // (A mepml row drawn as its wrapped layout has drawn its own, above.)
-        if (show_org_latex && !tbl_wrap_runs) {
+        if (show_org_latex && tbl_wrap == nullptr) {
             auto inline_it = buf.org_latex_inline.find(row);
             if (inline_it != buf.org_latex_inline.end()) {
                 for (const Buffer::OrgLatexInlineSpan &span : inline_it->second) {
@@ -63677,11 +63729,35 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                         gfx::DrawRectangle(static_cast<int>(span_x), static_cast<int>(span_y), static_cast<int>(cover_w),
                                       line_height, page_bg);
                     }
-                    const float draw_x = span_x + (cover_w - draw_w) / 2.0f;
+                    float draw_x = span_x + (cover_w - draw_w) / 2.0f;
                     // On the prose's baseline, rising into the room above
                     // and below the line that Editor::InlineMathPadFor
                     // made for it.
-                    gfx::DrawTextureEx(*tex, gfx::Vector2{draw_x, span_y + g_editor.InlineMathTopOffset(span)}, 0.0f, scale, gfx::White);
+                    float draw_y = span_y + g_editor.InlineMathTopOffset(span);
+                    // A soft-wrapped row breaks at a column, not at a word,
+                    // so the columns kept for a formula near the edge run
+                    // on at the start of the next line -- where the text
+                    // after it resumes. Drawn whole it ran off the pane
+                    // there instead; it is split the way the text is: what
+                    // fits ends this line, the rest starts the next.
+                    const float line_w = static_cast<float>(row_wrap_cols) * g_char_width;
+                    if (row_wrap_cols > 0 && scale > 0.0f && draw_x - text_x + draw_w > line_w + 0.5f) {
+                        float done = 0.0f;
+                        for (int guard = 0; done < draw_w && guard < 64; ++guard) {
+                            const float piece = std::min(draw_w - done, text_x + line_w - draw_x);
+                            if (piece > 0.0f) {
+                                gfx::DrawTexturePro(*tex,
+                                                    gfx::Rectangle{done / scale, 0.0f, piece / scale, static_cast<float>(tex->height)},
+                                                    gfx::Rectangle{draw_x, draw_y, piece, static_cast<float>(tex->height) * scale},
+                                                    gfx::Vector2{0.0f, 0.0f}, 0.0f, gfx::White);
+                                done += piece;
+                            }
+                            draw_x = text_x;
+                            draw_y += static_cast<float>(row_pitch);
+                        }
+                        continue;
+                    }
+                    gfx::DrawTextureEx(*tex, gfx::Vector2{draw_x, draw_y}, 0.0f, scale, gfx::White);
                 }
             }
         }
@@ -64294,8 +64370,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     // rather than stopping a cell short of the border at each end. Opaque
     // first -- the pipe has to actually go -- then the band's own wash
     // back over it, landing on exactly the color the row already shows.
+    // The opaque cover is square at the corners: the pipe is centred in
+    // its cell, which puts the top of its glyph in the very corner the
+    // wash leaves for the outline to round -- and what is outside the
+    // outline there is page anyway (a conceal is only made on a row
+    // whose background is plain, row_bg_plain).
     for (const OrgTableConceal &tc : org_table_conceals) {
-        draw_org_table_band(tc.rect, tc.round_top, tc.round_bot, tc.inset_l, tc.inset_r, page_bg);
+        draw_org_table_band(tc.rect, false, false, tc.inset_l, tc.inset_r, page_bg);
         draw_org_table_band(tc.rect, tc.round_top, tc.round_bot, tc.inset_l, tc.inset_r, tc.wash);
     }
 

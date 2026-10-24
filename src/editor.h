@@ -1615,6 +1615,11 @@ struct Buffer {
         // every slot walker asks for them, every frame.
         int width = 0, height = 0;
         float baseline = -1.0f;
+        // Which fragment, at which size and backend, this is the render of
+        // (Editor::OrgLatexFragmentIdentity; 0 for a span registered without
+        // one): what lets a rescan keep a span it would only register again
+        // (Editor::OrgLatexScanDelta).
+        size_t identity = 0;
     };
     std::unordered_map<int, std::vector<OrgLatexInlineSpan>> org_latex_inline;
     // mepml tables (Editor::MepmlTableLayout) size a cell holding inline
@@ -12300,6 +12305,20 @@ public:
      * @param force Re-plan even when nothing the layout depends on appears to have changed (pass true after an edit).
      */
     void OrgTableWrapScan(bool force = false);
+    // A table's layout plans each formula at its render's width, and
+    // renders land a frame or more after the scan that wanted them (or
+    // are cleared and re-registered by mep.org_latex_scan): set when one
+    // does on a table row, so the next frame plans that table again.
+    /**
+     * @brief Returns whether an inline maths render landed on a table row since the current buffer's layout was planned.
+     * @return True if OrgTableWrapScan should run again.
+     */
+    bool OrgTableWrapStale();
+    /**
+     * @brief A fingerprint of the inline maths on the rows of the tables the last OrgTableWrapScan planned.
+     * @return Equal to the last plan's own while nothing it was laid out around has changed.
+     */
+    size_t OrgTableMathSignature() const;
     // Appends one inline-math span (see Buffer::OrgLatexInlineSpan) for
     // `row` -- called once per match by mep_org_latex_register_inline
     // (kBuiltinOrgLatex). Appends rather than replaces (unlike
@@ -12337,7 +12356,29 @@ public:
     // the table was laid out for: mepml_render must run again.
     bool MepmlTablesStale();
     void AddOrgLatexInlineSpan(int row, int col_start, int col_end, const std::string &path, int first_row = -1,
-                               int last_row = -1);
+                               int last_row = -1, size_t identity = 0);
+    /**
+     * @brief A fragment's identity as a span records it: its source with the render's size and backend.
+     * @param variant The render's size and backend, as mep.org_latex_scan words them.
+     * @param body The fragment's source, delimiters included.
+     * @return The hash Buffer::OrgLatexInlineSpan::identity holds for it.
+     */
+    static size_t OrgLatexFragmentIdentity(const std::string &variant, const std::string &body);
+    // The scan behind mep.org_latex_scan, without the part that undid
+    // itself: every inline fragment whose render is already registered
+    // exactly where it now is -- same rows, columns, source and render
+    // variant, the cursor not on it -- keeps its spans, and only the rest
+    // are handed back to be rendered. Every other span is dropped (an
+    // edited formula, one gone, one the cursor stepped onto). A mepml
+    // buffer, whose layout keys off its spans being registered afresh,
+    // gets the whole set every time, as before.
+    /**
+     * @brief Scans the current buffer's LaTeX and keeps the inline renders that are still right.
+     * @param cursor_row 0-based row whose fragments show their source (they are returned, not kept), or -1.
+     * @param variant The render size and backend (see OrgLatexFragmentIdentity).
+     * @return Every block fragment, and the inline fragments that still need registering.
+     */
+    OrgLatexFragments OrgLatexScanDelta(int cursor_row, const std::string &variant);
     /**
      * @brief Whether an inline-math span shows its raw source rather than its render: the plain-cursor-line
      * rule, applied across the fragment's whole row range so a multi-line fragment is revealed as a unit. Never
@@ -16486,6 +16527,9 @@ private:
     int org_table_wrap_cursor_row_ = -2;  // -2 = nothing planned yet
     int org_table_wrap_sel_lo_ = -1;
     int org_table_wrap_sel_hi_ = -1;
+    bool org_table_wrap_math_stale_ = false;  // see OrgTableWrapStale
+    size_t org_table_wrap_math_sig_ = 0;       // OrgTableMathSignature() as last planned
+    std::vector<char> org_table_wrap_math_rows_;  // rows of the tables last planned (1 = a table row)
     // Org markup concealment / scaled headlines (<leader>otm, <leader>oth):
     // see OrgConcealVisible()/OrgHeadingScaleVisible() for what each gates
     // and why both start on.

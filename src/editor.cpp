@@ -36863,8 +36863,8 @@ void Editor::SnippetParse(const std::vector<std::string> &body, std::vector<std:
     }
     // Field order: 1, 2, ..., with the exit (0) last.
     std::stable_sort(stops_out->begin(), stops_out->end(), [](const SnippetStop &a, const SnippetStop &b) {
-        int an = a.num == 0 ? INT_MAX : a.num;
-        int bn = b.num == 0 ? INT_MAX : b.num;
+        int an = a.num == 0 ? std::numeric_limits<int>::max() : a.num;
+        int bn = b.num == 0 ? std::numeric_limits<int>::max() : b.num;
         return an < bn;
     });
 }

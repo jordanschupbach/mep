@@ -16,6 +16,7 @@
 | =pasteindent= / =pi=      | on      | re-indent a pasted block to fit where it lands |
 | =pyindent=                | on      | re-align a Python buffer's indentation on save |
 | =smarttab= / =sta=        | on      | one Backspace/Delete press per indent level |
+| =pdfautoreload= / =par=   | on      | an open PDF follows its file on disk |
 | =textwidth=N= / =tw=N=    | 80      | the column =gq= wraps to       |
 
 Prefix a boolean with =no= to turn it off: =:set nowrap=.
@@ -65,6 +66,17 @@ whole indent level -- back to the previous four-column tab stop rather than one
 space at a time -- and Delete do the same forwards. Spaces that are not
 indentation (between words, or anywhere after text on the line) still go one at
 a time.
+
+** PDF viewers: =pdfautoreload=
+
+A PDF open in a viewer pane re-reads itself when the file changes on disk --
+recompile a LaTeX document beside mep and the pane shows the new build a
+moment later, on the same page and at the same scroll and zoom you were
+reading at. mep looks at the file a few times a second and waits for it to
+stop changing before decoding it, so a compiler still writing its output is
+never read half-way; a file that disappears (a =latexmk -c=, say) leaves the
+last build on screen until the next one lands. =:set nopdfautoreload= turns
+this off for the session.
 
 * =mep.opt= options
 

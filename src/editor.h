@@ -2789,6 +2789,21 @@ struct PdfBufferState {
     bool HasUnsavedAnnots() const {
         return !pending_annots.empty() || !annot_edits.empty() || !annot_deletes.empty();
     }
+    // The file as this document was last read from (or written to) it --
+    // the PDF analogue of Buffer::disk, and what Editor::TickPdfAutoReload
+    // compares against to notice that pdflatex (or anything else) rewrote
+    // the file under an open viewer. Unstamped (valid == false) for a
+    // buffer that has no readable file (the wasm build, a PDF handed over
+    // as bytes); the watcher leaves those alone.
+    DiskStamp disk;
+    // A stamp seen on disk that differs from `disk`, and when it was first
+    // seen (TickPdfAutoReload's clock, seconds). A compiler writes its
+    // output over a stretch of time, so the first differing stamp is a
+    // half-written file as often as not; the reload waits until the stamp
+    // has held still for a moment (kPdfAutoReloadSettleSec) instead of
+    // decoding whatever bytes happened to be there when it first looked.
+    DiskStamp seen;
+    double seen_at = 0.0;
 };
 
 struct PdfSession {
@@ -7107,8 +7122,11 @@ public:
      * @param buffer_id The buffer id of the existing PDF session to overwrite.
      * @param bytes Pointer to the raw PDF bytes to parse.
      * @param len Length of `bytes` in bytes.
+     * @param keep_view Keep every viewing pane's page (clamped to the new page count), scroll, pan and zoom
+     *        instead of resetting to the top -- what an automatic reload of a recompiled document wants, so
+     *        the reader stays on the page they were proofreading.
      */
-    void ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t len);
+    void ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t len, bool keep_view = false);
     // Re-decodes `bytes` INTO the existing OfficeSession at `buffer_id` --
     // unlike OpenOfficeInPlace, never creates a new buffer/session and
     // never does a dedup-by-filename lookup; a hard in-place overwrite
@@ -13672,6 +13690,16 @@ public:
     // "the working tree just moved, re-read what you can" at the one moment
     // it knows that happened.
 
+    /** @brief Re-reads any open PDF whose file was rewritten on disk and has held still since (`:set pdfautoreload`).
+     *  Called once per frame (Editor::HandleInput); it stat()s the open PDFs' files a few times a second, and a
+     *  file whose stamp has differed from the loaded one for kPdfAutoReloadSettleSec without changing further is
+     *  decoded in place with every pane's page/scroll/zoom kept (ReloadPdfBuffer with keep_view) -- so a LaTeX
+     *  document recompiled beside mep refreshes in the viewer on its own. A half-written file (the compiler
+     *  still writing) only restarts the wait; a file that vanished is left alone until it is back.
+     *  @param now The frame's clock in seconds (gfx::GetTime; a test passes its own). */
+    void TickPdfAutoReload(double now);
+    /** @brief The `:set pdfautoreload` option: whether open PDFs follow their files on disk (default on). */
+    bool PdfAutoReload() const { return pdf_auto_reload_; }
     /** @brief Whether `buffer_id`'s file has been rewritten on disk since the buffer last read or wrote it.
      *  @param buffer_id The buffer to check.
      *  @return True only for a stamped, file-backed text buffer whose on-disk stamp now differs; false when
@@ -15726,6 +15754,15 @@ private:
     // presence is also what IsPdfBuffer tests. Same never-reaped lifetime
     // reasoning as images_.
     std::unordered_map<int, std::shared_ptr<PdfBufferState>> pdf_buffers_;
+    // Records the on-disk stamp of `bs`'s file as the bytes just loaded into
+    // it (PdfBufferState::disk) -- after OpenPdfInPlace, ReloadPdfBuffer and
+    // the annotation save, the three places the document and the file are
+    // known to agree. Clears any half-seen change.
+    void StampPdfBuffer(PdfBufferState &bs);
+    // The resolved path of a PDF buffer's file ("" if it has none).
+    std::string PdfBufferPath(int buffer_id) const;
+    // When TickPdfAutoReload last stat()ed the open PDFs (its own clock).
+    double pdf_watch_checked_ = -1.0;
     // note-text hash -> rendered LaTeX PNG path ("" while still rendering);
     // see SetPdfNoteLatexPng and kBuiltinPdfAnnot.
     std::unordered_map<std::string, std::string> pdf_note_latex_png_;
@@ -16395,6 +16432,8 @@ private:
     // for gq's ApplyOperator('q', ...) -> FormatLines wrap width.
     bool ignore_case_ = false;
     bool wrapscan_ = true;
+    // `:set pdfautoreload` -- open PDFs follow their files (TickPdfAutoReload).
+    bool pdf_auto_reload_ = true;
     int text_width_ = 80;
     // :set caretdelay=<ms> / :set caretrate=<per-second> -- how long a
     // held motion key waits before the caret starts repeating, and how

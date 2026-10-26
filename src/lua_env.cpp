@@ -12110,6 +12110,8 @@ int l_set_option(lua_State *L) {
         push_bool(ed->Wrap());
     } else if (name == "textwidth" || name == "tw") {
         lua_pushstring(L, std::to_string(ed->TextWidth()).c_str());
+    } else if (name == "pdfautoreload" || name == "par") {
+        push_bool(ed->PdfAutoReload());
     } else {
         lua_pushnil(L);
     }

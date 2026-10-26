@@ -114,6 +114,36 @@ const char *kAfterPull =
     "    scores = [model.score(f) for f in folds]\n"
     "    return sum(scores) / len(scores)\n";
 
+// A minimal classic-xref PDF with `pages` empty US-letter pages (the same
+// hand-built shape pdf_document_test.cpp uses); offsets are computed, not
+// hardcoded. Each page count gives a different byte length, so the stamp
+// differs in size as well as mtime, as for kBeforePull/kAfterPull.
+std::string MinimalPdf(int pages) {
+    std::vector<std::pair<int, std::string>> objects;
+    std::string kids;
+    for (int i = 0; i < pages; ++i) kids += std::to_string(3 + i) + " 0 R ";
+    objects.emplace_back(1, "<< /Type /Catalog /Pages 2 0 R >>");
+    objects.emplace_back(2, "<< /Type /Pages /Kids [" + kids + "] /Count " + std::to_string(pages) +
+                                " /MediaBox [0 0 612 792] >>");
+    for (int i = 0; i < pages; ++i) objects.emplace_back(3 + i, "<< /Type /Page /Parent 2 0 R >>");
+    std::string doc = "%PDF-1.4\n";
+    std::vector<size_t> offsets;
+    for (const auto &obj : objects) {
+        offsets.push_back(doc.size());
+        doc += std::to_string(obj.first) + " 0 obj\n" + obj.second + "\nendobj\n";
+    }
+    const size_t xref_off = doc.size();
+    doc += "xref\n0 " + std::to_string(objects.size() + 1) + "\n0000000000 65535 f \n";
+    for (size_t off : offsets) {
+        char line[32];
+        std::snprintf(line, sizeof(line), "%010lld 00000 n \n", static_cast<long long>(off));
+        doc += line;
+    }
+    doc += "trailer\n<< /Size " + std::to_string(objects.size() + 1) + " /Root 1 0 R >>\n";
+    doc += "startxref\n" + std::to_string(xref_off) + "\n%%EOF\n";
+    return doc;
+}
+
 std::string ScratchDir() {
     const char *env = std::getenv("MEP_RELOAD_TEST_DIR");
     if (env && *env) return env;
@@ -362,6 +392,118 @@ int main() {
         EXPECT(ed.Cursor().row >= 0 && ed.Cursor().row < lines,
                "the focused pane's cursor is inside the shortened file",
                "row " + std::to_string(ed.Cursor().row) + " of " + std::to_string(lines));
+    }
+
+    // ------------------------------------------------------------------ 9
+    // The same no-watcher gap for a PDF viewer: a document recompiled
+    // beside mep (pdflatex writing main.pdf) has to show up on its own,
+    // without a half-written file being decoded mid-build and without the
+    // reader being thrown back to page one. Editor::TickPdfAutoReload is
+    // what HandleInput runs every frame; here it is driven with its own
+    // clock, so the poll interval and settle wait are exercised exactly.
+    std::printf("\n== 9. an open PDF follows its file on disk\n");
+    {
+        const std::string path = dir + "/latex/main.pdf";
+        WriteWholeFile(path, MinimalPdf(3));
+        Editor ed;
+        ed.LoadFile(path);
+        const int id = ed.CurrentBufferId();
+        EXPECT(ed.IsPdfBuffer(id), "the file opened as a PDF buffer", "it did not");
+        PdfSession *sess = ed.AnyPdfSessionForBuffer(id);
+        EXPECT(sess != nullptr && sess->doc && sess->doc->PageCount() == 3,
+               "the viewer holds the three-page build",
+               sess && sess->doc ? std::to_string(sess->doc->PageCount()) + " pages" : "no session");
+        if (!sess) return 1;
+        sess->page = 2;  // proofreading the last page
+        sess->scroll_y = 120.0f;
+
+        // Nothing changed: however often the tick runs, nothing happens.
+        ed.TickPdfAutoReload(1.0);
+        ed.TickPdfAutoReload(2.0);
+        EXPECT(sess->page == 2 && sess->doc->PageCount() == 3, "an unchanged file is left alone",
+               "page " + std::to_string(sess->page));
+
+        // The build rewrites the file: a longer document this time. The
+        // first poll after the write sees a new stamp and starts the wait;
+        // a poll inside the settle window must NOT decode yet (the real
+        // file would still be half-written), the one after it must.
+        WriteWholeFile(path, MinimalPdf(5));
+        ed.TickPdfAutoReload(10.0);
+        EXPECT(sess->doc->PageCount() == 3, "the first sight of a changed file only starts the wait",
+               std::to_string(sess->doc->PageCount()) + " pages already");
+        ed.TickPdfAutoReload(10.3);
+        EXPECT(sess->doc->PageCount() == 3, "a file seen 0.3 s ago is still waited on",
+               std::to_string(sess->doc->PageCount()) + " pages already");
+        ed.TickPdfAutoReload(10.7);
+        EXPECT(sess->doc->PageCount() == 5, "THE FEATURE: once the file holds still it is re-read",
+               std::to_string(sess->doc->PageCount()) + " pages");
+        EXPECT(sess->page == 2 && sess->scroll_y == 120.0f,
+               "the reader is still on the page they were on, at the same scroll",
+               "page " + std::to_string(sess->page) + " scroll " + std::to_string(sess->scroll_y));
+
+        // Settled: later polls see the stamp the reload recorded and do
+        // nothing (in particular, no reload loop).
+        ed.TickPdfAutoReload(11.0);
+        ed.TickPdfAutoReload(11.5);
+        EXPECT(sess->doc->PageCount() == 5 && sess->page == 2, "a re-read file is not re-read again",
+               "page " + std::to_string(sess->page));
+
+        // A file that keeps changing (the compiler still writing) keeps
+        // restarting the wait: three different stamps 0.3 s apart never
+        // trigger a decode, the still one after them does.
+        sess->page = 4;
+        WriteWholeFile(path, MinimalPdf(1));
+        ed.TickPdfAutoReload(20.0);
+        WriteWholeFile(path, MinimalPdf(2));
+        ed.TickPdfAutoReload(20.3);
+        WriteWholeFile(path, MinimalPdf(4));
+        ed.TickPdfAutoReload(20.6);
+        EXPECT(sess->doc->PageCount() == 5, "a file still being written is not decoded",
+               std::to_string(sess->doc->PageCount()) + " pages");
+        ed.TickPdfAutoReload(20.9);
+        ed.TickPdfAutoReload(21.2);
+        EXPECT(sess->doc->PageCount() == 4, "the final write is picked up once it settles",
+               std::to_string(sess->doc->PageCount()) + " pages");
+        EXPECT(sess->page == 3, "a page past the new end is clamped to the last page",
+               "page " + std::to_string(sess->page));
+
+        // The ticks are throttled: two polls within the interval are one.
+        WriteWholeFile(path, MinimalPdf(6));
+        ed.TickPdfAutoReload(30.0);
+        ed.TickPdfAutoReload(30.1);  // same poll window: not a second sighting
+        ed.TickPdfAutoReload(30.2);
+        EXPECT(sess->doc->PageCount() == 4, "polls inside the interval do not advance the wait",
+               std::to_string(sess->doc->PageCount()) + " pages");
+        ed.TickPdfAutoReload(30.5);
+        EXPECT(sess->doc->PageCount() == 6, "and the settled file is read after the interval",
+               std::to_string(sess->doc->PageCount()) + " pages");
+
+        // `:set nopdfautoreload` switches the whole thing off.
+        ed.RunCommand("set nopdfautoreload");
+        EXPECT(!ed.PdfAutoReload(), "the option turned off", "it is still on");
+        WriteWholeFile(path, MinimalPdf(2));
+        ed.TickPdfAutoReload(40.0);
+        ed.TickPdfAutoReload(41.0);
+        EXPECT(sess->doc->PageCount() == 6, "with the option off the file is not followed",
+               std::to_string(sess->doc->PageCount()) + " pages");
+        ed.RunCommand("set pdfautoreload");
+        ed.TickPdfAutoReload(42.0);
+        ed.TickPdfAutoReload(43.0);
+        EXPECT(sess->doc->PageCount() == 2, "turning it back on picks the change up",
+               std::to_string(sess->doc->PageCount()) + " pages");
+
+        // Deleted out from under the viewer (a clean before a rebuild):
+        // the stale document stays up, and the rebuilt file is followed.
+        std::filesystem::remove(path, ec);
+        ed.TickPdfAutoReload(50.0);
+        ed.TickPdfAutoReload(51.0);
+        EXPECT(sess->doc->PageCount() == 2, "a missing file leaves the document up",
+               std::to_string(sess->doc->PageCount()) + " pages");
+        WriteWholeFile(path, MinimalPdf(3));
+        ed.TickPdfAutoReload(52.0);
+        ed.TickPdfAutoReload(53.0);
+        EXPECT(sess->doc->PageCount() == 3, "the rebuilt file is followed",
+               std::to_string(sess->doc->PageCount()) + " pages");
     }
 
     std::printf("\n---- %d checks, %d failures ----\n", g_checks, g_failures);

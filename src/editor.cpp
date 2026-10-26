@@ -5205,6 +5205,7 @@ Editor::~Editor() { ShutdownMedia(); }
 void Editor::HandleInput() {
     TickCollaboration();
     TickWorkspacePersistence(gfx::GetTime());
+    TickPdfAutoReload(gfx::GetTime());
     MaybeDismissHover();
     {
         gfx::Vector2 wheel = gfx::GetMouseWheelMoveV();
@@ -14195,6 +14196,7 @@ void Editor::OpenPdfInPlace(const std::string &path, const unsigned char *bytes,
         bs->buffer_id = buffer_id;
         bs->doc = std::move(doc);
         pdf_buffers_[buffer_id] = std::move(bs);
+        StampPdfBuffer(*pdf_buffers_[buffer_id]);
         // No render call here -- EnsurePdfPagesRastered (called every frame
         // from DrawPane, including the first) handles it lazily.
     }
@@ -15507,7 +15509,7 @@ void Editor::HandleMusicInput() {
     }
 }
 
-void Editor::ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t len) {
+void Editor::ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t len, bool keep_view) {
     PdfBufferState *bs = PdfBufferFor(buffer_id);
     if (!bs || !bs->doc) return;
     // Every pane viewing this buffer aliases bs->doc; a worker thread may be
@@ -15523,13 +15525,23 @@ void Editor::ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t l
         return;
     }
     // Reloaded in place: the shared_ptr is unchanged, so every pane's
-    // aliased `doc` already sees the new content. Reset each view.
+    // aliased `doc` already sees the new content. Reset each view -- or,
+    // for an automatic reload of a recompiled document, keep it where the
+    // reader was: the same page (clamped, should the document have become
+    // shorter), scroll and zoom. A page's size can change between builds
+    // and the cached page sizes are dropped with the rasters, so the next
+    // frame's RebasePdfScroll settles scroll_y against the new geometry.
+    const int page_count = bs->doc->PageCount();
     for (auto &kv : pdfs_) {
         PdfSession &sess = kv.second;
         if (sess.buffer_id != buffer_id) continue;
-        sess.page = 0;
-        sess.scroll_y = 0;
-        sess.pan_x = 0;
+        if (keep_view) {
+            sess.page = page_count > 0 ? std::clamp(sess.page, 0, page_count - 1) : 0;
+        } else {
+            sess.page = 0;
+            sess.scroll_y = 0;
+            sess.pan_x = 0;
+        }
         sess.rasters.clear();
         sess.page_size_pt.clear();
         sess.search_active = false;
@@ -15537,6 +15549,90 @@ void Editor::ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t l
         sess.search_query.clear();
         sess.search_matches.clear();
         sess.search_current = -1;
+    }
+    // The file's own annotations may have moved objects; every pane's
+    // overlays rebuild from the fresh document (rasters are gone anyway).
+    bs->annot_generation++;
+    // The bytes just decoded are what the file holds now (every caller
+    // reads them from the buffer's own file) -- so the watcher must not
+    // see this very reload as a change to react to.
+    StampPdfBuffer(*bs);
+}
+
+std::string Editor::PdfBufferPath(int buffer_id) const {
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return std::string();
+    const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.deleted || buf.filename.empty()) return std::string();
+    return ResolveBufferPath(buf, buf.filename);
+}
+
+void Editor::StampPdfBuffer(PdfBufferState &bs) {
+    bs.disk = StatDiskStamp(PdfBufferPath(bs.buffer_id));
+    bs.seen = DiskStamp();
+    bs.seen_at = 0.0;
+}
+
+namespace {
+// How often TickPdfAutoReload stat()s the open PDFs' files, and how long a
+// changed stamp must hold still before the file is re-read. pdflatex
+// writes its output across the whole run -- a stat in the middle sees a
+// real mtime change on a truncated file -- so the first differing stamp
+// starts a wait, and only a stamp that stopped moving is decoded. 0.4 s is
+// long enough to outlast the gaps between a compiler's writes on an
+// ordinary document and short enough that the refresh still reads as
+// immediate once the build ends.
+constexpr double kPdfAutoReloadPollSec = 0.25;
+constexpr double kPdfAutoReloadSettleSec = 0.4;
+}  // namespace
+
+void Editor::TickPdfAutoReload(double now) {
+    if (!pdf_auto_reload_ || pdf_buffers_.empty()) return;
+    if (pdf_watch_checked_ >= 0.0 && now - pdf_watch_checked_ < kPdfAutoReloadPollSec) return;
+    pdf_watch_checked_ = now;
+    for (auto &kv : pdf_buffers_) {
+        PdfBufferState &bs = *kv.second;
+        // Unstamped means no file to follow (the wasm build, or a document
+        // that only ever existed as bytes).
+        if (!bs.doc || !bs.disk.valid) continue;
+        const std::string path = PdfBufferPath(bs.buffer_id);
+        if (path.empty()) continue;
+        const DiskStamp cur = StatDiskStamp(path);
+        // Gone (a build that deletes its output before rewriting it, a
+        // tool writing to a temp name before the rename): nothing newer to
+        // show yet. The stale document stays up until the file is back.
+        if (!cur.valid) {
+            bs.seen = DiskStamp();
+            continue;
+        }
+        if (cur == bs.disk) {
+            bs.seen = DiskStamp();
+            continue;
+        }
+        if (cur != bs.seen) {
+            // A new (or still-moving) stamp: (re)start the settle wait.
+            bs.seen = cur;
+            bs.seen_at = now;
+            continue;
+        }
+        if (now - bs.seen_at < kPdfAutoReloadSettleSec) continue;
+        // Held still: read what is there now. ReloadPdfBuffer re-stamps on
+        // success; on a decode failure the stamp is still taken, so a file
+        // a failed build left behind is not re-read every poll -- the next
+        // successful build changes it again and is picked up then.
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            bs.seen = DiskStamp();
+            continue;
+        }
+        std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        ReloadPdfBuffer(bs.buffer_id, bytes.data(), bytes.size(), /*keep_view=*/true);
+        if (bs.disk != cur) {
+            // The decode failed (ReloadPdfBuffer left its status message);
+            // remember these bytes as seen so we wait for the next change.
+            bs.disk = cur;
+            bs.seen = DiskStamp();
+        }
     }
 }
 
@@ -34577,6 +34673,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                 py_indent_ = value;
             } else if (key == "smarttab" || key == "sta") {
                 smart_tab_ = value;
+            } else if (key == "pdfautoreload" || key == "par") {
+                pdf_auto_reload_ = value;
             } else {
                 status_message_ = "E518: Unknown option: " + opt;
             }
@@ -39959,6 +40057,9 @@ bool Editor::WriteBufferToPath(Buffer &buf, const std::string &path) {
             if (kv.second.buffer_id == buffer_id) kv.second.rasters.clear();
         buf.filename = path;
         buf.modified = false;
+        // The file now holds exactly the bytes in `doc`: the auto-reload
+        // watcher must not take our own write for an outside change.
+        StampPdfBuffer(*bs);
         save_epoch_++;
         status_message_ = "\"" + path + "\" written (annotations added)";
         return true;

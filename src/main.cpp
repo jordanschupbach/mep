@@ -3685,6 +3685,7 @@ const char *kKeybindingsText =
     "\n"
     "Language tools\n"
     "  gd  gh                         go to definition / help (LSP hover, or the R UI's help tab)\n"
+    "  gk                             LSP hover docs; in C/C++ UI mode, shown in the Help tab\n"
     "  gt  :MepLangTest               run this file's tests in the tab terminal -- go test, pytest/\n"
     "                                 unittest, testthat, the file's gtest/catch2 binary, cargo test,\n"
     "                                 vitest/jest, busted, rspec, Pkg.test(), zig test\n"
@@ -13912,7 +13913,7 @@ const char *kBuiltinLanguageUiC =
     "  if not sb then return end\n"
     "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
     "  mep.language_ui_render_textbox(sb.help, st and st.help_text,\n"
-    "    '(no man page yet -- press gh over a function name)')\n"
+    "    '(no docs yet -- gk shows LSP docs, gh a man page, for the symbol under the cursor)')\n"
     "end\n"
     "local function mep_c_ui_render_all()\n"
     "  mep_c_ui_render_asm()\n"
@@ -13961,6 +13962,78 @@ const char *kBuiltinLanguageUiC =
     "  return true\n"
     "end\n"
     "mep.help_register_provider('c', mep.c_ui_help_at_cursor)\n"
+    // Brings the Help tab forward in its pane without moving focus off the
+    // source. If the user closed that tab (or its whole pane), it is opened
+    // again: as a new tab in that pane when it still exists, otherwise in a
+    // new pane above the Plot/Hex pane, or a fresh right column.
+    "local function mep_c_ui_show_help(st)\n"
+    "  if st.help_buf and mep.reveal_buffer(st.help_buf, true) then return end\n"
+    "  local sb = mep_c_ui_sidebars\n"
+    "  if not sb then return end\n"
+    "  local cur = mep.current_pane_id()\n"
+    "  if st.top_pane and mep.pane_focus(st.top_pane) then\n"
+    "    mep.sidebar_open_pane(sb.help)\n"
+    "    st.help_buf = mep.current_buffer()\n"
+    "  else\n"
+    // Re-split above the Plot/Hex pane when it is still there (`split`
+    // opens and focuses the new pane on top), else a fresh right column.
+    "    if st.bottom_pane and mep.pane_focus(st.bottom_pane) then mep.cmd('split')\n"
+    "    else mep.pane_split_right(nil, mep.opt.c_ui_info_share) end\n"
+    "    st.top_pane = mep.current_pane_id()\n"
+    "    st.help_buf = mep.language_ui_open_tabs(st.top_pane, {sb.help})[sb.help]\n"
+    "  end\n"
+    "  mep.pane_focus(cur)\n"
+    "  mep.reveal_buffer(st.help_buf, true)\n"
+    "end\n"
+    // An LSP hover reply's `contents` as plain text: a string, a
+    // MarkupContent/MarkedString ({value=...}), or a list of either. Code
+    // fence lines from markdown replies are dropped since the Help tab
+    // shows plain rows.
+    "local function mep_c_ui_hover_text(contents)\n"
+    "  if contents == nil or contents == mep.json_null then return '' end\n"
+    "  local text\n"
+    "  if type(contents) == 'string' then text = contents\n"
+    "  elseif contents.value then text = tostring(contents.value)\n"
+    "  else\n"
+    "    local parts = {}\n"
+    "    for _, c in ipairs(contents) do\n"
+    "      local t = mep_c_ui_hover_text(c)\n"
+    "      if t ~= '' then parts[#parts + 1] = t end\n"
+    "    end\n"
+    "    text = table.concat(parts, '\\n\\n')\n"
+    "  end\n"
+    "  local out = {}\n"
+    "  for line in (text .. '\\n'):gmatch('([^\\n]*)\\n') do\n"
+    "    if not line:match('^%s*```') then out[#out + 1] = line end\n"
+    "  end\n"
+    "  return (table.concat(out, '\\n'):gsub('^%s+', ''):gsub('%s+$', ''))\n"
+    "end\n"
+    // gk: the LSP hover docs for the symbol under the cursor, shown in the
+    // Help tab (made visible if it isn't) instead of the transient popup K
+    // shows, so the docs stay up while you keep editing. Outside this UI
+    // mode gk is just the ordinary hover popup.
+    "function mep.c_ui_hover_to_help()\n"
+    "  local st = mep_c_ui_state[mep.current_tab_id()]\n"
+    "  if not st then mep.lsp_hover() return end\n"
+    "  local id = mep.lsp_client_for()\n"
+    "  if not id then mep.notify('gk: no LSP attached to this buffer', 'warn') return end\n"
+    "  local sym = mep.help_symbol_at_cursor('[%w_:]')\n"
+    "  sym = sym and sym:gsub('^:+', ''):gsub(':+$', '')\n"
+    "  if not sym or sym == '' then mep.notify('gk: no symbol under the cursor', 'warn') return end\n"
+    "  mep.lsp_request(id, 'textDocument/hover', {\n"
+    "    textDocument = {uri = mep_lsp_uri(mep.filename())},\n"
+    "    position = mep_lsp_position(),\n"
+    "  }, function(msg)\n"
+    "    local result = mep_lsp_result(msg)\n"
+    "    local text = result and mep_c_ui_hover_text(result.contents) or ''\n"
+    "    st.help_text = (text ~= '') and text or ('No hover documentation for ' .. sym .. '.')\n"
+    "    if mep_c_ui_state[mep.current_tab_id()] ~= st then return end\n"
+    "    mep_c_ui_render_help()\n"
+    "    mep_c_ui_show_help(st)\n"
+    "  end)\n"
+    "end\n"
+    "mep.command('MepCHoverDocs', mep.c_ui_hover_to_help)\n"
+    "mep.map_g('k', mep.c_ui_hover_to_help)\n"
     // The compiler/flags for this file: the Run button's own per-project
     // Setup (mep.run_button_config_for, kBuiltinRunButton -- loaded after
     // this chunk, resolved at call time) so both features agree on how the
@@ -14097,6 +14170,7 @@ const char *kBuiltinLanguageUiC =
     "    console = function() if mep.cpp_ui_start_console then mep.cpp_ui_start_console(st) else mep.terminal_here() end end,\n"
     "  })\n"
     "  st.editor_pane, st.console_pane, st.term_buf = layout.editor_pane, layout.console_pane, layout.console_buf\n"
+    "  st.top_pane, st.bottom_pane = layout.top_pane, layout.bottom_pane\n"
     "  local tid = mep.current_tab_id()\n"
     "  mep_c_ui_ensure_sidebars()\n"
     "  local sb = mep_c_ui_sidebars\n"
@@ -14110,7 +14184,7 @@ const char *kBuiltinLanguageUiC =
     "  if mep.cpp_ui_setup then mep.cpp_ui_setup(st, layout) end\n"
     "  mep.pane_focus(layout.editor_pane)\n"
     "  mep.c_ui_regen_asm(st)\n"
-    "  if st.cpp then mep.notify('C++ UI: crepl console below; Objects/Data/Definitions/History and compiler views; Plot bottom-right; <leader>re evaluates a fragment, <leader>rr runs the main body') else mep.notify('C/C++ language UI: terminal below, Assembly/Build/Help tabbed top-right, Hex bottom-right; <leader>rr builds and runs, gh opens a man page (mod1+Tab cycles tabs)') end\n"
+    "  if st.cpp then mep.notify('C++ UI: crepl console below; Objects/Data/Definitions/History and compiler views; Plot bottom-right; <leader>re evaluates a fragment, <leader>rr runs the main body, gk shows docs in the Help tab') else mep.notify('C/C++ language UI: terminal below, Assembly/Build/Help tabbed top-right, Hex bottom-right; <leader>rr builds and runs, gh opens a man page, gk shows LSP docs in Help (mod1+Tab cycles tabs)') end\n"
     "  return {\n"
     "    prefer_session_run = st.cpp ~= nil,\n"
     "    run_source = function(f) if not (mep.cpp_ui_run and mep.cpp_ui_run(st, f)) then mep.c_ui_build_and_run(st, f) end end,\n"

@@ -93,7 +93,10 @@ mep.opt.c_ui_hex_page = 1024   -- bytes per page
 
 * Help
 
-=gh= on a symbol opens its =man= page in the Help tab. =K= retains LSP hover.
+=gh= on a symbol opens its =man= page in the Help tab. =gk= shows the LSP hover
+docs (signature, Doxygen comment) in the Help tab instead, bringing the tab to
+the front, or reopening it if it was closed, without moving focus off the
+source. =K= still shows the hover popup.
 
 * C++ compiler and library flags
 

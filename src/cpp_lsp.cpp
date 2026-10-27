@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <map>
 #include <set>
 #include <string>
@@ -234,6 +235,26 @@ std::string ParameterListText(const CppNode *fn, const std::vector<std::string> 
     }
     out += ")";
     return out;
+}
+
+}  // namespace
+
+namespace {
+
+/**
+ * @brief The scope a qualifier opens, following a typedef or `using` alias to its class.
+ *
+ * `dm::Plot::boxplot` walks through `using Plot = plot::RPlot;` -- the
+ * alias itself opens no scope, the class it names does.
+ */
+int QualifierScope(const CppIndex &index, int symbol) {
+    const CppSymbol &found = index.symbols[static_cast<size_t>(symbol)];
+    if (found.child_scope >= 0 || found.kind != CppSymbolKind::Typedef || found.type_base.empty()) {
+        return found.child_scope;
+    }
+    const int target = CppResolveTypeName(index, found.scope, found.type_base);
+    if (target < 0 || target == symbol) return -1;
+    return index.symbols[static_cast<size_t>(target)].child_scope;
 }
 
 }  // namespace
@@ -1500,7 +1521,7 @@ private:
         int symbol = CppLookupName(index_, scope, parts[index]);
         index++;
         while (symbol >= 0 && index < parts.size()) {
-            const int child = index_.symbols[static_cast<size_t>(symbol)].child_scope;
+            const int child = QualifierScope(index_, symbol);
             if (child < 0) return -1;
             symbol = CppLookupMember(index_, child, parts[index]);
             index++;
@@ -1822,7 +1843,7 @@ int LookupTypePath(const CppIndex &index, int scope, const std::string &type_bas
     if (parts.size() < 2) return -1;
     int symbol = CppLookupName(index, scope, parts.front());
     for (size_t i = 1; symbol >= 0 && i < parts.size(); i++) {
-        const int child = index.symbols[static_cast<size_t>(symbol)].child_scope;
+        const int child = QualifierScope(index, symbol);
         if (child < 0) return -1;
         symbol = CppLookupMember(index, child, parts[i]);
     }
@@ -2157,17 +2178,38 @@ std::string CppFormatDocComment(const std::string &raw) {
     std::vector<std::string> body;  // prose minus examples, which go last
     std::vector<std::string> tail;
     {
-        // Examples (an `Example:` heading and the code under it) read best
-        // after the parameter list, where a reader has the contract first.
-        bool in_example = false;
-        for (const std::string &p : prose) {
-            if (p.size() > 1 && p.back() == ':' && p.find(' ') == std::string::npos &&
-                (p.rfind("Example", 0) == 0 || p.rfind("Usage", 0) == 0)) {
-                in_example = true;
-            } else if (in_example && !p.empty() && p.rfind("    ", 0) != 0) {
-                in_example = false;
+        // Examples (an `Example:` heading and the code under it) and
+        // References read best after the parameter list, where a reader
+        // has the contract first. An example runs while its lines are
+        // indented code; a reference list runs through `- ` items and
+        // their wrapped continuation lines, which get a hanging indent.
+        enum class Tail { None, Example, References };
+        Tail mode = Tail::None;
+        const auto heading_is = [](const std::string &p, std::initializer_list<const char *> words) {
+            if (p.size() < 2 || p.back() != ':' || p.find(' ') != std::string::npos) return false;
+            for (const char *w : words) {
+                if (p.rfind(w, 0) == 0) return true;
             }
-            (in_example ? tail : body).push_back(p);
+            return false;
+        };
+        for (size_t i = 0; i < prose.size(); i++) {
+            const std::string &p = prose[i];
+            if (heading_is(p, {"Example", "Usage"})) {
+                mode = Tail::Example;
+            } else if (heading_is(p, {"Reference", "Source", "Bibliography", "Citation"})) {
+                mode = Tail::References;
+            } else if (mode == Tail::Example && !p.empty() && p.rfind("    ", 0) != 0) {
+                mode = Tail::None;
+            } else if (mode == Tail::References && p.empty()) {
+                // A blank line ends the list unless another item follows it.
+                size_t next = i + 1;
+                while (next < prose.size() && prose[next].empty()) next++;
+                if (next >= prose.size() || prose[next].rfind("- ", 0) != 0) mode = Tail::None;
+            } else if (mode == Tail::References && p.rfind("- ", 0) != 0 && !heading_is(p, {"Reference", "Source"})) {
+                tail.push_back("  " + p);  // a wrapped citation line hangs under its item
+                continue;
+            }
+            (mode != Tail::None ? tail : body).push_back(p);
         }
     }
     const auto add_block = [&](const std::vector<std::string> &block) {

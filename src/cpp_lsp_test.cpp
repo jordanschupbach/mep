@@ -1152,6 +1152,17 @@ void TestDoxygenHoverRendering() {
     CHECK(out.find("Throws:") < out.find("Example:"));
     CHECK(out.find("See also: lib::seed()") != std::string::npos);
 
+    // A reference list follows the example, keeps its items, and indents wrapped lines.
+    {
+        const std::string refs = CppFormatDocComment(
+            "@brief Rounds.\n\n@par References\n- R Core Team. round.\n- Wilk, M. B. (1968).\n  Biometrika 55(1).\n\n"
+            "@par Example\n@code\nround(2.5);\n@endcode\n@param x Value.");
+        CHECK(refs.find("References:\n- R Core Team. round.\n- Wilk, M. B. (1968).\n  Biometrika 55(1).") !=
+              std::string::npos);
+        CHECK(refs.find("Parameters:") < refs.find("References:"));
+        CHECK(refs.find("Rounds.") < refs.find("Parameters:"));
+    }
+
     // Through a real comment: `///` markers lose one space only, so code keeps its shape.
     {
         const Lines lines = {"/// @brief Sums.", "/// @code", "/// f(1,", "///   2);", "/// @endcode",
@@ -1213,6 +1224,13 @@ void TestHoverSignaturesTemplatesAndOverloads() {
     const std::string row = HoverAt(lines, 24, "get_double", 1, NoFiles());
     CHECK(row.find("Reads a number.") != std::string::npos);
     CHECK(row.find("object type unknown here") != std::string::npos);
+    // A static member reached through a `using` alias of its class.
+    {
+        const Lines alias = {"namespace lib {", "struct Chart {", "  /// Makes a box plot.",
+                             "  static Chart boxplot(int n);", "};", "using Plot = Chart;", "}",
+                             "int main() { auto p = lib::Plot::boxplot(1); return 0; }"};
+        CHECK(HoverAt(alias, 7, "boxplot", 1, NoFiles()).find("Makes a box plot.") != std::string::npos);
+    }
     // A pack is spelled once.
     const std::string group = HoverAt(lines, 25, "group", 1, NoFiles());
     CHECK(group.find("Keys&&... keys)") != std::string::npos);

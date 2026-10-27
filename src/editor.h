@@ -350,7 +350,7 @@ enum class Mode {
 // Shared between Editor::HandleHoverFocusInput (scroll clamping) and
 // main.cpp's DrawHoverPopup (the focused render path's visible window) so
 // both agree on how many raw lines of hover text are shown at once.
-constexpr int kHoverFocusVisibleRows = 20;
+constexpr int kHoverFocusVisibleRows = 30;
 
 // Display name for the status line (main.cpp) and agent_rpc.cpp's
 // event.modeChanged notification -- the one place outside main.cpp that

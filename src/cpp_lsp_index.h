@@ -222,6 +222,16 @@ std::string CppDocCommentAbove(const CppIndex &index, int line);
 // from its parse alone, with no CppIndex built for it.
 std::string CppDocCommentAbove(const std::vector<CppComment> &comments, int line);
 
+/**
+ * @brief Renders a marker-stripped Doxygen comment as hover text.
+ *
+ * `@param`/`@tparam`/`@return`/`@throws` become aligned "Parameters:",
+ * "Returns:" and "Throws:" sections, `@code` examples keep their
+ * indentation and move after the contract, `@see` becomes "See also:",
+ * and inline commands such as `@p name` lose their marker.
+ */
+std::string CppFormatDocComment(const std::string &raw);
+
 /** @brief Renders a symbol the way hover shows it (`int Editor::width` / `void f(int a) const`). */
 std::string CppSymbolDetail(const CppSymbol &symbol);
 

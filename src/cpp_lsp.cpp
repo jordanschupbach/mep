@@ -17,6 +17,7 @@
 #include "cpp_lsp.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -162,8 +163,48 @@ bool IsFundamentalSpelling(const std::string &text) {
     return any;
 }
 
-/** @brief Renders a parameter list the way hover and signature help show it. */
-std::string ParameterListText(const CppNode *fn) {
+/** @brief The source text between two positions, whitespace runs collapsed to one space. */
+std::string SpellSource(const std::vector<std::string> &lines, const CppPos &from, const CppPos &to) {
+    std::string out;
+    for (int l = from.line; l <= to.line && l >= 0 && static_cast<size_t>(l) < lines.size(); l++) {
+        const std::string &text = lines[static_cast<size_t>(l)];
+        const size_t a = l == from.line ? static_cast<size_t>(std::max(0, from.col)) : 0;
+        const size_t b = l == to.line ? std::min(text.size(), static_cast<size_t>(std::max(0, to.col))) : text.size();
+        if (a < b) {
+            if (!out.empty()) out += ' ';
+            out += text.substr(a, b - a);
+        }
+    }
+    std::string compact;
+    for (const char c : out) {
+        const bool space = c == ' ' || c == '\t' || c == '\r';
+        if (space && (compact.empty() || compact.back() == ' ')) continue;
+        compact += space ? ' ' : c;
+    }
+    while (!compact.empty() && compact.back() == ' ') compact.pop_back();
+    return compact;
+}
+
+/** @brief A function's return type as written, with the declarator's `&`/`*` put back on it. */
+std::string ReturnTypeText(const CppNode *fn) {
+    if (fn == nullptr || fn->kids.empty()) return "";
+    std::string type = CppTypeText(fn->kids.front().get());
+    if (!fn->return_suffix.empty() && !fn->kids.front()->type_text.empty()) type += fn->return_suffix;
+    // `inline` says how the function is linked, not what it returns.
+    for (const std::string word : {"inline ", "__inline "}) {
+        const size_t at = type.find(word);
+        if (at != std::string::npos && (at == 0 || type[at - 1] == ' ')) type.erase(at, word.size());
+    }
+    return type;
+}
+
+/**
+ * @brief Renders a parameter list the way hover and signature help show it.
+ * @param fn the function node
+ * @param lines the source the node was parsed from; with it, default arguments are shown as
+ *        written (`int digits = 0`), without it as `= ...`
+ */
+std::string ParameterListText(const CppNode *fn, const std::vector<std::string> *lines = nullptr) {
     std::string out = "(";
     for (size_t i = 0; i < fn->params.size(); i++) {
         const CppNode *param = fn->params[i].get();
@@ -173,13 +214,23 @@ std::string ParameterListText(const CppNode *fn) {
             out += "...";
             continue;
         }
-        const std::string type = param->kids.empty() ? "" : CppTypeText(param->kids.front().get());
+        std::string type = param->kids.empty() ? "" : CppTypeText(param->kids.front().get());
+        const bool pack_in_type = type.size() >= 3 && type.compare(type.size() - 3, 3, "...") == 0;
         out += type;
         if (!param->name.empty()) {
-            if (!type.empty() && type.back() != '*' && type.back() != '&' && type.back() != ' ') out += ' ';
+            if (!type.empty() && type.back() != ' ') out += ' ';
             out += param->name;
         }
-        if (param->is_variadic) out += "...";
+        if (param->is_variadic && !pack_in_type) out += "...";
+        if (param->kids.size() > 1) {
+            std::string value = "...";
+            const CppNode *init = param->kids[1].get();
+            if (lines != nullptr && init != nullptr) {
+                const std::string spelled = SpellSource(*lines, init->start, init->end);
+                if (!spelled.empty() && spelled.size() <= 48) value = spelled;
+            }
+            out += " = " + value;
+        }
     }
     out += ")";
     return out;
@@ -598,13 +649,12 @@ private:
                     symbol.col = decl->name_pos.col;
                     symbol.end_col = decl->name_end.col;
                     symbol.doc = CppDocCommentAbove(parsed.comments, decl->start.line);
-                    const std::string return_type =
-                        decl->kids.empty() ? "" : CppTypeText(decl->kids.front().get());
+                    const std::string return_type = ReturnTypeText(decl);
                     // What a call returns, so `auto x = lib::make()` and
                     // `w.set_a().set_b()` know their type.
                     symbol.type_base = decl->kids.empty() ? "" : TypeBaseOf(decl->kids.front().get());
                     symbol.detail = (return_type.empty() ? "" : return_type + " ") + decl->name +
-                                    ParameterListText(decl) +
+                                    ParameterListText(decl, &lines) +
                                     (decl->trailing_qualifiers.empty() ? "" : " " + decl->trailing_qualifiers);
                     out->push_back(symbol);
                     break;
@@ -998,10 +1048,10 @@ private:
         symbol.is_defaulted = node->is_defaulted;
         symbol.is_constexpr = node->is_constexpr;
         symbol.access = node->str_value;
-        const std::string return_type = node->kids.empty() ? "" : CppTypeText(node->kids.front().get());
+        const std::string return_type = ReturnTypeText(node);
         symbol.type_text = return_type;
         symbol.type_base = node->kids.empty() ? "" : TypeBaseOf(node->kids.front().get());
-        symbol.detail = (return_type.empty() ? "" : return_type + " ") + node->name + ParameterListText(node) +
+        symbol.detail = (return_type.empty() ? "" : return_type + " ") + node->name + ParameterListText(node, &index_.lines) +
                         (node->trailing_qualifiers.empty() ? "" : " " + node->trailing_qualifiers);
         symbol.doc = DocFor(node);
         if (owner_kind == CppScope::Kind::Class) {
@@ -1797,7 +1847,34 @@ int CppLookupTypeName(const CppIndex &index, int scope, const std::string &spell
     return LookupTypeName(index, scope, spelled);
 }
 
-int CppResolveTypeName(const CppIndex &index, int scope, const std::string &type_base) {
+namespace {
+
+/**
+ * @brief Drops template argument lists from a type's spelling: `ns::Vec<double>` -> `ns::Vec`.
+ *
+ * Members are looked up on the primary template, so `Vec<double>` and
+ * `Vec<int>` both answer with `Vec`'s members (and their docs).
+ */
+std::string WithoutTemplateArgs(const std::string &spelled) {
+    if (spelled.find('<') == std::string::npos) return spelled;
+    std::string out;
+    int depth = 0;
+    for (const char c : spelled) {
+        if (c == '<') {
+            depth++;
+        } else if (c == '>') {
+            if (depth > 0) depth--;
+        } else if (depth == 0) {
+            out += c;
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+int CppResolveTypeName(const CppIndex &index, int scope, const std::string &spelled_type) {
+    const std::string type_base = WithoutTemplateArgs(spelled_type);
     if (type_base.empty()) return -1;
     int symbol = LookupTypeName(index, scope, type_base);
     int guard = 0;
@@ -1805,7 +1882,7 @@ int CppResolveTypeName(const CppIndex &index, int scope, const std::string &type
     while (symbol >= 0 && guard++ < 16) {
         const CppSymbol &found = index.symbols[static_cast<size_t>(symbol)];
         if (found.kind != CppSymbolKind::Typedef || found.type_base.empty()) return symbol;
-        const int next = LookupTypeName(index, found.scope, found.type_base);
+        const int next = LookupTypeName(index, found.scope, WithoutTemplateArgs(found.type_base));
         if (next < 0 || next == symbol) return symbol;
         symbol = next;
     }
@@ -1855,11 +1932,301 @@ std::string CppDocCommentAbove(const CppIndex &index, int line) {
     return CppDocCommentAbove(index.parse.comments, line);
 }
 
+namespace {
+
+/** @brief Removes trailing spaces, tabs and carriage returns. */
+std::string TrimRight(std::string s) {
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.pop_back();
+    return s;
+}
+
+/** @brief Counts a line's leading spaces (a tab counts as one). */
+size_t LeadingSpaces(const std::string &s) {
+    size_t n = 0;
+    while (n < s.size() && (s[n] == ' ' || s[n] == '\t')) n++;
+    return n;
+}
+
+/**
+ * @brief Rewrites Doxygen's inline commands into plain text.
+ *
+ * `@p name`, `@a name`, `@c name`, `@e name` and `@ref name` become just
+ * `name` (the reader of a hover does not need to be told it is a
+ * parameter), and `@b`/`@em` likewise lose their marker.
+ */
+std::string StripInlineDoxygen(const std::string &text) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); i++) {
+        const char c = text[i];
+        if ((c == '@' || c == '\\') && i + 1 < text.size()) {
+            size_t j = i + 1;
+            while (j < text.size() && std::isalpha(static_cast<unsigned char>(text[j]))) j++;
+            const std::string command = text.substr(i + 1, j - i - 1);
+            if ((command == "p" || command == "a" || command == "c" || command == "e" || command == "b" ||
+                 command == "em" || command == "ref") &&
+                j < text.size() && text[j] == ' ') {
+                i = j;  // drop the command and the space after it
+                continue;
+            }
+        }
+        out += c;
+    }
+    return out;
+}
+
+}  // namespace
+
+std::string CppFormatDocComment(const std::string &raw) {
+    // Doxygen's block commands become plain-text sections, so a hover reads
+    // like a man page rather than like markup:
+    //
+    //   Summary sentence.            (@brief / @details markers dropped)
+    //
+    //   Parameters:                  (@param, @tparam -> Template parameters:)
+    //     name  description
+    //   Returns: description
+    //   Throws:
+    //     std::invalid_argument  description
+    //
+    //   Example:                     (@par Example, then @code ... @endcode)
+    //       code, indentation kept
+    //
+    //   See also: a(), b()
+    //
+    // A tag's continuation lines stay with it, indented under its
+    // description. Anything not recognised is passed through unchanged.
+    std::vector<std::string> lines;
+    {
+        std::string current;
+        for (size_t i = 0; i <= raw.size(); i++) {
+            if (i == raw.size() || raw[i] == '\n') {
+                lines.push_back(TrimRight(current));
+                current.clear();
+            } else {
+                current += raw[i];
+            }
+        }
+    }
+
+    struct Entry {
+        std::string name;
+        std::vector<std::string> text;
+    };
+    std::vector<std::string> prose;  // summary, details, notes, examples -- in order
+    std::vector<Entry> tparams;
+    std::vector<Entry> params;
+    std::vector<std::string> returns;
+    std::vector<Entry> throws;
+    std::vector<std::string> see;
+    std::vector<Entry> *list = nullptr;     // the entry list a continuation line extends
+    std::vector<std::string> *flat = nullptr;  // or the flat section it extends
+    bool in_code = false;
+    std::vector<std::string> code;
+
+    const auto flush_code = [&]() {
+        size_t indent = std::string::npos;
+        for (const std::string &c : code) {
+            if (!Trim(c).empty()) indent = std::min(indent, LeadingSpaces(c));
+        }
+        if (indent == std::string::npos) indent = 0;
+        while (!code.empty() && Trim(code.back()).empty()) code.pop_back();
+        for (const std::string &c : code) prose.push_back("    " + (c.size() >= indent ? c.substr(indent) : ""));
+        prose.emplace_back();
+        code.clear();
+    };
+    const auto first_word = [](const std::string &s, std::string *rest) {
+        const std::string t = Trim(s);
+        size_t end = 0;
+        while (end < t.size() && t[end] != ' ' && t[end] != '\t') end++;
+        if (rest != nullptr) *rest = end < t.size() ? Trim(t.substr(end)) : "";
+        return t.substr(0, end);
+    };
+
+    for (const std::string &line : lines) {
+        const std::string trimmed = Trim(line);
+        if (in_code) {
+            if (trimmed == "@endcode" || trimmed == "\\endcode" || trimmed == "@endverbatim" ||
+                trimmed == "\\endverbatim") {
+                in_code = false;
+                flush_code();
+            } else {
+                code.push_back(line);
+            }
+            continue;
+        }
+        if (trimmed.empty()) {
+            list = nullptr;
+            flat = nullptr;
+            if (!prose.empty() && !prose.back().empty()) prose.emplace_back();
+            continue;
+        }
+        if (trimmed[0] == '@' || trimmed[0] == '\\') {
+            std::string rest;
+            std::string command = first_word(trimmed, &rest).substr(1);
+            // `@code{.cpp}` carries a language; it changes nothing here.
+            const size_t brace = command.find('{');
+            if (brace != std::string::npos) command = command.substr(0, brace);
+            list = nullptr;
+            flat = nullptr;
+            if (command == "code" || command == "verbatim") {
+                in_code = true;
+                continue;
+            }
+            if (command == "brief" || command == "short" || command == "details") {
+                if (!rest.empty()) prose.push_back(StripInlineDoxygen(rest));
+                flat = &prose;
+                continue;
+            }
+            if (command == "param" || command == "tparam") {
+                // `@param[in] name text` -- the direction is noise here.
+                std::string name_rest;
+                std::string name = first_word(rest, &name_rest);
+                if (name.rfind("[", 0) == 0) name = first_word(name_rest, &name_rest);
+                std::vector<Entry> &target = command == "param" ? params : tparams;
+                target.push_back({name, {}});
+                if (!name_rest.empty()) target.back().text.push_back(StripInlineDoxygen(name_rest));
+                list = &target;
+                continue;
+            }
+            if (command == "return" || command == "returns" || command == "retval" || command == "result") {
+                if (!rest.empty()) returns.push_back(StripInlineDoxygen(rest));
+                flat = &returns;
+                continue;
+            }
+            if (command == "throws" || command == "throw" || command == "exception") {
+                std::string what_rest;
+                const std::string what = first_word(rest, &what_rest);
+                throws.push_back({what, {}});
+                if (!what_rest.empty()) throws.back().text.push_back(StripInlineDoxygen(what_rest));
+                list = &throws;
+                continue;
+            }
+            if (command == "see" || command == "sa") {
+                if (!rest.empty()) see.push_back(StripInlineDoxygen(rest));
+                flat = &see;
+                continue;
+            }
+            if (command == "par") {
+                if (!prose.empty() && !prose.back().empty()) prose.emplace_back();
+                prose.push_back((rest.empty() ? std::string("Note") : StripInlineDoxygen(rest)) + ":");
+                flat = &prose;
+                continue;
+            }
+            static const std::pair<const char *, const char *> kLabels[] = {
+                {"note", "Note"},       {"warning", "Warning"}, {"attention", "Attention"},
+                {"pre", "Precondition"}, {"post", "Postcondition"}, {"deprecated", "Deprecated"},
+                {"since", "Since"},     {"todo", "To do"},      {"bug", "Bug"},
+                {"remark", "Remark"},   {"remarks", "Remark"},  {"invariant", "Invariant"},
+            };
+            bool labelled = false;
+            for (const auto &label : kLabels) {
+                if (command != label.first) continue;
+                if (!prose.empty() && !prose.back().empty()) prose.emplace_back();
+                prose.push_back(std::string(label.second) + ": " + StripInlineDoxygen(rest));
+                flat = &prose;
+                labelled = true;
+            }
+            if (labelled) continue;
+            // Grouping and file-level commands say nothing about the symbol.
+            if (command == "{" || command == "}" || command == "name" || command == "file" ||
+                command == "ingroup" || command == "addtogroup" || command == "defgroup" ||
+                command == "internal" || command == "endinternal") {
+                continue;
+            }
+        }
+        // Plain text: a continuation of the open tag, or prose.
+        const std::string text = StripInlineDoxygen(trimmed);
+        if (list != nullptr && !list->empty()) {
+            list->back().text.push_back(text);
+        } else if (flat != nullptr && flat != &prose) {
+            flat->push_back(text);
+        } else {
+            prose.push_back(text);
+        }
+    }
+    if (in_code) flush_code();
+
+    std::string out;
+    const auto add_line = [&](const std::string &l) {
+        out += l;
+        out += '\n';
+    };
+    // Prose, without leading/trailing/doubled blank lines.
+    while (!prose.empty() && prose.back().empty()) prose.pop_back();
+    std::vector<std::string> body;  // prose minus examples, which go last
+    std::vector<std::string> tail;
+    {
+        // Examples (an `Example:` heading and the code under it) read best
+        // after the parameter list, where a reader has the contract first.
+        bool in_example = false;
+        for (const std::string &p : prose) {
+            if (p.size() > 1 && p.back() == ':' && p.find(' ') == std::string::npos &&
+                (p.rfind("Example", 0) == 0 || p.rfind("Usage", 0) == 0)) {
+                in_example = true;
+            } else if (in_example && !p.empty() && p.rfind("    ", 0) != 0) {
+                in_example = false;
+            }
+            (in_example ? tail : body).push_back(p);
+        }
+    }
+    const auto add_block = [&](const std::vector<std::string> &block) {
+        bool last_blank = true;
+        for (const std::string &l : block) {
+            if (l.empty() && last_blank) continue;
+            add_line(l);
+            last_blank = l.empty();
+        }
+        while (out.size() >= 2 && out[out.size() - 1] == '\n' && out[out.size() - 2] == '\n') out.pop_back();
+    };
+    add_block(body);
+    const auto add_entries = [&](const char *heading, const std::vector<Entry> &entries) {
+        if (entries.empty()) return;
+        if (!out.empty()) add_line("");
+        add_line(heading);
+        size_t width = 0;
+        for (const Entry &e : entries) width = std::max(width, e.name.size());
+        width = std::min<size_t>(width, 24);
+        for (const Entry &e : entries) {
+            std::string first = "  " + e.name;
+            const std::string pad(width > e.name.size() ? width - e.name.size() : 0, ' ');
+            if (e.text.empty()) {
+                add_line(first);
+                continue;
+            }
+            add_line(first + pad + "  " + e.text.front());
+            for (size_t k = 1; k < e.text.size(); k++) add_line(std::string(width + 4, ' ') + e.text[k]);
+        }
+    };
+    add_entries("Template parameters:", tparams);
+    add_entries("Parameters:", params);
+    if (!returns.empty()) {
+        if (!out.empty() && params.empty() && tparams.empty()) add_line("");
+        add_line("Returns: " + returns.front());
+        for (size_t k = 1; k < returns.size(); k++) add_line("         " + returns[k]);
+    }
+    add_entries("Throws:", throws);
+    if (!tail.empty()) {
+        if (!out.empty()) add_line("");
+        add_block(tail);
+    }
+    if (!see.empty()) {
+        if (!out.empty()) add_line("");
+        std::string joined;
+        for (const std::string &s : see) joined += (joined.empty() ? "" : " ") + s;
+        add_line("See also: " + joined);
+    }
+    while (!out.empty() && (out.back() == '\n' || out.back() == ' ')) out.pop_back();
+    return out;
+}
+
 std::string CppDocCommentAbove(const std::vector<CppComment> &comments, int line) {
     // The comment block directly above the declaration, with its markers
     // stripped: `/** ... */`, a run of `///` lines, or a run of plain
     // `//` lines. Anything separated by a blank line belongs to whatever
-    // came before it, not to this declaration.
+    // came before it, not to this declaration. Failing that, a trailing
+    // `///<` on the declaration's own line (a field's or enumerator's
+    // usual spelling). Doxygen markup is rendered by CppFormatDocComment.
     std::vector<const CppComment *> block;
     int want_line = line - 1;
     for (int guard = 0; guard < 200; guard++) {
@@ -1873,7 +2240,29 @@ std::string CppDocCommentAbove(const std::vector<CppComment> &comments, int line
         block.push_back(found);
         want_line = found->line - 1;
     }
-    if (block.empty()) return "";
+    if (block.empty()) {
+        // A trailing `///<` (or `//!<`, `/**<`, `/*!<`) on the line itself.
+        for (const CppComment &comment : comments) {
+            if (comment.own_line || comment.line != line) continue;
+            const std::string &t = comment.text;
+            if (t.size() < 4 || (t.compare(0, 4, "///<") != 0 && t.compare(0, 4, "//!<") != 0 &&
+                                 t.compare(0, 4, "/**<") != 0 && t.compare(0, 4, "/*!<") != 0)) {
+                continue;
+            }
+            std::string text = t.substr(4);
+            if (comment.block && text.size() >= 2 && text.compare(text.size() - 2, 2, "*/") == 0) {
+                text = text.substr(0, text.size() - 2);
+            }
+            return CppFormatDocComment(Trim(text));
+        }
+        return "";
+    }
+    // Markers come off with at most one space after them, so the
+    // indentation inside an `@code` example survives into the hover.
+    const auto drop_one_space = [](std::string s) {
+        if (!s.empty() && s.front() == ' ') s.erase(0, 1);
+        return s;
+    };
     std::string out;
     for (auto it = block.rbegin(); it != block.rend(); ++it) {
         std::string text = (*it)->text;
@@ -1886,13 +2275,20 @@ std::string CppDocCommentAbove(const std::vector<CppComment> &comments, int line
             // Strip the leading ` * ` of each continuation line.
             std::string cleaned;
             std::string current;
+            bool first = true;
             for (size_t i = 0; i <= text.size(); i++) {
                 if (i == text.size() || text[i] == '\n') {
-                    std::string trimmed = Trim(current);
-                    if (!trimmed.empty() && trimmed.front() == '*') trimmed = Trim(trimmed.substr(1));
-                    if (!cleaned.empty()) cleaned += '\n';
-                    cleaned += trimmed;
+                    std::string kept = current;
+                    const size_t lead = kept.find_first_not_of(" \t");
+                    if (lead != std::string::npos && kept[lead] == '*' && !first) {
+                        kept = drop_one_space(kept.substr(lead + 1));
+                    } else if (first) {
+                        kept = drop_one_space(kept);
+                    }
+                    if (!cleaned.empty() || !first) cleaned += '\n';
+                    cleaned += kept;
                     current.clear();
+                    first = false;
                     continue;
                 }
                 current += text[i];
@@ -1901,23 +2297,10 @@ std::string CppDocCommentAbove(const std::vector<CppComment> &comments, int line
         } else {
             text = text.substr(2);
             if (!text.empty() && (text.front() == '/' || text.front() == '!')) text = text.substr(1);
-            text = Trim(text);
+            text = drop_one_space(text);
         }
         if (!out.empty()) out += '\n';
         out += text;
     }
-    // Doxygen's `@brief` only marks the summary line; in a hover it is
-    // noise in front of the sentence that matters.
-    for (const char *tag : {"@brief ", "\\brief "}) {
-        const std::string marker(tag);
-        size_t at = 0;
-        while ((at = out.find(marker, at)) != std::string::npos) {
-            if (at == 0 || out[at - 1] == '\n') {
-                out.erase(at, marker.size());
-            } else {
-                at += marker.size();
-            }
-        }
-    }
-    return Trim(out);
+    return CppFormatDocComment(out);
 }

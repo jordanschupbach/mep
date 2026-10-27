@@ -303,6 +303,10 @@ struct CppNode {
     std::string type_text;
     std::string type_base;
     std::vector<std::string> type_args;
+    // Function nodes only: the declarator's `*`/`&`/`&&` before the name
+    // (`RPlot &set_title()` -> "&"), which belongs to the return type but
+    // is not part of its decl-specifier spelling.
+    std::string return_suffix;
     int ptr_depth = 0;
     bool is_ref = false;
     bool is_const = false;

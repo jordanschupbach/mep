@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "cpp_ast.h"
+#include "cpp_lsp_index.h"
 
 namespace {
 void Check(bool condition, const char *expression, int line) {
@@ -1121,6 +1122,103 @@ void TestLibraryHoverThroughAliasesAndMembers() {
     std::filesystem::remove_all(root);
 }
 
+
+void TestDoxygenHoverRendering() {
+    // Block commands become sections; the example keeps its indentation and
+    // moves after the contract; inline markers disappear.
+    const std::string raw =
+        "@brief Draws @p n samples.\n"
+        "\n"
+        "Uses the shared generator.\n"
+        "\n"
+        "@par Example\n"
+        "@code\n"
+        "auto x = lib::draw(3,\n"
+        "                   1.0);\n"
+        "@endcode\n"
+        "@param n     How many.\n"
+        "@param scale Spread; must be\n"
+        "             positive.\n"
+        "@return The samples.\n"
+        "@throws std::invalid_argument If scale <= 0.\n"
+        "@see lib::seed()";
+    const std::string out = CppFormatDocComment(raw);
+    CHECK(out.find("@") == std::string::npos);
+    CHECK(out.rfind("Draws n samples.", 0) == 0);
+    CHECK(out.find("Parameters:\n  n      How many.\n  scale  Spread; must be\n") != std::string::npos);
+    CHECK(out.find("Returns: The samples.") != std::string::npos);
+    CHECK(out.find("Throws:\n  std::invalid_argument  If scale <= 0.") != std::string::npos);
+    CHECK(out.find("Example:\n    auto x = lib::draw(3,\n                       1.0);") != std::string::npos);
+    CHECK(out.find("Throws:") < out.find("Example:"));
+    CHECK(out.find("See also: lib::seed()") != std::string::npos);
+
+    // Through a real comment: `///` markers lose one space only, so code keeps its shape.
+    {
+        const Lines lines = {"/// @brief Sums.", "/// @code", "/// f(1,", "///   2);", "/// @endcode",
+                             "int f(int a, int b = 2);", "int g() { return f(1); }"};
+        const std::string text = HoverAt(lines, 6, "f(1)", 0, NoFiles());
+        CHECK(text.find("    f(1,\n      2);") != std::string::npos);
+        // A default argument is shown as written.
+        CHECK(text.find("int f(int a, int b = 2)") != std::string::npos);
+    }
+    // A trailing `///<` documents a field.
+    {
+        const Lines lines = {"struct P {", "  double alpha{1.0}; ///< opacity in [0, 1]", "};",
+                             "double f(P p) { return p.alpha; }"};
+        CHECK(HoverAt(lines, 3, "alpha", 1, NoFiles()).find("opacity in [0, 1]") != std::string::npos);
+    }
+}
+
+void TestHoverSignaturesTemplatesAndOverloads() {
+    const Lines lines = {
+        "#include <vector>",
+        "template <typename T>",
+        "class Column {",
+        " public:",
+        "  /// Borrows the values.",
+        "  const std::vector<T>& values() const { return v_; }",
+        "  /// Sets the title.",
+        "  Column& set_title(const char* t);",
+        "  std::vector<T> v_;",
+        "};",
+        "/// One argument.",
+        "int pick(int a);",
+        "/// Two arguments.",
+        "int pick(int a, int b);",
+        "struct Row {",
+        "  /// Reads a number.",
+        "  double get_double(const char* name) const;",
+        "};",
+        "template <typename... Keys> int group(Keys&&... keys);",
+        "int main() {",
+        "  Column<double> c;",
+        "  c.values();",
+        "  c.set_title(\"x\");",
+        "  pick(1, 2);",
+        "  auto fn = [](const auto& row) { return row.get_double(\"x\"); };",
+        "  return group(1, 2);",
+        "}",
+    };
+    // A member of a class template, through `Column<double>`.
+    CHECK(HoverAt(lines, 21, "values", 1, NoFiles()).find("Borrows the values.") != std::string::npos);
+    // The declarator's `&` stays on the return type, and `&` is spaced from the name.
+    const std::string set_title = HoverAt(lines, 22, "set_title", 1, NoFiles());
+    CHECK(set_title.find("Column& set_title(const char* t)") != std::string::npos);
+    // The overload matching the call's argument count is the one shown; the other is listed.
+    const std::string pick = HoverAt(lines, 23, "pick", 1, NoFiles());
+    CHECK(pick.find("Two arguments.") != std::string::npos);
+    CHECK(pick.find("One argument.") == std::string::npos);
+    CHECK(pick.find("Other overloads:\n  int pick(int a)") != std::string::npos);
+    // An `auto` lambda parameter: the member is found by name, flagged as a guess.
+    const std::string row = HoverAt(lines, 24, "get_double", 1, NoFiles());
+    CHECK(row.find("Reads a number.") != std::string::npos);
+    CHECK(row.find("object type unknown here") != std::string::npos);
+    // A pack is spelled once.
+    const std::string group = HoverAt(lines, 25, "group", 1, NoFiles());
+    CHECK(group.find("Keys&&... keys)") != std::string::npos);
+    CHECK(group.find("keys...") == std::string::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -1146,6 +1244,8 @@ int main() {
     TestRealisticFileIsQuiet();
     TestIncludedLibraryHeaders();
     TestLibraryHoverThroughAliasesAndMembers();
+    TestDoxygenHoverRendering();
+    TestHoverSignaturesTemplatesAndOverloads();
     std::printf("mep-cpp-lsp-test: all checks passed\n");
     return 0;
 }

@@ -43865,7 +43865,18 @@ void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
     // doesn't run off-screen; not scrollable -- this is a tooltip, not a
     // picker/sidebar, and truncating is the same tradeoff DrawFloatFrame-
     // based overlays already make for oversized content.
-    int max_rows = std::min(static_cast<int>(wrapped.size()), 20);
+    // Up to 40 rows (fewer on a short window); when the text is longer
+    // than that, the last row says so and how to read the rest, instead
+    // of the popup silently ending mid-example.
+    const int fit_rows = std::max(4, (gfx::GetScreenHeight() - 60) / std::max(1, line_h) - 2);
+    const int row_cap = std::min(40, fit_rows);
+    if (static_cast<int>(wrapped.size()) > row_cap) {
+        const int hidden = static_cast<int>(wrapped.size()) - (row_cap - 1);
+        wrapped.resize(static_cast<size_t>(row_cap - 1));
+        wrapped.push_back("... " + std::to_string(hidden) + " more line" + (hidden == 1 ? "" : "s") +
+                          " (press K twice more to scroll)");
+    }
+    int max_rows = static_cast<int>(wrapped.size());
     float max_w = title.empty() ? 0.0f : gfx::MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
     for (int i = 0; i < max_rows; i++) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, wrapped[static_cast<size_t>(i)].c_str(), font_size, 0).x);
     int box_w = std::min(max_box_w, static_cast<int>(max_w) + 20);

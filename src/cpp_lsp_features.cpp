@@ -366,6 +366,164 @@ std::vector<CppLspFold> CppLspFolds(const std::vector<std::string> &lines) {
 
 namespace {
 
+/** @brief Reports whether a symbol is something that can be called (and so overloaded). */
+bool IsCallableKind(CppSymbolKind kind) {
+    return kind == CppSymbolKind::Function || kind == CppSymbolKind::Method || kind == CppSymbolKind::Constructor;
+}
+
+/**
+ * @brief How many arguments a rendered signature accepts, as {min, max}.
+ *
+ * Reads the parameter list back out of a symbol's detail text
+ * (`Vector<> round(Vector<> v, int digits = 0)` -> {1, 2}); a parameter
+ * with a default is optional and a pack or `...` makes the maximum
+ * unbounded. {-1, -1} when the text has no parameter list.
+ */
+std::pair<int, int> ArityOf(const std::string &detail) {
+    size_t open = std::string::npos;
+    int angle = 0;
+    for (size_t i = 0; i < detail.size(); i++) {
+        if (detail[i] == '<') angle++;
+        if (detail[i] == '>' && angle > 0) angle--;
+        if (detail[i] == '(' && angle == 0) {
+            open = i;
+            break;
+        }
+    }
+    if (open == std::string::npos) return {-1, -1};
+    std::vector<std::string> params;
+    std::string current;
+    int depth = 0;
+    bool closed = false;
+    for (size_t i = open + 1; i < detail.size() && !closed; i++) {
+        const char c = detail[i];
+        if (c == '(' || c == '<' || c == '{' || c == '[') depth++;
+        if ((c == ')' || c == '>' || c == '}' || c == ']') && depth > 0) {
+            depth--;
+        } else if (c == ')' && depth == 0) {
+            closed = true;
+            continue;
+        }
+        if (c == ',' && depth == 0) {
+            params.push_back(current);
+            current.clear();
+            continue;
+        }
+        current += c;
+    }
+    if (current.find_first_not_of(' ') != std::string::npos) params.push_back(current);
+    int min = 0;
+    int max = 0;
+    for (const std::string &param : params) {
+        if (param.find("...") != std::string::npos) {
+            max = 1 << 20;
+            continue;
+        }
+        max++;
+        if (param.find('=') == std::string::npos && param.find("void") != 0) min++;
+    }
+    if (params.size() == 1 && params.front().find_first_not_of(' ') != std::string::npos &&
+        params.front().substr(params.front().find_first_not_of(' ')) == "void") {
+        return {0, 0};
+    }
+    return {min, max};
+}
+
+/**
+ * @brief Counts the arguments of the call that follows a name, or -1 when it is not called there.
+ *
+ * Starts just after the hovered word, steps over explicit template
+ * arguments (`get_column<std::string>(...)`) and counts top-level commas
+ * up to the matching `)`, across lines if the call spans them.
+ */
+int CallArgCount(const std::vector<std::string> &lines, int line, int col) {
+    size_t l = static_cast<size_t>(line);
+    size_t c = static_cast<size_t>(col);
+    const auto at = [&]() -> char { return l < lines.size() && c < lines[l].size() ? lines[l][c] : '\0'; };
+    const auto advance = [&]() {
+        if (l >= lines.size()) return;
+        if (++c >= lines[l].size()) {
+            l++;
+            c = 0;
+            while (l < lines.size() && lines[l].empty()) l++;
+        }
+    };
+    while (at() == ' ' || at() == '\t') advance();
+    if (at() == '<') {
+        int depth = 0;
+        for (int guard = 0; guard < 400 && l < lines.size(); guard++) {
+            if (at() == '<') depth++;
+            if (at() == '>' && --depth == 0) {
+                advance();
+                break;
+            }
+            advance();
+        }
+        while (at() == ' ' || at() == '\t') advance();
+    }
+    if (at() != '(') return -1;
+    advance();
+    int depth = 0;
+    int commas = 0;
+    bool any = false;
+    char quote = 0;
+    for (int guard = 0; guard < 4000 && l < lines.size(); guard++) {
+        const char ch = at();
+        if (quote != 0) {
+            if (ch == '\\') advance();
+            else if (ch == quote) quote = 0;
+            advance();
+            continue;
+        }
+        if (ch == '"' || ch == '\'') {
+            quote = ch;
+            any = true;
+        } else if (ch == '(' || ch == '[' || ch == '{') {
+            depth++;
+            any = true;
+        } else if (ch == ')' || ch == ']' || ch == '}') {
+            if (depth == 0) return any ? commas + 1 : 0;
+            depth--;
+        } else if (ch == ',' && depth == 0) {
+            commas++;
+        } else if (ch != ' ' && ch != '\t' && ch != '\0') {
+            any = true;
+        }
+        advance();
+    }
+    return -1;
+}
+
+/** @brief The callable symbols sharing a symbol's scope and name, one per distinct signature. */
+std::vector<int> OverloadsOf(const CppIndex &index, int symbol_id) {
+    std::vector<int> out;
+    const CppSymbol &symbol = index.symbols[static_cast<size_t>(symbol_id)];
+    if (!IsCallableKind(symbol.kind)) return {symbol_id};
+    std::set<std::string> seen;
+    for (size_t i = 0; i < index.symbols.size(); i++) {
+        const CppSymbol &other = index.symbols[i];
+        if (other.name != symbol.name || other.scope != symbol.scope || !IsCallableKind(other.kind)) continue;
+        if (!seen.insert(CppSymbolDetail(other)).second) continue;
+        out.push_back(static_cast<int>(i));
+    }
+    if (out.empty()) out.push_back(symbol_id);
+    return out;
+}
+
+/** @brief Picks the overload whose parameter count fits the call, falling back to `preferred`. */
+int PickOverload(const CppIndex &index, const std::vector<int> &overloads, int preferred, int arg_count) {
+    if (arg_count < 0) return preferred;
+    const auto fits = [&](int id) {
+        const std::pair<int, int> arity = ArityOf(CppSymbolDetail(index.symbols[static_cast<size_t>(id)]));
+        return arity.first >= 0 && arg_count >= arity.first && arg_count <= arity.second;
+    };
+    if (fits(preferred)) return preferred;
+    for (int id : overloads) {
+        if (fits(id)) return id;
+    }
+    return preferred;
+}
+
 std::string DescribeSymbol(const CppIndex &index, const CppSymbol &symbol) {
     std::string out = CppSymbolDetail(symbol);
     if (!symbol.qualified.empty() && symbol.qualified != symbol.name &&
@@ -381,6 +539,36 @@ std::string DescribeSymbol(const CppIndex &index, const CppSymbol &symbol) {
     if (doc.empty() && !symbol.external) doc = CppDocCommentAbove(index, symbol.range_start.line);
     if (!doc.empty()) out += "\n\n" + doc;
     return out;
+}
+
+/**
+ * @brief Describes a callable together with its overloads.
+ *
+ * The overload whose parameter count fits the call at the cursor is
+ * shown in full; the others are listed by signature at the end, with a
+ * one-line note under the header so the reader knows to look.
+ */
+std::string DescribeWithOverloads(const CppIndex &index, int symbol_id, int arg_count) {
+    const std::vector<int> overloads = OverloadsOf(index, symbol_id);
+    const int chosen = PickOverload(index, overloads, symbol_id, arg_count);
+    std::string text = DescribeSymbol(index, index.symbols[static_cast<size_t>(chosen)]);
+    if (overloads.size() <= 1) return text;
+    const size_t others = overloads.size() - 1;
+    // The note goes after the header lines (signature, qualified name, origin).
+    const size_t blank = text.find("\n\n");
+    const std::string note = "(+" + std::to_string(others) + " overload" + (others == 1 ? "" : "s") +
+                             ", listed at the end)";
+    if (blank == std::string::npos) {
+        text += "\n" + note;
+    } else {
+        text.insert(blank, "\n" + note);
+    }
+    text += "\n\nOther overloads:";
+    for (int id : overloads) {
+        if (id == chosen) continue;
+        text += "\n  " + CppSymbolDetail(index.symbols[static_cast<size_t>(id)]);
+    }
+    return text;
 }
 
 }  // namespace
@@ -424,11 +612,53 @@ CppLspHoverInfo CppLspHover(const std::vector<std::string> &lines, int line, int
     info.col_start = start;
     info.col_end = end;
 
+    const int arg_count = CallArgCount(lines, line, end);
     const CppOccurrence *occurrence = CppOccurrenceAt(index, line, start);
     if (occurrence != nullptr && occurrence->symbol >= 0) {
         info.found = true;
-        info.text = DescribeSymbol(index, index.symbols[static_cast<size_t>(occurrence->symbol)]);
+        info.text = DescribeWithOverloads(index, occurrence->symbol, arg_count);
         return info;
+    }
+    // A member whose object's type cannot be worked out here -- a generic
+    // lambda's `auto` parameter, or an `auto` returned by a function
+    // template -- is answered with the members of that name the index
+    // knows, saying plainly that it is a guess.
+    {
+        const std::string &text = lines[static_cast<size_t>(line)];
+        size_t before = static_cast<size_t>(start);
+        while (before > 0 && (text[before - 1] == ' ' || text[before - 1] == '\t')) before--;
+        const bool after_dot = before >= 1 && text[before - 1] == '.' &&
+                               !(before >= 2 && std::isdigit(static_cast<unsigned char>(text[before - 2])));
+        const bool after_arrow = before >= 2 && text[before - 1] == '>' && text[before - 2] == '-';
+        if (after_dot || after_arrow) {
+            std::vector<int> candidates;
+            std::set<std::string> owners_seen;
+            std::vector<std::string> owners;
+            for (size_t i = 0; i < index.symbols.size(); i++) {
+                const CppSymbol &s = index.symbols[i];
+                if (s.name != word) continue;
+                if (s.kind != CppSymbolKind::Method && s.kind != CppSymbolKind::Field) continue;
+                candidates.push_back(static_cast<int>(i));
+                const size_t cut = s.qualified.rfind("::");
+                const std::string owner = cut == std::string::npos ? s.qualified : s.qualified.substr(0, cut);
+                if (owners_seen.insert(owner).second) owners.push_back(owner);
+            }
+            if (!candidates.empty()) {
+                const int chosen = PickOverload(index, candidates, candidates.front(), arg_count);
+                std::string owners_text;
+                for (size_t k = 0; k < owners.size() && k < 6; k++) owners_text += (k ? ", " : "") + owners[k];
+                if (owners.size() > 6) owners_text += ", ...";
+                info.found = true;
+                info.text = DescribeWithOverloads(index, chosen, arg_count);
+                if (owners.size() > 1) {
+                    info.text = "(object type unknown here; `" + word + "` is a member of: " + owners_text + ")\n" +
+                                info.text;
+                } else {
+                    info.text = "(object type unknown here; assuming " + owners_text + ")\n" + info.text;
+                }
+                return info;
+            }
+        }
     }
     // A type written in a declaration (`lib::Widget w;`) is not in the
     // occurrence list either; resolve its spelling -- qualifiers and all,

@@ -2131,6 +2131,13 @@ private:
                 node->name_pos = d.name.name_pos;
                 node->name_end = d.name.name_end;
                 node->params = std::move(d.params);
+                for (size_t k = d.type_suffix_start; k < d.type_suffix_end && k < t_.size(); k++) {
+                    if (t_[k].kind == CppTokKind::End) break;
+                    const std::string &text = t_[k].text;
+                    if (text != "*" && text != "&" && text != "&&" && text != "const") break;
+                    if (text == "const") node->return_suffix += " ";
+                    node->return_suffix += text;
+                }
                 node->is_virtual = spec.is_virtual;
                 node->is_explicit = spec.is_explicit;
                 node->is_static = spec.is_static;

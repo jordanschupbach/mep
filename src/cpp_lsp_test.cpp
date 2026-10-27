@@ -858,6 +858,65 @@ void TestSignatureHelp() {
         CHECK(signature.found);
         CHECK(signature.documentation.find("Connects to a host.") != std::string::npos);
     }
+    {
+        // Qualified calls, through a namespace alias, and member calls on a known type.
+        const Lines lines = {"namespace lib { double Mix(double a, double b); }",
+                             "namespace dm = lib;",
+                             "struct Box { int Area(int w, int h) const; };",
+                             "void f() { Box b; dm::Mix(1, b.Area(2, 3)); }"};
+        const CppLspSignature qualified = CppLspSignatureHelp(lines, 3, 29);
+        CHECK(qualified.found);
+        CHECK(qualified.label.find("Mix(") != std::string::npos);
+        CHECK(qualified.active_param == 1);
+        const CppLspSignature member = CppLspSignatureHelp(lines, 3, 39);
+        CHECK(member.found);
+        CHECK(member.label.find("Area(") != std::string::npos);
+        CHECK(member.active_param == 1);
+    }
+    {
+        // Constructors: as an expression, in a declaration being typed, and qualified.
+        const Lines lines = {"namespace ns { struct V { V(double d, int n); }; }",
+                             "void f() {",
+                             "  auto a = ns::V(",
+                             "  ns::V v(1.0, ",
+                             "}"};
+        const CppLspSignature expr = CppLspSignatureHelp(lines, 2, 17);
+        CHECK(expr.found);
+        CHECK(expr.label.find("V(double d, int n)") != std::string::npos);
+        const CppLspSignature decl = CppLspSignatureHelp(lines, 3, 15);
+        CHECK(decl.found);
+        CHECK(decl.label.find("V(double d, int n)") != std::string::npos);
+        CHECK(decl.active_param == 1);
+    }
+    {
+        // Explicit template arguments, an auto-paired `)`, and overloads picked by arity.
+        const Lines lines = {"template <class T> T Get(const char *name);",
+                             "int Pick(int a);",
+                             "int Pick(int a, int b, int c);",
+                             "void f() { Get<int>(); Pick(1, ); }"};
+        const CppLspSignature templated = CppLspSignatureHelp(lines, 3, 20);
+        CHECK(templated.found);
+        CHECK(templated.label.find("Get(") != std::string::npos);
+        const CppLspSignature overload = CppLspSignatureHelp(lines, 3, 31);
+        CHECK(overload.found);
+        CHECK(overload.params.size() == 3);
+        CHECK(overload.active_param == 1);
+    }
+    {
+        // The hint keeps the doc's summary and moves each @param onto its parameter.
+        const Lines lines = {"/**", " * @brief Draws uniform values.", " *",
+                             " * Longer details that a typing hint should not show.",
+                             " * @param lower Inclusive lower bound.", " * @param upper Exclusive upper bound.",
+                             " */", "double Draw(double lower, double upper = 1.0);", "void f() { Draw(0, ); }"};
+        const CppLspSignature signature = CppLspSignatureHelp(lines, 8, 19);
+        CHECK(signature.found);
+        CHECK(signature.active_param == 1);
+        CHECK(signature.documentation.find("Draws uniform values.") != std::string::npos);
+        CHECK(signature.documentation.find("Longer details") == std::string::npos);
+        CHECK(signature.param_docs.size() == 2);
+        CHECK(signature.param_docs.size() == 2 && signature.param_docs[0] == "Inclusive lower bound.");
+        CHECK(signature.param_docs.size() == 2 && signature.param_docs[1] == "Exclusive upper bound.");
+    }
     CHECK(!CppLspSignatureHelp({"int x = 1;"}, 0, 8).found);
 }
 

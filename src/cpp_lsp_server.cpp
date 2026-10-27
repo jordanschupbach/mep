@@ -796,12 +796,13 @@ private:
     /** @brief Answers `textDocument/signatureHelp`. */
     Json SignatureHelp(const Json &params) const {
         const Request req = ReadRequest(params);
-        const CppLspSignature sig = CppLspSignatureHelp(Doc(req.uri), req.line, req.col);
+        const CppLspSignature sig = CppLspSignatureHelp(Doc(req.uri), req.line, req.col, OptionsFor(req.uri));
         if (!sig.found) return Json();
         Json parameters = Json::Array();
-        for (const std::string &p : sig.params) {
+        for (size_t i = 0; i < sig.params.size(); i++) {
             Json j = Json::Object();
-            j["label"] = p;
+            j["label"] = sig.params[i];
+            if (i < sig.param_docs.size() && !sig.param_docs[i].empty()) j["documentation"] = sig.param_docs[i];
             parameters.push_back(j);
         }
         Json signature = Json::Object();

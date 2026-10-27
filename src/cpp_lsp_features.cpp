@@ -514,6 +514,7 @@ std::vector<int> OverloadsOf(const CppIndex &index, int symbol_id) {
 int PickOverload(const CppIndex &index, const std::vector<int> &overloads, int preferred, int arg_count) {
     if (arg_count < 0) return preferred;
     const auto fits = [&](int id) {
+        if (id < 0) return false;
         const std::pair<int, int> arity = ArityOf(CppSymbolDetail(index.symbols[static_cast<size_t>(id)]));
         return arity.first >= 0 && arg_count >= arity.first && arg_count <= arity.second;
     };
@@ -897,10 +898,149 @@ std::vector<std::string> SplitParameters(const std::string &label) {
 
 }  // namespace
 
+namespace {
+
+/** @brief The parameter's own name: the last identifier before any default (`const T &name = 1` -> `name`). */
+std::string ParameterName(const std::string &param) {
+    std::string decl = param.substr(0, param.find('='));
+    size_t end = decl.size();
+    while (end > 0 && !IsCppIdentChar(static_cast<unsigned char>(decl[end - 1]))) end--;
+    size_t start = end;
+    while (start > 0 && IsCppIdentChar(static_cast<unsigned char>(decl[start - 1]))) start--;
+    return decl.substr(start, end - start);
+}
+
+/**
+ * @brief Shrinks a formatted doc comment to what a while-you-type hint should show.
+ *
+ * Keeps the summary (the first paragraph) as the signature's
+ * documentation, and lifts each `Parameters:` entry onto the parameter it
+ * names, so the hint can show just the argument being typed. The full
+ * text stays one keystroke away on hover.
+ */
+void SplitSignatureDoc(const std::string &doc, CppLspSignature *signature) {
+    std::vector<std::string> lines;
+    size_t from = 0;
+    while (from <= doc.size()) {
+        const size_t nl = doc.find('\n', from);
+        lines.push_back(doc.substr(from, nl == std::string::npos ? std::string::npos : nl - from));
+        if (nl == std::string::npos) break;
+        from = nl + 1;
+    }
+    std::string summary;
+    for (const std::string &line : lines) {
+        if (line.find_first_not_of(" \t") == std::string::npos) {
+            if (!summary.empty()) break;
+            continue;
+        }
+        if (line == "Parameters:") break;
+        summary += (summary.empty() ? "" : "\n") + line;
+    }
+    signature->documentation = summary;
+
+    std::map<std::string, std::string> described;
+    std::string current;
+    bool in_params = false;
+    for (const std::string &line : lines) {
+        if (line == "Parameters:") {
+            in_params = true;
+            continue;
+        }
+        if (!in_params) continue;
+        if (line.empty() || line[0] != ' ') break;  // the next section
+        const size_t text = line.find_first_not_of(' ');
+        if (text == 2) {
+            // "  name  description"
+            const size_t name_end = line.find(' ', text);
+            current = line.substr(text, name_end == std::string::npos ? std::string::npos : name_end - text);
+            const size_t desc = name_end == std::string::npos ? std::string::npos : line.find_first_not_of(' ', name_end);
+            described[current] = desc == std::string::npos ? "" : line.substr(desc);
+        } else if (!current.empty() && text != std::string::npos) {
+            described[current] += " " + line.substr(text);  // a wrapped continuation line
+        }
+    }
+    signature->param_docs.assign(signature->params.size(), "");
+    for (size_t i = 0; i < signature->params.size(); i++) {
+        const auto found = described.find(ParameterName(signature->params[i]));
+        if (found != described.end()) signature->param_docs[i] = found->second;
+    }
+}
+
+/** @brief Fills a signature from one callable symbol, using its leading comment when it carries no doc. */
+void FillSignature(const CppIndex &index, int symbol_id, CppLspSignature *signature) {
+    const CppSymbol &target = index.symbols[static_cast<size_t>(symbol_id)];
+    signature->found = true;
+    signature->label = CppSymbolDetail(target);
+    if (signature->label.empty()) signature->label = target.name;
+    std::string doc = target.doc;
+    if (doc.empty() && !target.external) doc = CppDocCommentAbove(index, target.range_start.line);
+    signature->params = SplitParameters(signature->label);
+    SplitSignatureDoc(doc, signature);
+}
+
+/**
+ * @brief Picks the overload that best fits a call being typed.
+ *
+ * `typed` is how many arguments the cursor has reached (the active one
+ * included); `total` is the call's full argument count when its `)` is
+ * already there (an auto-paired paren), or -1. The fit is tried against
+ * the larger of the two, then against `typed` alone, so an overload that
+ * still has room for the argument being typed wins.
+ */
+int PickSignatureOverload(const CppIndex &index, int symbol_id, int typed, int total) {
+    const std::vector<int> overloads = OverloadsOf(index, symbol_id);
+    if (overloads.size() <= 1) return symbol_id;
+    const int want = std::max(typed, total);
+    const int chosen = PickOverload(index, overloads, -1, want);
+    if (chosen >= 0) return chosen;
+    const int fallback = PickOverload(index, overloads, -1, typed);
+    if (fallback >= 0) return fallback;
+    // Nothing fits exactly (too few arguments typed yet): the overload
+    // with the fewest parameters that still has room for this one.
+    int best = -1;
+    int best_max = 0;
+    for (int id : overloads) {
+        const std::pair<int, int> arity = ArityOf(CppSymbolDetail(index.symbols[static_cast<size_t>(id)]));
+        if (arity.first < 0 || arity.second < typed) continue;
+        if (best < 0 || arity.second < best_max) {
+            best = id;
+            best_max = arity.second;
+        }
+    }
+    return best >= 0 ? best : symbol_id;
+}
+
+/** @brief The constructor of a class (or of the class a typedef names), or -1. */
+int ConstructorOf(const CppIndex &index, int type_id) {
+    for (int guard = 0; guard < 8 && type_id >= 0; guard++) {
+        const CppSymbol &type = index.symbols[static_cast<size_t>(type_id)];
+        if (type.kind == CppSymbolKind::Typedef) {
+            const int next = CppLookupTypeName(index, type.scope, type.type_base.empty() ? type.type_text : type.type_base);
+            if (next == type_id) return -1;
+            type_id = next;
+            continue;
+        }
+        if (type.kind != CppSymbolKind::Class && type.kind != CppSymbolKind::Struct) return -1;
+        if (type.child_scope < 0) return -1;
+        const int constructor = CppLookupMember(index, type.child_scope, type.name);
+        if (constructor < 0) return -1;
+        const CppSymbolKind kind = index.symbols[static_cast<size_t>(constructor)].kind;
+        return kind == CppSymbolKind::Constructor || kind == CppSymbolKind::Method ? constructor : -1;
+    }
+    return -1;
+}
+
+}  // namespace
+
 CppLspSignature CppLspSignatureHelp(const std::vector<std::string> &lines, int line, int col) {
+    return CppLspSignatureHelp(lines, line, col, PositionOptions());
+}
+
+CppLspSignature CppLspSignatureHelp(const std::vector<std::string> &lines, int line, int col,
+                                    const CppLspOptions &opts) {
     CppLspSignature signature;
-    const CppIndex index = BuildCppIndex(lines, PositionOptions());
     if (line < 0 || static_cast<size_t>(line) >= lines.size()) return signature;
+    const CppIndex index = BuildCppIndex(lines, opts);
     if (CppPositionInLiteral(index, line, col)) return signature;
 
     // Walk back through the tokens for the `(` that is still open, and
@@ -934,39 +1074,150 @@ CppLspSignature CppLspSignatureHelp(const std::vector<std::string> &lines, int l
         if (token.text == "," && depth == 0) active++;
     }
     if (open_token <= 0) return signature;
-    const CppToken &callee = index.parse.raw_tokens[static_cast<size_t>(open_token - 1)];
+
+    // Step back over explicit template arguments: `get_column<std::string>(`.
+    int callee_token = open_token - 1;
+    {
+        const CppToken &before = index.parse.raw_tokens[static_cast<size_t>(callee_token)];
+        if (before.kind == CppTokKind::Op && (before.text == ">" || before.text == ">>")) {
+            int angle = 0;
+            for (int i = callee_token; i >= 0; i--) {
+                const CppToken &t = index.parse.raw_tokens[static_cast<size_t>(i)];
+                if (t.kind != CppTokKind::Op) continue;
+                if (t.text == ">") angle++;
+                else if (t.text == ">>") angle += 2;
+                else if (t.text == "<") angle--;
+                else if (t.text == ";" || t.text == "{" || t.text == "}") return signature;
+                if (angle == 0) {
+                    callee_token = i - 1;
+                    break;
+                }
+            }
+            if (callee_token < 0 || callee_token == open_token - 1) return signature;
+        }
+    }
+    const CppToken &callee = index.parse.raw_tokens[static_cast<size_t>(callee_token)];
     if (callee.kind != CppTokKind::Ident) return signature;
 
     signature.active_param = active;
-    const int scope = CppScopeAt(index, callee.start);
-    const int symbol_index = CppLookupName(index, scope, callee.text);
-    if (symbol_index >= 0) {
-        const CppSymbol &symbol = index.symbols[static_cast<size_t>(symbol_index)];
-        if (symbol.kind == CppSymbolKind::Function || symbol.kind == CppSymbolKind::Method ||
-            symbol.kind == CppSymbolKind::Constructor || symbol.kind == CppSymbolKind::Macro) {
-            signature.found = true;
-            signature.label = symbol.detail.empty() ? symbol.name : symbol.detail;
-            signature.documentation = symbol.doc;
-            signature.params = SplitParameters(signature.label);
-            return signature;
+    const int typed = active + 1;
+    const int total = CallArgCount(lines, callee.end.line, callee.end.col);
+
+    // Answers with a callable, or with the constructor of a type.
+    const auto answer = [&](int symbol_id) -> bool {
+        if (symbol_id < 0) return false;
+        const CppSymbol &symbol = index.symbols[static_cast<size_t>(symbol_id)];
+        if (symbol.kind == CppSymbolKind::Macro) {
+            FillSignature(index, symbol_id, &signature);
+            return true;
         }
-        // A variable of a class type, called through `operator()`, and
-        // anything else this server cannot describe: say nothing rather
-        // than showing the variable's own declaration as a signature.
-        if (symbol.kind == CppSymbolKind::Class || symbol.kind == CppSymbolKind::Struct) {
-            const int class_scope = symbol.child_scope;
-            const int constructor = class_scope >= 0 ? CppLookupMember(index, class_scope, symbol.name) : -1;
+        if (IsCallableKind(symbol.kind)) {
+            FillSignature(index, PickSignatureOverload(index, symbol_id, typed, total), &signature);
+            return true;
+        }
+        int type_id = -1;
+        if (symbol.kind == CppSymbolKind::Class || symbol.kind == CppSymbolKind::Struct ||
+            symbol.kind == CppSymbolKind::Typedef) {
+            type_id = symbol_id;
+        } else if (symbol.kind == CppSymbolKind::Variable || symbol.kind == CppSymbolKind::Field) {
+            // `Widget w(` -- the declaration's own parentheses call the
+            // type's constructor. (A variable called later is `operator()`,
+            // which this server does not describe.)
+            const CppOccurrence *occ = CppOccurrenceAt(index, callee.start.line, callee.start.col);
+            if (occ == nullptr || !occ->is_declaration) return false;
+            const std::string spelled = symbol.type_base.empty() ? symbol.type_text : symbol.type_base;
+            if (spelled.empty() || spelled == "auto") return false;
+            type_id = CppLookupTypeName(index, symbol.scope, spelled);
+        }
+        const int constructor = type_id >= 0 ? ConstructorOf(index, type_id) : -1;
+        if (constructor < 0) return false;
+        FillSignature(index, PickSignatureOverload(index, constructor, typed, total), &signature);
+        return true;
+    };
+
+    // Reads a possibly qualified name leftwards from token `last`
+    // (`dm::plot::Histogram`), returning the spelling and its first token.
+    const auto spell_left = [&](int last, int *first) {
+        std::string spelled = index.parse.raw_tokens[static_cast<size_t>(last)].text;
+        int i = last - 1;
+        while (i >= 1) {
+            const CppToken &sep = index.parse.raw_tokens[static_cast<size_t>(i)];
+            const CppToken &qual = index.parse.raw_tokens[static_cast<size_t>(i - 1)];
+            if (sep.kind != CppTokKind::Op || sep.text != "::" || qual.kind != CppTokKind::Ident) break;
+            spelled = qual.text + "::" + spelled;
+            i -= 2;
+        }
+        if (first != nullptr) *first = i + 1;
+        return spelled;
+    };
+    const int scope = CppScopeAt(index, callee.start);
+
+    // 0. A declaration being typed, `dm::Histogram h(`: the name before
+    //    the paren is preceded by a type, whose constructor is the call.
+    //    Checked by tokens because a half-written declaration does not
+    //    parse as one yet.
+    if (callee_token >= 1) {
+        const CppToken &type_token = index.parse.raw_tokens[static_cast<size_t>(callee_token - 1)];
+        if (type_token.kind == CppTokKind::Ident) {
+            const int type = CppLookupTypeName(index, scope, spell_left(callee_token - 1, nullptr));
+            const int constructor = type >= 0 ? ConstructorOf(index, type) : -1;
             if (constructor >= 0) {
-                const CppSymbol &target = index.symbols[static_cast<size_t>(constructor)];
-                signature.found = true;
-                signature.label = target.detail.empty() ? target.name : target.detail;
-                signature.documentation = target.doc;
-                signature.params = SplitParameters(signature.label);
+                FillSignature(index, PickSignatureOverload(index, constructor, typed, total), &signature);
                 return signature;
             }
         }
-        return signature;
     }
+
+    // 1. What the indexer resolved the name to: qualified names, members
+    //    of a known type, and declarations from included headers.
+    const CppOccurrence *occurrence = CppOccurrenceAt(index, callee.start.line, callee.start.col);
+    if (occurrence != nullptr && occurrence->symbol >= 0) {
+        if (answer(occurrence->symbol)) return signature;
+        if (occurrence->is_declaration) return signature;
+    }
+
+    // 2. A qualified type spelled before the paren (`dm::Histogram(`),
+    //    read leftwards through the `::` qualifiers.
+    {
+        const std::string spelled = spell_left(callee_token, nullptr);
+        const int type = CppLookupTypeName(index, scope, spelled);
+        if (type >= 0 && index.symbols[static_cast<size_t>(type)].name == callee.text && answer(type)) {
+            return signature;
+        }
+        if (spelled == callee.text && answer(CppLookupName(index, scope, callee.text))) return signature;
+    }
+
+    // 3. A member call on an object whose type is unknown here (an `auto`
+    //    from a template, a generic lambda's parameter): the methods of
+    //    that name the index knows, flagged as a guess.
+    {
+        const CppToken &before = index.parse.raw_tokens[static_cast<size_t>(callee_token > 0 ? callee_token - 1 : 0)];
+        if (callee_token > 0 && before.kind == CppTokKind::Op && (before.text == "." || before.text == "->")) {
+            std::vector<int> candidates;
+            std::set<std::string> owners;
+            for (size_t i = 0; i < index.symbols.size(); i++) {
+                const CppSymbol &s = index.symbols[i];
+                if (s.name != callee.text || s.kind != CppSymbolKind::Method) continue;
+                candidates.push_back(static_cast<int>(i));
+                const size_t cut = s.qualified.rfind("::");
+                owners.insert(cut == std::string::npos ? s.qualified : s.qualified.substr(0, cut));
+            }
+            if (!candidates.empty()) {
+                int chosen = PickOverload(index, candidates, -1, std::max(typed, total));
+                if (chosen < 0) chosen = PickOverload(index, candidates, candidates.front(), typed);
+                FillSignature(index, chosen, &signature);
+                std::string note = owners.size() == 1 ? "(object type unknown here; assuming " + *owners.begin() + ")"
+                                                      : "(object type unknown here; `" + callee.text +
+                                                            "` is a member of " + std::to_string(owners.size()) +
+                                                            " classes)";
+                signature.documentation =
+                    signature.documentation.empty() ? note : note + "\n" + signature.documentation;
+                return signature;
+            }
+        }
+    }
+
+    // 4. The standard library vocabulary.
     for (const CppLspVocabEntry &entry : CppLspStdVocab()) {
         if (callee.text != entry.name) continue;
         signature.found = true;

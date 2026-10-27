@@ -276,6 +276,7 @@ struct CppLspSignature {
     std::string label;          // "connect(const Host &h, int port = 80)"
     std::string documentation;  // the callee's leading comment, when there is one
     std::vector<std::string> params;  // each parameter's own label, for highlighting
+    std::vector<std::string> param_docs;  // each parameter's description, from the doc's Parameters section
     int active_param = 0;
 };
 
@@ -287,6 +288,17 @@ struct CppLspSignature {
  * @return the signature, or a default-constructed value with `found == false` when the cursor is not in a call
  */
 CppLspSignature CppLspSignatureHelp(const std::vector<std::string> &lines, int line, int col);
+
+/**
+ * @brief Describes the call the cursor sits inside, resolving names through included headers.
+ * @param lines the document's text, one entry per line
+ * @param line 0-based cursor line
+ * @param col 0-based cursor byte column
+ * @param opts filesystem-resolution options (include paths, so `ns::func(` from a header resolves)
+ * @return the signature, or a default-constructed value with `found == false` when the cursor is not in a call
+ */
+CppLspSignature CppLspSignatureHelp(const std::vector<std::string> &lines, int line, int col,
+                                    const CppLspOptions &opts);
 
 // --- Shared vocabulary (exposed for tests, hover and completion) ------
 

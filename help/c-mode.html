@@ -13,16 +13,51 @@
 <body>
 <h1>C and C++ mode</h1>
 <h1>Opening it</h1>
-<p><code>&lt;leader&gt;lu</code> in a C or C++ file. The panels here are built around compiling
-rather than around a session, because that is what the language gives you.</p>
+<p><code>&lt;leader&gt;lu</code> (or <code>&lt;leader&gt;uu</code>) in a C or C++ file.</p>
+<p>C++ opens a persistent <b>crepl</b> session beneath your source. Variables, objects,
+functions, and types survive between inputs; earlier statements are not replayed.
+The Nix package bundles crepl, and the development shell puts it on PATH.
+A manual installation can install crepl separately or set <code>cpp_ui_cmd</code> below.
+C keeps its existing compiler-and-shell workflow.</p>
 <h1>The panels</h1>
 <table>
 <tr><th>Panel</th><th>Shows</th></tr>
-<tr><td>Assembly</td><td>the compiler's output for the current file</td></tr>
-<tr><td>Build</td><td>the build's diagnostics</td></tr>
+<tr><td>Objects</td><td>live C++ variables, declared types, and scalar values</td></tr>
+<tr><td>Data</td><td>an object's members and a bounded value preview</td></tr>
+<tr><td>Definitions</td><td>session functions, record types, aliases, and enums</td></tr>
+<tr><td>History</td><td>successful inputs; clicking one executes it again</td></tr>
+<tr><td>Plot</td><td>captured PNG figures, with previous/next navigation</td></tr>
+<tr><td>Assembly</td><td>the compiler's output for the saved current file</td></tr>
+<tr><td>Build</td><td>the compiler's diagnostics</td></tr>
 <tr><td>Hex</td><td>a hex view of a compiled binary</td></tr>
 <tr><td>Help</td><td><code>man</code> for the symbol under the cursor</td></tr>
 </table>
+<p>Objects, Data, Definitions, History, and Plot are the C++ session panels.
+The compiler views remain available as tabs. Click an Objects row to inspect its
+compiler-known members and value: dataframes use <code>head(100).to_string()</code>, strings
+show their contents, and containers or <code>values()</code> collections show up to 100 items.
+Private member names/types are metadata only; the inspector does not bypass C++
+access control or evaluate arbitrary getters automatically.</p>
+<h1>Sending C++ code</h1>
+<p><code>&lt;leader&gt;re</code> sends the complete fragment containing the cursor, including a
+multiline declaration or plot pipeline. A conventional <code>int main(...) {</code> wrapper,
+its final brace, and standalone outer-body <code>return 0;</code> are skipped. Send includes
+and prerequisite declarations first. The original source file is not rewritten;
+unsaved buffer edits can be submitted too.</p>
+<p>The Run button (<code>&lt;leader&gt;rr</code> or <code>gr</code>) runs the file into this same session. While
+C++ UI mode is active this takes priority over a <code>// CMD:</code> build hint; closing
+UI mode restores the normal command behavior. Re-declaring C++ variables can
+produce redefinition errors: use <code>:MepCppRestart</code> for a fresh session before
+running the whole file again. <code>:MepCppInspect</code> inspects the name at the cursor.</p>
+<h1>C++ figures</h1>
+<p>A standalone <code>plot.show();</code> is routed to <code>mep_ui::show(plot)</code> in UI mode. Types
+whose <code>save(path)</code> exports PNG appear in the Plot pane without opening a native
+window or blocking further evaluation. For example, the datamunge playground's
+<code>plt.show();</code> works unchanged. <code>mep_ui::show(plot);</code> can also be typed explicitly.
+If a type has no PNG save adapter, its native <code>show()</code> remains the fallback.
+Libraries with a different export API can provide an overload of <code>mep_ui::show</code>.</p>
+<p><code>mep_ui::view(object);</code> writes a value preview to Data. The templates live only
+in the session; no UI includes or namespaces need to be added to your program.</p>
 <h1>Assembly</h1>
 <p>The Assembly panel compiles the current file and shows the generated
 assembly -- the "what did the compiler actually do with this" view, without
@@ -43,7 +78,20 @@ usually what you want.</p>
 </table>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.c_ui_hex_page = <span class="tok-cyan">1024</span>   <span class="tok-comment">-- bytes per page</span></code></pre></div>
 <h1>Help</h1>
-<p><code>gh</code> on a symbol opens its <code>man</code> page in the Help tab.</p>
+<p><code>gh</code> on a symbol opens its <code>man</code> page in the Help tab. <code>K</code> retains LSP hover.</p>
+<h1>C++ compiler and library flags</h1>
+<p>The console inherits compiler flags from Run Setup. Additional flags, including
+pkg-config substitutions, can be configured before opening the mode:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.cpp_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'crepl'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.opt.cpp_ui_flags = <span class="tok-green">'$(pkg-config --cflags --libs my-library)'</span></code></pre></div>
+<p>By default, <code>&lt;dm/...&gt;</code> and <code>&lt;datamunge/...&gt;</code> includes add datamunge's pkg-config
+flags automatically. This uses the package visible in the environment launching
+mep; it must include the headers used by your source. Other library mappings can
+be added, or all automatic mappings disabled:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.cpp_ui_packages = <span class="tok-blue">{</span>[<span class="tok-green">'my-library/'</span>] = <span class="tok-green">'my-library'</span><span class="tok-blue">}</span>
+<span class="tok-comment">-- mep.opt.cpp_ui_packages = {}  -- use only explicit/Run Setup flags</span></code></pre></div>
+<p>Restart the session after changing flags. Crepl currently requires LLVM/Clang 21
+and a Unix host; it loads shared libraries rather than static archives.</p>
 <h1>Options</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.c_ui_info_share = <span class="tok-cyan">0.3</span>
 <span class="tok-cyan">mep</span>.opt.c_ui_bottom_share = <span class="tok-cyan">0.35</span>

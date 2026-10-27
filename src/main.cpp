@@ -128,6 +128,7 @@
 #endif
 #include "persist.h"
 #include "language_ui_csharp.h"
+#include "language_ui_cpp.h"
 
 namespace {
 
@@ -9078,7 +9079,7 @@ const char *kBuiltinLanguageUi =
     "    return\n"
     "  end\n"
     "  local handle = mode.open()\n"
-    "  mep.language_ui_active[tid] = {lang = lang, close = handle.close, run_source = handle.run_source}\n"
+    "  mep.language_ui_active[tid] = {lang = lang, close = handle.close, run_source = handle.run_source, prefer_session_run = handle.prefer_session_run}\n"
     "end\n"
     "mep.command('MepLanguageUi', mep.language_ui_toggle)\n"
     // <leader>re, "send the code at the cursor to the console": one key for
@@ -13967,7 +13968,7 @@ const char *kBuiltinLanguageUiC =
     "local function mep_c_ui_config(st)\n"
     "  local cfg = mep.run_button_config_for and mep.run_button_config_for(st.ext) or nil\n"
     "  local compiler = (cfg and cfg.compiler) or ((st.ext == 'c') and 'cc' or 'c++')\n"
-    "  local flags = (cfg and cfg.flags) or ''\n"
+    "  local flags = (st.cpp and st.cpp.compiler_flags) or (cfg and cfg.flags) or ''\n"
     "  return compiler, (flags ~= '' and (' ' .. flags) or '')\n"
     "end\n"
     // Regenerates the Assembly tab (see the header comment). Diagnostics
@@ -14093,7 +14094,7 @@ const char *kBuiltinLanguageUiC =
     "  local layout = mep.language_ui_layout({\n"
     "    info_share = mep.opt.c_ui_info_share, bottom_share = mep.opt.c_ui_bottom_share,\n"
     "    bottom_info_share = mep.opt.c_ui_bottom_info_share,\n"
-    "    console = function() mep.terminal_here() end,\n"
+    "    console = function() if mep.cpp_ui_start_console then mep.cpp_ui_start_console(st) else mep.terminal_here() end end,\n"
     "  })\n"
     "  st.editor_pane, st.console_pane, st.term_buf = layout.editor_pane, layout.console_pane, layout.console_buf\n"
     "  local tid = mep.current_tab_id()\n"
@@ -14106,12 +14107,15 @@ const char *kBuiltinLanguageUiC =
     "  st.asm_buf = bufs[sb.asm]\n"
     "  st.help_buf = bufs[sb.help]\n"
     "  mep.language_ui_open_tabs(layout.bottom_pane, {sb.hex})\n"
+    "  if mep.cpp_ui_setup then mep.cpp_ui_setup(st, layout) end\n"
     "  mep.pane_focus(layout.editor_pane)\n"
     "  mep.c_ui_regen_asm(st)\n"
-    "  mep.notify('C/C++ language UI: terminal below, Assembly/Build/Help tabbed top-right, Hex bottom-right; <leader>rr builds and runs, gh opens a man page (mod1+Tab cycles tabs)')\n"
+    "  if st.cpp then mep.notify('C++ UI: crepl console below; Objects/Data/Definitions/History and compiler views; Plot bottom-right; <leader>re evaluates a fragment, <leader>rr runs the main body') else mep.notify('C/C++ language UI: terminal below, Assembly/Build/Help tabbed top-right, Hex bottom-right; <leader>rr builds and runs, gh opens a man page (mod1+Tab cycles tabs)') end\n"
     "  return {\n"
-    "    run_source = function(f) mep.c_ui_build_and_run(st, f) end,\n"
+    "    prefer_session_run = st.cpp ~= nil,\n"
+    "    run_source = function(f) if not (mep.cpp_ui_run and mep.cpp_ui_run(st, f)) then mep.c_ui_build_and_run(st, f) end end,\n"
     "    close = function()\n"
+    "      if mep.cpp_ui_close then mep.cpp_ui_close(st) end\n"
     "      mep_c_ui_state[tid] = nil\n"
     "      layout.console_pane = st.console_pane\n"
     "      mep.language_ui_teardown(layout, st.extra_term_bufs)\n"
@@ -14147,6 +14151,7 @@ const char *kBuiltinLanguageUiC =
     "    local now = mep.now()\n"
     "    if now - last_poll < mep.opt.language_ui_poll_interval then return end\n"
     "    last_poll = now\n"
+    "    if mep.cpp_ui_poll then mep.cpp_ui_poll(st) end\n"
     "    local epoch = mep.buffer_save_epoch()\n"
     "    if epoch ~= st.last_save_epoch then\n"
     "      st.last_save_epoch = epoch\n"
@@ -36331,6 +36336,13 @@ const char *kBuiltinRunButton =
     "function mep.run_button_run()\n"
     "  local fname = mep.filename()\n"
     "  if not fname or fname == '' then mep.notify('Run: save this buffer to a file first', 'warn') return end\n"
+    // A live C++ session explicitly prefers in-session execution, including
+    // files with a CMD build hint. Closing UI mode restores normal CMD behavior.
+    "  local live_mode = mep.language_ui_active and mep.language_ui_active[mep.current_tab_id()]\n"
+    "  if live_mode and live_mode.prefer_session_run and live_mode.run_source and mep.language_for_buffer() == live_mode.lang then\n"
+    "    live_mode.run_source(fname)\n"
+    "    return\n"
+    "  end\n"
     "  local override = mep_run_button_cmd_override()\n"
     "  if override then\n"
     "    mep.cmd('write')\n"
@@ -69669,6 +69681,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinLanguageUiPython);
     lua->DoString(kBuiltinLanguageUiLisp);
     lua->DoString(kBuiltinLanguageUiC);
+    lua->DoString(BuiltinLanguageUiCpp());
     lua->DoString(kBuiltinLanguageUiBash);
     lua->DoString(kBuiltinLanguageUiClojure);
     lua->DoString(kBuiltinLanguageUiCrystal);

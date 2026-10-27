@@ -19,12 +19,17 @@
     inputs.flake-utils.follows = "flake-utils";
   };
 
+  # Local crepl development checkout, independent of datamunge. Refresh with
+  # `nix flake update crepl` while developing without commits.
+  inputs.crepl.url = "path:/mnt/projects/crepl";
+
   outputs =
-    { nixpkgs, flake-utils, datamunge, ... }:
+    { nixpkgs, flake-utils, datamunge, crepl, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        creplPkg = crepl.packages.${system}.default;
         # The locked datamunge commit doesn't build on Linux as checked in:
         #  * nix/datamunge{lua,guile,octave}.nix interpolate
         #    `${pkgs.darwin.cctools}/bin/install_name_tool` inside a
@@ -381,6 +386,8 @@
           installPhase = ''
             runHook preInstall
             install -Dm755 mep "$out/bin/mep"
+            # bundled_tool resolves this sibling even outside a development shell.
+            ln -s ${creplPkg}/bin/crepl "$out/bin/crepl"
             # The language servers mep brings itself, and the mepml
             # converter. These are not optional extras: kBuiltinLsp's
             # registry spawns each one through mep.bundled_tool, which
@@ -456,6 +463,7 @@
 
         devShells.default = (pkgs.mkShell.override { stdenv = mepStdenv; }) {
           packages = [
+            creplPkg
             pkgs.cmake
             pkgs.ninja
             # BUILD_PERFORMANCE_PLAN.md -- CMakeLists.txt auto-detects

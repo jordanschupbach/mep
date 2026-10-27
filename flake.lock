@@ -1,5 +1,20 @@
 {
   "nodes": {
+    "crepl": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1793066235,
+        "narHash": "sha256-H655YKZznoz41JfXrPJgxV+553qtiEMFuYf8mNWXLeY=",
+        "path": "/mnt/projects/crepl",
+        "type": "path"
+      },
+      "original": {
+        "path": "/mnt/projects/crepl",
+        "type": "path"
+      }
+    },
     "datamunge": {
       "inputs": {
         "flake-utils": [
@@ -49,6 +64,22 @@
     },
     "nixpkgs": {
       "locked": {
+        "lastModified": 1769433173,
+        "narHash": "sha256-Gf1dFYgD344WZ3q0LPlRoWaNdNQq8kSBDLEWulRQSEs=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "13b0f9e6ac78abbbb736c635d87845c4f4bee51b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
         "lastModified": 1791366222,
         "narHash": "sha256-o0N4g6uSOIppU7CGToNvGlMf5vC+B6O6ukFHKY/TKOY=",
         "owner": "NixOS",
@@ -63,7 +94,7 @@
         "type": "github"
       }
     },
-    "nixpkgs_2": {
+    "nixpkgs_3": {
       "locked": {
         "lastModified": 1786993761,
         "narHash": "sha256-1LU+eVzo7NRDq41O60TWWuSfE9nziXuN1AcU0STCR9k=",
@@ -81,7 +112,7 @@
     },
     "php-from-source": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs_2"
       },
       "locked": {
         "path": "./nix/flakes/php",
@@ -97,9 +128,10 @@
     },
     "root": {
       "inputs": {
+        "crepl": "crepl",
         "datamunge": "datamunge",
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs_2",
+        "nixpkgs": "nixpkgs_3",
         "systems": "systems"
       }
     },

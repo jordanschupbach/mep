@@ -930,3 +930,11 @@ lint-iwyu:
 
 # Run every static analysis tool above.
 lint: lint-tidy lint-cppcheck lint-iwyu
+
+# Live C++ session adapters and panels (uses crepl from PATH).
+test-cpp-ui:
+    python3 tools/cpp_ui_check.py
+
+# Actual editor, PTY, object panels, figures, and teardown on a private X11 display.
+test-cpp-ui-live: build-native
+    python3 tools/cpp_ui_live_check.py --build-dir {{native_build_dir}}

@@ -3585,3 +3585,26 @@ if(NOT EMSCRIPTEN)
         endif()
     endforeach()
 endif()
+
+# Stateful C++ UI: test the actual crepl process and embedded Lua panel bridge.
+if(NOT EMSCRIPTEN)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    find_program(MEP_CREPL_EXECUTABLE NAMES crepl)
+    find_program(MEP_LUA_EXECUTABLE NAMES lua lua5.4)
+    # Native `just install` needs the same sibling executable as the Nix package.
+    # An optional component also permits installing/verifying this runtime alone.
+    if(MEP_CREPL_EXECUTABLE)
+        install(PROGRAMS ${MEP_CREPL_EXECUTABLE} DESTINATION ${CMAKE_INSTALL_BINDIR}
+                RENAME crepl COMPONENT cpp-repl)
+    endif()
+    if(Python3_Interpreter_FOUND AND MEP_CREPL_EXECUTABLE)
+        set(MEP_CPP_UI_LUA_ARGS "")
+        if(MEP_LUA_EXECUTABLE)
+            list(APPEND MEP_CPP_UI_LUA_ARGS --lua ${MEP_LUA_EXECUTABLE})
+        endif()
+        add_test(NAME mep-cpp-ui-test
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/cpp_ui_check.py
+                    --crepl ${MEP_CREPL_EXECUTABLE} ${MEP_CPP_UI_LUA_ARGS})
+        set_tests_properties(mep-cpp-ui-test PROPERTIES LABELS "integration;languages" TIMEOUT 90)
+    endif()
+endif()

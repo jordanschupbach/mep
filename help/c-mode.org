@@ -5,17 +5,60 @@
 
 * Opening it
 
-=<leader>lu= in a C or C++ file. The panels here are built around compiling
-rather than around a session, because that is what the language gives you.
+=<leader>lu= (or =<leader>uu=) in a C or C++ file.
+
+C++ opens a persistent *crepl* session beneath your source. Variables, objects,
+functions, and types survive between inputs; earlier statements are not replayed.
+The Nix package bundles crepl, and the development shell puts it on PATH.
+A manual installation can install crepl separately or set =cpp_ui_cmd= below.
+C keeps its existing compiler-and-shell workflow.
 
 * The panels
 
-| Panel    | Shows                                            |
-|----------+--------------------------------------------------|
-| Assembly | the compiler's output for the current file       |
-| Build    | the build's diagnostics                          |
-| Hex      | a hex view of a compiled binary                  |
-| Help     | =man= for the symbol under the cursor            |
+| Panel       | Shows                                                |
+|-------------+------------------------------------------------------|
+| Objects     | live C++ variables, declared types, and scalar values  |
+| Data        | an object's members and a bounded value preview       |
+| Definitions | session functions, record types, aliases, and enums   |
+| History     | successful inputs; clicking one executes it again     |
+| Plot        | captured PNG figures, with previous/next navigation   |
+| Assembly    | the compiler's output for the saved current file      |
+| Build       | the compiler's diagnostics                           |
+| Hex         | a hex view of a compiled binary                      |
+| Help        | =man= for the symbol under the cursor                 |
+
+Objects, Data, Definitions, History, and Plot are the C++ session panels.
+The compiler views remain available as tabs. Click an Objects row to inspect its
+compiler-known members and value: dataframes use =head(100).to_string()=, strings
+show their contents, and containers or =values()= collections show up to 100 items.
+Private member names/types are metadata only; the inspector does not bypass C++
+access control or evaluate arbitrary getters automatically.
+
+* Sending C++ code
+
+=<leader>re= sends the complete fragment containing the cursor, including a
+multiline declaration or plot pipeline. A conventional =int main(...) {= wrapper,
+its final brace, and standalone outer-body =return 0;= are skipped. Send includes
+and prerequisite declarations first. The original source file is not rewritten;
+unsaved buffer edits can be submitted too.
+
+The Run button (=<leader>rr= or =gr=) runs the file into this same session. While
+C++ UI mode is active this takes priority over a =// CMD:= build hint; closing
+UI mode restores the normal command behavior. Re-declaring C++ variables can
+produce redefinition errors: use =:MepCppRestart= for a fresh session before
+running the whole file again. =:MepCppInspect= inspects the name at the cursor.
+
+* C++ figures
+
+A standalone =plot.show();= is routed to =mep_ui::show(plot)= in UI mode. Types
+whose =save(path)= exports PNG appear in the Plot pane without opening a native
+window or blocking further evaluation. For example, the datamunge playground's
+=plt.show();= works unchanged. =mep_ui::show(plot);= can also be typed explicitly.
+If a type has no PNG save adapter, its native =show()= remains the fallback.
+Libraries with a different export API can provide an overload of =mep_ui::show=.
+
+=mep_ui::view(object);= writes a value preview to Data. The templates live only
+in the session; no UI includes or namespaces need to be added to your program.
 
 * Assembly
 
@@ -50,7 +93,30 @@ mep.opt.c_ui_hex_page = 1024   -- bytes per page
 
 * Help
 
-=gh= on a symbol opens its =man= page in the Help tab.
+=gh= on a symbol opens its =man= page in the Help tab. =K= retains LSP hover.
+
+* C++ compiler and library flags
+
+The console inherits compiler flags from Run Setup. Additional flags, including
+pkg-config substitutions, can be configured before opening the mode:
+
+#+begin_src lua
+mep.opt.cpp_ui_cmd = {'crepl'}
+mep.opt.cpp_ui_flags = '$(pkg-config --cflags --libs my-library)'
+#+end_src
+
+By default, =<dm/...>= and =<datamunge/...>= includes add datamunge's pkg-config
+flags automatically. This uses the package visible in the environment launching
+mep; it must include the headers used by your source. Other library mappings can
+be added, or all automatic mappings disabled:
+
+#+begin_src lua
+mep.opt.cpp_ui_packages = {['my-library/'] = 'my-library'}
+-- mep.opt.cpp_ui_packages = {}  -- use only explicit/Run Setup flags
+#+end_src
+
+Restart the session after changing flags. Crepl currently requires LLVM/Clang 21
+and a Unix host; it loads shared libraries rather than static archives.
 
 * Options
 

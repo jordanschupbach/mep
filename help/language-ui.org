@@ -43,7 +43,7 @@ the language.
 answers depends on where you are:
 
 - in a language UI mode, its own Help tab -- R's =help()=, Python's pydoc,
-  =man= for C and C++, =DESCRIBE= for Common Lisp, =help= and =man= for
+  =man= for C and C++ (with live C++ object inspection in Data), =DESCRIBE= for Common Lisp, =help= and =man= for
   Bash, =doc= for Clojure, the standard library's doc comments for
   Crystal, the .NET reference documentation for C#;
 - otherwise, the LSP hover popup, the same one =K= opens.

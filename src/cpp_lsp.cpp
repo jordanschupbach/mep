@@ -36,8 +36,8 @@ namespace {
 
 // A header's declarations cost one parse each; the budget keeps a
 // deeply-including translation unit from making every keystroke slow.
-constexpr int kMaxHeaderDepth = 4;
-constexpr size_t kMaxHeaderFiles = 60;
+constexpr int kMaxHeaderDepth = 12;
+constexpr size_t kMaxHeaderFiles = 1500;
 
 std::string Trim(const std::string &s) {
     size_t start = 0;
@@ -80,6 +80,11 @@ struct HeaderSymbol {
     std::string detail;
     std::string doc;
     std::string type_base;
+    // A `namespace dm = datamunge;` in the header: the namespace it names.
+    std::string alias_target;
+    // A class's base clauses as written (`plot::RPlot`), resolved once
+    // every header is in, so inherited members are found.
+    std::vector<std::string> bases;
     bool is_function_like_macro = false;
 };
 
@@ -398,6 +403,15 @@ private:
         const size_t at = entry.qualified.rfind("::");
         const std::string qualifier = at == std::string::npos ? "" : entry.qualified.substr(0, at);
         symbol.scope = ExternalScopeFor(qualifier, path);
+        // An alias opens its target's scope, so `dm::factor` finds
+        // `datamunge::factor`. The target namespace may only be declared
+        // in a header read later; ExternalScopeFor makes the scope now and
+        // that header's names land in it.
+        if (!entry.alias_target.empty()) {
+            std::string target = entry.alias_target;
+            if (target.rfind("::", 0) == 0) target = target.substr(2);
+            if (!target.empty()) symbol.child_scope = ExternalScopeFor(target, path);
+        }
         const bool opens_scope = entry.kind == CppSymbolKind::Class || entry.kind == CppSymbolKind::Struct ||
                                  entry.kind == CppSymbolKind::Union || entry.kind == CppSymbolKind::Enum;
         const int parent_scope = symbol.scope;
@@ -407,11 +421,16 @@ private:
         const auto existing = opens_scope ? external_scopes_.find(entry.qualified) : external_scopes_.end();
         if (existing != external_scopes_.end()) symbol.child_scope = existing->second;
         const int created = AddSymbol(std::move(symbol));
-        if (!opens_scope || existing != external_scopes_.end()) return;
+        if (!opens_scope) return;
+        if (existing != external_scopes_.end()) {
+            if (!entry.bases.empty()) pending_bases_.emplace_back(existing->second, entry.bases);
+            return;
+        }
         const int class_scope = NewScope(CppScope::Kind::Class, parent_scope, entry.name, nullptr);
         index_.scopes[static_cast<size_t>(class_scope)].owner = created;
         index_.symbols[static_cast<size_t>(created)].child_scope = class_scope;
         external_scopes_[entry.qualified] = class_scope;
+        if (!entry.bases.empty()) pending_bases_.emplace_back(class_scope, entry.bases);
     }
 
     /**
@@ -516,6 +535,24 @@ private:
                 case CppNodeKind::LinkageSpec:
                     CollectHeaderSymbols(parsed, lines, qualifier, decl, out);
                     break;
+                case CppNodeKind::NamespaceAlias: {
+                    // `namespace dm = datamunge;` -- a library's short
+                    // spelling for its own API, and often the only one
+                    // its users ever write.
+                    if (decl->name.empty() || decl->str_value.empty()) break;
+                    HeaderSymbol symbol;
+                    symbol.name = decl->name;
+                    symbol.qualified = qualifier.empty() ? decl->name : qualifier + "::" + decl->name;
+                    symbol.kind = CppSymbolKind::Namespace;
+                    symbol.line = decl->name_pos.line;
+                    symbol.col = decl->name_pos.col;
+                    symbol.end_col = decl->name_end.col;
+                    symbol.doc = CppDocCommentAbove(parsed.comments, decl->start.line);
+                    symbol.alias_target = decl->str_value;
+                    symbol.detail = "namespace " + decl->name + " = " + decl->str_value;
+                    out->push_back(symbol);
+                    break;
+                }
                 case CppNodeKind::Class:
                 case CppNodeKind::Enum: {
                     if (decl->name.empty()) break;
@@ -526,7 +563,11 @@ private:
                     symbol.line = decl->name_pos.line;
                     symbol.col = decl->name_pos.col;
                     symbol.end_col = decl->name_end.col;
+                    symbol.doc = CppDocCommentAbove(parsed.comments, decl->start.line);
                     symbol.detail = decl->str_value + " " + symbol.qualified;
+                    for (const CppNodePtr &base : decl->bases) {
+                        if (base != nullptr && !base->name.empty()) symbol.bases.push_back(base->name);
+                    }
                     out->push_back(symbol);
                     // A header's class members matter too: `Editor::Draw`
                     // is what a .cpp file defines, and its fields are
@@ -543,6 +584,7 @@ private:
                     symbol.line = decl->name_pos.line;
                     symbol.col = decl->name_pos.col;
                     symbol.end_col = decl->name_end.col;
+                    symbol.doc = CppDocCommentAbove(parsed.comments, decl->start.line);
                     out->push_back(symbol);
                     break;
                 }
@@ -555,8 +597,12 @@ private:
                     symbol.line = decl->name_pos.line;
                     symbol.col = decl->name_pos.col;
                     symbol.end_col = decl->name_end.col;
+                    symbol.doc = CppDocCommentAbove(parsed.comments, decl->start.line);
                     const std::string return_type =
                         decl->kids.empty() ? "" : CppTypeText(decl->kids.front().get());
+                    // What a call returns, so `auto x = lib::make()` and
+                    // `w.set_a().set_b()` know their type.
+                    symbol.type_base = decl->kids.empty() ? "" : TypeBaseOf(decl->kids.front().get());
                     symbol.detail = (return_type.empty() ? "" : return_type + " ") + decl->name +
                                     ParameterListText(decl) +
                                     (decl->trailing_qualifiers.empty() ? "" : " " + decl->trailing_qualifiers);
@@ -573,6 +619,7 @@ private:
                     symbol.line = decl->name_pos.line;
                     symbol.col = decl->name_pos.col;
                     symbol.end_col = decl->name_end.col;
+                    symbol.doc = CppDocCommentAbove(parsed.comments, decl->start.line);
                     const CppNode *type = decl->kids.empty() ? nullptr : decl->kids.front().get();
                     symbol.type_base = TypeBaseOf(type);
                     symbol.detail = CppTypeText(type) + " " + symbol.qualified;
@@ -589,6 +636,10 @@ private:
                     symbol.line = decl->name_pos.line;
                     symbol.col = decl->name_pos.col;
                     symbol.end_col = decl->name_end.col;
+                    symbol.doc = CppDocCommentAbove(parsed.comments, decl->start.line);
+                    // What the alias names, so a variable declared with
+                    // it (`dm::Plot p;`) resolves to the real class.
+                    symbol.type_base = TypeBaseOf(decl->kids.empty() ? nullptr : decl->kids.front().get());
                     symbol.detail = "using " + decl->name + " = " +
                                     (decl->kids.empty() ? "" : CppTypeText(decl->kids.front().get()));
                     out->push_back(symbol);
@@ -602,6 +653,7 @@ private:
                     symbol.line = decl->name_pos.line;
                     symbol.col = decl->name_pos.col;
                     symbol.end_col = decl->name_end.col;
+                    symbol.doc = CppDocCommentAbove(parsed.comments, decl->start.line);
                     out->push_back(symbol);
                     break;
                 }
@@ -660,6 +712,11 @@ private:
                 symbol.range_end = node->end;
                 symbol.scope = scope;
                 symbol.detail = "namespace " + node->name + " = " + node->str_value;
+                symbol.doc = DocFor(node);
+                // Point the alias at its target's scope, so `alias::name`
+                // resolves the same as `target::name`.
+                const int target = ResolveQualified(node->str_value, scope);
+                if (target >= 0) symbol.child_scope = index_.symbols[static_cast<size_t>(target)].child_scope;
                 const int created = AddSymbol(std::move(symbol));
                 RecordOccurrence(node->name, node->name_pos, node->name_end, created, false, true, false);
                 break;
@@ -1059,15 +1116,15 @@ private:
                 // `auto p = Point(1, 2)` names a type; `auto &c = Cache()`
                 // names a function, and what it deduces is that
                 // function's return type -- not the function.
-                const int symbol = CppLookupName(index_, scope, LastComponent(callee->str_value));
+                const int symbol = LookupId(callee, scope);
                 if (symbol >= 0) {
-                    const CppSymbol &target = index_.symbols[static_cast<size_t>(symbol)];
-                    if (target.kind == CppSymbolKind::Function || target.kind == CppSymbolKind::Method) {
-                        return target.type_base;
-                    }
+                    const std::string resolved = ResolvedTypeOf(symbol);
+                    if (!resolved.empty()) return resolved;
                 }
                 return callee->str_value;
             }
+            // `auto x = obj.make()` / `auto p = Plot().a().b()`.
+            return TypeOfExpression(init, scope);
         }
         if (init->kind == CppNodeKind::New && !init->kids.empty()) {
             return TypeBaseOf(init->kids.front().get());
@@ -1415,13 +1472,48 @@ private:
     }
 
     /** @brief The bare type name of an expression, where the file says so outright. */
+    /** @brief The symbol an `Id` names: `a::b::c` walks its qualifiers, a bare name is looked up. */
+    int LookupId(const CppNode *id, int scope) const {
+        if (id == nullptr) return -1;
+        if (id->str_value.find("::") != std::string::npos) {
+            const int found = ResolveQualified(id->str_value, scope);
+            if (found >= 0) return found;
+        }
+        return CppLookupName(index_, scope, LastComponent(id->str_value.empty() ? id->name : id->str_value));
+    }
+
+    /**
+     * @brief The type an expression naming `symbol` has, spelled so it resolves from anywhere.
+     *
+     * A class (a constructor call) is its own type. Anything else has the
+     * type its declaration wrote, which is relative to where it was
+     * declared: `Histogram &set_title()` inside `namespace datamunge`
+     * means `datamunge::Histogram`, which a lookup from the calling file
+     * would not find by the bare name. Resolving it in the declaring
+     * scope and answering with the qualified name fixes that.
+     */
+    std::string ResolvedTypeOf(int symbol) const {
+        if (symbol < 0) return "";
+        const CppSymbol &target = index_.symbols[static_cast<size_t>(symbol)];
+        if (target.kind == CppSymbolKind::Class || target.kind == CppSymbolKind::Struct ||
+            target.kind == CppSymbolKind::Union) {
+            return target.qualified.empty() ? target.name : target.qualified;
+        }
+        if (target.type_base.empty() || target.type_base == "auto") return "";
+        const int type = CppResolveTypeName(index_, target.scope, target.type_base);
+        if (type < 0 || type == symbol) return target.type_base;
+        const CppSymbol &found = index_.symbols[static_cast<size_t>(type)];
+        if (found.kind == CppSymbolKind::TemplateParam) return target.type_base;
+        return found.qualified.empty() ? target.type_base : found.qualified;
+    }
+
     std::string TypeOfExpression(const CppNode *node, int scope) const {
         if (node == nullptr) return "";
         switch (node->kind) {
             case CppNodeKind::Id: {
-                const int symbol = CppLookupName(index_, scope, LastComponent(node->str_value));
+                const int symbol = LookupId(node, scope);
                 if (symbol < 0) return "";
-                return index_.symbols[static_cast<size_t>(symbol)].type_base;
+                return ResolvedTypeOf(symbol);
             }
             case CppNodeKind::This: {
                 for (int current = scope; current >= 0;
@@ -1435,7 +1527,7 @@ private:
             case CppNodeKind::Member: {
                 const int member = ResolveMemberOf(node, scope);
                 if (member < 0) return "";
-                return index_.symbols[static_cast<size_t>(member)].type_base;
+                return ResolvedTypeOf(member);
             }
             case CppNodeKind::Paren:
                 return node->kids.empty() ? "" : TypeOfExpression(node->kids.front().get(), scope);
@@ -1447,16 +1539,13 @@ private:
                 if (node->kids.empty()) return "";
                 const CppNode *callee = node->kids.front().get();
                 if (callee == nullptr) return "";
-                const int symbol = callee->kind == CppNodeKind::Id
-                                       ? CppLookupName(index_, scope, LastComponent(callee->str_value))
-                                       : -1;
+                // `f()` / `ns::f()` / `Type()`, or a method call `x.f()`
+                // -- the link in a chain like `Plot().a().b()`.
+                int symbol = -1;
+                if (callee->kind == CppNodeKind::Id) symbol = LookupId(callee, scope);
+                if (callee->kind == CppNodeKind::Member) symbol = ResolveMemberOf(callee, scope);
                 if (symbol < 0) return "";
-                const CppSymbol &target = index_.symbols[static_cast<size_t>(symbol)];
-                // A constructor call names its own type.
-                if (target.kind == CppSymbolKind::Class || target.kind == CppSymbolKind::Struct) {
-                    return target.name;
-                }
-                return target.type_base;
+                return ResolvedTypeOf(symbol);
             }
             default:
                 return "";
@@ -1506,8 +1595,10 @@ private:
         for (const auto &entry : pending_bases_) {
             CppScope &scope = index_.scopes[static_cast<size_t>(entry.first)];
             for (const std::string &base : entry.second) {
-                const std::string last = LastComponent(TypeBaseOfName(base));
-                const int symbol = CppLookupName(index_, scope.parent, last);
+                // `plot::RPlot` walks its qualifiers; a bare name falls
+                // back to an ordinary lookup inside CppResolveTypeName.
+                int symbol = CppResolveTypeName(index_, scope.parent, TypeBaseOfName(base));
+                if (symbol < 0) symbol = CppLookupName(index_, scope.parent, LastComponent(TypeBaseOfName(base)));
                 if (symbol >= 0 && index_.symbols[static_cast<size_t>(symbol)].child_scope >= 0) {
                     scope.base_scopes.push_back(index_.symbols[static_cast<size_t>(symbol)].child_scope);
                 } else {
@@ -1648,20 +1739,73 @@ int CppLookupNameFiltered(const CppIndex &index, int scope, const std::string &n
     return -1;
 }
 
-int CppResolveTypeName(const CppIndex &index, int scope, const std::string &type_base) {
-    if (type_base.empty()) return -1;
+namespace {
+
+/**
+ * @brief Resolves a type name to its symbol, walking its qualifiers when it has any.
+ *
+ * `ns::Widget` is looked up as `ns` from `scope`, then `Widget` inside
+ * the scope `ns` opens -- a namespace, a class, or a namespace alias
+ * pointing at one. Looking up only the last component misses every type
+ * that is not visible unqualified from where it is used, which is all
+ * of a library's types in a file that spells them `lib::Type`. Returns
+ * -1 when a qualifier does not resolve, so the caller can fall back.
+ */
+int LookupTypePath(const CppIndex &index, int scope, const std::string &type_base) {
+    std::vector<std::string> parts;
+    int depth = 0;
+    std::string current;
+    for (size_t i = 0; i < type_base.size(); i++) {
+        const char c = type_base[i];
+        if (c == '<') depth++;
+        if (c == '>') depth--;
+        if (depth == 0 && c == ':' && i + 1 < type_base.size() && type_base[i + 1] == ':') {
+            parts.push_back(Trim(current));
+            current.clear();
+            i++;
+            continue;
+        }
+        if (depth == 0 && c != '>') current += c;
+    }
+    parts.push_back(Trim(current));
+    if (!parts.empty() && parts.front().empty()) parts.erase(parts.begin());  // a leading `::`
+    if (parts.size() < 2) return -1;
+    int symbol = CppLookupName(index, scope, parts.front());
+    for (size_t i = 1; symbol >= 0 && i < parts.size(); i++) {
+        const int child = index.symbols[static_cast<size_t>(symbol)].child_scope;
+        if (child < 0) return -1;
+        symbol = CppLookupMember(index, child, parts[i]);
+    }
+    return symbol;
+}
+
+/** @brief One step of type resolution: the qualified path first, the bare last name second. */
+int LookupTypeName(const CppIndex &index, int scope, const std::string &type_base) {
+    if (type_base.find("::") != std::string::npos) {
+        const int found = LookupTypePath(index, scope, type_base);
+        if (found >= 0) return found;
+    }
     const size_t at = type_base.rfind("::");
     const std::string last = at == std::string::npos ? type_base : type_base.substr(at + 2);
-    int symbol = CppLookupNameFiltered(index, scope, last, true);
+    return CppLookupNameFiltered(index, scope, last, true);
+}
+
+}  // namespace
+
+int CppLookupTypeName(const CppIndex &index, int scope, const std::string &spelled) {
+    if (spelled.empty()) return -1;
+    return LookupTypeName(index, scope, spelled);
+}
+
+int CppResolveTypeName(const CppIndex &index, int scope, const std::string &type_base) {
+    if (type_base.empty()) return -1;
+    int symbol = LookupTypeName(index, scope, type_base);
     int guard = 0;
     // A typedef or `using` alias resolves to what it names.
     while (symbol >= 0 && guard++ < 16) {
         const CppSymbol &found = index.symbols[static_cast<size_t>(symbol)];
         if (found.kind != CppSymbolKind::Typedef || found.type_base.empty()) return symbol;
-        const size_t inner_at = found.type_base.rfind("::");
-        const std::string inner = inner_at == std::string::npos ? found.type_base
-                                                                : found.type_base.substr(inner_at + 2);
-        const int next = CppLookupNameFiltered(index, found.scope, inner, true);
+        const int next = LookupTypeName(index, found.scope, found.type_base);
         if (next < 0 || next == symbol) return symbol;
         symbol = next;
     }
@@ -1708,6 +1852,10 @@ std::string CppWordAt(const std::vector<std::string> &lines, int line, int col, 
 }
 
 std::string CppDocCommentAbove(const CppIndex &index, int line) {
+    return CppDocCommentAbove(index.parse.comments, line);
+}
+
+std::string CppDocCommentAbove(const std::vector<CppComment> &comments, int line) {
     // The comment block directly above the declaration, with its markers
     // stripped: `/** ... */`, a run of `///` lines, or a run of plain
     // `//` lines. Anything separated by a blank line belongs to whatever
@@ -1716,7 +1864,7 @@ std::string CppDocCommentAbove(const CppIndex &index, int line) {
     int want_line = line - 1;
     for (int guard = 0; guard < 200; guard++) {
         const CppComment *found = nullptr;
-        for (const CppComment &comment : index.parse.comments) {
+        for (const CppComment &comment : comments) {
             if (!comment.own_line) continue;
             if (comment.end_line != want_line) continue;
             found = &comment;
@@ -1757,6 +1905,19 @@ std::string CppDocCommentAbove(const CppIndex &index, int line) {
         }
         if (!out.empty()) out += '\n';
         out += text;
+    }
+    // Doxygen's `@brief` only marks the summary line; in a hover it is
+    // noise in front of the sentence that matters.
+    for (const char *tag : {"@brief ", "\\brief "}) {
+        const std::string marker(tag);
+        size_t at = 0;
+        while ((at = out.find(marker, at)) != std::string::npos) {
+            if (at == 0 || out[at - 1] == '\n') {
+                out.erase(at, marker.size());
+            } else {
+                at += marker.size();
+            }
+        }
     }
     return Trim(out);
 }

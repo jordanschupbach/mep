@@ -203,6 +203,10 @@ int CppLookupNameFiltered(const CppIndex &index, int scope, const std::string &n
 /** @brief Looks a member name up in a class scope and its base classes. */
 int CppLookupMember(const CppIndex &index, int class_scope, const std::string &name);
 
+// The type a written name (`ns::Widget`, `Widget`) refers to from `scope`,
+// qualifiers walked, *without* following typedefs or `using` aliases.
+int CppLookupTypeName(const CppIndex &index, int scope, const std::string &spelled);
+
 /** @brief Resolves a type's bare name to the class/enum symbol it names, or -1. */
 int CppResolveTypeName(const CppIndex &index, int scope, const std::string &type_base);
 
@@ -214,6 +218,9 @@ std::string CppWordAt(const std::vector<std::string> &lines, int line, int col, 
 
 /** @brief The comment block immediately above a line, rendered as plain text ("" when there is none). */
 std::string CppDocCommentAbove(const CppIndex &index, int line);
+// The same, over a bare comment list: a header's declarations are read
+// from its parse alone, with no CppIndex built for it.
+std::string CppDocCommentAbove(const std::vector<CppComment> &comments, int line);
 
 /** @brief Renders a symbol the way hover shows it (`int Editor::width` / `void f(int a) const`). */
 std::string CppSymbolDetail(const CppSymbol &symbol);

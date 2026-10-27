@@ -1061,6 +1061,66 @@ void TestIncludedLibraryHeaders() {
     std::filesystem::remove_all(root);
 }
 
+/** @brief Hover text at the first occurrence of `needle` on `line`, offset `into` characters. */
+std::string HoverAt(const Lines &lines, int line, const std::string &needle, int into, const CppLspOptions &opts) {
+    const size_t at = lines[static_cast<size_t>(line)].find(needle);
+    if (at == std::string::npos) return "";
+    const CppLspHoverInfo info = CppLspHover(lines, line, static_cast<int>(at) + into, opts);
+    return info.found ? info.text : "";
+}
+
+void TestLibraryHoverThroughAliasesAndMembers() {
+    // The shape of a real library: an umbrella header that pulls in the
+    // modules and gives the namespace a short alias, a class whose base
+    // lives in a nested namespace, chainable setters, a free function
+    // returning a class, and Doxygen comments on all of it.
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "mep-cpp-lsp-test-alias";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "inc" / "lib" / "plot");
+    std::filesystem::create_directories(root / "src");
+    WriteLines(root / "inc" / "lib" / "plot" / "base.hpp",
+               {"#pragma once", "namespace lib { namespace plot {", "class Base {", " public:",
+                "  /// @brief Opens a window.", "  void show() const;", "};", "} }"});
+    WriteLines(root / "inc" / "lib" / "hist.hpp",
+               {"#pragma once", "#include <lib/plot/base.hpp>", "namespace lib {",
+                "/// @brief A histogram.", "class Hist : public plot::Base {", " public:",
+                "  /// @brief Sets the title.", "  Hist &set_title(int v);", "};",
+                "/// @brief Makes a histogram.", "Hist make_hist();", "using Chart = Hist;", "}"});
+    WriteLines(root / "inc" / "lib" / "all.hpp",
+               {"#pragma once", "#include <lib/hist.hpp>", "/// Short spelling.", "namespace l = lib;"});
+    const Lines lines = {"#include <lib/all.hpp>",
+                         "int main() {",
+                         "  l::Hist h;",
+                         "  h.set_title(1).show();",
+                         "  auto m = l::make_hist();",
+                         "  m.show();",
+                         "  l::Chart c;",
+                         "  c.set_title(2);",
+                         "  return 0;",
+                         "}"};
+    CppLspOptions opts;
+    opts.doc_dir = (root / "src").string();
+    opts.file_name = "main.cpp";
+    opts.check_files = true;
+    opts.include_dirs = {(root / "inc").string()};
+    // The alias opens its target, and the doc comment travels with the name.
+    const std::string hist = HoverAt(lines, 2, "Hist", 1, opts);
+    CHECK(hist.find("lib::Hist") != std::string::npos);
+    CHECK(hist.find("A histogram.") != std::string::npos);
+    CHECK(hist.find("@brief") == std::string::npos);
+    // A member of a namespaced header class, then an inherited one through a chain.
+    CHECK(HoverAt(lines, 3, "set_title", 1, opts).find("Sets the title.") != std::string::npos);
+    CHECK(HoverAt(lines, 3, "show", 1, opts).find("Opens a window.") != std::string::npos);
+    // `auto` from a qualified call's return type, and a `using` alias of a class.
+    CHECK(HoverAt(lines, 4, "make_hist", 1, opts).find("Makes a histogram.") != std::string::npos);
+    CHECK(HoverAt(lines, 5, "show", 1, opts).find("lib::plot::Base::show") != std::string::npos);
+    CHECK(HoverAt(lines, 7, "set_title", 1, opts).find("lib::Hist::set_title") != std::string::npos);
+    // An alias written in the document itself works the same way.
+    const Lines local = {"#include <lib/hist.hpp>", "namespace q = lib;", "int main() { q::make_hist(); }"};
+    CHECK(HoverAt(local, 2, "make_hist", 1, opts).find("lib::make_hist") != std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -1085,6 +1145,7 @@ int main() {
     TestRobustnessAndOddDocuments();
     TestRealisticFileIsQuiet();
     TestIncludedLibraryHeaders();
+    TestLibraryHoverThroughAliasesAndMembers();
     std::printf("mep-cpp-lsp-test: all checks passed\n");
     return 0;
 }

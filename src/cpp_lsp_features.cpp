@@ -430,6 +430,39 @@ CppLspHoverInfo CppLspHover(const std::vector<std::string> &lines, int line, int
         info.text = DescribeSymbol(index, index.symbols[static_cast<size_t>(occurrence->symbol)]);
         return info;
     }
+    // A type written in a declaration (`lib::Widget w;`) is not in the
+    // occurrence list either; resolve its spelling -- qualifiers and all,
+    // read leftwards from the word -- the way the declaration would.
+    {
+        const std::string &text = lines[static_cast<size_t>(line)];
+        size_t left = static_cast<size_t>(start);
+        while (left >= 2 && text[left - 1] == ':' && text[left - 2] == ':') {
+            size_t ident = left - 2;
+            while (ident > 0 && IsCppIdentChar(static_cast<unsigned char>(text[ident - 1]))) ident--;
+            if (ident == left - 2) break;
+            left = ident;
+        }
+        const std::string spelled = text.substr(left, static_cast<size_t>(end) - left);
+        CppPos here;
+        here.line = line;
+        here.col = start;
+        const int type = CppLookupTypeName(index, CppScopeAt(index, here), spelled);
+        if (type >= 0 && index.symbols[static_cast<size_t>(type)].name == word) {
+            info.found = true;
+            info.text = DescribeSymbol(index, index.symbols[static_cast<size_t>(type)]);
+            return info;
+        }        // The qualifier itself (`dm` in `dm::factor`): a namespace or alias.
+        const bool qualifies = static_cast<size_t>(end) + 1 < text.size() && text[static_cast<size_t>(end)] == ':' &&
+                               text[static_cast<size_t>(end) + 1] == ':';
+        if (qualifies && left == static_cast<size_t>(start)) {
+            const int ns = CppLookupName(index, CppScopeAt(index, here), word);
+            if (ns >= 0 && index.symbols[static_cast<size_t>(ns)].kind == CppSymbolKind::Namespace) {
+                info.found = true;
+                info.text = DescribeSymbol(index, index.symbols[static_cast<size_t>(ns)]);
+                return info;
+            }
+        }
+    }
     // A macro invocation is not in the occurrence list -- its tokens were
     // replaced before the parser saw them -- so it is answered from the
     // macro table directly.

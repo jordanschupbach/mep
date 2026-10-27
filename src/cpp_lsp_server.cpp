@@ -43,11 +43,20 @@
 //     branches this server reads.
 //   - `includeDirs`: extra directories a quoted `#include` resolves
 //     against, beyond the document's own.
+//
+// Without `includeDirs` the server still finds a project's headers: it
+// reads the `-I` flags out of the nearest compile_commands.json (walking
+// up from the document, also trying `build/`), and adds any `include/`
+// directory it passes on the way up to the repository root. Both come
+// after `includeDirs`, so an explicit setting always wins.
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <system_error>
@@ -65,6 +74,160 @@
 #include "rpc_framing.h"
 
 namespace {
+
+// --- Include-directory discovery --------------------------------------
+
+/** @brief Splits a compile command line into arguments, honoring quotes and backslash escapes. */
+std::vector<std::string> SplitCommandLine(const std::string &command) {
+    std::vector<std::string> out;
+    std::string current;
+    bool have = false;
+    char quote = 0;
+    for (size_t i = 0; i < command.size(); i++) {
+        const char c = command[i];
+        if (quote != 0) {
+            if (c == quote) {
+                quote = 0;
+            } else if (c == '\\' && quote == '"' && i + 1 < command.size()) {
+                current += command[++i];
+            } else {
+                current += c;
+            }
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            quote = c;
+            have = true;
+        } else if (c == '\\' && i + 1 < command.size()) {
+            current += command[++i];
+            have = true;
+        } else if (c == ' ' || c == '\t' || c == '\n') {
+            if (have) out.push_back(current);
+            current.clear();
+            have = false;
+        } else {
+            current += c;
+            have = true;
+        }
+    }
+    if (have) out.push_back(current);
+    return out;
+}
+
+/**
+ * @brief The `-I`/`-iquote` directories one compile command names, made absolute against its directory.
+ *
+ * `-isystem` is deliberately left out: it is how a build names the
+ * compiler's and the system's own headers, and parsing libstdc++ would
+ * spend the whole header budget on names this server already knows
+ * (cpp_lsp_std_names.cpp) -- or, under Nix, on a stale installed copy of
+ * the very project being edited.
+ */
+void AppendIncludeFlags(const std::vector<std::string> &args, const std::filesystem::path &directory,
+                        std::vector<std::string> *out) {
+    for (size_t i = 0; i < args.size(); i++) {
+        std::string dir;
+        const std::string &arg = args[i];
+        if (arg == "-I" || arg == "-iquote" || arg == "/I") {
+            if (i + 1 < args.size()) dir = args[++i];
+        } else if (arg.rfind("-I", 0) == 0 || arg.rfind("/I", 0) == 0) {
+            dir = arg.substr(2);
+        } else if (arg.rfind("-iquote", 0) == 0) {
+            dir = arg.substr(7);
+        }
+        if (dir.empty()) continue;
+        std::filesystem::path path(dir);
+        if (path.is_relative()) path = directory / path;
+        const std::string normal = path.lexically_normal().string();
+        if (std::find(out->begin(), out->end(), normal) == out->end()) out->push_back(normal);
+    }
+}
+
+// A compile database read once, then reused until its file changes.
+struct CompileDb {
+    std::filesystem::file_time_type mtime{};
+    std::map<std::string, std::vector<std::string>> by_file;  // first entry per file wins
+    std::vector<std::string> all;                             // every entry's dirs, in order
+};
+
+/** @brief Reads (or returns the cached) include directories of a compile_commands.json. */
+const CompileDb *LoadCompileDb(const std::filesystem::path &path) {
+    static std::map<std::string, CompileDb> cache;
+    std::error_code ec;
+    const auto mtime = std::filesystem::last_write_time(path, ec);
+    if (ec) return nullptr;
+    const std::string key = path.string();
+    const auto found = cache.find(key);
+    if (found != cache.end() && found->second.mtime == mtime) return &found->second;
+    CompileDb db;
+    db.mtime = mtime;
+    std::ifstream in(path, std::ios::binary);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    Json root;
+    if (in.bad() || !Json::Parse(text, &root) || !root.is_array()) {
+        cache[key] = db;
+        return &cache[key];
+    }
+    for (const Json &entry : root.items()) {
+        if (!entry.is_object()) continue;
+        const std::filesystem::path directory(entry.contains("directory") ? entry.get("directory").as_string("") : "");
+        std::vector<std::string> args;
+        if (entry.contains("arguments") && entry.get("arguments").is_array()) {
+            for (const Json &arg : entry.get("arguments").items()) args.push_back(arg.as_string(""));
+        } else if (entry.contains("command")) {
+            args = SplitCommandLine(entry.get("command").as_string(""));
+        }
+        std::vector<std::string> dirs;
+        AppendIncludeFlags(args, directory, &dirs);
+        std::filesystem::path file(entry.contains("file") ? entry.get("file").as_string("") : "");
+        if (file.is_relative()) file = directory / file;
+        db.by_file.emplace(file.lexically_normal().string(), dirs);
+        for (const std::string &dir : dirs) {
+            if (std::find(db.all.begin(), db.all.end(), dir) == db.all.end()) db.all.push_back(dir);
+        }
+    }
+    cache[key] = std::move(db);
+    return &cache[key];
+}
+
+/**
+ * @brief Where a document's angled and project-relative includes most likely live.
+ * @param doc_path the document's absolute path
+ * @return the nearest compile database's `-I` directories (this file's own entry when it has one,
+ *         otherwise every entry's), then each `include/` directory between the document and the
+ *         repository root
+ */
+std::vector<std::string> DiscoverIncludeDirs(const std::string &doc_path) {
+    std::vector<std::string> out;
+    std::vector<std::string> conventional;
+    bool have_db = false;
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::path(doc_path).parent_path();
+    for (int level = 0; level < 10 && !dir.empty(); level++) {
+        if (!have_db) {
+            for (const char *candidate : {"compile_commands.json", "build/compile_commands.json"}) {
+                const std::filesystem::path db_path = dir / candidate;
+                if (!std::filesystem::is_regular_file(db_path, ec)) continue;
+                const CompileDb *db = LoadCompileDb(db_path);
+                if (db == nullptr || (db->by_file.empty() && db->all.empty())) continue;
+                const auto own = db->by_file.find(std::filesystem::path(doc_path).lexically_normal().string());
+                out = own != db->by_file.end() && !own->second.empty() ? own->second : db->all;
+                have_db = true;
+                break;
+            }
+        }
+        const std::filesystem::path include = dir / "include";
+        if (std::filesystem::is_directory(include, ec)) conventional.push_back(include.lexically_normal().string());
+        // The repository root is as far as a project's own headers go.
+        if (std::filesystem::exists(dir / ".git", ec)) break;
+        if (!dir.has_parent_path() || dir.parent_path() == dir) break;
+        dir = dir.parent_path();
+    }
+    for (const std::string &entry : conventional) {
+        if (std::find(out.begin(), out.end(), entry) == out.end()) out.push_back(entry);
+    }
+    return out;
+}
 
 // --- URI <-> path -----------------------------------------------------
 
@@ -403,6 +566,13 @@ private:
         opts.max_line_length = max_line_length_;
         opts.defines = defines_;
         opts.include_dirs = include_dirs_;
+        if (opts.check_files) {
+            for (const std::string &dir : DiscoverIncludeDirs(path)) {
+                if (std::find(opts.include_dirs.begin(), opts.include_dirs.end(), dir) == opts.include_dirs.end()) {
+                    opts.include_dirs.push_back(dir);
+                }
+            }
+        }
         return opts;
     }
 

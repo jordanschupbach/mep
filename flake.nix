@@ -19,9 +19,10 @@
     inputs.flake-utils.follows = "flake-utils";
   };
 
-  # Local crepl development checkout, independent of datamunge. Refresh with
-  # `nix flake update crepl` while developing without commits.
-  inputs.crepl.url = "path:/mnt/projects/crepl";
+  # crepl (stateful C++ REPL used by the C++ UI), tracking its main branch on
+  # GitHub. Bump with `nix flake update crepl`. To test an uncommitted local
+  # checkout, pass `--override-input crepl path:/mnt/projects/crepl`.
+  inputs.crepl.url = "github:jordanschupbach/crepl";
 
   outputs =
     { nixpkgs, flake-utils, datamunge, crepl, ... }:

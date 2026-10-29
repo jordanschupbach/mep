@@ -948,6 +948,7 @@ add_library(mep_core STATIC
     src/tcp_client.cpp
     src/org_doc.cpp
     src/mepml_doc.cpp
+    src/mepml_format.cpp
     src/mepml_style.cpp
     src/mepml_export.cpp
     src/mepml_slides.cpp
@@ -2419,6 +2420,17 @@ target_compile_options(mep-mepml-doc-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANI
 target_link_options(mep-mepml-doc-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-mepml-doc-test)
 
+# mep's mepml formatter (src/mepml_format.cpp, gf in a .mepml buffer): unit
+# cases, then every .mepml file in the repository at several widths --
+# self-checked, idempotent, and the same document after as before.
+add_executable(mep-mepml-format-test EXCLUDE_FROM_ALL src/mepml_format_test.cpp src/mepml_format.cpp src/mepml_doc.cpp
+    src/mepml_style.cpp)
+target_include_directories(mep-mepml-format-test PRIVATE src "${CMAKE_BINARY_DIR}/generated")
+target_compile_definitions(mep-mepml-format-test PRIVATE MEPML_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mep-mepml-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-mepml-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-mepml-format-test)
+
 # mepml's tree-sitter grammar against mep's own parser: same blocks, same
 # inline constructs on test.mepml, and a mutation run over the external
 # scanner (see the file's own comment).
@@ -3539,7 +3551,7 @@ if(NOT EMSCRIPTEN)
         mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test
         mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test
         mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test
-        mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test
+        mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-format-test mep-mepml-style-test
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
         mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test

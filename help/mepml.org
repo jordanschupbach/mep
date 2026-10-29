@@ -66,6 +66,7 @@ restyles all of them.
 | =<leader>kA=          | toggle the alt text popup shown on hover (off by default) |
 | =<leader>kp=          | present the slides, filling the editor (also the header's screen button, on a presentation) |
 | =<leader>kP=          | present the slides full screen                            |
+| =gf=                  | format: the code block under the cursor, else the whole document (prose to =:set textwidth=, then every block) -- see [[file:formatting.html][Formatting]] |
 | =:MepmlExecute=       | run the code block under the cursor                       |
 | =:MepmlExecuteAll=    | run every code block                                      |
 | =:MepmlVideoToggle=   | play or pause the =\video= on (or near) the cursor's row   |
@@ -92,6 +93,8 @@ restyles all of them.
 | =:HtmlViewToggle=     | an HTML file: its rendered page or its source text         |
 | =:MepmlFoldsRecompute= | rebuild folds (=za=, =zc= and =zo= do this themselves)  |
 | =:MepmlPresent= [mode] | present the slides: =fill= (the default), =full=, =stop= |
+| =:MepmlFormat=        | format the document and its code blocks                   |
+| =:MepmlFormatBlock=   | format the code block under the cursor                    |
 
 Folding (=za=, =zM=, =zR=) folds heading sections, code blocks,
 citations, display maths, tables, lists, comment runs and the rendered

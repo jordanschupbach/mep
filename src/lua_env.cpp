@@ -30,6 +30,7 @@
 #include "crystal_format.h"
 #include "csharp_format.h"
 #include "c_format.h"
+#include "mepml_format.h"
 #include "lisp_format.h"
 #include "r_format.h"
 #include "tcp_client.h"
@@ -619,6 +620,40 @@ int l_format_csharp(lua_State *L) {
     }
     lua_pushlstring(L, r.text.data(), r.text.size());
     return 1;
+}
+
+// mep.format_mepml(text[, width]) -> the text formatted as mepml, plus the
+// number of changes left out (they would have changed what the document
+// says); nil plus an error message when it can't be formatted.
+//
+// mep's own mepml formatter (mepml_format.h), the builtin behind `gf` in a
+// .mepml buffer outside its code blocks: prose refilled to `width` columns
+// -- `:set textwidth` when no width is given -- tables aligned, blank lines
+// tidied. Code blocks are left to their own languages' formatters.
+/**
+ * @brief Implements mep.format_mepml(text, width?): formats a mepml document.
+ * @param L Lua state; arg 1 the text, arg 2 the column width (default :set textwidth).
+ * @return Number of values pushed (2: the text and the count of changes left out; or nil and a message).
+ */
+int l_format_mepml(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    mepml::FormatDocumentOptions opt;
+    opt.width = GetEditor(L)->TextWidth();
+    if (!lua_isnoneornil(L, 2)) {
+        const lua_Integer w = luaL_checkinteger(L, 2);
+        if (w > 0 && w <= 1000) opt.width = static_cast<int>(w);
+    }
+    const mepml::FormatDocumentResult r = mepml::FormatDocument(std::string(src, len), opt);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        lua_pushinteger(L, r.error_line);
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    lua_pushinteger(L, r.kept);
+    return 2;
 }
 
 // mep.format_c(text[, width[, spec]]) -> the text formatted as C, or nil plus an error message
@@ -16819,6 +16854,7 @@ const luaL_Reg kMepFuncs[] = {
     {"format_crystal", l_format_crystal},
     {"format_csharp", l_format_csharp},
     {"format_c", l_format_c},
+    {"format_mepml", l_format_mepml},
     {"format_lisp", l_format_lisp},
     {"cursor", l_cursor},
     {"set_cursor", l_set_cursor},

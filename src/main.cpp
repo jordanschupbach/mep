@@ -17881,6 +17881,12 @@ const char *kBuiltinFormat =
     // indent_style; mep.format_languages.cs = {'dotnet', 'format', ...} is
     // not a filter, see help/formatting.org for running it instead.
     "  cs = {builtin = 'format_csharp', name = \"mep's C# formatter\"},\n"
+    // mepml: mep's own (src/mepml_format.cpp) -- prose refilled to the
+    // width, tables aligned, blank lines tidied, and checked to leave the
+    // document meaning what it did. No `width` here: it follows `:set
+    // textwidth`; set one to pin it. Its code blocks go to their own
+    // languages' entries (mep.mepml_format_document).
+    "  mepml = {builtin = 'format_mepml', name = \"mep's mepml formatter\"},\n"
     "}\n"
     // Same aliasing as mep.run_languages': entries are looked up by bare
     // extension, so every extension of a language needs its own key. Every
@@ -18150,7 +18156,14 @@ const char *kBuiltinFormat =
     // ran, so an edit that moved or resized it (including the block
     // having been deleted outright) is caught instead of overwriting
     // whatever rows now sit there.
-    "local function mep_format_apply_block(name, buf, start_row, before, lines, indent, on_done)\n"
+    // The block as it now is, found again by its opening row: an org
+    // block by default, a mepml one when the block carries its own finder.
+    "local function mep_format_reread(blk, row)\n"
+    "  if blk.reread then return blk.reread(row) end\n"
+    "  return mep_org_src_block_at(row)\n"
+    "end\n"
+    "local function mep_format_apply_block(name, buf, blk0, before, lines, indent, on_done)\n"
+    "  local start_row = blk0.start_row\n"
     "  if mep.current_buffer() ~= buf then\n"
     "    on_done(false, 'gf: moved off the buffer being formatted -- nothing applied', 'warn')\n"
     "    return\n"
@@ -18159,7 +18172,7 @@ const char *kBuiltinFormat =
     "    on_done(false, 'gf: ' .. name .. ' produced no output -- nothing applied', 'error')\n"
     "    return\n"
     "  end\n"
-    "  local blk = mep_org_src_block_at(start_row)\n"
+    "  local blk = mep_format_reread(blk0, start_row)\n"
     "  if not blk or blk.start_row ~= start_row or blk.body ~= before then\n"
     "    on_done(false, 'gf: block edited while ' .. name .. ' ran -- nothing applied', 'warn')\n"
     "    return\n"
@@ -18250,7 +18263,7 @@ const char *kBuiltinFormat =
     "      on_done(false, 'gf: moved off the buffer being formatted -- nothing applied', 'warn')\n"
     "      return\n"
     "    end\n"
-    "    local now = mep_org_src_block_at(blk.start_row)\n"
+    "    local now = mep_format_reread(blk, blk.start_row)\n"
     "    if not now or now.start_row ~= blk.start_row or now.body ~= before then\n"
     "      on_done(false, 'gf: block edited while the language server ran -- nothing applied', 'warn')\n"
     "      return\n"
@@ -18296,10 +18309,19 @@ const char *kBuiltinFormat =
     "  end\n"
     "  local indent = mep_format_common_indent(raw)\n"
     "  local text = table.concat(mep_format_dedent(raw, indent), '\\n') .. '\\n'\n"
-    "  local buf, start_row = mep.current_buffer(), blk.start_row\n"
+    // A block that names its own width (a mepml document's, which is the
+    // document's line width) gets a builtin formatter that wraps at it,
+    // less the block's indent; the language's own width is for files.
+    "  if blk.width and spec.builtin and spec.width then\n"
+    "    local s = {}\n"
+    "    for k, v in pairs(spec) do s[k] = v end\n"
+    "    s.width = math.max(20, blk.width - #indent)\n"
+    "    spec = s\n"
+    "  end\n"
+    "  local buf = mep.current_buffer()\n"
     "  mep_format_run(spec, ft, mep_format_block_subst(ft), text, function(lines, name, err)\n"
     "    if err then on_done(false, err, 'error') return end\n"
-    "    mep_format_apply_block(name, buf, start_row, before, lines, indent, on_done)\n"
+    "    mep_format_apply_block(name, buf, blk, before, lines, indent, on_done)\n"
     "  end)\n"
     "end\n"
     "function mep.org_format_block(blk)\n"
@@ -18317,41 +18339,32 @@ const char *kBuiltinFormat =
     // Sequential rather than parallel for the same reason: two
     // overlapping mep.replace_lines would each be applying to rows the
     // other had already moved.
-    "function mep.org_format_blocks()\n"
-    "  local rows = {}\n"
-    "  for i = 1, mep.line_count() do\n"
-    "    if (mep.get_line(i) or ''):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
-    "      rows[#rows + 1] = i\n"
-    "    end\n"
-    "  end\n"
-    "  if #rows == 0 then mep.notify('gf: no #+begin_src blocks in this file', 'warn') return end\n"
+    // The sweep both block languages share: `rows` are the blocks' opening
+    // rows, `block_at` finds a block again by that row, and on_finish gets
+    // (formatted, unchanged, total, last_err) once every block is done.
+    "local function mep_format_blocks_sweep(rows, block_at, on_finish)\n"
     "  local buf = mep.current_buffer()\n"
-    "  local formatted, skipped, last_err = 0, 0, nil\n"
+    "  local formatted, unchanged, last_err = 0, 0, nil\n"
     "  local i = #rows\n"
     "  local step\n"
     "  step = function()\n"
-    "    if i < 1 then\n"
-    "      local msg = 'gf: formatted ' .. formatted .. ' of ' .. #rows .. ' blocks'\n"
-    "      if skipped > 0 and last_err then msg = msg .. ' (' .. last_err .. ')' end\n"
-    "      mep.notify(msg, formatted > 0 and 'info' or 'warn')\n"
-    "      return\n"
-    "    end\n"
+    "    if i < 1 then on_finish(formatted, unchanged, #rows, last_err) return end\n"
     "    if mep.current_buffer() ~= buf then\n"
     "      mep.notify('gf: moved off the buffer being formatted -- stopped after ' .. formatted .. ' blocks', 'warn')\n"
     "      return\n"
     "    end\n"
-    "    local blk = mep_org_src_block_at(rows[i])\n"
+    "    local blk = block_at(rows[i])\n"
     "    i = i - 1\n"
     "    if not blk or not blk.lang or blk.lang == '' then\n"
-    "      skipped = skipped + 1\n"
     "      step()\n"
     "      return\n"
     "    end\n"
     "    mep_format_block_run(blk, false, function(ok, msg)\n"
     "      if ok then\n"
     "        formatted = formatted + 1\n"
+    "      elseif msg == 'gf: already formatted' then\n"
+    "        unchanged = unchanged + 1\n"
     "      else\n"
-    "        skipped = skipped + 1\n"
     // The final tally is itself a 'gf: ...' message, so a skipped
     // block's own reason goes in without repeating the prefix.
     "        last_err = msg and (msg:gsub('^gf: ', '')) or last_err\n"
@@ -18360,6 +18373,96 @@ const char *kBuiltinFormat =
     "    end)\n"
     "  end\n"
     "  step()\n"
+    "end\n"
+    "function mep.org_format_blocks()\n"
+    "  local rows = {}\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    if (mep.get_line(i) or ''):match('^%s*#%+[Bb][Ee][Gg][Ii][Nn]_[Ss][Rr][Cc]') then\n"
+    "      rows[#rows + 1] = i\n"
+    "    end\n"
+    "  end\n"
+    "  if #rows == 0 then mep.notify('gf: no #+begin_src blocks in this file', 'warn') return end\n"
+    "  mep_format_blocks_sweep(rows, mep_org_src_block_at, function(formatted, _, total, last_err)\n"
+    "    local msg = 'gf: formatted ' .. formatted .. ' of ' .. total .. ' blocks'\n"
+    "    if formatted < total and last_err then msg = msg .. ' (' .. last_err .. ')' end\n"
+    "    mep.notify(msg, formatted > 0 and 'info' or 'warn')\n"
+    "  end)\n"
+    "end\n"
+    // --- mepml ``` blocks ---------------------------------------------
+    // The code block whose fences or body hold 1-based `row`, in the shape
+    // the org functions above take (start_row/end_row the fence rows, body
+    // the lines between) plus its own finder, so the "was it edited while
+    // the formatter ran" checks re-read a mepml block, not an org one. A
+    // block whose code is a file's (include=) has no body here to format.
+    "local function mep_format_mepml_block_at(row)\n"
+    "  for _, b in ipairs(mep.mepml_code_blocks()) do\n"
+    "    if not b.included and b.lang ~= '' and row >= b.first - 1 and row <= b.last + 1 then\n"
+    "      local body = {}\n"
+    "      for i = b.first, b.last do body[#body + 1] = mep.get_line(i) or '' end\n"
+    "      return {start_row = b.first - 1, end_row = b.last + 1, lang = b.lang,\n"
+    "              body = table.concat(body, '\\n'), reread = mep_format_mepml_block_at,\n"
+    "              width = tonumber(mep.set_option('textwidth'))}\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    // Every code block in the document, then: the same sweep as org's.
+    "local function mep_format_mepml_blocks(prose_msg, level)\n"
+    "  local rows = {}\n"
+    "  for _, b in ipairs(mep.mepml_code_blocks()) do\n"
+    "    if not b.included and b.lang ~= '' then rows[#rows + 1] = b.first - 1 end\n"
+    "  end\n"
+    "  if #rows == 0 then mep.notify(prose_msg, level) return end\n"
+    "  mep_format_blocks_sweep(rows, mep_format_mepml_block_at, function(formatted, unchanged, total, last_err)\n"
+    "    local msg = prose_msg .. '; code blocks: ' .. formatted .. ' formatted, ' .. unchanged .. ' already tidy'\n"
+    "    local skipped = total - formatted - unchanged\n"
+    "    if skipped > 0 then msg = msg .. ', ' .. skipped .. ' skipped (' .. tostring(last_err) .. ')' end\n"
+    "    mep.notify(msg, level)\n"
+    "  end)\n"
+    "end\n"
+    // gf in a mepml document, outside its code blocks: the prose first
+    // (mep.format_languages.mepml -- mep's own formatter unless a config
+    // swapped it), then every code block with its own language's
+    // formatter, at the document's line width.
+    "function mep.mepml_format_document()\n"
+    "  local buf = mep.current_buffer()\n"
+    "  local before = mep_format_buffer_text()\n"
+    "  local spec = mep.format_languages.mepml\n"
+    "  local function apply(lines, kept)\n"
+    "    if mep.current_buffer() ~= buf or mep_format_buffer_text() ~= before then\n"
+    "      mep.notify('gf: buffer changed while formatting -- nothing applied', 'warn')\n"
+    "      return\n"
+    "    end\n"
+    "    local msg, level = 'gf: document already formatted', 'info'\n"
+    "    if #lines > 0 and table.concat(lines, '\\n') .. '\\n' ~= before then\n"
+    "      local row, col = mep.cursor()\n"
+    "      mep.replace_lines(1, mep.line_count() + 1, lines)\n"
+    "      mep.set_cursor(math.min(row, mep.line_count()), col)\n"
+    "      msg = 'gf: formatted the document'\n"
+    "    end\n"
+    "    if kept and kept > 0 then\n"
+    "      msg = msg .. ' (' .. kept .. ' change' .. (kept == 1 and '' or 's') ..\n"
+    "        ' left out: they would change what the document says)'\n"
+    "      level = 'warn'\n"
+    "    end\n"
+    "    mep_format_mepml_blocks(msg, level)\n"
+    "  end\n"
+    "  if not spec then mep_format_mepml_blocks('gf: no mepml formatter set', 'warn') return end\n"
+    "  if spec.builtin == 'format_mepml' then\n"
+    "    local out, kept_or_err = mep.format_mepml(before, spec.width)\n"
+    "    if not out then mep.notify('gf: ' .. tostring(kept_or_err), 'error') return end\n"
+    "    apply(mep_format_split(out), kept_or_err)\n"
+    "    return\n"
+    "  end\n"
+    "  mep_format_run(spec, 'mepml', mep_lsp_abspath(mep.filename()), before, function(lines, name, err)\n"
+    "    if err then mep.notify(err, 'error') return end\n"
+    "    apply(lines)\n"
+    "  end)\n"
+    "end\n"
+    "function mep.mepml_format_block()\n"
+    "  local blk = mep_format_mepml_block_at(mep.cursor())\n"
+    "  if not blk then mep.notify('gf: not inside a code block', 'warn') return end\n"
+    "  mep.org_format_block(blk)\n"
     "end\n"
     "function mep.format_buffer()\n"
     // An org buffer has no formatter of its own out of the box (nothing
@@ -18370,6 +18473,13 @@ const char *kBuiltinFormat =
     // formatter still gets it.
     "  local fname = mep.filename()\n"
     "  local ft = fname ~= '' and mep_lsp_filetype(fname) or ''\n"
+    // A mepml document: the code block under the cursor with its own
+    // language's formatter, else the whole document (prose and blocks).
+    "  if ft == 'mepml' then\n"
+    "    if mep_format_mepml_block_at(mep.cursor()) then mep.mepml_format_block()\n"
+    "    else mep.mepml_format_document() end\n"
+    "    return\n"
+    "  end\n"
     "  local spec = mep.format_languages[ft]\n"
     "  if not spec and ft == 'org' then\n"
     "    local blk = mep_format_org_block_at_cursor()\n"
@@ -18391,6 +18501,8 @@ const char *kBuiltinFormat =
     "mep.command('MepFormat', mep.format_buffer)\n"
     "mep.command('MepOrgFormatBlock', function() mep.org_format_block() end)\n"
     "mep.command('MepOrgFormatBlocks', mep.org_format_blocks)\n"
+    "mep.command('MepmlFormat', mep.mepml_format_document)\n"
+    "mep.command('MepmlFormatBlock', mep.mepml_format_block)\n"
     // Bound via mep.map_g, not plain mep.map: only the former can see a
     // key typed after a pending 'g' (see mep.map_g('d', ...) in
     // kBuiltinLsp). 'f' after 'g' is free -- mep's built-in g-motions are

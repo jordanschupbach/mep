@@ -23,6 +23,7 @@ stale copy from disk.
 | Common Lisp (=.lisp=, =.lsp=, =.cl=, =.asd=) | *built in* -- mep's own, nothing to install |
 | Crystal (=.cr=)      | *built in* -- mep's own, nothing to install |
 | C# (=.cs=)           | *built in* -- mep's own, nothing to install |
+| mepml (=.mepml=)     | *built in* -- see /mepml documents/ below |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
 That is a deliberately short table. Most languages already have a formatter
@@ -64,6 +65,57 @@ to that block's own language server -- the one already answering
 [[file:org-polyglot.html][hover and completion inside the block]]. The
 whole-file sweep does not: it only runs the table, and reports those blocks
 as skipped.
+
+* mepml documents
+
+In a =.mepml= file =gf= formats the prose /and/ the code.
+
+| Where the cursor is              | What =gf= does                                   |
+|----------------------------------+--------------------------------------------------|
+| on a code block's fences or body | formats that block with its language's formatter |
+| anywhere else                    | formats the document, then every code block      |
+
+=:MepmlFormatBlock= and =:MepmlFormat= are the same two, by name. A code
+block works as in an org file (above), with one difference: it is wrapped at
+the document's width -- =:set textwidth=, 80 by default -- rather than at
+the language's own (88 for Python, 100 for C++), since it sits on the same
+page as the prose.
+
+The document itself goes through mep's mepml formatter:
+
+- paragraphs, list items and the =\abstract='s paragraphs are refilled to
+  =:set textwidth= columns, a list item's later lines hanging under its text;
+- table columns are padded so the pipes line up, the separator row sized to
+  match, alignment colons kept and each cell aligned the way they say;
+- a comment or callout with a line past the width is refilled (one that
+  fits is left as you wrote it);
+- trailing whitespace goes, runs of blank lines become one, and blank lines
+  at the top and bottom of the file go.
+
+It leaves alone what is not prose: code blocks and their results (a
+=results=markdown= region is a program's output, even though it reads as
+blocks), display maths, =\define=, =\raw= and command blocks, HTML and SVG
+markup, and headings.
+
+A line is never broken inside maths, =`verbatim`=, a link, a citation or a
+command's arguments, and never so that the next line starts with something
+that reads as another block -- =- =, =1.=, =>= or =//= at the start of a
+line would make a list item, a heading or a comment. The word before such a
+piece goes down with it instead. An inline =// remark= stays at the end of
+its line.
+
+** It will not change what the document says
+
+After formatting, the result is parsed again and compared with the
+original: the same blocks, the same text and markup, the same options,
+whitespace aside. A change that fails the check is left out, and =gf= says
+how many were. So formatting can make the file tidier, never different.
+
+To pin a width for mepml alone:
+
+#+begin_src lua
+mep.format_languages.mepml.width = 72
+#+end_src
 
 * The C++ formatter
 

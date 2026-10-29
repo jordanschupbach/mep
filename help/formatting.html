@@ -29,6 +29,7 @@ stale copy from disk.</p>
 <tr><td>Common Lisp (<code>.lisp</code>, <code>.lsp</code>, <code>.cl</code>, <code>.asd</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Crystal (<code>.cr</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>C# (<code>.cs</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>mepml (<code>.mepml</code>)</td><td><b>built in</b> -- see <i>mepml documents</i> below</td></tr>
 <tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
 </table>
 <p>That is a deliberately short table. Most languages already have a formatter
@@ -63,6 +64,42 @@ to that block's own language server -- the one already answering
 <a href="org-polyglot.html">hover and completion inside the block</a>. The
 whole-file sweep does not: it only runs the table, and reports those blocks
 as skipped.</p>
+<h1>mepml documents</h1>
+<p>In a <code>.mepml</code> file <code>gf</code> formats the prose <i>and</i> the code.</p>
+<table>
+<tr><th>Where the cursor is</th><th>What <code>gf</code> does</th></tr>
+<tr><td>on a code block's fences or body</td><td>formats that block with its language's formatter</td></tr>
+<tr><td>anywhere else</td><td>formats the document, then every code block</td></tr>
+</table>
+<p><code>:MepmlFormatBlock</code> and <code>:MepmlFormat</code> are the same two, by name. A code
+block works as in an org file (above), with one difference: it is wrapped at
+the document's width -- <code>:set textwidth</code>, 80 by default -- rather than at
+the language's own (88 for Python, 100 for C++), since it sits on the same
+page as the prose.</p>
+<p>The document itself goes through mep's mepml formatter:</p>
+<ul>
+<li>paragraphs, list items and the <code>\abstract</code>'s paragraphs are refilled to <code>:set textwidth</code> columns, a list item's later lines hanging under its text;</li>
+<li>table columns are padded so the pipes line up, the separator row sized to match, alignment colons kept and each cell aligned the way they say;</li>
+<li>a comment or callout with a line past the width is refilled (one that fits is left as you wrote it);</li>
+<li>trailing whitespace goes, runs of blank lines become one, and blank lines at the top and bottom of the file go.</li>
+</ul>
+<p>It leaves alone what is not prose: code blocks and their results (a
+<code>results=markdown</code> region is a program's output, even though it reads as
+blocks), display maths, <code>\define</code>, <code>\raw</code> and command blocks, HTML and SVG
+markup, and headings.</p>
+<p>A line is never broken inside maths, <code>`verbatim`</code>, a link, a citation or a
+command's arguments, and never so that the next line starts with something
+that reads as another block -- <code>- =, =1.</code>, <code>&gt;</code> or <code>//</code> at the start of a
+line would make a list item, a heading or a comment. The word before such a
+piece goes down with it instead. An inline <code>// remark</code> stays at the end of
+its line.</p>
+<h2>It will not change what the document says</h2>
+<p>After formatting, the result is parsed again and compared with the
+original: the same blocks, the same text and markup, the same options,
+whitespace aside. A change that fails the check is left out, and <code>gf</code> says
+how many were. So formatting can make the file tidier, never different.</p>
+<p>To pin a width for mepml alone:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.mepml.width = <span class="tok-cyan">72</span></code></pre></div>
 <h1>The C++ formatter</h1>
 <p>C++ is formatted by mep itself. Nothing is spawned, no <code>clang-format</code> has to
 be on <code>PATH</code>, and <code>gf</code> works the same in a fresh checkout as on a fully

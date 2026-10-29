@@ -70,6 +70,7 @@ restyles all of them.</p>
 <tr><td><code>&lt;leader&gt;kA</code></td><td>toggle the alt text popup shown on hover (off by default)</td></tr>
 <tr><td><code>&lt;leader&gt;kp</code></td><td>present the slides, filling the editor (also the header's screen button, on a presentation)</td></tr>
 <tr><td><code>&lt;leader&gt;kP</code></td><td>present the slides full screen</td></tr>
+<tr><td><code>gf</code></td><td>format: the code block under the cursor, else the whole document (prose to <code>:set textwidth</code>, then every block) -- see <a href="formatting.html">Formatting</a></td></tr>
 <tr><td><code>:MepmlExecute</code></td><td>run the code block under the cursor</td></tr>
 <tr><td><code>:MepmlExecuteAll</code></td><td>run every code block</td></tr>
 <tr><td><code>:MepmlVideoToggle</code></td><td>play or pause the <code>\video</code> on (or near) the cursor's row</td></tr>
@@ -96,6 +97,8 @@ restyles all of them.</p>
 <tr><td><code>:HtmlViewToggle</code></td><td>an HTML file: its rendered page or its source text</td></tr>
 <tr><td><code>:MepmlFoldsRecompute</code></td><td>rebuild folds (<code>za</code>, <code>zc</code> and <code>zo</code> do this themselves)</td></tr>
 <tr><td><code>:MepmlPresent</code> [mode]</td><td>present the slides: <code>fill</code> (the default), <code>full</code>, <code>stop</code></td></tr>
+<tr><td><code>:MepmlFormat</code></td><td>format the document and its code blocks</td></tr>
+<tr><td><code>:MepmlFormatBlock</code></td><td>format the code block under the cursor</td></tr>
 </table>
 <p>Folding (<code>za</code>, <code>zM</code>, <code>zR</code>) folds heading sections, code blocks,
 citations, display maths, tables, lists, comment runs and the rendered

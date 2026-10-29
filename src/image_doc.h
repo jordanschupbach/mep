@@ -26,6 +26,14 @@ public:
      */
     bool LoadFromMemory(const unsigned char *bytes, size_t len);
     /**
+     * @brief Takes already-decoded RGBA8 pixels (an SVG rasterized, a format converted elsewhere).
+     * @param rgba Row-major RGBA8 pixels, width*height*4 bytes.
+     * @param width Width in pixels.
+     * @param height Height in pixels.
+     * @return false if the sizes don't match up.
+     */
+    bool LoadFromRgba(const std::vector<unsigned char> &rgba, int width, int height);
+    /**
      * @brief Frees the decoded pixel buffer, if one was allocated by LoadFromMemory.
      */
     ~ImageDoc();
@@ -77,6 +85,17 @@ private:
  * @return true if the extension (case-insensitive) is png, jpg, jpeg, bmp, or gif.
  */
 bool IsImagePath(const std::string &path);
+
+// What opens in the image viewer (Editor::LoadFile, the file tree's image
+// gallery): the formats above, SVG (rasterized, svg_raster.h), and other
+// still-image formats the in-house codecs don't read, which the viewer
+// converts with ffmpeg when it is installed (IsConvertedImagePath).
+bool IsViewerImagePath(const std::string &path);
+// Whether the extension is SVG (.svg / .svgz is not -- it is gzipped).
+bool IsSvgPath(const std::string &path);
+// Still-image formats only ffmpeg reads here: webp, tiff, ico, tga, the
+// netpbm family, qoi, avif, heic/heif, jxl, jp2, exr, dds, psd.
+bool IsConvertedImagePath(const std::string &path);
 
 // Decodes a standard base64 string (the wasm build's /read-binary bridge
 // response body, see the comment above mep_js_read_file_binary in

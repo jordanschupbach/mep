@@ -5,7 +5,15 @@
 
 * The viewer
 
-=.png=, =.jpg=, =.bmp= and =.gif= open in a pane.
+Images open in the viewer from the file tree, =:e= or a link. =.png=,
+=.jpg=, =.bmp= and =.gif= are decoded by mep itself, and so is =.svg=:
+it is drawn at 1024 pixels or more along its longer side, so a small icon
+stays sharp as you zoom.
+
+=.webp=, =.tiff=, =.ico=, =.tga=, =.avif=, =.heic=, =.jxl=, =.qoi=, the
+netpbm formats and a few others go through =ffmpeg=, which has to be
+installed; without it, opening one says so. An animated file shows its
+first frame.
 
 | Key         | Does                          |
 |-------------+-------------------------------|
@@ -14,6 +22,11 @@
 | drag        | pan                           |
 | =Ctrl+scroll= | zoom                        |
 | =e=         | open the [[file:image-editor.html][image editor]]        |
+| =Ctrl-E=    | an SVG's source text (=Ctrl-V= back) |
+
+The image editor saves PNG. Over an SVG, or a file =ffmpeg= converted,
+=:w= refuses rather than writing PNG data under the wrong extension --
+save under a =.png= name instead.
 
 Transparency is drawn over a checkerboard, and scaling is nearest-neighbour
 so pixels stay crisp rather than turning to mush when you zoom in.
@@ -27,7 +40,8 @@ through a folder of images rather than opening them one at a time.
 
 #+begin_src lua
 mep.image_size(buf)        --> width, height
-mep.is_image_path(path)    --> is this an image?
+mep.is_image_path(path)    --> does this open in the viewer?
+mep.svg_view_toggle()      --> SVG picture (true) / source (false)
 mep.image_set_theme(buf, on)
 #+end_src
 

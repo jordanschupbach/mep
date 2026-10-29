@@ -38,19 +38,23 @@ title.</p>
 <tr><td><code>L</code></td><td>forward</td></tr>
 <tr><td><code>r</code></td><td>reload</td></tr>
 <tr><td><code>f</code></td><td>label every link, type a letter to follow</td></tr>
-<tr><td><code>/</code></td><td>fuzzy-find a line on the page (also <code>:MepHtmlSearch</code>)</td></tr>
-<tr><td><code>N</code> <code>P</code></td><td>next / previous highlighted line</td></tr>
+<tr><td><code>/</code></td><td>find on the page (also <code>:MepHtmlSearch</code>)</td></tr>
+<tr><td><code>n</code> <code>p</code></td><td>next / previous match (<code>N</code> <code>P</code> too)</td></tr>
+<tr><td><code>Esc</code></td><td>clear the matches</td></tr>
 <tr><td><code>Ctrl-E</code></td><td>show the page source</td></tr>
 <tr><td><code>=</code></td><td>reset the zoom; on a mepml document's HTML export, line the document up with the page instead (<a href="mepml.html">mepml</a>)</td></tr>
 </table>
 <p><code>localhost:8000</code>, <code>:8000/app</code>, <code>example.com</code> and plain file paths all work
 in the URL bar.</p>
-<p><code>/</code> opens the same fuzzy picker it does in a text buffer, over the page's
-lines as they are laid out, with the lines around the highlighted one as
-a preview. <code>Enter</code> scrolls there and highlights the line. When what you
-typed is plain text on that line, every line holding it is highlighted
-and <code>N</code> / <code>P</code> step through them. The highlight goes when the page is
-zoomed or the pane resized, since the lines move.</p>
+<p><code>/</code> finds a word or a phrase on the page. Every place the text you type
+occurs is listed with the words around it; case does not matter, and a
+phrase can wrap from one line onto the next. The preview beside the list
+is the page itself, rendered at the preview's width and scrolled to the
+match, which is outlined. <code>Enter</code> scrolls there and highlights every
+match; <code>n</code> / <code>p</code> step through them and <code>Esc</code> clears them. The highlights
+follow the text when the page is zoomed or the pane resized. <code>/</code> again
+starts from the last query. Fixed panels (a sidebar or top bar that does
+not scroll) are not searched.</p>
 <h1>It is a live page, not a snapshot</h1>
 <p>The pane pumps the page's event loop every frame, so timers,
 <code>requestAnimationFrame</code>, promises, <code>async</code> functions and ES modules all run

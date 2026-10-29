@@ -2785,11 +2785,10 @@ struct PdfBufferState {
     // re-derives them (Editor::EnsurePdfPagesRastered) -- so an annotation
     // created in one window shows up in the other on its next frame.
     int annot_generation = 0;
-    // Every page's text lines (PdfDoc::PageLines), filled on the first `/`
-    // and reused until the document is reloaded -- `lines_doc` says which
-    // document they were read from (Editor::PdfAllLines).
-    std::weak_ptr<PdfDoc> lines_doc;
-    std::vector<std::vector<PdfTextLine>> lines;
+    // The `/` picker's results for what is typed in it so far
+    // (Editor::PdfFind); accepting one makes them the pane's search.
+    std::string find_query;
+    std::vector<PdfTextMatch> find_matches;
     // True when there are unsaved annotation changes of any kind.
     bool HasUnsavedAnnots() const {
         return !pending_annots.empty() || !annot_edits.empty() || !annot_deletes.empty();
@@ -3344,13 +3343,37 @@ struct HtmlHistoryEntry {
 
 struct JsRuntime;  // js_engine.h
 
-// One visual line of a laid-out html page, as the `/` line picker lists
-// it: its words joined, and its box in page px (x from the content's left
-// edge, y in HtmlSession::scroll_y's space).
+// One visual line of a laid-out html page's text, for `/`: its words
+// joined (whitespace collapsed to single spaces), and its box in page px
+// (x from the content's left edge, y in HtmlSession::scroll_y's space).
+// xs[i] is where byte i of `text` starts, and xs[text.size()] where the
+// line ends, so a match inside it can be boxed.
 struct HtmlTextLine {
     std::string text;
     float x = 0, y = 0, w = 0, h = 0;
+    std::vector<float> xs;
 };
+
+// One occurrence of a `/` query on an html page: a box per line it spans
+// (page px, same space as HtmlTextLine), plus the text around it for the
+// picker and the match's byte range in that text.
+struct HtmlMatch {
+    struct Rect {
+        float x, y, w, h;
+    };
+    std::vector<Rect> rects;
+    std::string context;
+    int hl_start = 0, hl_end = 0;
+};
+
+// Every occurrence of `query` in `lines`, top to bottom: case-insensitive
+// (ASCII), with any run of whitespace in the query matching one space, and
+// free to run from the end of one line onto the next.
+// The first `context_limit` matches get their `context`.
+std::vector<HtmlMatch> FindHtmlMatches(const std::vector<HtmlTextLine> &lines, const std::string &query,
+                                       size_t context_limit = 0);
+// How many results the `/` pickers list (and give a context snippet).
+constexpr size_t kFindResultLimit = 2000;
 
 struct HtmlSession {
     int buffer_id = 0;
@@ -3435,21 +3458,26 @@ struct HtmlSession {
     // The block the pointer was last over (Editor::HoverHtmlNode); only
     // compared, never dereferenced -- the page may have removed it since.
     const DomNode *hover_node = nullptr;
-    // --- `/` line picker (Editor::HandleHtmlInput, mep.html_search) ---
+    // --- `/` find in page (Editor::HandleHtmlInput, mep.html_search) ---
     // Only DrawPane has the layout, so `/` sets lines_request and the next
     // draw fills `lines` from that frame's runs and opens the picker
-    // (Editor::SetHtmlLines). search_lines are the highlighted lines
-    // (indices into `lines`); search_current is the one N/P is on, -1 when
-    // nothing is highlighted. All of it is cleared when the page changes.
+    // (Editor::SetHtmlLines). find_matches are the picker's results for
+    // what is typed in it so far (Editor::HtmlFind); accepting one makes
+    // them search_matches, highlighted, with search_current the one n/p
+    // is on. All of it is cleared when the page changes.
     bool lines_request = false;
     std::vector<HtmlTextLine> lines;
-    std::vector<int> search_lines;
-    int search_current = -1;
+    std::string find_query;
+    std::vector<HtmlMatch> find_matches;
     std::string search_query;
-    // The zoom and pane width `lines` were laid out at: the highlight is
-    // only drawn while both still hold, since a relayout moves the lines.
-    float search_zoom = 1.0f;
-    int search_view_w = 0;
+    std::vector<HtmlMatch> search_matches;
+    int search_current = -1;
+    // What `lines` were laid out at. While a search is up, a draw that
+    // finds any of these changed rebuilds them so the highlights follow
+    // the text (Editor::HtmlLinesStale).
+    float lines_zoom = 1.0f;
+    int lines_view_w = 0;
+    float lines_total_h = 0.0f;
 };
 
 // One WYSIWYG office-document pane's state, keyed by buffer id the same
@@ -6658,15 +6686,15 @@ public:
      * GotoPdfPagePane to move just one pane (`:N`, a link click).
      */
     void GotoPdfPage(int buffer_id, int page);
-    // Every page's text lines for buffer_id's PDF, cached on its
-    // PdfBufferState; nullptr if buffer_id isn't a PDF. What the `/`
-    // picker (mep.pdf_search, kBuiltinPickerSources) lists.
-    const std::vector<std::vector<PdfTextLine>> *PdfAllLines(int buffer_id);
-    // The `/` picker's jump: shows line `row` of `page` (both 0-based) in
-    // buffer_id's PDF pane and highlights it. With a non-empty `query`
-    // that occurs on that line, the query's own matches are highlighted
-    // instead, so N/P go on to its other occurrences.
-    void PdfGotoLine(int buffer_id, int page, int row, const std::string &query);
+    // The `/` picker (mep.pdf_search, kBuiltinPickerSources): every
+    // occurrence of `query` in buffer_id's PDF, kept on its PdfBufferState
+    // as find_matches; nullptr if buffer_id isn't a PDF.
+    const std::vector<PdfTextMatch> *PdfFind(int buffer_id, const std::string &query);
+    // Accepting a result: find_matches become the pane's search, and it
+    // jumps to match `index` (0-based), so n/p go on from there.
+    void PdfGotoMatch(int buffer_id, int index);
+    // Drops the pane's search and its highlights (Esc).
+    void ClearPdfSearch(PdfSession &sess);
     // Jumps a single pane's PDF view to `page` (clamped), leaving sibling
     // panes on the same document where they were -- `:N` and in-document
     // link clicks, which act on the pane they were issued in.
@@ -7146,14 +7174,22 @@ public:
     void RequestHtmlLines(int buffer_id);
     // Whether buffer_id's pane asked for its lines (clears the request).
     bool TakeHtmlLinesRequest(int buffer_id);
-    // Stores the lines a draw built and opens the picker (mep_html_search).
-    void SetHtmlLines(int buffer_id, std::vector<HtmlTextLine> lines);
-    // The picker's jump: scrolls to line `row` (0-based) and highlights it.
-    // A non-empty `query` that occurs in it highlights every line holding
-    // the query instead, and N/P step through those.
-    void HtmlGotoLine(int buffer_id, int row, const std::string &query);
-    // N/P: the next (+1) / previous (-1) highlighted line, wrapping.
+    // Whether a search is up and `lines` no longer fit the page as this
+    // draw laid it out (zoom, width or height changed).
+    bool HtmlLinesStale(int buffer_id, float total_h) const;
+    // Stores the lines a draw built: refinds the search on them, and opens
+    // the picker (mep_html_search) if `/` asked for them.
+    void SetHtmlLines(int buffer_id, std::vector<HtmlTextLine> lines, float total_h, bool open_picker);
+    // The picker's results for `query` (find_matches); nullptr if
+    // buffer_id isn't an html page.
+    const std::vector<HtmlMatch> *HtmlFind(int buffer_id, const std::string &query);
+    // Accepting a result: find_matches become the search, highlighted,
+    // and it scrolls to match `index` (0-based).
+    void HtmlGotoMatch(int buffer_id, int index);
+    // n/p: the next (+1) / previous (-1) match, wrapping; 0 re-shows the current one.
     void HtmlStepMatch(HtmlSession &sess, int delta);
+    // Drops the search and its highlights (Esc).
+    void ClearHtmlSearch(HtmlSession &sess);
     // Re-decodes `bytes` INTO the existing PdfSession at `buffer_id` --
     // unlike OpenPdfInPlace, never creates a new buffer/session and never
     // does a dedup-by-filename lookup; a hard in-place overwrite (fresh
@@ -7216,6 +7252,22 @@ public:
      * @param buffer_id The buffer id to convert.
      */
     void ConvertHtmlBufferToText(int buffer_id);
+    // --- SVG in the image viewer ---
+    // An SVG opens rasterized in the image viewer (OpenImageInPlace); these
+    // flip its buffer between that picture and its source text, the way
+    // Ctrl-E / Ctrl-V do for an html page. To the picture renders the text
+    // as saved, so a buffer with unsaved edits stays text (with a note).
+    void ConvertSvgBufferToText(int buffer_id);
+    bool ConvertTextBufferToSvg(int buffer_id);
+    // :SvgViewToggle: -1 when the current buffer isn't an .svg file, else
+    // 1 if it now shows the picture, 0 the source.
+    int SvgToggleView();
+    // The TrueType font SVG text is drawn in (main.cpp hands over the
+    // office pane's Liberation Sans at startup); without one, text is left out.
+    void SetSvgFont(const unsigned char *ttf, size_t len) {
+        svg_font_ = ttf;
+        svg_font_len_ = len;
+    }
     /**
      * @brief Converts a plain-text buffer to a rendered HTML view by parsing its current in-memory lines.
      * @param buffer_id The buffer id to convert.
@@ -13079,6 +13131,20 @@ public:
         picker_preview_spans_ = std::move(spans);
         picker_preview_scroll_ = 0;
     }
+    // A preview column that shows the document itself instead of text:
+    // the `/` pickers of the PDF and html viewers point it at one of their
+    // results (mep.pdf_preview_match / mep.html_preview_match), and
+    // DrawPickerOverlay renders that page around it with the match marked.
+    // Cleared on every OpenPicker(), like the text preview.
+    struct PickerDocPreview {
+        enum Kind { kNone, kPdf, kHtml };
+        Kind kind = kNone;
+        int buffer_id = -1;
+        int pane_id = -1;  // the PDF pane whose colors the page is drawn in
+        int index = -1;    // into find_matches
+    };
+    void SetPickerDocPreview(PickerDocPreview::Kind kind, int buffer_id, int index);
+    const PickerDocPreview &GetPickerDocPreview() const { return picker_doc_preview_; }
     /**
      * @brief Returns the picker's current preview text.
      * @return The preview text, empty if no preview is set.
@@ -14197,6 +14263,12 @@ private:
     // decode failure, sets status_message_ and leaves the current pane
     // untouched.
     void OpenImageInPlace(const std::string &path, const unsigned char *bytes, size_t len);
+    // Decodes a file for the image viewer into `doc`: the in-house codecs
+    // for PNG/JPEG/BMP/GIF, svg_raster for an SVG, and ffmpeg (when it is
+    // installed) for the other formats IsConvertedImagePath names. False,
+    // with `*error` set, when it can't.
+    bool DecodeViewerImage(const std::string &path, const unsigned char *bytes, size_t len, ImageDoc &doc,
+                           std::string *error);
     // Same shape as HandleImageInput (h/j/k/l + arrows scroll vertically/
     // pan horizontally, ':'/leader forwarded, everything else a no-op)
     // plus +/-/= zoom (HtmlSession::zoom, same convention as ImageSession's
@@ -14220,12 +14292,13 @@ private:
     // pending_g_ -- see OpenPdfInPlace's reset of it). +/-/= zoom like
     // HandleImageInput's apply_zoom, folding drift into rendered_scale
     // (clearing the raster cache) when it leaves its settled band.
-    // Ctrl-R toggles PdfSession::theme_colors. '/' opens the line picker
-    // (mep_pdf_search -> PdfGotoLine; the in-pane HandlePdfSearchInput
-    // prompt is only the fallback without the Lua side), N/P
-    // jump to the next/previous match (GotoPdfMatch) once one exists.
-    // Serves both Mode::Pdf and Mode::PdfNav (see the enum): 'n' enters
-    // PdfNav, which adds count-prefixed Space/Shift-Space page jumps
+    // Ctrl-R toggles PdfSession::theme_colors. '/' opens the find picker
+    // (mep_pdf_search -> PdfFind/PdfGotoMatch; the in-pane
+    // HandlePdfSearchInput prompt is only the fallback without the Lua
+    // side); while a search is up n/p (and N/P) jump to the next/previous
+    // match (GotoPdfMatch) and Escape clears it (ClearPdfSearch).
+    // Serves both Mode::Pdf and Mode::PdfNav (see the enum): 'n' with no
+    // search up enters PdfNav, which adds count-prefixed Space/Shift-Space page jumps
     // (reusing pending_count_), a 'g' go-to-page prompt (delegates to
     // HandlePdfNavGotoInput while sess.nav_goto_active), d/u half-page,
     // f/b full-page, and Escape back to Mode::Pdf.
@@ -16235,6 +16308,9 @@ private:
     // doesn't leave a later item's preview scrolled to wherever the
     // previous one happened to be.
     int picker_preview_scroll_ = 0;
+    const unsigned char *svg_font_ = nullptr;
+    size_t svg_font_len_ = 0;
+    PickerDocPreview picker_doc_preview_;
     std::vector<std::string> picker_tabs_;
     int picker_active_tab_ = 0;
 

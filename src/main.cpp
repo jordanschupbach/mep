@@ -30652,7 +30652,8 @@ const char *kBuiltinMepml =
     "  elseif ft == 'org' and mep.org_view_toggle_ui then mep.org_view_toggle_ui()\n"
     "  elseif (ft == 'md' or ft == 'markdown') and mep.markdown_view_toggle_ui then mep.markdown_view_toggle_ui()\n"
     "  elseif ft == 'html' or ft == 'htm' then mep.html_view_toggle_ui()\n"
-    "  else mep.notify('Not a document buffer (mepml, org, markdown or html)', 'warn') end\n"
+    "  elseif ft == 'svg' then mep.svg_view_toggle_ui()\n"
+    "  else mep.notify('Not a document buffer (mepml, org, markdown, html or svg)', 'warn') end\n"
     "end\n"
     "mep.command('DocViewToggle', mep.doc_view_toggle_ui)\n"
     "mep.leader_map('kv', 'document: toggle view mode (rendered on every line)', mep.doc_view_toggle_ui)\n"
@@ -30666,6 +30667,14 @@ const char *kBuiltinMepml =
     "  mep.notify('HTML view: ' .. (rendered and 'rendered page' or 'source text'))\n"
     "end\n"
     "mep.command('HtmlViewToggle', mep.html_view_toggle_ui)\n"
+    // An SVG: the picture the image viewer draws, or its source text
+    // (Editor::SvgToggleView -- Ctrl-E / Ctrl-V from the keyboard).
+    "function mep.svg_view_toggle_ui()\n"
+    "  local picture = mep.svg_view_toggle()\n"
+    "  if picture == nil then mep.notify('Not an SVG file', 'warn') return end\n"
+    "  mep.notify('SVG view: ' .. (picture and 'picture' or 'source text'))\n"
+    "end\n"
+    "mep.command('SvgViewToggle', mep.svg_view_toggle_ui)\n"
     "mep.leader_map('bv', 'browse: toggle HTML file between page and source', mep.html_view_toggle_ui)\n"
     "mep.leader_map('kf', 'mepml: toggle the preview popup (math, svg, html) while typing',\n"
     "  function() mep.org_latex_popup_toggle_ui() end)\n"
@@ -39754,83 +39763,57 @@ const char *kBuiltinPickerSources =
     "mep.command('MepBufferSearch', mep.buffer_search)\n"
     "mep.leader_map('/', 'search', mep.buffer_search, 0xf002, 'Yellow')\n"
     "mep.map('n', '/', mep.buffer_search, {desc = 'Buffer fuzzy find (picker)'})\n"
-    // '/' in a PDF pane (Editor::HandlePdfInput calls mep_pdf_search):
-    // the same picker over the document's text lines (mep.pdf_lines), one
-    // row per visual line prefixed with its page number, previewing the
-    // lines around it on its page. Accepting jumps there and highlights
-    // it (mep.pdf_goto_line); the last query typed is handed over too, so
-    // when it is plain text on that line N/P go on to its other matches.
-    // Few lines above the match, many below: the preview shows its top,
-    // so a match with ten wrapped lines above it was off the bottom.
-    "local kPickerPreviewAbove, kPickerPreviewBelow = 3, 20\n"
+    // '/' in a PDF pane (Editor::HandlePdfInput calls mep_pdf_search) or
+    // an html page (Editor::SetHtmlLines calls mep_html_search): find in
+    // the document. Every exact occurrence of what is typed (a word or a
+    // phrase, case-insensitive) is a row, the text around it with the
+    // match picked out; the preview column shows the document itself
+    // there, rendered, with the match marked (mep.pdf_preview_match /
+    // mep.html_preview_match). Enter jumps to it with every match
+    // highlighted, n/p step through them in the pane, Esc there clears
+    // them. `/` again reopens on the last query.
+    "local mep_doc_find_last = {}\n"
+    "local function mep_doc_find(title, bid, find, preview, goto_match, prefix_of)\n"
+    "  local query = ''\n"
+    "  local function refresh(q)\n"
+    "    query = q\n"
+    "    mep_doc_find_last[bid] = q\n"
+    "    local results, total = find(bid, q)\n"
+    "    results, total = results or {}, total or 0\n"
+    "    local items = {}\n"
+    "    for i, r in ipairs(results) do\n"
+    "      local prefix = prefix_of(r)\n"
+    "      items[i] = {display = prefix .. r.context, data = tostring(i),\n"
+    "        hl = {{col_start = #prefix + r.col_start, col_end = #prefix + r.col_end, hl = 'IncSearch'}}}\n"
+    "    end\n"
+    "    mep.picker_set_items(items)\n"
+    "    if q == '' then mep.picker_set_hint('type a word or phrase')\n"
+    "    elseif total > #results then mep.picker_set_hint(string.format('%d matches (first %d listed)', total, #results))\n"
+    "    else mep.picker_set_hint(total == 1 and '1 match' or (total .. ' matches')) end\n"
+    "    preview(bid, #results > 0 and 1 or nil)\n"
+    "  end\n"
+    "  mep.picker_open(title, {}, function(item)\n"
+    "    local i = tonumber(item or '')\n"
+    "    if i then goto_match(bid, i) end\n"
+    "  end, refresh, nil, function(item)\n"
+    "    preview(bid, tonumber(item or ''))\n"
+    "  end, true)\n"
+    "  local last = mep_doc_find_last[bid] or ''\n"
+    "  if last ~= '' then mep.picker_set_query(last) end\n"
+    "  refresh(last)\n"
+    "end\n"
     "function mep.pdf_search()\n"
     "  local bid = mep.current_buffer()\n"
-    "  local lines = mep.pdf_lines(bid)\n"
-    "  if not lines then return end\n"
-    "  if #lines == 0 then mep.notify('No text in this PDF', 'warn') return end\n"
-    "  local by_page = {}\n"
-    "  local items = {}\n"
-    "  for i, l in ipairs(lines) do\n"
-    "    local pg = by_page[l.page]\n"
-    "    if not pg then pg = {}; by_page[l.page] = pg end\n"
-    "    pg[l.row] = l.text\n"
-    "    items[i] = {display = string.format('p%-3d %s', l.page, l.text), data = l.page .. ':' .. l.row}\n"
-    "  end\n"
-    "  local function parse(data)\n"
-    "    local p, r = data:match('^(%d+):(%d+)$')\n"
-    "    return tonumber(p), tonumber(r)\n"
-    "  end\n"
-    "  local function show_preview(page, row)\n"
-    "    local pg = by_page[page] or {}\n"
-    "    local from, to = math.max(1, row - kPickerPreviewAbove), math.min(#pg, row + kPickerPreviewBelow)\n"
-    "    local out = {'Page ' .. page, ''}\n"
-    "    for r = from, to do\n"
-    "      out[#out + 1] = ((r == row) and '> ' or '  ') .. pg[r]\n"
-    "    end\n"
-    "    mep.picker_set_preview(table.concat(out, '\\n'))\n"
-    "  end\n"
-    "  local query = ''\n"
-    "  mep.picker_open('PDF Lines', items, function(item)\n"
-    "    if not item then return end\n"
-    "    local p, r = parse(item)\n"
-    "    if p then mep.pdf_goto_line(bid, p, r, query) end\n"
-    "  end, function(q) query = q end, nil, function(item)\n"
-    "    local p, r = parse(item or '')\n"
-    "    if p then show_preview(p, r) end\n"
-    "  end)\n"
-    "  show_preview(lines[1].page, lines[1].row)\n"
+    "  if not mep.pdf_find(bid, '') then return end\n"
+    "  mep_doc_find('Find in PDF', bid, mep.pdf_find, mep.pdf_preview_match, mep.pdf_goto_match,\n"
+    "    function(r) return string.format('p%-3d ', r.page) end)\n"
     "end\n"
     "function mep_pdf_search() mep.pdf_search() end\n"
     "mep.command('MepPdfSearch', mep.pdf_search)\n"
-    // The html viewer's '/': Editor::SetHtmlLines calls this once a draw
-    // has collected the page's text lines (mep.html_search asks for that).
-    // Same picker as above; the preview is the lines around the highlighted
-    // one, and the last query typed goes to mep.html_goto_line.
     "function mep_html_search(bid_str)\n"
     "  local bid = tonumber(bid_str)\n"
-    "  local lines = mep.html_lines(bid)\n"
-    "  if not lines then return end\n"
-    "  if #lines == 0 then mep.notify('No text on this page', 'warn') return end\n"
-    "  local items = {}\n"
-    "  for i, l in ipairs(lines) do\n"
-    "    items[i] = {display = string.format('%4d  %s', l.row, l.text), data = tostring(l.row)}\n"
-    "  end\n"
-    "  local function show_preview(row)\n"
-    "    local from, to = math.max(1, row - kPickerPreviewAbove), math.min(#lines, row + kPickerPreviewBelow)\n"
-    "    local out = {}\n"
-    "    for r = from, to do\n"
-    "      out[#out + 1] = ((r == row) and '> ' or '  ') .. lines[r].text\n"
-    "    end\n"
-    "    mep.picker_set_preview(table.concat(out, '\\n'))\n"
-    "  end\n"
-    "  local query = ''\n"
-    "  mep.picker_open('Page Lines', items, function(item)\n"
-    "    if item then mep.html_goto_line(bid, tonumber(item), query) end\n"
-    "  end, function(q) query = q end, nil, function(item)\n"
-    "    local r = tonumber(item or '')\n"
-    "    if r then show_preview(r) end\n"
-    "  end)\n"
-    "  show_preview(1)\n"
+    "  mep_doc_find('Find in Page', bid, mep.html_find, mep.html_preview_match, mep.html_goto_match,\n"
+    "    function() return '' end)\n"
     "end\n"
     "mep.command('MepHtmlSearch', function() mep.html_search() end)\n"
     // <leader>bb: every open buffer, previewing the highlighted one's
@@ -42981,10 +42964,13 @@ static float DrawPickerColoredRun(const std::string &text, const std::vector<gfx
  * source supplied one) a preview column -- either a colorscheme swatch grid or scrolled
  * highlighted text.
  */
+void DrawPickerDocPreview(float px, float py, float pw, float ph);  // defined with the html painter, below
+void ReleasePickerDocPreview();
 void DrawPickerOverlay() {
     const std::vector<PickerItem> &results = g_editor.PickerFilteredResults();
     int selected = g_editor.PickerSelected();
-    bool has_preview = !g_editor.PickerPreview().empty() || IsSwatchPreviewPicker();
+    const bool doc_preview = g_editor.GetPickerDocPreview().kind != Editor::PickerDocPreview::kNone;
+    bool has_preview = !g_editor.PickerPreview().empty() || IsSwatchPreviewPicker() || doc_preview;
     // Sized like mep.nvim's own picker (mep.nvim/lua/mep/picker/ui.lua's
     // create_layout: width = 0.9*columns, height = 0.8*lines, left/results
     // column = 0.38*width) -- 80% of width rather than mep.nvim's 90%,
@@ -43100,7 +43086,11 @@ void DrawPickerOverlay() {
         float px = static_cast<float>(div_x + 10);
         int preview_w = (f.box_x + f.box_w) - div_x - 20;
         gfx::BeginScissorMode(div_x, static_cast<int>(list_y) - 2, preview_w + 20, content_bottom - static_cast<int>(list_y));
-        if (IsSwatchPreviewPicker()) {
+        if (doc_preview) {
+            DrawPickerDocPreview(static_cast<float>(div_x + 4), list_y - 2.0f, static_cast<float>(preview_w + 12),
+                                 static_cast<float>(content_bottom) - list_y);
+            gfx::EndScissorMode();
+        } else if (IsSwatchPreviewPicker()) {
             // One row per named palette role: a filled swatch of that
             // role's color, its hex value, and the role name -- looked up
             // fresh from the highlighted row every frame (no stale state
@@ -50118,19 +50108,22 @@ HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
  * @param y Y position to draw the run at.
  * @param run The run to draw (text, font size, color, and style flags).
  */
-// The page's visual lines of text, top to bottom, for the `/` picker
-// (Editor::SetHtmlLines): runs sharing a row (overlapping the first run's
-// vertical middle) are one line, read left to right, with a space where
-// the gap between two runs is wider than a sliver -- runs are words, but
-// "foo<b>bar</b>" is two runs and one word. Fixed panels are left out:
-// they do not scroll, so there is nothing to jump to.
+// The page's visual lines of text, top to bottom, for `/` (Editor::
+// SetHtmlLines): runs sharing a row (overlapping the first run's vertical
+// middle) are one line, read left to right, with a space where the gap
+// between two runs is wider than a sliver -- runs are words, but
+// "foo<b>bar</b>" is two runs and one word. Whitespace collapses to single
+// spaces, and each byte's x is kept (HtmlTextLine::xs) so a match can be
+// boxed. Fixed panels are left out: they do not scroll, so there is
+// nothing to jump to.
 std::vector<HtmlTextLine> HtmlLayoutTextLines(const HtmlLayout &layout) {
     std::vector<const HtmlRun *> runs;
     runs.reserve(layout.runs.size());
     for (const HtmlRun &r : layout.runs)
-        if (!r.text.empty() && r.text.find_first_not_of(" \t\n") != std::string::npos) runs.push_back(&r);
+        if (!r.text.empty() && r.text.find_first_not_of(" \t\n\r") != std::string::npos) runs.push_back(&r);
     std::stable_sort(runs.begin(), runs.end(), [](const HtmlRun *a, const HtmlRun *b) { return a->y < b->y; });
     std::vector<HtmlTextLine> out;
+    std::string prefix;
     size_t i = 0;
     while (i < runs.size()) {
         const float mid = runs[i]->y + runs[i]->font_size * 0.6f;
@@ -50139,26 +50132,74 @@ std::vector<HtmlTextLine> HtmlLayoutTextLines(const HtmlLayout &layout) {
         std::vector<const HtmlRun *> row(runs.begin() + static_cast<std::ptrdiff_t>(i), runs.begin() + static_cast<std::ptrdiff_t>(j));
         std::stable_sort(row.begin(), row.end(), [](const HtmlRun *a, const HtmlRun *b) { return a->x < b->x; });
         HtmlTextLine line;
-        float top = row.front()->y, bottom = top, right = row.front()->x, prev_end = 0.0f;
-        line.x = row.front()->x;
+        float top = row.front()->y, bottom = top, prev_end = row.front()->x;
         for (size_t k = 0; k < row.size(); ++k) {
             const HtmlRun &r = *row[k];
             const gfx::Font &font = r.font ? *r.font : g_font;
-            const float w = gfx::MeasureTextEx(font, r.text.c_str(), r.font_size, r.letter_spacing).x;
-            if (k > 0 && r.x - prev_end > r.font_size * 0.1f) line.text += ' ';
-            line.text += r.text;
-            prev_end = r.x + w;
-            right = std::max(right, prev_end);
+            auto x_at = [&](size_t byte) {
+                if (byte == 0) return r.x;
+                prefix.assign(r.text, 0, byte);
+                return r.x + gfx::MeasureTextEx(font, prefix.c_str(), r.font_size, r.letter_spacing).x;
+            };
+            if (k > 0 && r.x - prev_end > r.font_size * 0.1f && !line.text.empty() && line.text.back() != ' ') {
+                line.text += ' ';
+                line.xs.push_back(prev_end);
+            }
+            for (size_t b = 0; b < r.text.size();) {
+                size_t len = 1;
+                while (b + len < r.text.size() && (static_cast<unsigned char>(r.text[b + len]) & 0xC0) == 0x80) ++len;
+                const char c = r.text[b];
+                const float cx = x_at(b);
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                    if (!line.text.empty() && line.text.back() != ' ') {
+                        line.text += ' ';
+                        line.xs.push_back(cx);
+                    }
+                } else {
+                    line.text.append(r.text, b, len);
+                    line.xs.insert(line.xs.end(), len, cx);
+                }
+                b += len;
+            }
+            prev_end = x_at(r.text.size());
             top = std::min(top, r.y);
             bottom = std::max(bottom, r.y + r.font_size * 1.25f);
         }
-        line.y = top;
-        line.w = right - line.x;
-        line.h = bottom - top;
-        out.push_back(std::move(line));
+        float end_x = prev_end;
+        while (!line.text.empty() && line.text.back() == ' ') {
+            end_x = line.xs.back();
+            line.text.pop_back();
+            line.xs.pop_back();
+        }
+        if (!line.text.empty()) {
+            line.xs.push_back(end_x);
+            line.x = line.xs.front();
+            line.y = top;
+            line.w = end_x - line.x;
+            line.h = bottom - top;
+            out.push_back(std::move(line));
+        }
         i = j;
     }
     return out;
+}
+
+// The `/` search's matches over a laid-out page, the IncSearch tint the
+// PDF viewer's matches use: `current` (an index into `matches`, -1 for
+// none) stronger and outlined. (ox, oy) is where page px (0, 0) is drawn.
+void DrawHtmlMatches(const std::vector<HtmlMatch> &matches, int current, float ox, float oy, float clip_top,
+                     float clip_bottom) {
+    const gfx::Color mc = ResolveHlGroup("IncSearch");
+    for (size_t i = 0; i < matches.size(); ++i) {
+        const bool cur = static_cast<int>(i) == current;
+        for (const HtmlMatch::Rect &r : matches[i].rects) {
+            const float ry = oy + r.y;
+            if (ry + r.h < clip_top || ry > clip_bottom) continue;
+            const gfx::Rectangle box{ox + r.x - 1.0f, ry, r.w + 2.0f, r.h};
+            gfx::DrawRectangleRec(box, gfx::Color{mc.r, mc.g, mc.b, static_cast<unsigned char>(cur ? 120 : 60)});
+            if (cur) gfx::DrawRectangleLinesEx(box, 2.0f, gfx::Color{mc.r, mc.g, mc.b, 255});
+        }
+    }
 }
 
 void DrawHtmlRun(float x, float y, const HtmlRun &run) {
@@ -55978,6 +56019,216 @@ void PaintHtmlLayout(const HtmlLayout &layout, const HtmlLayoutCtx &ctx, float x
     }
 }
 
+// --- `/` picker previews of a PDF or html page (Editor::PickerDocPreview) ---
+//
+// The picker's preview column shows the document itself around the
+// highlighted result, its match marked, instead of text.
+
+// html: the page laid out again at the column's width and painted there,
+// scrolled to the match. Laying out writes each node's geometry (and a
+// fixed panel's slide animation) into the DOM, which scripts and the mepml
+// source sync read back, so those are put back as the pane left them.
+void DrawHtmlPickerPreview(const Editor::PickerDocPreview &dp, float px, float py, float pw, float ph) {
+    const HtmlSession *hs = g_editor.GetHtml(dp.buffer_id);
+    if (!hs || !hs->doc.root) return;
+    constexpr float kPad = 8.0f;
+    HtmlLayoutCtx ctx{std::max(50.0f, pw - kPad * 2.0f), g_font_size * hs->zoom, ResolveHlGroup("Normal")};
+    ctx.base_dir = urlutil::IsHttpUrl(hs->origin) ? hs->origin : std::filesystem::path(hs->source).parent_path().string();
+    ctx.zoom = hs->zoom;
+    if (hs->css_px_images) ctx.image_scale = ctx.base_font_size / 16.0f;
+    ctx.viewport_w = pw;
+    ctx.viewport_h = ph;
+    struct Saved {
+        DomNode *node;
+        float x, y, w, h, tx;
+        bool tx_init;
+    };
+    std::vector<Saved> saved;
+    std::function<void(DomNode *)> save = [&](DomNode *n) {
+        saved.push_back({n, n->layout_x, n->layout_y, n->layout_w, n->layout_h, n->anim_translate_x, n->anim_translate_init});
+        for (auto &c : n->children) save(c.get());
+    };
+    save(hs->doc.root.get());
+    HtmlLayout layout = LayoutHtmlDoc(hs->doc, ctx);
+    for (const Saved &sv : saved) {
+        sv.node->layout_x = sv.x;
+        sv.node->layout_y = sv.y;
+        sv.node->layout_w = sv.w;
+        sv.node->layout_h = sv.h;
+        sv.node->anim_translate_x = sv.tx;
+        sv.node->anim_translate_init = sv.tx_init;
+    }
+    // The same search on this layout's text; the k-th match is the k-th
+    // the pane found, since both read the page in the same order.
+    const std::vector<HtmlMatch> matches = FindHtmlMatches(HtmlLayoutTextLines(layout), hs->find_query);
+    const int cur = matches.empty() ? -1 : std::min(dp.index, static_cast<int>(matches.size()) - 1);
+    float scroll = 0.0f;
+    if (cur >= 0) {
+        const HtmlMatch::Rect &r = matches[static_cast<size_t>(cur)].rects.front();
+        scroll = std::clamp(r.y + r.h / 2.0f - ph / 2.0f, 0.0f, std::max(0.0f, layout.total_height - ph));
+    }
+    gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(py), static_cast<int>(pw), static_cast<int>(ph),
+                       ResolveHlGroup("NormalBg"));
+    const float top = py - scroll;
+    PaintHtmlLayout(layout, ctx, px, kPad, top, py, ph, hs->theme_colors, -1, -1, false);
+    DrawHtmlMatches(matches, cur, px + kPad, top, py, py + ph);
+}
+
+// PDF: the match's page rendered to the column's width on a worker
+// thread (a heavy page can take longer than a frame), then shown scrolled
+// to the match. The last page rendered stays up while the next renders.
+struct PdfPickerPreview {
+    std::shared_ptr<PdfDoc> doc;  // what `tex` shows a page of
+    int page = -1;
+    float scale = 0.0f;
+    std::vector<unsigned char> rgba;
+    int w = 0, h = 0;
+    gfx::Texture2D tex{};
+    bool has_tex = false, tex_stale = true, tex_theme = false;
+    int tex_epoch = -1;
+    std::future<PdfSession::RenderResult> job;
+    std::shared_ptr<PdfDoc> job_doc;
+    int job_page = -1;
+    float job_scale = 0.0f;
+    // The matches' rects on `page`, kept while the query is the same.
+    std::vector<PdfHighlightRect> rects;
+    std::string rects_query;
+    int rects_page = -1;
+    float rects_scale = 0.0f;
+};
+PdfPickerPreview g_pdf_picker_preview;
+
+// Frees the preview's page once no picker is showing one. A render still
+// running is left to finish first: dropping its future would wait on it.
+void ReleasePickerDocPreview() {
+    PdfPickerPreview &pp = g_pdf_picker_preview;
+    if (pp.job.valid()) {
+        if (pp.job.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+        pp.job = {};
+        pp.job_doc.reset();
+    }
+    if (pp.has_tex) gfx::UnloadTexture(pp.tex);
+    pp = PdfPickerPreview{};
+}
+
+void DrawPdfPickerPreview(const Editor::PickerDocPreview &dp, float px, float py, float pw, float ph) {
+    const PdfBufferState *bs = g_editor.PdfBufferFor(dp.buffer_id);
+    if (!bs || !bs->doc || bs->find_matches.empty()) return;
+    const int idx = std::min(dp.index, static_cast<int>(bs->find_matches.size()) - 1);
+    const int page = bs->find_matches[static_cast<size_t>(idx)].page;
+    const double page_w_pt = bs->doc->PageWidthPt(page);
+    if (page_w_pt <= 0.0) return;
+    // Whole pixels per 1/100 pt, so the box's own rounding never re-renders.
+    const float scale = std::round(static_cast<float>(static_cast<double>(pw) / page_w_pt) * 100.0f) / 100.0f;
+    PdfPickerPreview &pp = g_pdf_picker_preview;
+    if (pp.doc && pp.doc != bs->doc) {
+        if (pp.has_tex) gfx::UnloadTexture(pp.tex);
+        pp.has_tex = false;
+        pp.doc.reset();
+        pp.rects_page = -1;
+    }
+    if (pp.job.valid() && pp.job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        PdfSession::RenderResult res = pp.job.get();
+        if (res.ok && pp.job_doc == bs->doc) {
+            pp.doc = pp.job_doc;
+            pp.page = pp.job_page;
+            pp.scale = pp.job_scale;
+            pp.rgba = std::move(res.rgba);
+            pp.w = res.w;
+            pp.h = res.h;
+            pp.tex_stale = true;
+        }
+        pp.job_doc.reset();
+    }
+    const bool now_shown = pp.doc == bs->doc && pp.page == page && pp.scale == scale;
+    if (!now_shown && !pp.job.valid()) {
+        std::shared_ptr<PdfDoc> doc = bs->doc;
+        pp.job_doc = doc;
+        pp.job_page = page;
+        pp.job_scale = scale;
+        pp.job = std::async(std::launch::async, [doc, page, scale]() {
+            PdfSession::RenderResult res;
+            res.ok = doc->RenderPage(page, scale, res.rgba, res.w, res.h, &res.warning);
+            return res;
+        });
+    }
+    // Upload (and recolor, the way the pane shows it) when the page or the
+    // pane's colors changed.
+    const PdfSession *ps = g_editor.GetPdf(dp.pane_id);
+    const bool theme = ps ? ps->theme_colors : true;
+    const int epoch = g_editor.ThemeEpoch();
+    if (pp.doc && !pp.rgba.empty() && (pp.tex_stale || pp.tex_theme != theme || pp.tex_epoch != epoch)) {
+        std::vector<unsigned char> px_data = pp.rgba;
+        if (theme) {
+            const ThemedPdfRamp ramp = MakeThemedPdfRamp(ResolveHlGroup("Normal"), ResolveHlGroup("NormalBg"));
+            for (size_t i = 0, n = static_cast<size_t>(pp.w) * static_cast<size_t>(pp.h); i < n; i++) {
+                ramp.Apply(&pp.rgba[i * 4], &px_data[i * 4]);
+                px_data[i * 4 + 3] = 255;
+            }
+        }
+        gfx::Image img{};
+        img.data = px_data.data();
+        img.width = pp.w;
+        img.height = pp.h;
+        img.mipmaps = 1;
+        img.format = gfx::kPixelFormatR8G8B8A8;
+        if (pp.has_tex) gfx::UnloadTexture(pp.tex);
+        pp.tex = gfx::LoadTextureFromImage(img);
+        pp.has_tex = true;
+        pp.tex_stale = false;
+        pp.tex_theme = theme;
+        pp.tex_epoch = epoch;
+    }
+    gfx::DrawRectangle(static_cast<int>(px), static_cast<int>(py), static_cast<int>(pw), static_cast<int>(ph),
+                       ResolveHlGroup("NormalBg"));
+    const gfx::Color dim = ResolveHlGroup("Comment");
+    if (!pp.has_tex) {
+        const std::string msg = "Rendering page " + std::to_string(page + 1) + "...";
+        gfx::DrawTextEx(g_font, msg.c_str(), gfx::Vector2{px + 8.0f, py + 8.0f}, g_font_size, 0, dim);
+        return;
+    }
+    // Fit the column's width (a rotated page can come out wider), then
+    // scroll so the match is in the middle.
+    const float fit = std::min(1.0f, pw / static_cast<float>(pp.w));
+    const float dw = static_cast<float>(pp.w) * fit, dh = static_cast<float>(pp.h) * fit;
+    if (pp.page == page && (pp.rects_page != page || pp.rects_scale != pp.scale || pp.rects_query != bs->find_query)) {
+        pp.rects = bs->doc->MatchRectsForPage(page, pp.scale, bs->find_matches);
+        pp.rects_page = page;
+        pp.rects_scale = pp.scale;
+        pp.rects_query = bs->find_query;
+    }
+    static const std::vector<PdfHighlightRect> kNoRects;
+    const std::vector<PdfHighlightRect> &rects = pp.page == page ? pp.rects : kNoRects;
+    float scroll = 0.0f;
+    for (const PdfHighlightRect &r : rects) {
+        if (r.match_index != idx) continue;
+        scroll = std::clamp((r.y0 + r.y1) / 2.0f * fit - ph / 2.0f, 0.0f, std::max(0.0f, dh - ph));
+        break;
+    }
+    const float ox = px + (pw - dw) / 2.0f, oy = py - scroll;
+    gfx::DrawTexturePro(pp.tex, gfx::Rectangle{0, 0, static_cast<float>(pp.w), static_cast<float>(pp.h)},
+                        gfx::Rectangle{ox, oy, dw, dh}, gfx::Vector2{0, 0}, 0.0f, gfx::Color{255, 255, 255, 255});
+    const gfx::Color mc = ResolveHlGroup("IncSearch");
+    for (const PdfHighlightRect &r : rects) {
+        const bool cur = r.match_index == idx;
+        const gfx::Rectangle box{ox + r.x0 * fit - 1.0f, oy + r.y0 * fit - 1.0f, (r.x1 - r.x0) * fit + 2.0f,
+                                 (r.y1 - r.y0) * fit + 2.0f};
+        gfx::DrawRectangleRec(box, gfx::Color{mc.r, mc.g, mc.b, static_cast<unsigned char>(cur ? 120 : 60)});
+        if (cur) gfx::DrawRectangleLinesEx(box, 2.0f, gfx::Color{mc.r, mc.g, mc.b, 255});
+    }
+    const std::string label = "Page " + std::to_string(page + 1) + (pp.page == page ? "" : "  (rendering...)");
+    const float lw = gfx::MeasureTextEx(g_font, label.c_str(), g_font_size, 0).x;
+    gfx::DrawRectangle(static_cast<int>(px + pw - lw - 12.0f), static_cast<int>(py), static_cast<int>(lw + 12.0f),
+                       static_cast<int>(g_font_size + 6.0f), ResolveHlGroup("NormalBg"));
+    gfx::DrawTextEx(g_font, label.c_str(), gfx::Vector2{px + pw - lw - 6.0f, py + 3.0f}, g_font_size, 0, dim);
+}
+
+void DrawPickerDocPreview(float px, float py, float pw, float ph) {
+    const Editor::PickerDocPreview &dp = g_editor.GetPickerDocPreview();
+    if (dp.kind == Editor::PickerDocPreview::kHtml) DrawHtmlPickerPreview(dp, px, py, pw, ph);
+    else if (dp.kind == Editor::PickerDocPreview::kPdf) DrawPdfPickerPreview(dp, px, py, pw, ph);
+}
+
 // --- Presentation editor pane (a PresSession: src/editor_pres.cpp) ----------------------
 //
 // A deck's slide drawn to scale in the office faces (g_office_font_*), a
@@ -58016,9 +58267,14 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                                             gfx::GetFrameTime());
         g_editor.ClampHtmlScroll(pane.buffer_id, std::max(0.0f, layout.total_height - content_h));
         // `/` asked for this page's text lines (Editor::SetHtmlLines opens
-        // the picker over them). Only this frame's layout knows them.
-        if (g_editor.TakeHtmlLinesRequest(pane.buffer_id))
-            g_editor.SetHtmlLines(pane.buffer_id, HtmlLayoutTextLines(layout));
+        // the picker over them), or a search is up and the page has been
+        // laid out differently since they were read: only this frame's
+        // layout knows where the text is.
+        {
+            const bool want = g_editor.TakeHtmlLinesRequest(pane.buffer_id);
+            if (want || g_editor.HtmlLinesStale(pane.buffer_id, layout.total_height))
+                g_editor.SetHtmlLines(pane.buffer_id, HtmlLayoutTextLines(layout), layout.total_height, want);
+        }
 
         gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                           static_cast<int>(content_h));
@@ -58027,23 +58283,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         float top = content_y - html_sess->scroll_y;
         bool theme = html_sess->theme_colors;
         PaintHtmlLayout(layout, ctx, x, kHtmlPad, top, content_y, content_h, theme, pane.id, pane.buffer_id, true);
-        // The `/` picker's highlighted lines (Editor::HtmlGotoLine), the
-        // same IncSearch tint the PDF viewer's matches use -- only while
-        // the page is still laid out the way it was when they were found.
-        if (!html_sess->search_lines.empty() && html_sess->search_zoom == html_sess->zoom &&
-            html_sess->search_view_w == html_sess->viewport_w) {
-            const gfx::Color mc = ResolveHlGroup("IncSearch");
-            for (size_t i = 0; i < html_sess->search_lines.size(); ++i) {
-                const int row = html_sess->search_lines[i];
-                if (row < 0 || row >= static_cast<int>(html_sess->lines.size())) continue;
-                const HtmlTextLine &l = html_sess->lines[static_cast<size_t>(row)];
-                const float ly = top + l.y;
-                if (ly + l.h < content_y || ly > content_y + content_h) continue;
-                const bool cur = static_cast<int>(i) == html_sess->search_current;
-                gfx::DrawRectangle(static_cast<int>(x + kHtmlPad + l.x), static_cast<int>(ly), static_cast<int>(l.w),
-                                   static_cast<int>(l.h), gfx::Color{mc.r, mc.g, mc.b, static_cast<unsigned char>(cur ? 110 : 55)});
-            }
-        }
+        // The `/` search's matches (Editor::HtmlGotoMatch).
+        if (!html_sess->search_matches.empty())
+            DrawHtmlMatches(html_sess->search_matches, html_sess->search_current, x + kHtmlPad, top, content_y,
+                            content_y + content_h);
         gfx::EndScissorMode();
         // Fixed panels (sidebar/top bar): painted AFTER (over) the scrolled
         // document and pinned -- their origin is the viewport edge, not the
@@ -58155,11 +58398,12 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // text buffer's own live-search-preview highlight -- see its
         // comment in BuildHighlightGroups) rather than a fixed yellow, so
         // this stays theme-consistent the same way the page recoloring
-        // does: dim alpha for "just another match," brighter for
-        // search_current specifically.
+        // does: dim alpha for "just another match," a little brighter and
+        // outlined for search_current specifically -- still see-through, so
+        // the text under it stays readable.
         gfx::Color match_c = ResolveHlGroup("IncSearch");
-        gfx::Color match_other = gfx::Color{match_c.r, match_c.g, match_c.b, 90};
-        gfx::Color match_cur = gfx::Color{match_c.r, match_c.g, match_c.b, 190};
+        gfx::Color match_other = gfx::Color{match_c.r, match_c.g, match_c.b, 70};
+        gfx::Color match_cur = gfx::Color{match_c.r, match_c.g, match_c.b, 120};
         // Markup annotations (highlights + sticky notes). mep's RenderPage
         // draws page CONTENT only, never annotations, so the viewer paints
         // them itself as an overlay (device-pixel rects at
@@ -58265,10 +58509,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             }
             for (const PdfHighlightRect &hr : pr.highlights) {
                 bool current = hr.match_index == pdf_sess->search_current;
-                gfx::DrawRectangle(static_cast<int>(pos.x + hr.x0 * pdf_sess->zoom),
-                              static_cast<int>(pos.y + hr.y0 * pdf_sess->zoom),
-                              static_cast<int>((hr.x1 - hr.x0) * pdf_sess->zoom),
-                              static_cast<int>((hr.y1 - hr.y0) * pdf_sess->zoom), current ? match_cur : match_other);
+                const gfx::Rectangle box{pos.x + hr.x0 * pdf_sess->zoom - 1.0f, pos.y + hr.y0 * pdf_sess->zoom - 1.0f,
+                                         (hr.x1 - hr.x0) * pdf_sess->zoom + 2.0f, (hr.y1 - hr.y0) * pdf_sess->zoom + 2.0f};
+                gfx::DrawRectangleRec(box, current ? match_cur : match_other);
+                if (current) gfx::DrawRectangleLinesEx(box, 2.0f, gfx::Color{match_c.r, match_c.g, match_c.b, 255});
             }
             // Markup annotations: highlights as translucent colour fills,
             // notes (and highlights that carry a comment) as a small yellow
@@ -66837,6 +67081,8 @@ void DrawEditor() {
     }
     if (g_editor.CurrentMode() == Mode::Preview) DrawPreviewOverlay();
     if (g_editor.CurrentMode() == Mode::Picker) DrawPickerOverlay();
+    if (g_editor.CurrentMode() != Mode::Picker || g_editor.GetPickerDocPreview().kind != Editor::PickerDocPreview::kPdf)
+        ReleasePickerDocPreview();
     if (g_editor.CurrentMode() == Mode::RoamGraph) DrawRoamGraphOverlay();
     if (g_editor.CurrentMode() == Mode::WhichKey) DrawWhichKeyOverlay();
     if (g_editor.FoldPrefixPending() && gfx::GetTime() - g_editor.FoldPrefixPendingSince() >= kFoldHintDelay) {
@@ -69695,6 +69941,8 @@ int main(int argc, char **argv) {
     // font-bake thread started a few lines below), since every gfx::
     // facade function dereferences the backend pointers this sets up.
     gfx::SetBackends(gfx::ToBackends(gfx::CreateNativeBackendSet()));
+    // SVGs in the image viewer draw their text in the office face.
+    g_editor.SetSvgFont(kLiberationSansRegularTtf, kLiberationSansRegularTtfLen);
 
 #if !defined(__EMSCRIPTEN__)
     // Handled before anything else in main(): --export-org is a one-shot

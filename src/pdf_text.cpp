@@ -114,50 +114,97 @@ std::string ExtractPageText(const unsigned char *doc_data, size_t doc_len, const
     return ExtractPageBuild(doc_data, doc_len, table, page, &glyphs).text;
 }
 
-std::vector<PdfTextMatch> Search(const unsigned char *doc_data, size_t doc_len, const pdfdoc::PdfDocument &doc,
-                                  const std::string &query) {
-    std::vector<PdfTextMatch> results;
-    if (query.empty()) return results;
-    std::string query_lower = AsciiLower(query);
-
+SearchIndex BuildSearchIndex(const unsigned char *doc_data, size_t doc_len, const pdfdoc::PdfDocument &doc) {
+    SearchIndex index;
+    index.pages.resize(static_cast<size_t>(std::max(doc.PageCount(), 0)));
     for (int p = 0; p < doc.PageCount(); ++p) {
         const pdfdoc::Page *page = doc.GetPage(p);
         if (!page) continue;
         std::vector<pdfrender::TextGlyph> glyphs;
         PageTextBuild build = ExtractPageBuild(doc_data, doc_len, doc.Xref(), *page, &glyphs);
-        if (build.text.empty()) continue;
-        std::string haystack_lower = AsciiLower(build.text);
+        SearchPage &out = index.pages[static_cast<size_t>(p)];
+        out.text = std::move(build.text);
+        out.lower = AsciiLower(out.text);
+        out.char_glyph = std::move(build.char_glyph);
+        out.glyph_new_line = std::move(build.glyph_new_line);
+        out.glyph_boxes.reserve(glyphs.size());
+        for (const pdfrender::TextGlyph &g : glyphs)
+            out.glyph_boxes.push_back({static_cast<float>(g.left), static_cast<float>(g.top), static_cast<float>(g.right),
+                                       static_cast<float>(g.bottom)});
+    }
+    return index;
+}
+
+namespace {
+
+bool IsUtf8Continuation(char c) { return (static_cast<unsigned char>(c) & 0xC0) == 0x80; }
+
+// Up to ~kBefore bytes before and ~kAfter after [pos, end), cut at a space
+// where there is one near the edge and never inside a UTF-8 sequence, with
+// an ellipsis where the page's text goes on.
+void FillContext(const std::string &text, size_t pos, size_t end, PdfTextMatch &m) {
+    constexpr size_t kBefore = 16, kAfter = 100;
+    size_t from = pos > kBefore ? pos - kBefore : 0;
+    size_t to = std::min(text.size(), end + kAfter);
+    if (from > 0) {
+        const size_t sp = text.find(' ', from);
+        if (sp != std::string::npos && sp < pos) from = sp + 1;
+        while (from < pos && IsUtf8Continuation(text[from])) ++from;
+    }
+    if (to < text.size()) {
+        const size_t sp = text.rfind(' ', to);
+        if (sp != std::string::npos && sp >= end) to = sp;
+        while (to > end && to < text.size() && IsUtf8Continuation(text[to])) --to;
+    }
+    const std::string lead = from > 0 ? "..." : "";
+    m.context = lead + text.substr(from, to - from) + (to < text.size() ? "..." : "");
+    m.context_hl_start = static_cast<int>(lead.size() + (pos - from));
+    m.context_hl_end = static_cast<int>(lead.size() + (end - from));
+}
+
+}  // namespace
+
+std::vector<PdfTextMatch> Search(const SearchIndex &index, const std::string &query, size_t context_limit) {
+    std::vector<PdfTextMatch> results;
+    if (query.empty()) return results;
+    const std::string query_lower = AsciiLower(query);
+    for (size_t p = 0; p < index.pages.size(); ++p) {
+        const SearchPage &page = index.pages[p];
+        if (page.text.empty()) continue;
+        const std::string &haystack_lower = page.lower;
 
         size_t pos = 0;
         while ((pos = haystack_lower.find(query_lower, pos)) != std::string::npos) {
-            size_t end = pos + query_lower.size();
+            const size_t end = pos + query_lower.size();
 
             std::vector<int> covered;
             for (size_t i = pos; i < end; ++i) {
-                int gi = build.char_glyph[i];
+                int gi = page.char_glyph[i];
                 if (gi < 0) continue;
                 if (covered.empty() || covered.back() != gi) covered.push_back(gi);
             }
 
             if (!covered.empty()) {
                 PdfTextMatch m;
-                m.page = p;
+                m.page = static_cast<int>(p);
                 size_t k = 0;
                 while (k < covered.size()) {
                     size_t j = k + 1;
-                    const pdfrender::TextGlyph &g0 = glyphs[static_cast<size_t>(covered[k])];
-                    double left = g0.left, right = g0.right, top = g0.top, bottom = g0.bottom;
-                    while (j < covered.size() && !build.glyph_new_line[static_cast<size_t>(covered[j])]) {
-                        const pdfrender::TextGlyph &g = glyphs[static_cast<size_t>(covered[j])];
-                        left = std::min(left, g.left);
-                        right = std::max(right, g.right);
-                        top = std::max(top, g.top);
-                        bottom = std::min(bottom, g.bottom);
+                    const SearchPage::Box &g0 = page.glyph_boxes[static_cast<size_t>(covered[k])];
+                    double left = static_cast<double>(g0.left), right = static_cast<double>(g0.right), top = static_cast<double>(g0.top),
+                           bottom = static_cast<double>(g0.bottom);
+                    while (j < covered.size() && !page.glyph_new_line[static_cast<size_t>(covered[j])]) {
+                        const SearchPage::Box &g = page.glyph_boxes[static_cast<size_t>(covered[j])];
+                        left = std::min(left, static_cast<double>(g.left));
+                        right = std::max(right, static_cast<double>(g.right));
+                        top = std::max(top, static_cast<double>(g.top));
+                        bottom = std::min(bottom, static_cast<double>(g.bottom));
                         ++j;
                     }
                     m.rects_pt.push_back(PdfTextRectPt{left, top, right, bottom});
                     k = j;
                 }
+                if (results.size() < context_limit) FillContext(page.text, pos, end, m);
                 results.push_back(std::move(m));
             }
 
@@ -165,6 +212,12 @@ std::vector<PdfTextMatch> Search(const unsigned char *doc_data, size_t doc_len, 
         }
     }
     return results;
+}
+
+std::vector<PdfTextMatch> Search(const unsigned char *doc_data, size_t doc_len, const pdfdoc::PdfDocument &doc,
+                                  const std::string &query) {
+    if (query.empty()) return {};
+    return Search(BuildSearchIndex(doc_data, doc_len, doc), query);
 }
 
 std::vector<GlyphBox> PageGlyphBoxes(const unsigned char *doc_data, size_t doc_len, const pdfxref::XrefTable &table,

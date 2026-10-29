@@ -27,13 +27,14 @@ bool LooksLikeSvg(const unsigned char *bytes, size_t len);
 bool Dimensions(const unsigned char *bytes, size_t len, int *width, int *height);
 
 // Renders the document at its own size (scaled down to fit `max_side` on
-// its longer side) into straight-alpha RGBA8 `rgba` (width*height*4 bytes,
+// its longer side, and up to `min_side` when it is smaller -- an icon a
+// viewer will zoom into) into straight-alpha RGBA8 `rgba` (width*height*4 bytes,
 // transparent where nothing is drawn). Text is set in `font_ttf` (a
 // TrueType font's bytes, which must outlive the call); with no font, text
 // is left out. False, with `*error` saying why, when it cannot.
 bool Rasterize(const unsigned char *bytes, size_t len, std::vector<unsigned char> *rgba, int *width, int *height,
                std::string *error, const unsigned char *font_ttf = nullptr, size_t font_len = 0,
-               int max_side = 4096);
+               int max_side = 4096, int min_side = 0);
 
 // Sets one text shape (svg_doc's SvgShape::Kind::Text, its rotation
 // included) in `font_ttf` into a tight straight-alpha RGBA8 image, the way

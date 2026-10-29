@@ -29,17 +29,25 @@ that magnification you are looking at a detail rather than reading.</p>
 <tr><td><code>mep.pdf_outline()</code></td><td>the document's outline</td></tr>
 <tr><td><code>mep.pdf_reload()</code></td><td>re-read the file</td></tr>
 <tr><td><code>mep.pdf_page_png(n)</code></td><td>a page as a PNG, base64</td></tr>
-<tr><td><code>mep.pdf_search()</code></td><td>the <code>/</code> line picker</td></tr>
-<tr><td><code>mep.pdf_lines()</code></td><td>every line, with its page</td></tr>
+<tr><td><code>mep.pdf_search()</code></td><td>the <code>/</code> find picker</td></tr>
+<tr><td><code>mep.pdf_find(buf, text)</code></td><td>every match, with its page</td></tr>
 <tr><td><code>mep.is_pdf_buffer(buf)</code></td><td>is this a PDF?</td></tr>
 </table>
 <h1>Searching</h1>
-<p><code>/</code> (or <code>:MepPdfSearch</code>) opens the same fuzzy picker it does in a text buffer, listing every
-line of the document with its page number and previewing the lines
-around the highlighted one. <code>Enter</code> jumps to the line and highlights it.
-When what you typed is plain text on that line, it becomes the search:
-its occurrences are highlighted and <code>N</code> / <code>P</code> step through the rest of
-them.</p>
+<p><code>/</code> (or <code>:MepPdfSearch</code>) finds a word or a phrase in the document. Every
+place the text you type occurs is listed with its page number and the
+words around it; case does not matter, and a phrase can run from one line
+onto the next. The preview beside the list shows the page itself, rendered,
+with the match outlined.</p>
+<p><code>Enter</code> jumps to that match and highlights all of them. Then:</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>n</code> <code>p</code></td><td>next / previous match (<code>N</code> <code>P</code> too)</td></tr>
+<tr><td><code>Esc</code></td><td>clear the search</td></tr>
+<tr><td><code>/</code></td><td>search again, starting from the last query</td></tr>
+</table>
+<p>While a search is showing, <code>n</code> steps through it; once <code>Esc</code> has cleared
+it, <code>n</code> goes back to entering page-nav mode.</p>
 <h1>The outline</h1>
 <p>A PDF with bookmarks gets an outline you can navigate rather than scrolling
 -- the table of contents the author built, used as a jump list.</p>

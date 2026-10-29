@@ -47,8 +47,12 @@
 #include <unordered_set>
 
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
+#include <fcntl.h>
 #include <pwd.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <unistd.h>
+extern char **environ;
 #endif
 
 #include "gfx/audio.h"
@@ -7365,7 +7369,7 @@ void Editor::SplitCurrentPane(SplitDir dir, const std::string &file_arg, bool ne
     // OpenPdfInPlace, ...) assigns into CurPane() itself, so calling it
     // there lands the file in the *new* pane, not the original one.
     const bool special = !file_arg.empty() &&
-                         (IsImagePath(file_arg) || IsPdfPath(file_arg) || IsDocxPath(file_arg) || IsOdtPath(file_arg) ||
+                         (IsViewerImagePath(file_arg) || IsPdfPath(file_arg) || IsDocxPath(file_arg) || IsOdtPath(file_arg) ||
                           IsRtfPath(file_arg) || IsHtmlPath(file_arg) || IsCsvPath(file_arg) || IsXlsxPath(file_arg) || IsOdsPath(file_arg));
 
     int new_buffer_id = active->pane.buffer_id;
@@ -7953,10 +7957,11 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
             break;
         }
     }
+    std::string decode_error;
     if (buffer_id < 0) {
         auto doc = std::make_unique<ImageDoc>();
-        if (!doc->LoadFromMemory(bytes, len)) {
-            status_message_ = "E-\"" + path + "\": " + doc->Error();
+        if (!DecodeViewerImage(path, bytes, len, *doc, &decode_error)) {
+            status_message_ = "E-\"" + path + "\": " + decode_error;
             return;
         }
         buffer_id = CreateEmptyBuffer();
@@ -7974,10 +7979,18 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
         // the latest plot) would otherwise keep showing whatever was on
         // disk the first time this path was opened.
         auto it = images_.find(buffer_id);
-        if (it != images_.end()) {
+        if (it == images_.end() && IsSvgPath(path)) {
+            // The SVG's source is open as text (Ctrl-E): opening the file
+            // again shows the picture, unless that would drop unsaved edits.
+            if (buffers_[static_cast<size_t>(buffer_id)].modified) {
+                status_message_ = "\"" + path + "\" has unsaved changes -- showing the source (:w, then Ctrl-V to render)";
+            } else if (!ConvertTextBufferToSvg(buffer_id)) {
+                return;
+            }
+        } else if (it != images_.end()) {
             auto doc = std::make_unique<ImageDoc>();
-            if (!doc->LoadFromMemory(bytes, len)) {
-                status_message_ = "E-\"" + path + "\": " + doc->Error();
+            if (!DecodeViewerImage(path, bytes, len, *doc, &decode_error)) {
+                status_message_ = "E-\"" + path + "\": " + decode_error;
                 return;
             }
             it->second.doc = std::move(doc);
@@ -8002,7 +8015,153 @@ void Editor::OpenImageInPlace(const std::string &path, const unsigned char *byte
     CurPane().buffer_id = buffer_id;
     CurPane().cursor = {0, 0};
     CurPane().scroll_row = 0;
-    status_message_.clear();
+    if (images_.count(buffer_id)) status_message_.clear();
+}
+
+namespace {
+#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
+// `path` converted to PNG bytes by ffmpeg (its first frame, for an
+// animated WebP or a multi-image ICO). The empty string when ffmpeg is
+// missing or can't read the file; `*missing` says which.
+std::string FfmpegToPng(const std::string &path, bool *missing) {
+    *missing = false;
+    char out_path[] = "/tmp/mep-image-XXXXXX.png";
+    const int fd = mkstemps(out_path, 4);
+    if (fd < 0) return "";
+    close(fd);
+    std::vector<std::string> args = {"ffmpeg", "-v", "error", "-nostdin", "-y", "-i", path,
+                                     "-frames:v", "1", "-c:v", "png", "-f", "image2", out_path};
+    std::vector<char *> argv;
+    for (std::string &a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    pid_t pid = 0;
+    const int rc = posix_spawnp(&pid, "ffmpeg", &fa, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    std::string png;
+    int status = 0;
+    if (rc != 0) {
+        *missing = true;
+    } else if (waitpid(pid, &status, 0) >= 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        std::ifstream in(out_path, std::ios::binary);
+        png.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    } else if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+        *missing = true;
+    }
+    unlink(out_path);
+    return png;
+}
+#endif
+}  // namespace
+
+bool Editor::DecodeViewerImage(const std::string &path, const unsigned char *bytes, size_t len, ImageDoc &doc,
+                               std::string *error) {
+    if (doc.LoadFromMemory(bytes, len)) return true;
+    if (IsSvgPath(path) || svg_raster::LooksLikeSvg(bytes, len)) {
+        // Rendered at least 1024px on its longer side, so an icon stays
+        // sharp when the viewer zooms in; at most 4096.
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        if (!svg_raster::Rasterize(bytes, len, &rgba, &w, &h, error, svg_font_, svg_font_len_, 4096, 1024)) return false;
+        if (!doc.LoadFromRgba(rgba, w, h)) {
+            *error = doc.Error();
+            return false;
+        }
+        return true;
+    }
+    if (IsConvertedImagePath(path)) {
+        const std::string ext = path.substr(path.find_last_of('.') + 1);
+#if defined(__EMSCRIPTEN__) || defined(_WIN32)
+        *error = "." + ext + " images aren't supported in this build";
+        return false;
+#else
+        bool missing = false;
+        const std::string png = FfmpegToPng(path, &missing);
+        if (png.empty()) {
+            *error = missing ? "opening ." + ext + " images needs ffmpeg, which isn't installed"
+                             : "ffmpeg couldn't read this ." + ext + " file";
+            return false;
+        }
+        if (!doc.LoadFromMemory(reinterpret_cast<const unsigned char *>(png.data()), png.size())) {
+            *error = doc.Error();
+            return false;
+        }
+        return true;
+#endif
+    }
+    *error = doc.Error();
+    return false;
+}
+
+void Editor::ConvertSvgBufferToText(int buffer_id) {
+    auto it = images_.find(buffer_id);
+    if (it == images_.end()) return;
+    auto ed = image_editors_.find(buffer_id);
+    if (ed != image_editors_.end() && ed->second.modified) {
+        status_message_ = "E-The image editor has unsaved changes (:w name.png to keep them)";
+        return;
+    }
+    if (ed != image_editors_.end()) image_editors_.erase(ed);
+    const std::string path = buffers_[static_cast<size_t>(buffer_id)].filename;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        status_message_ = "E484: Can't open file \"" + path + "\"";
+        return;
+    }
+    const std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    images_.erase(it);
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    buf.lines = SplitIntoLines(content);
+    if (buf.lines.empty()) buf.lines.emplace_back();
+    buf.modified = false;
+    // See ConvertHtmlBufferToText: the buffer has real text now, and the
+    // syntax/fold hooks only notice through this epoch.
+    change_epoch_++;
+}
+
+bool Editor::ConvertTextBufferToSvg(int buffer_id) {
+    if (IsImageBuffer(buffer_id)) return true;
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (buf.modified) {
+        status_message_ = "E-Unsaved changes: :w first, then render the SVG";
+        return false;
+    }
+    std::ifstream in(buf.filename, std::ios::binary);
+    if (!in) {
+        status_message_ = "E484: Can't open file \"" + buf.filename + "\"";
+        return false;
+    }
+    const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto doc = std::make_unique<ImageDoc>();
+    std::string error;
+    if (!DecodeViewerImage(buf.filename, bytes.data(), bytes.size(), *doc, &error)) {
+        status_message_ = "E-\"" + buf.filename + "\": " + error;
+        return false;
+    }
+    ImageSession sess;
+    sess.buffer_id = buffer_id;
+    sess.doc = std::move(doc);
+    sess.decode_generation = 1;
+    images_[buffer_id] = std::move(sess);
+    buf.lines.assign(1, std::string());
+    change_epoch_++;
+    return true;
+}
+
+int Editor::SvgToggleView() {
+    const int buffer_id = CurPane().buffer_id;
+    if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return -1;
+    if (!IsSvgPath(buffers_[static_cast<size_t>(buffer_id)].filename)) return -1;
+    const bool picture = IsImageBuffer(buffer_id);
+    if (picture) ConvertSvgBufferToText(buffer_id);
+    else ConvertTextBufferToSvg(buffer_id);
+    CurPane().cursor = {0, 0};
+    CurPane().scroll_row = 0;
+    SyncModeToActivePaneBuffer();
+    return IsImageBuffer(buffer_id) ? 1 : 0;
 }
 
 void Editor::SyncModeToActivePaneBuffer() {
@@ -8205,6 +8364,12 @@ void Editor::HandleImageInput() {
     // false instead of true. The actual recoloring is entirely a DrawPane
     // concern (main.cpp); this just flips the flag.
     if (ctrl && gfx::IsKeyPressed(gfx::Key::R)) sess->theme_colors = !sess->theme_colors;
+    // Ctrl-E on an SVG: its source text, in this same buffer -- the
+    // html viewer's key; Ctrl-V in normal mode renders it again.
+    if (ctrl && gfx::IsKeyPressed(gfx::Key::E) && IsSvgPath(Buf().filename)) {
+        SvgToggleView();
+        return;  // sess is gone once the buffer holds text
+    }
 
     // +/-/= zoom: +/- multiply or divide the zoom factor by kImageZoomStep,
     // re-anchored on whatever image point is currently at the viewport's
@@ -12100,7 +12265,9 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
     sess.source = source;
     sess.js.reset();  // the old page's runtime points into the tree being replaced
     sess.lines.clear();
-    sess.search_lines.clear();
+    sess.find_query.clear();
+    sess.find_matches.clear();
+    sess.search_matches.clear();
     sess.search_current = -1;
     sess.search_query.clear();
     sess.lines_request = false;
@@ -12320,15 +12487,29 @@ bool Editor::TakeHtmlLinesRequest(int buffer_id) {
     return true;
 }
 
-void Editor::SetHtmlLines(int buffer_id, std::vector<HtmlTextLine> lines) {
+bool Editor::HtmlLinesStale(int buffer_id, float total_h) const {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || it->second.search_matches.empty()) return false;
+    const HtmlSession &sess = it->second;
+    return sess.lines_zoom != sess.zoom || sess.lines_view_w != sess.viewport_w || sess.lines_total_h != total_h;
+}
+
+void Editor::SetHtmlLines(int buffer_id, std::vector<HtmlTextLine> lines, float total_h, bool open_picker) {
     auto it = htmldocs_.find(buffer_id);
     if (it == htmldocs_.end()) return;
-    it->second.lines = std::move(lines);
-    it->second.search_lines.clear();
-    it->second.search_current = -1;
-    it->second.search_zoom = it->second.zoom;
-    it->second.search_view_w = it->second.viewport_w;
-    if (lua_) lua_->CallGlobal2Strings("mep_html_search", std::to_string(buffer_id), "");
+    HtmlSession &sess = it->second;
+    sess.lines = std::move(lines);
+    sess.lines_zoom = sess.zoom;
+    sess.lines_view_w = sess.viewport_w;
+    sess.lines_total_h = total_h;
+    sess.find_matches.clear();
+    // The same search on the relaid-out text, still on the same match.
+    if (!sess.search_query.empty()) {
+        sess.search_matches = FindHtmlMatches(sess.lines, sess.search_query);
+        const int n = static_cast<int>(sess.search_matches.size());
+        sess.search_current = n == 0 ? -1 : std::min(sess.search_current, n - 1);
+    }
+    if (open_picker && lua_) lua_->CallGlobal2Strings("mep_html_search", std::to_string(buffer_id), "");
 }
 
 namespace {
@@ -12336,44 +12517,119 @@ std::string AsciiLower(std::string s) {
     for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
+
+bool IsUtf8Cont(char c) { return (static_cast<unsigned char>(c) & 0xC0) == 0x80; }
+
+// The text around [pos, end) of `text` for a result list: ~16 bytes
+// before and ~100 after, cut at a space near the edge where there is one,
+// with an ellipsis where the text goes on. Same shape as the PDF
+// search's snippets (pdftext::Search).
+void HtmlMatchContext(const std::string &text, size_t pos, size_t end, HtmlMatch &m) {
+    constexpr size_t kBefore = 16, kAfter = 100;
+    size_t from = pos > kBefore ? pos - kBefore : 0;
+    size_t to = std::min(text.size(), end + kAfter);
+    if (from > 0) {
+        const size_t sp = text.find(' ', from);
+        if (sp != std::string::npos && sp < pos) from = sp + 1;
+        while (from < pos && IsUtf8Cont(text[from])) ++from;
+    }
+    if (to < text.size()) {
+        const size_t sp = text.rfind(' ', to);
+        if (sp != std::string::npos && sp >= end) to = sp;
+        while (to > end && to < text.size() && IsUtf8Cont(text[to])) --to;
+    }
+    const std::string lead = from > 0 ? "..." : "";
+    m.context = lead + text.substr(from, to - from) + (to < text.size() ? "..." : "");
+    m.hl_start = static_cast<int>(lead.size() + (pos - from));
+    m.hl_end = static_cast<int>(lead.size() + (end - from));
+}
 }  // namespace
 
+std::vector<HtmlMatch> FindHtmlMatches(const std::vector<HtmlTextLine> &lines, const std::string &query,
+                                       size_t context_limit) {
+    std::vector<HtmlMatch> out;
+    // Whitespace in the query: one space, none at either end.
+    std::string q;
+    for (char c : query) {
+        const bool ws = c == ' ' || c == '\t' || c == '\n' || c == '\r';
+        if (ws) {
+            if (!q.empty() && q.back() != ' ') q += ' ';
+        } else {
+            q += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+    }
+    while (!q.empty() && q.back() == ' ') q.pop_back();
+    if (q.empty()) return out;
+    // The page's lines as one text, a space between each, so a phrase can
+    // wrap from one line onto the next.
+    std::string text;
+    std::vector<size_t> starts;
+    starts.reserve(lines.size());
+    for (const HtmlTextLine &l : lines) {
+        if (!text.empty()) text += ' ';
+        starts.push_back(text.size());
+        text += l.text;
+    }
+    const std::string lower = AsciiLower(text);
+    size_t pos = 0;
+    while ((pos = lower.find(q, pos)) != std::string::npos) {
+        const size_t end = pos + q.size();
+        HtmlMatch m;
+        // The first line starting after `pos`, then back one: the line it begins on.
+        size_t li = static_cast<size_t>(std::upper_bound(starts.begin(), starts.end(), pos) - starts.begin());
+        li = li > 0 ? li - 1 : 0;
+        for (; li < lines.size() && starts[li] < end; ++li) {
+            const HtmlTextLine &l = lines[li];
+            const size_t a = std::max(pos, starts[li]) - starts[li];
+            const size_t b = std::min(end, starts[li] + l.text.size()) - starts[li];
+            if (b <= a || l.xs.size() != l.text.size() + 1) continue;
+            m.rects.push_back({l.xs[a], l.y, l.xs[b] - l.xs[a], l.h});
+        }
+        if (!m.rects.empty()) {
+            if (out.size() < context_limit) HtmlMatchContext(text, pos, end, m);
+            out.push_back(std::move(m));
+        }
+        pos = end;
+    }
+    return out;
+}
+
+const std::vector<HtmlMatch> *Editor::HtmlFind(int buffer_id, const std::string &query) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return nullptr;
+    it->second.find_query = query;
+    it->second.find_matches = FindHtmlMatches(it->second.lines, query, kFindResultLimit);
+    return &it->second.find_matches;
+}
+
 void Editor::HtmlStepMatch(HtmlSession &sess, int delta) {
-    const int n = static_cast<int>(sess.search_lines.size());
+    const int n = static_cast<int>(sess.search_matches.size());
     if (n == 0) return;
-    sess.search_current = (((sess.search_current < 0 ? 0 : sess.search_current + delta) % n) + n) % n;
-    const int row = sess.search_lines[static_cast<size_t>(sess.search_current)];
-    if (row < 0 || row >= static_cast<int>(sess.lines.size())) return;
-    const HtmlTextLine &line = sess.lines[static_cast<size_t>(row)];
-    // Centre the line in the pane; the next draw's ClampHtmlScroll keeps it on the page.
-    sess.scroll_y = std::max(0.0f, line.y + line.h / 2.0f - static_cast<float>(sess.viewport_h) / 2.0f);
+    sess.search_current = sess.search_current < 0 ? 0 : (((sess.search_current + delta) % n) + n) % n;
+    const HtmlMatch &m = sess.search_matches[static_cast<size_t>(sess.search_current)];
+    const HtmlMatch::Rect &r = m.rects.front();
+    status_message_ = "[" + std::to_string(sess.search_current + 1) + "/" + std::to_string(n) + "] " + sess.search_query;
+    // Centre the match in the pane; the next draw's ClampHtmlScroll keeps it on the page.
+    sess.scroll_y = std::max(0.0f, r.y + r.h / 2.0f - static_cast<float>(sess.viewport_h) / 2.0f);
     sess.scroll_anim_target = -1.0f;
 }
 
-void Editor::HtmlGotoLine(int buffer_id, int row, const std::string &query) {
+void Editor::HtmlGotoMatch(int buffer_id, int index) {
     auto it = htmldocs_.find(buffer_id);
     if (it == htmldocs_.end()) return;
     HtmlSession &sess = it->second;
-    if (row < 0 || row >= static_cast<int>(sess.lines.size())) return;
-    sess.search_lines.clear();
-    sess.search_current = -1;
+    if (index < 0 || index >= static_cast<int>(sess.find_matches.size())) return;
+    sess.search_matches = sess.find_matches;
+    sess.search_current = index;
+    sess.search_query = sess.find_query;
+    HtmlStepMatch(sess, 0);
+}
+
+void Editor::ClearHtmlSearch(HtmlSession &sess) {
+    status_message_.clear();
     sess.search_query.clear();
-    // A query that is plain text on the chosen line: every line holding it
-    // is highlighted, N/P step through them, starting on this one.
-    const std::string q = AsciiLower(query);
-    if (!q.empty() && AsciiLower(sess.lines[static_cast<size_t>(row)].text).find(q) != std::string::npos) {
-        for (size_t i = 0; i < sess.lines.size(); ++i) {
-            if (AsciiLower(sess.lines[i].text).find(q) == std::string::npos) continue;
-            if (static_cast<int>(i) == row) sess.search_current = static_cast<int>(sess.search_lines.size()) - 1;
-            sess.search_lines.push_back(static_cast<int>(i));
-        }
-        sess.search_query = query;
-    } else {
-        sess.search_lines.push_back(row);
-        sess.search_query = sess.lines[static_cast<size_t>(row)].text;
-    }
-    // HtmlStepMatch(+1) from the entry before the chosen one lands on it.
-    HtmlStepMatch(sess, 1);
+    sess.search_matches.clear();
+    sess.search_current = -1;
 }
 
 bool Editor::NavigateHtmlHistory(int buffer_id, int direction) {
@@ -12458,6 +12714,11 @@ int Editor::HtmlToggleView() {
 }
 
 void Editor::HandleHtmlInput() {
+    // This mode reads keys with IsKeyPressed and never takes them off the
+    // GetKeyPressed() queue, so they would pile up there and reach whatever
+    // reads it next -- the `/` picker opened on a stale Escape and shut
+    // again at once. Emptied every frame instead.
+    while (gfx::GetKeyPressed() != gfx::Key::None) {}
     HtmlSession *sess = nullptr;
     {
         auto it = htmldocs_.find(CurPane().buffer_id);
@@ -12779,6 +13040,9 @@ void Editor::HandleHtmlInput() {
     // so any value at or past the true bottom lands exactly on it. Every
     // other printable key is a deliberate no-op -- there's no text to
     // insert/operate on.
+    // Escape drops the `/` search's highlights (a page that listens for
+    // Escape got it first, above).
+    if (gfx::IsKeyPressed(gfx::Key::Escape) && !sess->search_matches.empty()) ClearHtmlSearch(*sess);
     for (const int cp : chars) {
         if (page_took_char(cp)) continue;
         if (cp == 'g') {
@@ -12825,13 +13089,14 @@ void Editor::HandleHtmlInput() {
             } else if (cp == 'f') {
                 link_hint_request_ = true;
             } else if (cp == '/') {
-                // The fuzzy line picker, as in a text buffer and a PDF. Only
-                // the draw knows where the lines are, so this asks it; the
-                // next frame opens the picker (SetHtmlLines).
+                // Find in page: a picker of every occurrence of what is
+                // typed, previewing each on the rendered page. Only the draw
+                // knows where the text is, so this asks it; the next frame
+                // opens the picker (SetHtmlLines).
                 sess->lines_request = true;
-            } else if (cp == 'N') {
+            } else if (cp == 'n' || cp == 'N') {
                 HtmlStepMatch(*sess, 1);
-            } else if (cp == 'P') {
+            } else if (cp == 'p' || cp == 'P') {
                 HtmlStepMatch(*sess, -1);
             }
         }
@@ -12910,51 +13175,35 @@ void Editor::GotoPdfPage(int buffer_id, int page) {
     }
 }
 
-const std::vector<std::vector<PdfTextLine>> *Editor::PdfAllLines(int buffer_id) {
+const std::vector<PdfTextMatch> *Editor::PdfFind(int buffer_id, const std::string &query) {
     PdfBufferState *bs = PdfBufferFor(buffer_id);
     if (!bs || !bs->doc) return nullptr;
-    if (bs->lines_doc.lock() != bs->doc) {
-        const int n = bs->doc->PageCount();
-        bs->lines.assign(static_cast<size_t>(std::max(n, 0)), {});
-        for (int p = 0; p < n; ++p) bs->lines[static_cast<size_t>(p)] = bs->doc->PageLines(p);
-        bs->lines_doc = bs->doc;
+    if (query != bs->find_query || query.empty()) {
+        bs->find_query = query;
+        bs->find_matches = bs->doc->Search(query, kFindResultLimit);
     }
-    return &bs->lines;
+    return &bs->find_matches;
 }
 
-void Editor::PdfGotoLine(int buffer_id, int page, int row, const std::string &query) {
+void Editor::PdfGotoMatch(int buffer_id, int index) {
+    PdfBufferState *bs = PdfBufferFor(buffer_id);
     PdfSession *sess = AnyPdfSessionForBuffer(buffer_id);
-    const std::vector<std::vector<PdfTextLine>> *all = PdfAllLines(buffer_id);
-    if (!sess || !sess->doc || !all) return;
-    if (page < 0 || page >= static_cast<int>(all->size())) return;
-    const std::vector<PdfTextLine> &lines = (*all)[static_cast<size_t>(page)];
-    if (row < 0 || row >= static_cast<int>(lines.size())) {
-        GotoPdfPage(buffer_id, page);
-        return;
-    }
-    const PdfTextLine &line = lines[static_cast<size_t>(row)];
-    // A query typed into the picker that is plain text on this line: search
-    // for it document-wide so N/P keep going, and start on the occurrence
-    // inside this line (vertical centre within the line's box).
-    if (!query.empty()) {
-        RunPdfSearch(*sess, query);
-        for (size_t i = 0; i < sess->search_matches.size(); ++i) {
-            const PdfTextMatch &m = sess->search_matches[i];
-            if (m.page != page || m.rects_pt.empty()) continue;
-            const double cy = (m.rects_pt.front().top + m.rects_pt.front().bottom) / 2.0;
-            if (cy <= line.rect.top && cy >= line.rect.bottom) {
-                GotoPdfMatch(*sess, static_cast<int>(i));
-                return;
-            }
-        }
-    }
-    // Otherwise (no query, or a fuzzy one that isn't a substring): the
-    // whole line is the one highlighted match.
-    sess->search_query = line.text;
-    sess->search_matches = {PdfTextMatch{page, {line.rect}}};
+    if (!bs || !sess || !sess->doc) return;
+    if (index < 0 || index >= static_cast<int>(bs->find_matches.size())) return;
+    sess->search_active = false;
+    sess->search_query = bs->find_query;
+    sess->search_matches = bs->find_matches;
     sess->search_current = -1;
     RecomputePdfPageHighlights(*sess);
-    GotoPdfMatch(*sess, 0);
+    GotoPdfMatch(*sess, index);
+}
+
+void Editor::ClearPdfSearch(PdfSession &sess) {
+    status_message_.clear();
+    sess.search_query.clear();
+    sess.search_matches.clear();
+    sess.search_current = -1;
+    RecomputePdfPageHighlights(sess);
 }
 
 std::pair<double, double> Editor::PdfPageSizePt(PdfSession &sess, int page_index) {
@@ -14282,6 +14531,7 @@ void Editor::GotoPdfMatch(PdfSession &sess, int index) {
     int n = static_cast<int>(sess.search_matches.size());
     index = ((index % n) + n) % n;
     sess.search_current = index;
+    status_message_ = "[" + std::to_string(index + 1) + "/" + std::to_string(n) + "] " + sess.search_query;
     const PdfTextMatch &m = sess.search_matches[static_cast<size_t>(index)];
     sess.page = m.page;
     sess.pan_x = 0;
@@ -15679,6 +15929,8 @@ void Editor::ReloadPdfBuffer(int buffer_id, const unsigned char *bytes, size_t l
         sess.search_matches.clear();
         sess.search_current = -1;
     }
+    bs->find_query.clear();
+    bs->find_matches.clear();
     // The file's own annotations may have moved objects; every pane's
     // overlays rebuild from the fresh document (rasters are gone anyway).
     bs->annot_generation++;
@@ -16027,6 +16279,10 @@ void Editor::HandlePdfInput() {
                 mode_ = Mode::Pdf;
                 pending_count_ = 0;
             }
+        } else if (key == gfx::Key::Escape && !sess->search_matches.empty()) {
+            // Plain Mode::Pdf: Escape drops the `/` search's highlights.
+            ClearPdfSearch(*sess);
+            pending_count_ = 0;
         }
     }
     if (full_down) { sess->scroll_y += static_cast<float>(sess->viewport_h); rebase_scroll(); }
@@ -16152,10 +16408,10 @@ void Editor::HandlePdfInput() {
                 goto_page(page_count - 1);
             }
         } else if (cp == '/') {
-            // The same fuzzy line picker '/' opens in a text buffer
-            // (mep.pdf_search, kBuiltinPickerSources), over the document's
-            // text lines. The old in-pane prompt stays as the fallback for
-            // a build without the Lua side.
+            // Find in the document: a picker of every occurrence of what is
+            // typed, previewing each on its page (mep.pdf_search,
+            // kBuiltinPickerSources). The old in-pane prompt stays as the
+            // fallback for a build without the Lua side.
             pending_g_ = false;
             pending_count_ = 0;
             if (lua_ && lua_->HasGlobalFunction("mep_pdf_search")) {
@@ -16164,10 +16420,18 @@ void Editor::HandlePdfInput() {
             }
             sess->search_active = true;
             sess->search_input.clear();
+        } else if (!annotate && (cp == 'n' || cp == 'p' || cp == 'N' || cp == 'P') && !sess->search_matches.empty()) {
+            // A search is up: n/p (and N/P) step through its matches,
+            // count-prefixed like vim's n. Esc drops the search, and n
+            // goes back to entering Mode::PdfNav.
+            pending_g_ = false;
+            const int steps = take_count();
+            const bool fwd = cp == 'n' || cp == 'N';
+            GotoPdfMatch(*sess, sess->search_current + (fwd ? steps : -steps));
         } else if (!nav && !annotate && cp == 'n') {
-            // Enter Mode::PdfNav unconditionally ('N'/'P' below took over
-            // the old n/p match-jump role). Same "mode_ is no longer this
-            // mode -- stop draining" reasoning as EnterCommand above.
+            // Enter Mode::PdfNav when there is no search to step through
+            // (the branch above). Same "mode_ is no longer this mode --
+            // stop draining" reasoning as EnterCommand above.
             pending_g_ = false;
             pending_count_ = 0;
             mode_ = Mode::PdfNav;
@@ -16247,14 +16511,6 @@ void Editor::HandlePdfInput() {
                 return;
             }
             PdfAskAboutSelection(*sess, cp);
-        } else if (cp == 'N' && !sess->search_matches.empty()) {
-            pending_g_ = false;
-            pending_count_ = 0;
-            GotoPdfMatch(*sess, sess->search_current + 1);
-        } else if (cp == 'P' && !sess->search_matches.empty()) {
-            pending_g_ = false;
-            pending_count_ = 0;
-            GotoPdfMatch(*sess, sess->search_current - 1);
         } else {
             pending_g_ = false;
             pending_count_ = 0;
@@ -23801,6 +24057,11 @@ void Editor::HandleNormalInput() {
         // Visual Block -- the opposite direction of HandleHtmlInput's own
         // Ctrl-E (see ConvertTextBufferToHtml's own comment). Every other
         // buffer keeps plain Visual Block, unaffected.
+        if (IsSvgPath(Buf().filename)) {
+            // An SVG's source (Ctrl-E from its picture): back to the picture.
+            SvgToggleView();
+            return;
+        }
         if (IsHtmlPath(Buf().filename)) {
             ConvertTextBufferToHtml(CurPane().buffer_id);
             CurPane().cursor = {0, 0};
@@ -30583,9 +30844,21 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     picker_preview_text_.clear();
     picker_preview_spans_.clear();
     picker_preview_scroll_ = 0;
+    picker_doc_preview_ = PickerDocPreview{};
     picker_tabs_.clear();
     picker_active_tab_ = 0;
     mode_ = Mode::Picker;
+}
+
+void Editor::SetPickerDocPreview(PickerDocPreview::Kind kind, int buffer_id, int index) {
+    picker_doc_preview_ = PickerDocPreview{};
+    if (index < 0) return;
+    picker_doc_preview_.kind = kind;
+    picker_doc_preview_.buffer_id = buffer_id;
+    picker_doc_preview_.index = index;
+    if (kind == PickerDocPreview::kPdf) {
+        if (const PdfSession *sess = AnyPdfSessionForBuffer(buffer_id)) picker_doc_preview_.pane_id = sess->pane_id;
+    }
 }
 
 void Editor::ClosePicker() {
@@ -40135,6 +40408,13 @@ bool Editor::WriteBufferToPath(Buffer &buf, const std::string &path) {
         // nothing to flatten and no reason to let `:w` touch the file.
         auto edit_it = image_editors_.find(buffer_id);
         if (edit_it != image_editors_.end()) {
+            // The editor writes PNG data whatever the name says; over an
+            // SVG (or any format it was converted from) that would replace
+            // the real file with a PNG wearing the wrong extension.
+            if (IsSvgPath(io_path) || IsConvertedImagePath(io_path)) {
+                status_message_ = "E-The image editor writes PNG -- save it under a .png name (:w name.png)";
+                return false;
+            }
             if (!SaveImageEditorPng(edit_it->second, io_path)) return false;
             buf.filename = path;
             buf.modified = false;
@@ -40736,7 +41016,7 @@ void Editor::LoadFile(const std::string &path, bool force_text) {
         return;
     }
 #endif
-    if (IsImagePath(path)) {
+    if (IsViewerImagePath(path)) {
 #if defined(__EMSCRIPTEN__)
         char *result = mep_js_read_file_binary(path.c_str());
         std::string res(result);

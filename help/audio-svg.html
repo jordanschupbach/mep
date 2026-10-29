@@ -18,11 +18,12 @@ seeing what is in a file -- where the silence is, whether it clipped --
 rather than for changing it.</p>
 <p>Notebook and document views use the same decoder for embedded audio.</p>
 <h1>SVG and XML</h1>
-<p><code>.svg</code> renders as a vector image, and <code>.xml</code> renders as structured markup.
-Both go through the same engine that draws HTML, so a stylesheet on an SVG
-is honoured.</p>
-<p>To edit the markup rather than view the result, open the file as text with
-<code>:e</code>.</p>
+<p><code>.svg</code> opens as a picture in the <a href="images.html">image viewer</a>, from the file tree or <code>:e</code>
+alike. <code>Ctrl-E</code> swaps the picture for the SVG's source text in the same
+buffer, and <code>Ctrl-V</code> (or <code>:SvgViewToggle</code>) draws it again -- save first,
+since the picture is rendered from the file on disk.</p>
+<p><code>.xml</code> renders as structured markup, through the same engine that draws
+HTML.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="viewers-overview.html">What mep can open</a> -- the full table.</li>

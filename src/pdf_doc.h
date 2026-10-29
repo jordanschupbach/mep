@@ -42,6 +42,10 @@ struct PdfTextRectPt {
 struct PdfTextMatch {
     int page = 0;
     std::vector<PdfTextRectPt> rects_pt;
+    // The page text around the match, for a result list (the `/` picker),
+    // and the match's byte range in it.
+    std::string context;
+    int context_hl_start = 0, context_hl_end = 0;
 };
 
 // A search match's highlight rect already converted to device pixels at a
@@ -105,12 +109,6 @@ struct PdfGlyphBox {
 struct PdfTextRow {
     std::vector<int> glyphs;
     bool display_math = false;
-};
-// One visual row as readable text plus the box around it (point space) --
-// what the `/` line picker lists and highlights (PdfDoc::PageLines).
-struct PdfTextLine {
-    std::string text;
-    PdfTextRectPt rect;
 };
 struct PdfAnnotDraw {
     int kind = 0;                        // 0 = highlight, 1 = note
@@ -219,16 +217,17 @@ public:
     // matching -- ordinary 'A'-'Z' lowering, applied to both query and
     // extracted text -- see that header's own doc comment for why that's
     // close enough to PDFium's original MATCHCASE-unset default for this
-    // codebase's needs) across every page, in page order. Loads and
-    // re-extracts each page's text, so this is O(document size) -- call
-    // only when the query text actually changes, not per frame/per
-    // keystroke.
+    // codebase's needs) across every page, in page order. The first search
+    // extracts every page's text (O(document size)) and keeps it, so later
+    // ones -- the `/` picker searches per keystroke -- only scan it. The
+    // first `context_limit` matches get a context snippet.
     /**
      * @brief Performs a case-insensitive substring search for query text across every page.
      * @param query The text to search for.
+     * @param context_limit How many of the first matches get a context snippet.
      * @return All matches found, in page order, each with its highlight rects in PDF-point space.
      */
-    std::vector<PdfTextMatch> Search(const std::string &query) const;
+    std::vector<PdfTextMatch> Search(const std::string &query, size_t context_limit = 0) const;
 
     // Converts every rect (across all of `matches`) belonging to
     // page_index into device pixels at px_per_pt, in one page-load round
@@ -363,13 +362,6 @@ public:
      * @brief Returns a page's glyphs grouped into visual rows, top to bottom.
      */
     std::vector<PdfTextRow> PageTextRows(int page_index) const;
-
-    // The same rows, each as one line of text with its bounding box --
-    // rows with no readable text are left out. What the `/` picker lists.
-    /**
-     * @brief Returns a page's visual rows as text lines with their point-space boxes, top to bottom.
-     */
-    std::vector<PdfTextLine> PageLines(int page_index) const;
 
     // --- the text behind a selection (copying, quoting) ---
 

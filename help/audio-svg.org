@@ -13,12 +13,13 @@ Notebook and document views use the same decoder for embedded audio.
 
 * SVG and XML
 
-=.svg= renders as a vector image, and =.xml= renders as structured markup.
-Both go through the same engine that draws HTML, so a stylesheet on an SVG
-is honoured.
+=.svg= opens as a picture in the [[file:images.html][image viewer]], from the file tree or =:e=
+alike. =Ctrl-E= swaps the picture for the SVG's source text in the same
+buffer, and =Ctrl-V= (or =:SvgViewToggle=) draws it again -- save first,
+since the picture is rendered from the file on disk.
 
-To edit the markup rather than view the result, open the file as text with
-=:e=.
+=.xml= renders as structured markup, through the same engine that draws
+HTML.
 
 * See also
 

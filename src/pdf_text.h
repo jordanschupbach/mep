@@ -49,6 +49,10 @@ struct PdfTextRectPt {
 struct PdfTextMatch {
     int page = 0;
     std::vector<PdfTextRectPt> rects_pt;
+    // A snippet of the page's text around the match, for a result list,
+    // and the match's byte range in it ([context_hl_start, context_hl_end)).
+    std::string context;
+    int context_hl_start = 0, context_hl_end = 0;
 };
 
 struct PdfHighlightRect {
@@ -70,6 +74,27 @@ std::string ExtractPageText(const unsigned char *doc_data, size_t doc_len, const
 // loaded from.
 std::vector<PdfTextMatch> Search(const unsigned char *doc_data, size_t doc_len, const pdfdoc::PdfDocument &doc,
                                   const std::string &query);
+
+// Every page's searchable text, extracted once so a search per keystroke
+// does not re-run each page's content stream (BuildSearchIndex, then the
+// Search overload below -- the same matches as the one above).
+struct SearchPage {
+    std::string text, lower;           // `lower`: ASCII-folded, for matching
+    std::vector<int> char_glyph;       // per byte of `text`: its glyph, or -1 for a synthetic separator
+    std::vector<bool> glyph_new_line;  // per glyph: starts a new line
+    struct Box {
+        float left, top, right, bottom;
+    };
+    std::vector<Box> glyph_boxes;  // per glyph, PDF points
+};
+struct SearchIndex {
+    std::vector<SearchPage> pages;
+};
+SearchIndex BuildSearchIndex(const unsigned char *doc_data, size_t doc_len, const pdfdoc::PdfDocument &doc);
+// `context_limit`: how many of the first matches get a `context` snippet
+// (a result list shows a bounded number; building one per match of a
+// one-letter query in a long document is not free).
+std::vector<PdfTextMatch> Search(const SearchIndex &index, const std::string &query, size_t context_limit = 0);
 
 // Converts every rect (across all of `matches`) belonging to page_index
 // into device pixels at px_per_pt, via the same PageToDeviceMatrix

@@ -4868,6 +4868,22 @@ int l_html_view_toggle(lua_State *L) {
     return 1;
 }
 
+// mep.svg_view_toggle() -> bool | nil: the current .svg buffer flipped
+// between the image viewer's picture and its source text
+// (Editor::SvgToggleView; :SvgViewToggle). True when it now shows the
+// picture, false the source, nil when the buffer is not an SVG file.
+/**
+ * @brief Implements mep.svg_view_toggle(): flips the current SVG buffer between picture and source.
+ * @param L Lua state.
+ * @return Number of values pushed (1: true picture, false source, nil not an SVG buffer).
+ */
+int l_svg_view_toggle(lua_State *L) {
+    const int r = GetEditor(L)->SvgToggleView();
+    if (r < 0) lua_pushnil(L);
+    else lua_pushboolean(L, r == 1);
+    return 1;
+}
+
 // mep.mepml_present(mode?) -> true | nil, err: presents the current mepml
 // document's slides (Editor::MepmlPresentStart), `mode` "fill" (the
 // default: the pane takes the editor area) or "full" (the window goes full
@@ -8570,7 +8586,7 @@ int l_list_dir(lua_State *L) {
  */
 int l_is_image_path(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
-    lua_pushboolean(L, IsImagePath(path));
+    lua_pushboolean(L, IsViewerImagePath(path));
     return 1;
 }
 
@@ -13523,91 +13539,110 @@ int l_pdf_goto_page(lua_State *L) {
     return 0;
 }
 
-// mep.html_lines([buffer_id]) -> the html page's text lines as {row=, text=} (1-based row), top to bottom
-// -- the ones its last `/` collected (Editor::SetHtmlLines); nil if
-// buffer_id (default: the current buffer) isn't an html page.
-int l_html_lines(lua_State *L) {
-    Editor *ed = GetEditor(L);
-    const int buffer_id =
-        lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
-    const HtmlSession *sess = ed->GetHtml(buffer_id);
-    if (!sess) {
+namespace {
+// One `/` result as the picker lists it: {context=, col_start=, col_end=}
+// (the match's span in context, 1-based, end exclusive), plus page= for a PDF.
+void PushFindResult(lua_State *L, const std::string &context, int hl_start, int hl_end, int page) {
+    lua_createtable(L, 0, 4);
+    lua_pushlstring(L, context.data(), context.size());
+    lua_setfield(L, -2, "context");
+    lua_pushinteger(L, hl_start + 1);
+    lua_setfield(L, -2, "col_start");
+    lua_pushinteger(L, hl_end + 1);
+    lua_setfield(L, -2, "col_end");
+    if (page > 0) {
+        lua_pushinteger(L, page);
+        lua_setfield(L, -2, "page");
+    }
+}
+
+int BufferArg(lua_State *L, int idx) {
+    return lua_isnoneornil(L, idx) ? GetEditor(L)->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, idx));
+}
+
+// A 1-based match index argument as 0-based; -1 for nil.
+int MatchIndexArg(lua_State *L, int idx) {
+    return lua_isnoneornil(L, idx) ? -1 : static_cast<int>(luaL_checkinteger(L, idx)) - 1;
+}
+}  // namespace
+
+// mep.html_find(buffer_id, query) -> occurrences of query on the html page as {context=, col_start=, col_end=}, and the total count
+// -- top to bottom (the first 2000), case-insensitive, a phrase free to wrap onto the next
+// line; context is the text around it and col_start/col_end the match's
+// span in it (1-based, end exclusive). nil if buffer_id isn't an html page.
+// Reads the text the last `/` collected (mep.html_search).
+int l_html_find(lua_State *L) {
+    const std::vector<HtmlMatch> *matches = GetEditor(L)->HtmlFind(BufferArg(L, 1), luaL_checkstring(L, 2));
+    if (!matches) {
         lua_pushnil(L);
         return 1;
     }
-    lua_createtable(L, static_cast<int>(sess->lines.size()), 0);
-    for (size_t i = 0; i < sess->lines.size(); ++i) {
-        lua_createtable(L, 0, 2);
-        lua_pushinteger(L, static_cast<lua_Integer>(i) + 1);
-        lua_setfield(L, -2, "row");
-        lua_pushlstring(L, sess->lines[i].text.data(), sess->lines[i].text.size());
-        lua_setfield(L, -2, "text");
+    const size_t shown = std::min(matches->size(), kFindResultLimit);
+    lua_createtable(L, static_cast<int>(shown), 0);
+    for (size_t i = 0; i < shown; ++i) {
+        const HtmlMatch &m = (*matches)[i];
+        PushFindResult(L, m.context, m.hl_start, m.hl_end, 0);
         lua_rawseti(L, -2, static_cast<int>(i) + 1);
     }
-    return 1;
+    lua_pushinteger(L, static_cast<lua_Integer>(matches->size()));
+    return 2;
 }
 
-// mep.html_goto_line(buffer_id, row [, query]): scrolls to and highlights a line from mep.html_lines
-// (1-based row). A `query` that occurs on that line highlights every line
-// holding it, and N/P step through them (Editor::HtmlGotoLine).
-int l_html_goto_line(lua_State *L) {
-    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
-    const int row = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
-    GetEditor(L)->HtmlGotoLine(buffer_id, row, luaL_optstring(L, 3, ""));
+// mep.html_preview_match(buffer_id, index): previews result `index` of the last mep.html_find, rendered, in the picker
+// (on the page, the match marked); nil clears the preview.
+int l_html_preview_match(lua_State *L) {
+    GetEditor(L)->SetPickerDocPreview(Editor::PickerDocPreview::kHtml, BufferArg(L, 1), MatchIndexArg(L, 2));
     return 0;
 }
 
-// mep.html_search([buffer_id]): opens the `/` line picker over an html page
+// mep.html_goto_match(buffer_id, index): scrolls to result `index` of the last mep.html_find and highlights them all
+// -- n/p in the page then step through them, Esc clears them.
+int l_html_goto_match(lua_State *L) {
+    GetEditor(L)->HtmlGotoMatch(BufferArg(L, 1), MatchIndexArg(L, 2));
+    return 0;
+}
+
+// mep.html_search([buffer_id]): opens the `/` find-in-page picker over an html page
 // (default: the current buffer) -- on the next frame, once the pane has
 // been laid out (Editor::RequestHtmlLines).
 int l_html_search(lua_State *L) {
-    Editor *ed = GetEditor(L);
-    ed->RequestHtmlLines(lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1)));
+    GetEditor(L)->RequestHtmlLines(BufferArg(L, 1));
     return 0;
 }
 
-// mep.pdf_lines([buffer_id]) -> every text line of the PDF as {page=, row=, text=}
-// (1-based page and row-within-page) in page order, or nil if buffer_id
-// (default: the current buffer) isn't a PDF.
-// Cached per document, so a second call is cheap. The `/` picker's items
-// (mep.pdf_search, kBuiltinPickerSources).
-int l_pdf_lines(lua_State *L) {
-    Editor *ed = GetEditor(L);
-    const int buffer_id =
-        lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
-    const std::vector<std::vector<PdfTextLine>> *all = ed->PdfAllLines(buffer_id);
-    if (!all) {
+// mep.pdf_find(buffer_id, query) -> occurrences of query in the PDF as {page=, context=, col_start=, col_end=}, and the total count
+// -- in page order (the first 2000), case-insensitive; page is 1-based, context the text
+// around the match and col_start/col_end its span in it (1-based, end
+// exclusive). nil if buffer_id isn't a PDF. The document's text is read
+// once, on the first search, so searching per keystroke is cheap.
+int l_pdf_find(lua_State *L) {
+    const std::vector<PdfTextMatch> *matches = GetEditor(L)->PdfFind(BufferArg(L, 1), luaL_checkstring(L, 2));
+    if (!matches) {
         lua_pushnil(L);
         return 1;
     }
-    lua_newtable(L);
-    int n = 0;
-    for (size_t p = 0; p < all->size(); ++p) {
-        const std::vector<PdfTextLine> &lines = (*all)[p];
-        for (size_t r = 0; r < lines.size(); ++r) {
-            lua_createtable(L, 0, 3);
-            lua_pushinteger(L, static_cast<lua_Integer>(p) + 1);
-            lua_setfield(L, -2, "page");
-            lua_pushinteger(L, static_cast<lua_Integer>(r) + 1);
-            lua_setfield(L, -2, "row");
-            lua_pushlstring(L, lines[r].text.data(), lines[r].text.size());
-            lua_setfield(L, -2, "text");
-            lua_rawseti(L, -2, ++n);
-        }
+    const size_t shown = std::min(matches->size(), kFindResultLimit);
+    lua_createtable(L, static_cast<int>(shown), 0);
+    for (size_t i = 0; i < shown; ++i) {
+        const PdfTextMatch &m = (*matches)[i];
+        PushFindResult(L, m.context, m.context_hl_start, m.context_hl_end, m.page + 1);
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
     }
-    return 1;
+    lua_pushinteger(L, static_cast<lua_Integer>(matches->size()));
+    return 2;
 }
 
-// mep.pdf_goto_line(buffer_id, page, row [, query]): jumps to and highlights a line from mep.pdf_lines
-// (1-based page/row). A `query` that occurs on
-// that line becomes the pane's search, so N/P step through its other
-// occurrences (Editor::PdfGotoLine).
-int l_pdf_goto_line(lua_State *L) {
-    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
-    const int page = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
-    const int row = static_cast<int>(luaL_checkinteger(L, 3)) - 1;
-    const char *query = luaL_optstring(L, 4, "");
-    GetEditor(L)->PdfGotoLine(buffer_id, page, row, query);
+// mep.pdf_preview_match(buffer_id, index): previews result `index` of the last mep.pdf_find, rendered, in the picker
+// (on its page, the match marked); nil clears the preview.
+int l_pdf_preview_match(lua_State *L) {
+    GetEditor(L)->SetPickerDocPreview(Editor::PickerDocPreview::kPdf, BufferArg(L, 1), MatchIndexArg(L, 2));
+    return 0;
+}
+
+// mep.pdf_goto_match(buffer_id, index): jumps to result `index` of the last mep.pdf_find and highlights them all
+// -- n/p in the pane then step through them, Esc clears them.
+int l_pdf_goto_match(lua_State *L) {
+    GetEditor(L)->PdfGotoMatch(BufferArg(L, 1), MatchIndexArg(L, 2));
     return 0;
 }
 
@@ -17101,6 +17136,7 @@ const luaL_Reg kMepFuncs[] = {
     {"doc_view_toggle", l_mepml_view_toggle},
     {"doc_view", l_mepml_view},
     {"html_view_toggle", l_html_view_toggle},
+    {"svg_view_toggle", l_svg_view_toggle},
     {"mepml_view", l_mepml_view},
     {"mepml_present", l_mepml_present},
     {"mepml_present_stop", l_mepml_present_stop},
@@ -17360,11 +17396,13 @@ const luaL_Reg kMepFuncs[] = {
     {"pdf_outline", l_pdf_outline},
     {"a11y", l_a11y},
     {"pdf_goto_page", l_pdf_goto_page},
-    {"pdf_lines", l_pdf_lines},
-    {"html_lines", l_html_lines},
-    {"html_goto_line", l_html_goto_line},
+    {"pdf_find", l_pdf_find},
+    {"pdf_preview_match", l_pdf_preview_match},
+    {"pdf_goto_match", l_pdf_goto_match},
+    {"html_find", l_html_find},
+    {"html_preview_match", l_html_preview_match},
+    {"html_goto_match", l_html_goto_match},
     {"html_search", l_html_search},
-    {"pdf_goto_line", l_pdf_goto_line},
     {"pdf_fit_page", l_pdf_fit_page},
     {"pdf_current_page", l_pdf_current_page},
     {"pdf_selection", l_pdf_selection},

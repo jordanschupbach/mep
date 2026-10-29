@@ -255,7 +255,7 @@ bool Dimensions(const unsigned char *bytes, size_t len, int *width, int *height)
 }
 
 bool Rasterize(const unsigned char *bytes, size_t len, std::vector<unsigned char> *rgba, int *width, int *height,
-               std::string *error, const unsigned char *font_ttf, size_t font_len, int max_side) {
+               std::string *error, const unsigned char *font_ttf, size_t font_len, int max_side, int min_side) {
     HtmlDoc doc;
     const DomNode *svg = ParseSvg(bytes, len, doc);
     if (!svg) {
@@ -271,7 +271,9 @@ bool Rasterize(const unsigned char *bytes, size_t len, std::vector<unsigned char
         if (error) *error = "the SVG has no size";
         return false;
     }
-    const float fit = std::min(1.0f, static_cast<float>(std::max(1, max_side)) / std::max(w, h));
+    const float longer = std::max(w, h);
+    const float fit = std::min(std::max(1.0f, static_cast<float>(min_side) / longer),
+                               static_cast<float>(std::max(1, max_side)) / longer);
     Canvas canvas;
     canvas.w = std::max(1, static_cast<int>(std::lround(w * fit)));
     canvas.h = std::max(1, static_cast<int>(std::lround(h * fit)));

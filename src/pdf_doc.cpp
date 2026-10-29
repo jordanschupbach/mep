@@ -82,6 +82,10 @@ struct PdfDoc::Impl {
     // read the first time it is asked for.
     mutable std::unique_ptr<pdfstruct::Tree> struct_tree_;
     mutable std::unique_ptr<a11y::Document> a11y_;
+    // Every page's text for Search, extracted on the first search and
+    // kept: the `/` picker searches on every keystroke. Only the UI thread
+    // searches, so it needs no lock.
+    mutable std::unique_ptr<pdftext::SearchIndex> search_index_;
     const pdfstruct::Tree &StructTree() const {
         if (!struct_tree_)
             struct_tree_ = std::make_unique<pdfstruct::Tree>(
@@ -176,7 +180,7 @@ bool PdfDoc::RenderPage(int page_index, float px_per_pt, std::vector<unsigned ch
     return true;
 }
 
-std::vector<PdfTextMatch> PdfDoc::Search(const std::string &query) const {
+std::vector<PdfTextMatch> PdfDoc::Search(const std::string &query, size_t context_limit) const {
     std::vector<PdfTextMatch> results;
     if (!impl_) return results;
     // pdftext::PdfTextMatch/PdfTextRectPt are identically-shaped (same
@@ -186,14 +190,20 @@ std::vector<PdfTextMatch> PdfDoc::Search(const std::string &query) const {
     // anything. Kept as an explicit field-by-field copy rather than a
     // reinterpret_cast: distinct aggregate types have no guaranteed
     // layout compatibility in portable C++ even when shaped identically.
-    std::vector<pdftext::PdfTextMatch> matches =
-        pdftext::Search(impl_->file_data_.data(), impl_->file_data_.size(), impl_->document_, query);
+    if (query.empty()) return results;
+    if (!impl_->search_index_)
+        impl_->search_index_ = std::make_unique<pdftext::SearchIndex>(
+            pdftext::BuildSearchIndex(impl_->file_data_.data(), impl_->file_data_.size(), impl_->document_));
+    std::vector<pdftext::PdfTextMatch> matches = pdftext::Search(*impl_->search_index_, query, context_limit);
     results.reserve(matches.size());
     for (const pdftext::PdfTextMatch &m : matches) {
         PdfTextMatch out;
         out.page = m.page;
         out.rects_pt.reserve(m.rects_pt.size());
         for (const pdftext::PdfTextRectPt &r : m.rects_pt) out.rects_pt.push_back({r.left, r.top, r.right, r.bottom});
+        out.context = m.context;
+        out.context_hl_start = m.context_hl_start;
+        out.context_hl_end = m.context_hl_end;
         results.push_back(std::move(out));
     }
     return results;
@@ -386,34 +396,6 @@ std::vector<PdfTextRow> PdfDoc::PageTextRows(int page_index) const {
         row.glyphs = std::move(r.glyphs);
         row.display_math = r.display_math;
         out.push_back(std::move(row));
-    }
-    return out;
-}
-
-std::vector<PdfTextLine> PdfDoc::PageLines(int page_index) const {
-    std::vector<PdfTextLine> out;
-    if (!impl_ || !impl_->EnsureGlyphCache(page_index)) return out;
-    const auto &g = impl_->glyph_cache_;
-    for (const pdftext::GlyphRow &r : pdftext::PageGlyphRows(g, impl_->glyph_cache_rotate_)) {
-        if (r.glyphs.empty()) continue;
-        PdfTextLine line;
-        line.text = pdftext::JoinGlyphRowText(g, r.glyphs, impl_->glyph_cache_rotate_);
-        if (line.text.find_first_not_of(" \t") == std::string::npos) continue;
-        bool first = true;
-        for (int gi : r.glyphs) {
-            if (gi < 0 || gi >= static_cast<int>(g.size())) continue;
-            const pdftext::GlyphBox &b = g[static_cast<size_t>(gi)];
-            if (first) {
-                line.rect = {b.left, b.top, b.right, b.bottom};
-                first = false;
-            } else {
-                line.rect.left = std::min(line.rect.left, b.left);
-                line.rect.right = std::max(line.rect.right, b.right);
-                line.rect.top = std::max(line.rect.top, b.top);
-                line.rect.bottom = std::min(line.rect.bottom, b.bottom);
-            }
-        }
-        out.push_back(std::move(line));
     }
     return out;
 }

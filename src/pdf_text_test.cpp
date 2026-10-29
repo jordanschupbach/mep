@@ -137,6 +137,30 @@ void TestSearchLineWrapProducesTwoRects() {
     CHECK(m[0].rects_pt[1].top < m[0].rects_pt[0].bottom);
 }
 
+// The index the `/` picker searches per keystroke gives the same matches
+// as a one-off search, and a context snippet around each one up to the
+// limit asked for, with the match's span in it.
+void TestSearchIndexContext() {
+    std::string doc = OnePageDoc("BT /F1 12 Tf 10 50 Td (alpha beta gamma beta delta) Tj ET");
+    pdfdoc::PdfDocument document;
+    document.Load(B(doc), doc.size());
+    const pdftext::SearchIndex index = pdftext::BuildSearchIndex(B(doc), doc.size(), document);
+    CHECK(index.pages.size() == 1);
+
+    std::vector<pdftext::PdfTextMatch> once = pdftext::Search(B(doc), doc.size(), document, "BETA");
+    std::vector<pdftext::PdfTextMatch> indexed = pdftext::Search(index, "BETA", 1);
+    CHECK(once.size() == 2);
+    CHECK(indexed.size() == 2);
+    CHECK(indexed[1].rects_pt[0].left == once[1].rects_pt[0].left);
+
+    const pdftext::PdfTextMatch &m = indexed[0];
+    CHECK(!m.context.empty());
+    CHECK(m.context_hl_end - m.context_hl_start == 4);
+    CHECK(m.context.substr(static_cast<size_t>(m.context_hl_start), 4) == "beta");
+    CHECK(indexed[1].context.empty());  // past the limit of 1
+    CHECK(pdftext::Search(index, "").empty());
+}
+
 void TestSearchAcrossMultiplePages() {
     std::string doc = BuildDoc(
         {
@@ -848,6 +872,7 @@ int main(int argc, char **argv) {
     TestSearchNoMatchReturnsEmpty();
     TestSearchLineWrapProducesTwoRects();
     TestSearchAcrossMultiplePages();
+    TestSearchIndexContext();
     TestMatchRectsForPageScalesWithPxPerPt();
     TestExtractPageTextContainsShownWords();
     TestSelectionRects();

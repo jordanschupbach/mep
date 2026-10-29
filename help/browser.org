@@ -33,20 +33,24 @@ title.
 | =L=        | forward                                |
 | =r=        | reload                                 |
 | =f=        | label every link, type a letter to follow |
-| =/=        | fuzzy-find a line on the page (also =:MepHtmlSearch=) |
-| =N= =P=    | next / previous highlighted line       |
+| =/=        | find on the page (also =:MepHtmlSearch=) |
+| =n= =p=    | next / previous match (=N= =P= too)    |
+| =Esc=      | clear the matches                      |
 | =Ctrl-E=   | show the page source                   |
 | ~=~        | reset the zoom; on a mepml document's HTML export, line the document up with the page instead ([[file:mepml.html][mepml]]) |
 
 =localhost:8000=, =:8000/app=, =example.com= and plain file paths all work
 in the URL bar.
 
-=/= opens the same fuzzy picker it does in a text buffer, over the page's
-lines as they are laid out, with the lines around the highlighted one as
-a preview. =Enter= scrolls there and highlights the line. When what you
-typed is plain text on that line, every line holding it is highlighted
-and =N= / =P= step through them. The highlight goes when the page is
-zoomed or the pane resized, since the lines move.
+=/= finds a word or a phrase on the page. Every place the text you type
+occurs is listed with the words around it; case does not matter, and a
+phrase can wrap from one line onto the next. The preview beside the list
+is the page itself, rendered at the preview's width and scrolled to the
+match, which is outlined. =Enter= scrolls there and highlights every
+match; =n= / =p= step through them and =Esc= clears them. The highlights
+follow the text when the page is zoomed or the pane resized. =/= again
+starts from the last query. Fixed panels (a sidebar or top bar that does
+not scroll) are not searched.
 
 * It is a live page, not a snapshot
 

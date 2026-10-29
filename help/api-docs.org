@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (217)
+* The bindings (222)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -34,11 +34,14 @@ that it does nothing.
 | =mep.doc_export_html_to_latex= | thin |
 | =mep.doc_export_html_to_odt= | -- |
 | =mep.html_current_origin= | the current pane's HtmlSession::origin, or |
+| =mep.html_goto_line= | scrolls to and highlights a line from mep.html_lines |
+| =mep.html_lines= | the html page's text lines as {row, text} (1-based row), top to bottom |
 | =mep.html_navigate= | is html_reload's history-recording |
 | =mep.html_omnibar_edit= | puts the focused html pane's omnibar into edit mode |
 | =mep.html_open= | opens `path` (a real local .html file's |
 | =mep.html_reload= | re-reads local file `path` and |
 | =mep.html_scroll_to= | scrolls an html pane straight to a page-space offset |
+| =mep.html_search= | opens the `/` line picker over an html page |
 | =mep.html_settle= | runs the focused html pane's page (timers, promises, animation frames) until it goes idle or the budget is spent |
 | =mep.html_source_lines= | an html pane's mepml source-line tags with their laid-out positions, plus its scroll offset and visible height |
 | =mep.html_title= | the focused html pane's document title (what a page's script last set) |
@@ -206,7 +209,9 @@ that it does nothing.
 | =mep.org_timestamp_shift= | shifts the org timestamp under/near the cursor by a number of days |
 | =mep.pdf_current_page= | 1-indexed current page, or 0 if |
 | =mep.pdf_fit_page= | fits the page to its pane(s) (Editor::RequestPdfFitPage) |
+| =mep.pdf_goto_line= | jumps to and highlights a line from mep.pdf_lines |
 | =mep.pdf_goto_page= | jumps buffer_id's own PDF viewer |
+| =mep.pdf_lines= | every text line of the PDF as {page, row, text} |
 | =mep.pdf_note_latex_done= | async callback (from kBuiltinPdfAnnot's |
 | =mep.pdf_outline= | array of {title, page, depth}, or nil if |
 | =mep.pdf_page_png= | one page rendered to a base64 PNG, with its pixel width and height |

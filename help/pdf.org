@@ -23,7 +23,18 @@ that magnification you are looking at a detail rather than reading.
 | =mep.pdf_outline()=          | the document's outline    |
 | =mep.pdf_reload()=           | re-read the file          |
 | =mep.pdf_page_png(n)=        | a page as a PNG, base64   |
+| =mep.pdf_search()=           | the =/= line picker       |
+| =mep.pdf_lines()=            | every line, with its page |
 | =mep.is_pdf_buffer(buf)=     | is this a PDF?            |
+
+* Searching
+
+=/= (or =:MepPdfSearch=) opens the same fuzzy picker it does in a text buffer, listing every
+line of the document with its page number and previewing the lines
+around the highlighted one. =Enter= jumps to the line and highlights it.
+When what you typed is plain text on that line, it becomes the search:
+its occurrences are highlighted and =N= / =P= step through the rest of
+them.
 
 * The outline
 

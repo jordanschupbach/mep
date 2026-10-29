@@ -390,6 +390,34 @@ std::vector<PdfTextRow> PdfDoc::PageTextRows(int page_index) const {
     return out;
 }
 
+std::vector<PdfTextLine> PdfDoc::PageLines(int page_index) const {
+    std::vector<PdfTextLine> out;
+    if (!impl_ || !impl_->EnsureGlyphCache(page_index)) return out;
+    const auto &g = impl_->glyph_cache_;
+    for (const pdftext::GlyphRow &r : pdftext::PageGlyphRows(g, impl_->glyph_cache_rotate_)) {
+        if (r.glyphs.empty()) continue;
+        PdfTextLine line;
+        line.text = pdftext::JoinGlyphRowText(g, r.glyphs, impl_->glyph_cache_rotate_);
+        if (line.text.find_first_not_of(" \t") == std::string::npos) continue;
+        bool first = true;
+        for (int gi : r.glyphs) {
+            if (gi < 0 || gi >= static_cast<int>(g.size())) continue;
+            const pdftext::GlyphBox &b = g[static_cast<size_t>(gi)];
+            if (first) {
+                line.rect = {b.left, b.top, b.right, b.bottom};
+                first = false;
+            } else {
+                line.rect.left = std::min(line.rect.left, b.left);
+                line.rect.right = std::max(line.rect.right, b.right);
+                line.rect.top = std::max(line.rect.top, b.top);
+                line.rect.bottom = std::min(line.rect.bottom, b.bottom);
+            }
+        }
+        out.push_back(std::move(line));
+    }
+    return out;
+}
+
 std::vector<pdfannots::Quad> PdfDoc::SelectionQuadsForGlyphs(int page_index, int gi_a, int gi_b) const {
     std::vector<pdfannots::Quad> out;
     if (!impl_) return out;

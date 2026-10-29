@@ -13523,6 +13523,94 @@ int l_pdf_goto_page(lua_State *L) {
     return 0;
 }
 
+// mep.html_lines([buffer_id]) -> the html page's text lines as {row=, text=} (1-based row), top to bottom
+// -- the ones its last `/` collected (Editor::SetHtmlLines); nil if
+// buffer_id (default: the current buffer) isn't an html page.
+int l_html_lines(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int buffer_id =
+        lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
+    const HtmlSession *sess = ed->GetHtml(buffer_id);
+    if (!sess) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, static_cast<int>(sess->lines.size()), 0);
+    for (size_t i = 0; i < sess->lines.size(); ++i) {
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, static_cast<lua_Integer>(i) + 1);
+        lua_setfield(L, -2, "row");
+        lua_pushlstring(L, sess->lines[i].text.data(), sess->lines[i].text.size());
+        lua_setfield(L, -2, "text");
+        lua_rawseti(L, -2, static_cast<int>(i) + 1);
+    }
+    return 1;
+}
+
+// mep.html_goto_line(buffer_id, row [, query]): scrolls to and highlights a line from mep.html_lines
+// (1-based row). A `query` that occurs on that line highlights every line
+// holding it, and N/P step through them (Editor::HtmlGotoLine).
+int l_html_goto_line(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const int row = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    GetEditor(L)->HtmlGotoLine(buffer_id, row, luaL_optstring(L, 3, ""));
+    return 0;
+}
+
+// mep.html_search([buffer_id]): opens the `/` line picker over an html page
+// (default: the current buffer) -- on the next frame, once the pane has
+// been laid out (Editor::RequestHtmlLines).
+int l_html_search(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->RequestHtmlLines(lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
+// mep.pdf_lines([buffer_id]) -> every text line of the PDF as {page=, row=, text=}
+// (1-based page and row-within-page) in page order, or nil if buffer_id
+// (default: the current buffer) isn't a PDF.
+// Cached per document, so a second call is cheap. The `/` picker's items
+// (mep.pdf_search, kBuiltinPickerSources).
+int l_pdf_lines(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int buffer_id =
+        lua_isnoneornil(L, 1) ? ed->CurrentBufferId() : static_cast<int>(luaL_checkinteger(L, 1));
+    const std::vector<std::vector<PdfTextLine>> *all = ed->PdfAllLines(buffer_id);
+    if (!all) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    int n = 0;
+    for (size_t p = 0; p < all->size(); ++p) {
+        const std::vector<PdfTextLine> &lines = (*all)[p];
+        for (size_t r = 0; r < lines.size(); ++r) {
+            lua_createtable(L, 0, 3);
+            lua_pushinteger(L, static_cast<lua_Integer>(p) + 1);
+            lua_setfield(L, -2, "page");
+            lua_pushinteger(L, static_cast<lua_Integer>(r) + 1);
+            lua_setfield(L, -2, "row");
+            lua_pushlstring(L, lines[r].text.data(), lines[r].text.size());
+            lua_setfield(L, -2, "text");
+            lua_rawseti(L, -2, ++n);
+        }
+    }
+    return 1;
+}
+
+// mep.pdf_goto_line(buffer_id, page, row [, query]): jumps to and highlights a line from mep.pdf_lines
+// (1-based page/row). A `query` that occurs on
+// that line becomes the pane's search, so N/P step through its other
+// occurrences (Editor::PdfGotoLine).
+int l_pdf_goto_line(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const int page = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
+    const int row = static_cast<int>(luaL_checkinteger(L, 3)) - 1;
+    const char *query = luaL_optstring(L, 4, "");
+    GetEditor(L)->PdfGotoLine(buffer_id, page, row, query);
+    return 0;
+}
+
 // mep.pdf_fit_page([buffer_id]): fits the whole page in each pane showing
 // the PDF (default: the current buffer), the `=` key's zoom -- at once, or
 // for a pane not drawn yet, once it knows its size. The Run button uses it
@@ -17272,6 +17360,11 @@ const luaL_Reg kMepFuncs[] = {
     {"pdf_outline", l_pdf_outline},
     {"a11y", l_a11y},
     {"pdf_goto_page", l_pdf_goto_page},
+    {"pdf_lines", l_pdf_lines},
+    {"html_lines", l_html_lines},
+    {"html_goto_line", l_html_goto_line},
+    {"html_search", l_html_search},
+    {"pdf_goto_line", l_pdf_goto_line},
     {"pdf_fit_page", l_pdf_fit_page},
     {"pdf_current_page", l_pdf_current_page},
     {"pdf_selection", l_pdf_selection},
@@ -17663,6 +17756,13 @@ void LuaEnv::CallRefWith2StringsAndBool(int ref, const std::string &a, const std
         if (editor_) editor_->SetStatusMessage(std::string("Lua error: ") + (msg ? msg : "?"));
         lua_pop(L_, 1);
     }
+}
+
+bool LuaEnv::HasGlobalFunction(const char *fn) {
+    lua_getglobal(L_, fn);
+    const bool is_fn = lua_isfunction(L_, -1);
+    lua_pop(L_, 1);
+    return is_fn;
 }
 
 void LuaEnv::CallGlobal2Strings(const char *fn, const std::string &a, const std::string &b) {

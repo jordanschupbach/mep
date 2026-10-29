@@ -39754,6 +39754,85 @@ const char *kBuiltinPickerSources =
     "mep.command('MepBufferSearch', mep.buffer_search)\n"
     "mep.leader_map('/', 'search', mep.buffer_search, 0xf002, 'Yellow')\n"
     "mep.map('n', '/', mep.buffer_search, {desc = 'Buffer fuzzy find (picker)'})\n"
+    // '/' in a PDF pane (Editor::HandlePdfInput calls mep_pdf_search):
+    // the same picker over the document's text lines (mep.pdf_lines), one
+    // row per visual line prefixed with its page number, previewing the
+    // lines around it on its page. Accepting jumps there and highlights
+    // it (mep.pdf_goto_line); the last query typed is handed over too, so
+    // when it is plain text on that line N/P go on to its other matches.
+    // Few lines above the match, many below: the preview shows its top,
+    // so a match with ten wrapped lines above it was off the bottom.
+    "local kPickerPreviewAbove, kPickerPreviewBelow = 3, 20\n"
+    "function mep.pdf_search()\n"
+    "  local bid = mep.current_buffer()\n"
+    "  local lines = mep.pdf_lines(bid)\n"
+    "  if not lines then return end\n"
+    "  if #lines == 0 then mep.notify('No text in this PDF', 'warn') return end\n"
+    "  local by_page = {}\n"
+    "  local items = {}\n"
+    "  for i, l in ipairs(lines) do\n"
+    "    local pg = by_page[l.page]\n"
+    "    if not pg then pg = {}; by_page[l.page] = pg end\n"
+    "    pg[l.row] = l.text\n"
+    "    items[i] = {display = string.format('p%-3d %s', l.page, l.text), data = l.page .. ':' .. l.row}\n"
+    "  end\n"
+    "  local function parse(data)\n"
+    "    local p, r = data:match('^(%d+):(%d+)$')\n"
+    "    return tonumber(p), tonumber(r)\n"
+    "  end\n"
+    "  local function show_preview(page, row)\n"
+    "    local pg = by_page[page] or {}\n"
+    "    local from, to = math.max(1, row - kPickerPreviewAbove), math.min(#pg, row + kPickerPreviewBelow)\n"
+    "    local out = {'Page ' .. page, ''}\n"
+    "    for r = from, to do\n"
+    "      out[#out + 1] = ((r == row) and '> ' or '  ') .. pg[r]\n"
+    "    end\n"
+    "    mep.picker_set_preview(table.concat(out, '\\n'))\n"
+    "  end\n"
+    "  local query = ''\n"
+    "  mep.picker_open('PDF Lines', items, function(item)\n"
+    "    if not item then return end\n"
+    "    local p, r = parse(item)\n"
+    "    if p then mep.pdf_goto_line(bid, p, r, query) end\n"
+    "  end, function(q) query = q end, nil, function(item)\n"
+    "    local p, r = parse(item or '')\n"
+    "    if p then show_preview(p, r) end\n"
+    "  end)\n"
+    "  show_preview(lines[1].page, lines[1].row)\n"
+    "end\n"
+    "function mep_pdf_search() mep.pdf_search() end\n"
+    "mep.command('MepPdfSearch', mep.pdf_search)\n"
+    // The html viewer's '/': Editor::SetHtmlLines calls this once a draw
+    // has collected the page's text lines (mep.html_search asks for that).
+    // Same picker as above; the preview is the lines around the highlighted
+    // one, and the last query typed goes to mep.html_goto_line.
+    "function mep_html_search(bid_str)\n"
+    "  local bid = tonumber(bid_str)\n"
+    "  local lines = mep.html_lines(bid)\n"
+    "  if not lines then return end\n"
+    "  if #lines == 0 then mep.notify('No text on this page', 'warn') return end\n"
+    "  local items = {}\n"
+    "  for i, l in ipairs(lines) do\n"
+    "    items[i] = {display = string.format('%4d  %s', l.row, l.text), data = tostring(l.row)}\n"
+    "  end\n"
+    "  local function show_preview(row)\n"
+    "    local from, to = math.max(1, row - kPickerPreviewAbove), math.min(#lines, row + kPickerPreviewBelow)\n"
+    "    local out = {}\n"
+    "    for r = from, to do\n"
+    "      out[#out + 1] = ((r == row) and '> ' or '  ') .. lines[r].text\n"
+    "    end\n"
+    "    mep.picker_set_preview(table.concat(out, '\\n'))\n"
+    "  end\n"
+    "  local query = ''\n"
+    "  mep.picker_open('Page Lines', items, function(item)\n"
+    "    if item then mep.html_goto_line(bid, tonumber(item), query) end\n"
+    "  end, function(q) query = q end, nil, function(item)\n"
+    "    local r = tonumber(item or '')\n"
+    "    if r then show_preview(r) end\n"
+    "  end)\n"
+    "  show_preview(1)\n"
+    "end\n"
+    "mep.command('MepHtmlSearch', function() mep.html_search() end)\n"
     // <leader>bb: every open buffer, previewing the highlighted one's
     // live contents (unsaved edits and terminals included -- read from
     // the buffer, not the file on disk) around its cursor, Treesitter-
@@ -50039,6 +50118,49 @@ HtmlLayout LayoutHtmlDoc(const HtmlDoc &doc, const HtmlLayoutCtx &ctx) {
  * @param y Y position to draw the run at.
  * @param run The run to draw (text, font size, color, and style flags).
  */
+// The page's visual lines of text, top to bottom, for the `/` picker
+// (Editor::SetHtmlLines): runs sharing a row (overlapping the first run's
+// vertical middle) are one line, read left to right, with a space where
+// the gap between two runs is wider than a sliver -- runs are words, but
+// "foo<b>bar</b>" is two runs and one word. Fixed panels are left out:
+// they do not scroll, so there is nothing to jump to.
+std::vector<HtmlTextLine> HtmlLayoutTextLines(const HtmlLayout &layout) {
+    std::vector<const HtmlRun *> runs;
+    runs.reserve(layout.runs.size());
+    for (const HtmlRun &r : layout.runs)
+        if (!r.text.empty() && r.text.find_first_not_of(" \t\n") != std::string::npos) runs.push_back(&r);
+    std::stable_sort(runs.begin(), runs.end(), [](const HtmlRun *a, const HtmlRun *b) { return a->y < b->y; });
+    std::vector<HtmlTextLine> out;
+    size_t i = 0;
+    while (i < runs.size()) {
+        const float mid = runs[i]->y + runs[i]->font_size * 0.6f;
+        size_t j = i;
+        while (j < runs.size() && runs[j]->y <= mid) ++j;
+        std::vector<const HtmlRun *> row(runs.begin() + static_cast<std::ptrdiff_t>(i), runs.begin() + static_cast<std::ptrdiff_t>(j));
+        std::stable_sort(row.begin(), row.end(), [](const HtmlRun *a, const HtmlRun *b) { return a->x < b->x; });
+        HtmlTextLine line;
+        float top = row.front()->y, bottom = top, right = row.front()->x, prev_end = 0.0f;
+        line.x = row.front()->x;
+        for (size_t k = 0; k < row.size(); ++k) {
+            const HtmlRun &r = *row[k];
+            const gfx::Font &font = r.font ? *r.font : g_font;
+            const float w = gfx::MeasureTextEx(font, r.text.c_str(), r.font_size, r.letter_spacing).x;
+            if (k > 0 && r.x - prev_end > r.font_size * 0.1f) line.text += ' ';
+            line.text += r.text;
+            prev_end = r.x + w;
+            right = std::max(right, prev_end);
+            top = std::min(top, r.y);
+            bottom = std::max(bottom, r.y + r.font_size * 1.25f);
+        }
+        line.y = top;
+        line.w = right - line.x;
+        line.h = bottom - top;
+        out.push_back(std::move(line));
+        i = j;
+    }
+    return out;
+}
+
 void DrawHtmlRun(float x, float y, const HtmlRun &run) {
     const gfx::Font &font = run.font ? *run.font : g_font;
     // Liberation has true weight/style faces; retain the old approximation
@@ -57893,6 +58015,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         g_editor.AdvanceHtmlScrollAnimation(pane.buffer_id, std::max(0.0f, layout.total_height - content_h),
                                             gfx::GetFrameTime());
         g_editor.ClampHtmlScroll(pane.buffer_id, std::max(0.0f, layout.total_height - content_h));
+        // `/` asked for this page's text lines (Editor::SetHtmlLines opens
+        // the picker over them). Only this frame's layout knows them.
+        if (g_editor.TakeHtmlLinesRequest(pane.buffer_id))
+            g_editor.SetHtmlLines(pane.buffer_id, HtmlLayoutTextLines(layout));
 
         gfx::BeginScissorMode(static_cast<int>(x), static_cast<int>(content_y), static_cast<int>(w),
                           static_cast<int>(content_h));
@@ -57901,6 +58027,23 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         float top = content_y - html_sess->scroll_y;
         bool theme = html_sess->theme_colors;
         PaintHtmlLayout(layout, ctx, x, kHtmlPad, top, content_y, content_h, theme, pane.id, pane.buffer_id, true);
+        // The `/` picker's highlighted lines (Editor::HtmlGotoLine), the
+        // same IncSearch tint the PDF viewer's matches use -- only while
+        // the page is still laid out the way it was when they were found.
+        if (!html_sess->search_lines.empty() && html_sess->search_zoom == html_sess->zoom &&
+            html_sess->search_view_w == html_sess->viewport_w) {
+            const gfx::Color mc = ResolveHlGroup("IncSearch");
+            for (size_t i = 0; i < html_sess->search_lines.size(); ++i) {
+                const int row = html_sess->search_lines[i];
+                if (row < 0 || row >= static_cast<int>(html_sess->lines.size())) continue;
+                const HtmlTextLine &l = html_sess->lines[static_cast<size_t>(row)];
+                const float ly = top + l.y;
+                if (ly + l.h < content_y || ly > content_y + content_h) continue;
+                const bool cur = static_cast<int>(i) == html_sess->search_current;
+                gfx::DrawRectangle(static_cast<int>(x + kHtmlPad + l.x), static_cast<int>(ly), static_cast<int>(l.w),
+                                   static_cast<int>(l.h), gfx::Color{mc.r, mc.g, mc.b, static_cast<unsigned char>(cur ? 110 : 55)});
+            }
+        }
         gfx::EndScissorMode();
         // Fixed panels (sidebar/top bar): painted AFTER (over) the scrolled
         // document and pinned -- their origin is the viewport edge, not the

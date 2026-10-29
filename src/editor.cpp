@@ -12099,6 +12099,11 @@ void Editor::PopulateHtmlSession(HtmlSession &sess, const std::string &origin, c
     sess.origin = origin;
     sess.source = source;
     sess.js.reset();  // the old page's runtime points into the tree being replaced
+    sess.lines.clear();
+    sess.search_lines.clear();
+    sess.search_current = -1;
+    sess.search_query.clear();
+    sess.lines_request = false;
     sess.focused_field = nullptr;
     sess.hover_node = nullptr;
     sess.doc = HtmlDoc();
@@ -12301,6 +12306,74 @@ void Editor::ScrollHtmlTo(int buffer_id, float y) {
     // actually draws, and an idle editor stops drawing partway there.
     it->second.scroll_y = std::max(0.0f, y);
     it->second.scroll_anim_target = -1.0f;
+}
+
+void Editor::RequestHtmlLines(int buffer_id) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it != htmldocs_.end()) it->second.lines_request = true;
+}
+
+bool Editor::TakeHtmlLinesRequest(int buffer_id) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end() || !it->second.lines_request) return false;
+    it->second.lines_request = false;
+    return true;
+}
+
+void Editor::SetHtmlLines(int buffer_id, std::vector<HtmlTextLine> lines) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    it->second.lines = std::move(lines);
+    it->second.search_lines.clear();
+    it->second.search_current = -1;
+    it->second.search_zoom = it->second.zoom;
+    it->second.search_view_w = it->second.viewport_w;
+    if (lua_) lua_->CallGlobal2Strings("mep_html_search", std::to_string(buffer_id), "");
+}
+
+namespace {
+std::string AsciiLower(std::string s) {
+    for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+}  // namespace
+
+void Editor::HtmlStepMatch(HtmlSession &sess, int delta) {
+    const int n = static_cast<int>(sess.search_lines.size());
+    if (n == 0) return;
+    sess.search_current = (((sess.search_current < 0 ? 0 : sess.search_current + delta) % n) + n) % n;
+    const int row = sess.search_lines[static_cast<size_t>(sess.search_current)];
+    if (row < 0 || row >= static_cast<int>(sess.lines.size())) return;
+    const HtmlTextLine &line = sess.lines[static_cast<size_t>(row)];
+    // Centre the line in the pane; the next draw's ClampHtmlScroll keeps it on the page.
+    sess.scroll_y = std::max(0.0f, line.y + line.h / 2.0f - static_cast<float>(sess.viewport_h) / 2.0f);
+    sess.scroll_anim_target = -1.0f;
+}
+
+void Editor::HtmlGotoLine(int buffer_id, int row, const std::string &query) {
+    auto it = htmldocs_.find(buffer_id);
+    if (it == htmldocs_.end()) return;
+    HtmlSession &sess = it->second;
+    if (row < 0 || row >= static_cast<int>(sess.lines.size())) return;
+    sess.search_lines.clear();
+    sess.search_current = -1;
+    sess.search_query.clear();
+    // A query that is plain text on the chosen line: every line holding it
+    // is highlighted, N/P step through them, starting on this one.
+    const std::string q = AsciiLower(query);
+    if (!q.empty() && AsciiLower(sess.lines[static_cast<size_t>(row)].text).find(q) != std::string::npos) {
+        for (size_t i = 0; i < sess.lines.size(); ++i) {
+            if (AsciiLower(sess.lines[i].text).find(q) == std::string::npos) continue;
+            if (static_cast<int>(i) == row) sess.search_current = static_cast<int>(sess.search_lines.size()) - 1;
+            sess.search_lines.push_back(static_cast<int>(i));
+        }
+        sess.search_query = query;
+    } else {
+        sess.search_lines.push_back(row);
+        sess.search_query = sess.lines[static_cast<size_t>(row)].text;
+    }
+    // HtmlStepMatch(+1) from the entry before the chosen one lands on it.
+    HtmlStepMatch(sess, 1);
 }
 
 bool Editor::NavigateHtmlHistory(int buffer_id, int direction) {
@@ -12751,6 +12824,15 @@ void Editor::HandleHtmlInput() {
                 return;
             } else if (cp == 'f') {
                 link_hint_request_ = true;
+            } else if (cp == '/') {
+                // The fuzzy line picker, as in a text buffer and a PDF. Only
+                // the draw knows where the lines are, so this asks it; the
+                // next frame opens the picker (SetHtmlLines).
+                sess->lines_request = true;
+            } else if (cp == 'N') {
+                HtmlStepMatch(*sess, 1);
+            } else if (cp == 'P') {
+                HtmlStepMatch(*sess, -1);
             }
         }
     }
@@ -12826,6 +12908,53 @@ void Editor::GotoPdfPage(int buffer_id, int page) {
         kv.second.page = clamped;
         kv.second.scroll_y = 0;
     }
+}
+
+const std::vector<std::vector<PdfTextLine>> *Editor::PdfAllLines(int buffer_id) {
+    PdfBufferState *bs = PdfBufferFor(buffer_id);
+    if (!bs || !bs->doc) return nullptr;
+    if (bs->lines_doc.lock() != bs->doc) {
+        const int n = bs->doc->PageCount();
+        bs->lines.assign(static_cast<size_t>(std::max(n, 0)), {});
+        for (int p = 0; p < n; ++p) bs->lines[static_cast<size_t>(p)] = bs->doc->PageLines(p);
+        bs->lines_doc = bs->doc;
+    }
+    return &bs->lines;
+}
+
+void Editor::PdfGotoLine(int buffer_id, int page, int row, const std::string &query) {
+    PdfSession *sess = AnyPdfSessionForBuffer(buffer_id);
+    const std::vector<std::vector<PdfTextLine>> *all = PdfAllLines(buffer_id);
+    if (!sess || !sess->doc || !all) return;
+    if (page < 0 || page >= static_cast<int>(all->size())) return;
+    const std::vector<PdfTextLine> &lines = (*all)[static_cast<size_t>(page)];
+    if (row < 0 || row >= static_cast<int>(lines.size())) {
+        GotoPdfPage(buffer_id, page);
+        return;
+    }
+    const PdfTextLine &line = lines[static_cast<size_t>(row)];
+    // A query typed into the picker that is plain text on this line: search
+    // for it document-wide so N/P keep going, and start on the occurrence
+    // inside this line (vertical centre within the line's box).
+    if (!query.empty()) {
+        RunPdfSearch(*sess, query);
+        for (size_t i = 0; i < sess->search_matches.size(); ++i) {
+            const PdfTextMatch &m = sess->search_matches[i];
+            if (m.page != page || m.rects_pt.empty()) continue;
+            const double cy = (m.rects_pt.front().top + m.rects_pt.front().bottom) / 2.0;
+            if (cy <= line.rect.top && cy >= line.rect.bottom) {
+                GotoPdfMatch(*sess, static_cast<int>(i));
+                return;
+            }
+        }
+    }
+    // Otherwise (no query, or a fuzzy one that isn't a substring): the
+    // whole line is the one highlighted match.
+    sess->search_query = line.text;
+    sess->search_matches = {PdfTextMatch{page, {line.rect}}};
+    sess->search_current = -1;
+    RecomputePdfPageHighlights(*sess);
+    GotoPdfMatch(*sess, 0);
 }
 
 std::pair<double, double> Editor::PdfPageSizePt(PdfSession &sess, int page_index) {
@@ -16023,8 +16152,16 @@ void Editor::HandlePdfInput() {
                 goto_page(page_count - 1);
             }
         } else if (cp == '/') {
+            // The same fuzzy line picker '/' opens in a text buffer
+            // (mep.pdf_search, kBuiltinPickerSources), over the document's
+            // text lines. The old in-pane prompt stays as the fallback for
+            // a build without the Lua side.
             pending_g_ = false;
             pending_count_ = 0;
+            if (lua_ && lua_->HasGlobalFunction("mep_pdf_search")) {
+                lua_->CallGlobal2Strings("mep_pdf_search", "", "");
+                return;  // mode_ is Picker now -- stop draining as this mode
+            }
             sess->search_active = true;
             sess->search_input.clear();
         } else if (!nav && !annotate && cp == 'n') {

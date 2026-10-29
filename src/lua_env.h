@@ -80,6 +80,12 @@ public:
      */
     void CallGlobal2Strings(const char *fn, const std::string &a, const std::string &b);
     /**
+     * @brief Whether a global of this name is currently a Lua function.
+     * @param fn Name of the global.
+     * @return True if it is a function.
+     */
+    bool HasGlobalFunction(const char *fn);
+    /**
      * @brief Calls a global Lua function with three string arguments, discarding its result.
      *
      * CallGlobal2Strings plus one. The PDF ask routes use it to hand over the passage, where it came

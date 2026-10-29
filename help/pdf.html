@@ -29,8 +29,17 @@ that magnification you are looking at a detail rather than reading.</p>
 <tr><td><code>mep.pdf_outline()</code></td><td>the document's outline</td></tr>
 <tr><td><code>mep.pdf_reload()</code></td><td>re-read the file</td></tr>
 <tr><td><code>mep.pdf_page_png(n)</code></td><td>a page as a PNG, base64</td></tr>
+<tr><td><code>mep.pdf_search()</code></td><td>the <code>/</code> line picker</td></tr>
+<tr><td><code>mep.pdf_lines()</code></td><td>every line, with its page</td></tr>
 <tr><td><code>mep.is_pdf_buffer(buf)</code></td><td>is this a PDF?</td></tr>
 </table>
+<h1>Searching</h1>
+<p><code>/</code> (or <code>:MepPdfSearch</code>) opens the same fuzzy picker it does in a text buffer, listing every
+line of the document with its page number and previewing the lines
+around the highlighted one. <code>Enter</code> jumps to the line and highlights it.
+When what you typed is plain text on that line, it becomes the search:
+its occurrences are highlighted and <code>N</code> / <code>P</code> step through the rest of
+them.</p>
 <h1>The outline</h1>
 <p>A PDF with bookmarks gets an outline you can navigate rather than scrolling
 -- the table of contents the author built, used as a jump list.</p>

@@ -2785,6 +2785,11 @@ struct PdfBufferState {
     // re-derives them (Editor::EnsurePdfPagesRastered) -- so an annotation
     // created in one window shows up in the other on its next frame.
     int annot_generation = 0;
+    // Every page's text lines (PdfDoc::PageLines), filled on the first `/`
+    // and reused until the document is reloaded -- `lines_doc` says which
+    // document they were read from (Editor::PdfAllLines).
+    std::weak_ptr<PdfDoc> lines_doc;
+    std::vector<std::vector<PdfTextLine>> lines;
     // True when there are unsaved annotation changes of any kind.
     bool HasUnsavedAnnots() const {
         return !pending_annots.empty() || !annot_edits.empty() || !annot_deletes.empty();
@@ -3339,6 +3344,14 @@ struct HtmlHistoryEntry {
 
 struct JsRuntime;  // js_engine.h
 
+// One visual line of a laid-out html page, as the `/` line picker lists
+// it: its words joined, and its box in page px (x from the content's left
+// edge, y in HtmlSession::scroll_y's space).
+struct HtmlTextLine {
+    std::string text;
+    float x = 0, y = 0, w = 0, h = 0;
+};
+
 struct HtmlSession {
     int buffer_id = 0;
     HtmlDoc doc;
@@ -3422,6 +3435,21 @@ struct HtmlSession {
     // The block the pointer was last over (Editor::HoverHtmlNode); only
     // compared, never dereferenced -- the page may have removed it since.
     const DomNode *hover_node = nullptr;
+    // --- `/` line picker (Editor::HandleHtmlInput, mep.html_search) ---
+    // Only DrawPane has the layout, so `/` sets lines_request and the next
+    // draw fills `lines` from that frame's runs and opens the picker
+    // (Editor::SetHtmlLines). search_lines are the highlighted lines
+    // (indices into `lines`); search_current is the one N/P is on, -1 when
+    // nothing is highlighted. All of it is cleared when the page changes.
+    bool lines_request = false;
+    std::vector<HtmlTextLine> lines;
+    std::vector<int> search_lines;
+    int search_current = -1;
+    std::string search_query;
+    // The zoom and pane width `lines` were laid out at: the highlight is
+    // only drawn while both still hold, since a relayout moves the lines.
+    float search_zoom = 1.0f;
+    int search_view_w = 0;
 };
 
 // One WYSIWYG office-document pane's state, keyed by buffer id the same
@@ -6630,6 +6658,15 @@ public:
      * GotoPdfPagePane to move just one pane (`:N`, a link click).
      */
     void GotoPdfPage(int buffer_id, int page);
+    // Every page's text lines for buffer_id's PDF, cached on its
+    // PdfBufferState; nullptr if buffer_id isn't a PDF. What the `/`
+    // picker (mep.pdf_search, kBuiltinPickerSources) lists.
+    const std::vector<std::vector<PdfTextLine>> *PdfAllLines(int buffer_id);
+    // The `/` picker's jump: shows line `row` of `page` (both 0-based) in
+    // buffer_id's PDF pane and highlights it. With a non-empty `query`
+    // that occurs on that line, the query's own matches are highlighted
+    // instead, so N/P go on to its other occurrences.
+    void PdfGotoLine(int buffer_id, int page, int row, const std::string &query);
     // Jumps a single pane's PDF view to `page` (clamped), leaving sibling
     // panes on the same document where they were -- `:N` and in-document
     // link clicks, which act on the pane they were issued in.
@@ -7104,6 +7141,19 @@ public:
      * @param y Target scroll offset in page px.
      */
     void ScrollHtmlTo(int buffer_id, float y);
+    // `/` line picker over an html page (see HtmlSession::lines_request).
+    // Asks the next draw of buffer_id's pane for its text lines.
+    void RequestHtmlLines(int buffer_id);
+    // Whether buffer_id's pane asked for its lines (clears the request).
+    bool TakeHtmlLinesRequest(int buffer_id);
+    // Stores the lines a draw built and opens the picker (mep_html_search).
+    void SetHtmlLines(int buffer_id, std::vector<HtmlTextLine> lines);
+    // The picker's jump: scrolls to line `row` (0-based) and highlights it.
+    // A non-empty `query` that occurs in it highlights every line holding
+    // the query instead, and N/P step through those.
+    void HtmlGotoLine(int buffer_id, int row, const std::string &query);
+    // N/P: the next (+1) / previous (-1) highlighted line, wrapping.
+    void HtmlStepMatch(HtmlSession &sess, int delta);
     // Re-decodes `bytes` INTO the existing PdfSession at `buffer_id` --
     // unlike OpenPdfInPlace, never creates a new buffer/session and never
     // does a dedup-by-filename lookup; a hard in-place overwrite (fresh
@@ -14170,8 +14220,9 @@ private:
     // pending_g_ -- see OpenPdfInPlace's reset of it). +/-/= zoom like
     // HandleImageInput's apply_zoom, folding drift into rendered_scale
     // (clearing the raster cache) when it leaves its settled band.
-    // Ctrl-R toggles PdfSession::theme_colors. '/' starts a text search
-    // (delegates to HandlePdfSearchInput while sess.search_active), N/P
+    // Ctrl-R toggles PdfSession::theme_colors. '/' opens the line picker
+    // (mep_pdf_search -> PdfGotoLine; the in-pane HandlePdfSearchInput
+    // prompt is only the fallback without the Lua side), N/P
     // jump to the next/previous match (GotoPdfMatch) once one exists.
     // Serves both Mode::Pdf and Mode::PdfNav (see the enum): 'n' enters
     // PdfNav, which adds count-prefixed Space/Shift-Space page jumps

@@ -106,6 +106,12 @@ struct PdfTextRow {
     std::vector<int> glyphs;
     bool display_math = false;
 };
+// One visual row as readable text plus the box around it (point space) --
+// what the `/` line picker lists and highlights (PdfDoc::PageLines).
+struct PdfTextLine {
+    std::string text;
+    PdfTextRectPt rect;
+};
 struct PdfAnnotDraw {
     int kind = 0;                        // 0 = highlight, 1 = note
     std::vector<PdfAnnotRect> rects;     // highlight: one device-px rect per quad; note: one icon rect
@@ -357,6 +363,13 @@ public:
      * @brief Returns a page's glyphs grouped into visual rows, top to bottom.
      */
     std::vector<PdfTextRow> PageTextRows(int page_index) const;
+
+    // The same rows, each as one line of text with its bounding box --
+    // rows with no readable text are left out. What the `/` picker lists.
+    /**
+     * @brief Returns a page's visual rows as text lines with their point-space boxes, top to bottom.
+     */
+    std::vector<PdfTextLine> PageLines(int page_index) const;
 
     // --- the text behind a selection (copying, quoting) ---
 

@@ -32209,6 +32209,18 @@ bool CommandTakesFileArg(const std::string &name) {
     return std::find(kFileCommands.begin(), kFileCommands.end(), name) != kFileCommands.end();
 }
 
+/**
+ * @brief Expands a leading `~` or `~/` in a command-line path to $HOME, the way a shell would.
+ * @param path The path as typed (`~user` forms are left alone).
+ * @return The expanded path, or `path` unchanged when there is nothing to expand or $HOME is unset.
+ */
+std::string ExpandCmdlineTilde(const std::string &path) {
+    if (path.empty() || path[0] != '~' || (path.size() > 1 && path[1] != '/')) return path;
+    const char *home = std::getenv("HOME");
+    if (home == nullptr || home[0] == '\0') return path;
+    return std::string(home) + path.substr(1);
+}
+
 }  // namespace
 
 // Recomputed only on Tab (unlike the Insert-mode popup, which recomputes on
@@ -32245,12 +32257,23 @@ void Editor::UpdateCmdlineCompletion() {
         size_t slash = token.find_last_of('/');
         std::string dir = (slash == std::string::npos) ? "" : token.substr(0, slash + 1);
         std::string base_prefix = (slash == std::string::npos) ? token : token.substr(slash + 1);
-        std::string list_dir = dir.empty() ? "." : dir;
+        // A bare `~` completes to `~/` so the next Tab lists the home dir.
+        if (token == "~") {
+            command_line_ += '/';
+            return;
+        }
+        // `~/...` lists $HOME but the typed `~` stays in the command line
+        // (ExecuteCommandLine expands it when the command runs).
+        std::string list_dir = dir.empty() ? "." : ExpandCmdlineTilde(dir);
 
         std::vector<DirEntry> entries = ListDirectory(list_dir);
-        // Drop entries whose name doesn't start with the already-typed prefix.
+        // Drop entries whose name doesn't start with the already-typed
+        // prefix, and dotfiles unless the prefix itself starts with '.'
+        // (shell/vim behaviour -- otherwise .git & co. crowd the list).
+        const bool want_hidden = !base_prefix.empty() && base_prefix[0] == '.';
         entries.erase(std::remove_if(entries.begin(), entries.end(),
                                       [&](const DirEntry &e) {
+                                          if (!want_hidden && !e.name.empty() && e.name[0] == '.') return true;
                                           return e.name.compare(0, base_prefix.size(), base_prefix) != 0;
                                       }),
                       entries.end());
@@ -34787,6 +34810,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
     size_t sp = cmd.find(' ');
     std::string name = (sp == std::string::npos) ? cmd : cmd.substr(0, sp);
     std::string args = (sp == std::string::npos) ? "" : cmd.substr(sp + 1);
+    // `:e ~/notes.org` means the home dir, not a literal "~" directory.
+    if (CommandTakesFileArg(name)) args = ExpandCmdlineTilde(args);
 
     if (name == "w" || name == "write" || name == "w!" || name == "write!") {
         // The bang is SaveBuffer's staleness override: "yes, I know the file

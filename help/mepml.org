@@ -1775,13 +1775,34 @@ mep-mepml build notes.mepml                # what the editor's export does: the
                                            # //? Export: format (html by default)
                                            # into the build directory, then Post:
 mep-mepml build notes.mepml org md html    # several formats, Post: once after all
+mep-mepml build notes.mepml md -d out/     # into out/ instead of the build directory
+mep-mepml run notes.mepml                  # run every code block, as C-c C-c does
+mep-mepml build --run notes.mepml pdf      # run the blocks, then export
+mep-mepml convert --run notes.mepml ~/x.md # the same, to one file anywhere
 #+end_src
 
 =convert= writes the file it is given (and copies the pictures it names
 beside it, as above) and runs nothing after;
 =build= is the editor's export with the document's =Build:= and =Post:=
-honoured, so a =just= recipe or a Makefile builds a document the way the
-play button does.
+honoured (=-d DIR= writes into =DIR= instead, =--no-post= skips =Post:=),
+so a =just= recipe or a Makefile builds a document the way the play button
+does. Paths may be relative to any directory, and options may come before
+or after them.
+
+=run= (and =--run= on =convert= or =build=) runs the code blocks with no
+window: =mep --run-mepml=, the editor's own runner, so a block runs with the
+same languages, =flags=, =file== figures and result formats as =C-c C-c= on
+it, in the document's directory, top to bottom. The results are written into
+the document, which is only rewritten when they changed (and not at all if it
+was edited meanwhile). Each block's outcome -- finished, failed (with its
+errors) or skipped (=eval="no"=, or a terminal, window or web block, which
+need the editor) -- is printed, and the exit status is 1 when one failed. A
+failed block keeps its previous results unless =--write-errors= is given.
+=--timeout SECONDS= stops a block that runs too long, =--report FILE.json=
+writes every block's outcome, =-o OUT= (with =run=) writes the run document
+elsewhere, =-q= reports only failures. With =--run=, the export is written
+even when a block failed. =mep-mepml= finds =mep= beside itself, or through
+=$MEP_EXECUTABLE= or =--mep PATH=.
 
 and Lua functions: =mep.mepml_export(path)= writes the current buffer in
 the format =path= names, =mep.mepml_export_as(fmt)= also does PDF, and

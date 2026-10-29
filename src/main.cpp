@@ -73,6 +73,7 @@
 #include <optional>
 #include <string_view>
 #include <sstream>
+#include <chrono>
 #include <string>
 #include <sys/stat.h>
 #include <system_error>
@@ -30268,50 +30269,65 @@ const char *kBuiltinMepml =
     "  local html = (t:sub(1, 9) == '<!doctype' or t:sub(1, 5) == '<html') and t:sub(-7) == '</html>'\n"
     "  return (svg or html) and doc or text\n"
     "end\n"
-    "local function mep_mepml_run_block(row, on_done)\n"
+    // `on_done(status)` says how the run went, for a caller that keeps
+    // count (mep --run-mepml): status.status is 'ok', 'failed' or
+    // 'skipped', status.reason why when it is not ok. `opts` (optional):
+    // headless = true skips the blocks that only make sense in a window
+    // (terminal, gui, web) instead of starting them; keep_failed = true
+    // leaves a failed block's old results in place rather than writing its
+    // errors over them.
+    "local function mep_mepml_run_block(row, on_done, opts)\n"
     "  on_done = on_done or function() end\n"
+    "  opts = opts or {}\n"
+    "  local function skip(why) on_done({status = 'skipped', reason = why}) end\n"
     "  local blk = mep.mepml_block_at(row)\n"
-    "  if not blk then mep.notify('Not in a mepml code block', 'warn') on_done() return end\n"
+    "  if not blk then mep.notify('Not in a mepml code block', 'warn') skip('not in a code block') return end\n"
     "  if mep_mepml_falsy(blk.options.eval) then\n"
     "    mep.notify('This block has eval=' .. tostring(blk.options.eval) .. '; not running it', 'warn')\n"
-    "    on_done()\n"
+    "    skip('eval=' .. tostring(blk.options.eval))\n"
     "    return\n"
     "  end\n"
     "  local lang = (blk.lang or ''):lower()\n"
-    "  if lang == '' then mep.notify('The code block has no language (```{lang} ...)', 'warn') on_done() return end\n"
+    "  if lang == '' then mep.notify('The code block has no language (```{lang} ...)', 'warn') skip('no language') return end\n"
     "  -- An exec block (or a shell block with results=terminal) runs as a\n"
     "  -- program in a terminal inside its results, not as a batch job.\n"
     "  local res = tostring(blk.options.results or blk.options.output or ''):lower()\n"
+    "  local interactive = res == 'web' or res == 'app' or lang == 'exec-gui' or lang == 'gui' or lang == 'exec'\n"
+    "    or lang == 'executable' or res == 'terminal' or res == 'exec' or res == 'exec-gui'\n"
+    "  if interactive and opts.headless then skip('results=' .. (res ~= '' and res or lang) .. ' runs only in the editor') return end\n"
     "  -- results=web: what the block makes is a web page -- an html block is\n"
     "  -- the page, any other block a program serving one (a Shiny app ...).\n"
     "  if res == 'web' or res == 'app' then mep_mepml_run_web(blk, lang, on_done) return end\n"
     "  -- An exec-gui block's program opens a window, shown inside its results.\n"
     "  if lang == 'exec-gui' or lang == 'gui' then\n"
     "    mep.mepml_gui_start(mep.current_buffer(), blk.fence_row)\n"
-    "    on_done()\n"
+    "    on_done({status = 'ok'})\n"
     "    return\n"
     "  end\n"
     "  if lang == 'exec' or lang == 'executable' or res == 'terminal' then\n"
     "    mep.mepml_terminal_start(mep.current_buffer(), blk.fence_row)\n"
-    "    on_done()\n"
+    "    on_done({status = 'ok'})\n"
     "    return\n"
     "  end\n"
     "  local buf = mep.current_buffer()\n"
-    "  local function finish(text)\n"
+    "  -- `failure`: why the run failed, or nil when it did not.\n"
+    "  local function finish(text, failure)\n"
+    "    if failure and opts.keep_failed then on_done({status = 'failed', reason = failure, output = text}) return end\n"
     "    if not mep.mepml_splice_results(buf, blk.fence_row, blk.code, text) then\n"
     "      mep.notify('mepml: the block changed while it ran; results discarded', 'warn')\n"
+    "      failure = failure or 'the block changed while it ran; results discarded'\n"
     "    end\n"
-    "    on_done()\n"
+    "    on_done({status = failure and 'failed' or 'ok', reason = failure, output = failure and text or nil})\n"
     "  end\n"
     "  if lang == 'mep-lua' then\n"
     "    local chunk, err = load(blk.code, '=mep-lua block', 't')\n"
-    "    if not chunk then finish('compile error: ' .. tostring(err)) return end\n"
+    "    if not chunk then finish('compile error: ' .. tostring(err), 'compile error') return end\n"
     "    local r = table.pack(pcall(chunk))\n"
     "    local out = {}\n"
     "    if not r[1] then out[1] = 'error: ' .. tostring(r[2]) else\n"
     "      for i = 2, r.n do out[#out + 1] = tostring(r[i]) end\n"
     "    end\n"
-    "    finish(table.concat(out, '\\n'))\n"
+    "    finish(table.concat(out, '\\n'), not r[1] and 'error' or nil)\n"
     "    return\n"
     "  end\n"
     "  -- Header options become babel header args, so every babel language\n"
@@ -30320,7 +30336,11 @@ const char *kBuiltinMepml =
     "  for _, o in ipairs(blk.option_list) do args[#args + 1] = ':' .. o.name .. ' ' .. o.value end\n"
     "  local args_str = table.concat(args, ' ')\n"
     "  local lang_def, exe = mep_org_babel_resolve_lang(lang, args_str)\n"
-    "  if not lang_def then mep.notify('mepml: ' .. tostring(exe), 'warn') on_done() return end\n"
+    "  if not lang_def then\n"
+    "    mep.notify('mepml: ' .. tostring(exe), 'warn')\n"
+    "    on_done({status = 'failed', reason = tostring(exe)})\n"
+    "    return\n"
+    "  end\n"
     "  -- results=exec: the block is a program in its language -- written out,\n"
     "  -- and compiled when the language is, the way babel runs it -- that then\n"
     "  -- runs in a terminal inside its results, like an exec block (with\n"
@@ -30332,7 +30352,7 @@ const char *kBuiltinMepml =
     "    mep_org_babel_prepare_exec(lang_def, exe, script, args_str, mep_mepml_dir(mep.filename()), function(argv, extra, stage)\n"
     "      if not argv then\n"
     "        mep.notify('mepml: ' .. tostring(stage or 'build') .. ' failed', 'warn')\n"
-    "        finish(table.concat(extra or {}, '\\n'))\n"
+    "        finish(table.concat(extra or {}, '\\n'), tostring(stage or 'build') .. ' failed')\n"
     "        return\n"
     "      end\n"
     "      if res == 'exec-gui' then\n"
@@ -30340,7 +30360,7 @@ const char *kBuiltinMepml =
     "      else\n"
     "        mep.mepml_terminal_start(buf, blk.fence_row, argv, extra)\n"
     "      end\n"
-    "      on_done()\n"
+    "      on_done({status = 'ok'})\n"
     "    end)\n"
     "    return\n"
     "  end\n"
@@ -30403,7 +30423,9 @@ const char *kBuiltinMepml =
     "    end\n"
     "    local text = table.concat(out, '\\n')\n"
     "    if lang == 'r' and code == 0 then text = mep_mepml_r_printed_document(text) end\n"
+    "    local failure = nil\n"
     "    if code ~= 0 then\n"
+    "      failure = tostring(verb or 'run') .. ' exited with ' .. tostring(code)\n"
     "      local e = table.concat(err or {}, '\\n')\n"
     "      if e ~= '' then text = text .. (text ~= '' and '\\n' or '') .. e end\n"
     "      mep.notify('mepml: ' .. tostring(verb or 'run') .. ' exited with ' .. tostring(code), 'warn')\n"
@@ -30417,15 +30439,17 @@ const char *kBuiltinMepml =
     "        text = text .. (text ~= '' and '\\n' or '') .. (video and '\\\\video(' or '\\\\image(') .. fig .. ')'\n"
     "      else\n"
     "        mep.notify('mepml: ' .. why, 'warn')\n"
+    "        failure = failure or why\n"
     "      end\n"
     "    end\n"
-    "    finish(text)\n"
+    "    finish(text, failure)\n"
     "  end, dir, env)\n"
     "end\n"
     "function mep.mepml_execute() mep_mepml_run_block((mep.cursor())) end\n"
     // The block at 1-based `row` of the current buffer (a presentation runs
     // the document's block for the slide's, Editor::MepmlPresentRunBlocks).
-    "function mep.mepml_run_block_at(row) mep_mepml_run_block(row) end\n"
+    // (`on_done` and `opts` as mep_mepml_run_block takes them; mep --run-mepml passes both.)
+    "function mep.mepml_run_block_at(row, on_done, opts) mep_mepml_run_block(row, on_done, opts) end\n"
     "mep.command('MepmlExecute', mep.mepml_execute)\n"
     // A \video on (or near) the cursor's row plays or pauses, as a click
     // on its picture does.
@@ -70047,6 +70071,389 @@ int RunHeadlessLua(const std::string &path) {
 }
 #endif
 
+#if !defined(__EMSCRIPTEN__)
+extern "C" {
+#include "lauxlib.h"
+#include "lua.h"
+}
+
+namespace {
+
+// `mep --run-mepml`'s Lua side. It drives the editor's own block runner
+// (kBuiltinMepml's mep_mepml_run_block, the C-c C-c path) over every block
+// of the current buffer in turn, and keeps a record of how each went in
+// mep_mepml_headless (done, started, the per-block results, and the run
+// as JSON once done). The C++ loop pumps the jobs and watches the clock.
+const char *kHeadlessMepmlDriver = R"LUA(
+local H = {done = true, jobs = {}}
+mep_mepml_headless = H
+local function now() return mep_mepml_headless_clock or os.time() end
+-- Every job a block starts, so a timed-out block's can be killed.
+local real_job_start = mep.job_start
+mep.job_start = function(argv, o)
+  local id = real_job_start(argv, o)
+  if id then H.jobs[#H.jobs + 1] = id end
+  return id
+end
+-- No status line here: notices go to stderr with --verbose, else nowhere
+-- (each block's outcome is reported on its own below).
+mep.notify = function(msg) if H.opts and H.opts.verbose then io.stderr:write('    ', tostring(msg), '\n') end end
+local function json_str(s)
+  s = tostring(s or '')
+  s = s:gsub('[%c"\\]', function(c)
+    local named = {['"'] = '\\"', ['\\'] = '\\\\', ['\n'] = '\\n', ['\r'] = '\\r', ['\t'] = '\\t'}
+    return named[c] or string.format('\\u%04x', c:byte())
+  end)
+  return '"' .. s .. '"'
+end
+-- The last `n` lines of `text`, for a failure's report.
+local function tail(text, n)
+  local lines = {}
+  for l in (tostring(text or '') .. '\n'):gmatch('(.-)\n') do
+    -- (Not the earlier run's figure line the runner appends.)
+    if not l:match('^\\image%(') and not l:match('^\\video%(') then lines[#lines + 1] = l end
+  end
+  while #lines > 0 and lines[#lines] == '' do lines[#lines] = nil end
+  local first = math.max(1, #lines - n + 1)
+  return table.concat(lines, '\n', first), first > 1
+end
+local function to_json()
+  local parts = {}
+  for _, r in ipairs(H.results) do
+    parts[#parts + 1] = string.format(
+      '{"index": %d, "line": %d, "lang": %s, "status": %s, "reason": %s, "seconds": %.3f, "output": %s}',
+      r.index, r.line, json_str(r.lang), json_str(r.status), json_str(r.reason), r.seconds, json_str(r.output))
+  end
+  return '[' .. table.concat(parts, ', ') .. ']'
+end
+function mep_mepml_headless_start(opts)
+  H.opts, H.done, H.results, H.index, H.failed, H.skipped, H.json = opts, false, {}, 0, 0, 0, '[]'
+  H.token = (H.token or 0) + 1
+  local name = opts.name or mep.filename()
+  local total = #mep.mepml_code_blocks()
+  if not opts.quiet then io.stderr:write(string.format('%s: %d code block%s\n', name, total, total == 1 and '' or 's')) end
+  local function record(st)
+    local b = H.current
+    st = st or {status = 'ok'}
+    if H.timed_out then st = {status = 'failed', reason = string.format('timed out after %g s', opts.timeout), output = st.output} end
+    local out, cut = '', false
+    if st.status == 'failed' then out, cut = tail(st.output, 40) end
+    local r = {index = H.index, line = b.first - 1, lang = b.lang, status = st.status, reason = st.reason or '',
+               seconds = now() - H.started, output = out}
+    H.results[#H.results + 1] = r
+    if r.status == 'failed' then H.failed = H.failed + 1 elseif r.status == 'skipped' then H.skipped = H.skipped + 1 end
+    if not opts.quiet or r.status == 'failed' then
+      io.stderr:write(string.format('  [%d/%d] %s:%d %s %s%s (%.1f s)\n', r.index, total, name, r.line, r.lang,
+        r.status, r.reason ~= '' and (': ' .. r.reason) or '', r.seconds))
+      if r.status == 'failed' and out ~= '' then
+        if cut then io.stderr:write('      ...\n') end
+        io.stderr:write('      ', (out:gsub('\n', '\n      ')), '\n')
+      end
+    end
+  end
+  local next_block
+  -- A block's completion counts once, and only while it is the current
+  -- block (the watchdog may have given up on it already).
+  local function finisher()
+    local tok = H.token
+    return function(st)
+      if tok ~= H.token then return end
+      H.token = H.token + 1
+      record(st)
+      next_block()
+    end
+  end
+  next_block = function()
+    H.index = H.index + 1
+    local list = mep.mepml_code_blocks()
+    if H.index > #list then
+      H.json = to_json()
+      H.done = true
+      return
+    end
+    H.current, H.started, H.jobs, H.timed_out, H.idle_since = list[H.index], now(), {}, false, nil
+    local done = finisher()
+    H.give_up = done
+    local ok, err = xpcall(mep.mepml_run_block_at, debug.traceback, H.current.first, done,
+                           {headless = true, keep_failed = not opts.write_errors})
+    if not ok then done({status = 'failed', reason = 'runner error', output = tostring(err)}) end
+  end
+  next_block()
+end
+function mep_mepml_headless_timeout()
+  H.timed_out = true
+  for _, id in ipairs(H.jobs) do pcall(mep.job_kill, id) end
+end
+-- Called by the C++ loop now and then: a block with no job running for a
+-- while that has not finished was stranded (a Lua error in a callback):
+-- count it as failed and go on.
+function mep_mepml_headless_watch()
+  if H.done then return end
+  for _, id in ipairs(H.jobs) do
+    if mep.job_is_running(id) then H.idle_since = nil return end
+  end
+  H.idle_since = H.idle_since or now()
+  if now() - H.idle_since > 10 and H.give_up then
+    H.give_up({status = 'failed', reason = 'the runner stopped without finishing the block (see -v)'})
+  end
+end
+)LUA";
+
+// A field of a global table of the Lua state, as a number/bool/string (0, false, "" when absent).
+double HeadlessLuaNumber(lua_State *L, const char *table, const char *field) {
+    lua_getglobal(L, table);
+    lua_getfield(L, -1, field);
+    const double v = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0.0;
+    lua_pop(L, 2);
+    return v;
+}
+bool HeadlessLuaBool(lua_State *L, const char *table, const char *field) {
+    lua_getglobal(L, table);
+    lua_getfield(L, -1, field);
+    const bool v = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 2);
+    return v;
+}
+std::string HeadlessLuaString(lua_State *L, const char *table, const char *field) {
+    lua_getglobal(L, table);
+    lua_getfield(L, -1, field);
+    size_t n = 0;
+    const char *s = lua_isstring(L, -1) ? lua_tolstring(L, -1, &n) : nullptr;
+    std::string v = s ? std::string(s, n) : std::string();
+    lua_pop(L, 2);
+    return v;
+}
+
+// `s` as a quoted literal: JSON (`json`) or Lua; both escape the same way here.
+std::string HeadlessQuote(const std::string &s) {
+    std::string out = "\"";
+    for (const char c : s) {
+        if (c == '\\' || c == '"') out += '\\';
+        if (c == '\n') out += "\\n";
+        else out += c;
+    }
+    return out + "\"";
+}
+
+bool HeadlessReadText(const std::string &p, std::string *out) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    *out = ss.str();
+    return true;
+}
+
+}  // namespace
+
+/**
+ * @brief Runs every code block of one or more .mepml documents with no window, writing their results, as C-c C-c does.
+ * @param args The arguments after `--run-mepml`: options, then the files.
+ * @return 0 when every block ran (or was skipped on purpose), 1 when one failed or a file could not be run, 2 on a usage error.
+ *
+ * Backs `mep --run-mepml [options] FILE.mepml...` (and `mep-mepml run`,
+ * which calls it): the headless "run every block" that lets a document's
+ * results be regenerated by a build or CI. Each block goes through the
+ * editor's own runner -- the same language table, compile flags, figure
+ * capture (file=) and result formats as pressing C-c C-c on it -- in the
+ * document's directory, one after another, top to bottom.
+ *
+ * Unlike the editor, a block that fails keeps its previous results unless
+ * --write-errors is given (a build should not overwrite good results with
+ * a transient error), and blocks that need a window (results=terminal,
+ * exec, gui, web) are skipped. Each block's outcome is printed to stderr,
+ * and --report writes them all as JSON. The document is only rewritten
+ * when its results changed.
+ */
+int RunHeadlessMepml(const std::vector<std::string> &args) {
+    auto usage = [](FILE *to) {
+        std::fprintf(to,
+                     "usage: mep --run-mepml [options] FILE.mepml...\n"
+                     "  runs every code block of each document, as C-c C-c does, and writes the\n"
+                     "  results into it (or into -o OUT); exits 1 if any block failed\n"
+                     "  -o, --output OUT     write the run document here, not over FILE (one FILE only;\n"
+                     "                       the blocks still run in FILE's directory)\n"
+                     "  --report FILE.json   each block's outcome (status, reason, time, error output)\n"
+                     "  --timeout SECONDS    stop a block that runs longer and count it as failed\n"
+                     "  --write-errors       write a failed block's errors as its results, as the editor\n"
+                     "                       does (default: keep its previous results)\n"
+                     "  -q, --quiet          report only failures\n"
+                     "  -v, --verbose        also show the runner's notices\n");
+        return to == stdout ? 0 : 2;
+    };
+    std::vector<std::string> files;
+    std::string output, report;
+    double timeout = 0;
+    bool write_errors = false, quiet = false, verbose = false;
+    for (size_t i = 0; i < args.size(); ++i) {
+        const std::string &a = args[i];
+        auto value = [&](std::string *out) {
+            if (i + 1 >= args.size()) return false;
+            *out = args[++i];
+            return true;
+        };
+        std::string v;
+        if (a == "-o" || a == "--output") {
+            if (!value(&output)) return usage(stderr);
+        } else if (a == "--report") {
+            if (!value(&report)) return usage(stderr);
+        } else if (a == "--timeout") {
+            if (!value(&v)) return usage(stderr);
+            char *end = nullptr;
+            timeout = std::strtod(v.c_str(), &end);
+            if (end == v.c_str() || *end || timeout < 0) return usage(stderr);
+        } else if (a == "--write-errors") {
+            write_errors = true;
+        } else if (a == "-q" || a == "--quiet") {
+            quiet = true;
+        } else if (a == "-v" || a == "--verbose") {
+            verbose = true;
+        } else if (a == "-h" || a == "--help") {
+            return usage(stdout);
+        } else if (a.size() > 1 && a[0] == '-') {
+            std::fprintf(stderr, "mep --run-mepml: unknown option %s\n", a.c_str());
+            return usage(stderr);
+        } else {
+            files.push_back(a);
+        }
+    }
+    if (files.empty() || (!output.empty() && files.size() != 1)) return usage(stderr);
+
+    // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) -- process-lifetime
+    // singleton, exactly as main()'s own LuaEnv is; this process exits below.
+    LuaEnv *lua = new LuaEnv(&g_editor);
+    g_editor.SetLuaEnv(lua);
+    // The runner and what it stands on: babel's language table and its
+    // extensions, the org helpers babel calls, and the mepml chunk. Their
+    // render/frame hooks are registered but never fire -- nothing here
+    // draws a frame.
+    const std::string babel = std::string(kBuiltinOrgBabel) + kBuiltinOrgBabelRun;
+    for (const char *chunk : {kBuiltinEditHooks, kBuiltinSyntax, kBuiltinOrg, kBuiltinOrgLinks, kBuiltinOrgImages,
+                              babel.c_str(), kBuiltinOrgPolyglot, kBuiltinOrgBabelSqlTex, kBuiltinOrgBabelMaxima,
+                              kBuiltinOrgBabelGap, kBuiltinMepml, kHeadlessMepmlDriver}) {
+        if (!lua->DoString(chunk)) {
+            std::fprintf(stderr, "mep --run-mepml: could not load the block runner\n");
+            return 1;
+        }
+    }
+    lua_State *L = lua->State();
+    const auto t0 = std::chrono::steady_clock::now();
+    auto clock = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
+    auto set_clock = [&] {
+        lua_pushnumber(L, clock());
+        lua_setglobal(L, "mep_mepml_headless_clock");
+    };
+
+    int failed_blocks = 0, failed_files = 0, ran = 0, skipped = 0;
+    std::string json = "{\"files\": [";
+    for (size_t f = 0; f < files.size(); ++f) {
+        std::error_code ec;
+        const std::filesystem::path path = std::filesystem::absolute(files[f], ec).lexically_normal();
+        const std::string target =
+            output.empty() ? path.string() : std::filesystem::absolute(output, ec).lexically_normal().string();
+        std::string file_json = std::string(f ? ", " : "") + "{\"file\": " + HeadlessQuote(path.string());
+        std::string original;
+        if (!std::filesystem::is_regular_file(path, ec) || !HeadlessReadText(path.string(), &original)) {
+            std::fprintf(stderr, "mep --run-mepml: cannot read %s\n", files[f].c_str());
+            ++failed_files;
+            json += file_json + ", \"error\": \"cannot read the file\", \"blocks\": []}";
+            continue;
+        }
+        g_editor.LoadFile(path.string());
+        set_clock();
+        const std::string start = "local ok, err = pcall(mep_mepml_headless_start, {name = " + HeadlessQuote(files[f]) +
+                                  ", timeout = " + std::to_string(timeout) +
+                                  ", write_errors = " + (write_errors ? "true" : "false") +
+                                  ", quiet = " + (quiet ? "true" : "false") +
+                                  ", verbose = " + (verbose ? "true" : "false") + "})\n" +
+                                  "if not ok then io.stderr:write('mep --run-mepml: ' .. tostring(err) .. '\\n') "
+                                  "error('run failed', 0) end";
+        bool aborted = !lua->DoString(start);
+        long polls = 0;
+        // Pump the blocks' jobs until the last one is in. A block that will
+        // not stop when killed (past its timeout and a grace period) ends the
+        // document's run.
+        while (!aborted && !HeadlessLuaBool(L, "mep_mepml_headless", "done")) {
+            set_clock();
+            JobManager::Instance().PollAll();
+            if (++polls % 100 == 0) lua->DoString("mep_mepml_headless_watch()");
+            const double age = clock() - HeadlessLuaNumber(L, "mep_mepml_headless", "started");
+            if (timeout > 0 && age > timeout && !HeadlessLuaBool(L, "mep_mepml_headless", "timed_out"))
+                lua->DoString("mep_mepml_headless_timeout()");
+            if (timeout > 0 && age > timeout + 30) {
+                std::fprintf(stderr, "mep --run-mepml: %s: a block would not stop; giving up on the document\n",
+                             files[f].c_str());
+                aborted = true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        const int failed = static_cast<int>(HeadlessLuaNumber(L, "mep_mepml_headless", "failed"));
+        const int skip = static_cast<int>(HeadlessLuaNumber(L, "mep_mepml_headless", "skipped"));
+        const int done = static_cast<int>(HeadlessLuaNumber(L, "mep_mepml_headless", "index")) - 1;
+        failed_blocks += failed;
+        skipped += skip;
+        ran += std::max(0, done - skip - failed);
+        if (aborted) {
+            ++failed_files;
+            json += file_json + ", \"error\": \"the run did not finish\", \"blocks\": []}";
+            continue;
+        }
+        // Save through the editor (`:w!`, which puts include= blocks' code
+        // back in their files), to a scratch file first, so a document whose
+        // results did not change is not touched.
+        const std::string scratch = target + ".mep-run.tmp";
+        g_editor.RunCommand("w! " + scratch);
+        std::string after, file_error;
+        bool written = false;
+        if (!HeadlessReadText(scratch, &after)) {
+            std::fprintf(stderr, "mep --run-mepml: could not write %s\n", target.c_str());
+            ++failed_files;
+        } else if (std::string now; target == path.string() && after != original &&
+                   (!HeadlessReadText(target, &now) || now != original)) {
+            // Edited (or removed) while its blocks ran: the edit wins, and
+            // this run's results are not written.
+            std::fprintf(stderr, "mep --run-mepml: %s changed on disk while its blocks ran; results not written\n",
+                         files[f].c_str());
+            ++failed_files;
+            file_error = "changed on disk while its blocks ran; results not written";
+        } else if (after != original || target != path.string()) {
+            std::filesystem::rename(scratch, target, ec);
+            written = !ec;
+            if (ec) {
+                std::fprintf(stderr, "mep --run-mepml: could not write %s: %s\n", target.c_str(), ec.message().c_str());
+                ++failed_files;
+            }
+        }
+        std::filesystem::remove(scratch, ec);
+        if (!file_error.empty()) file_json += ", \"error\": " + HeadlessQuote(file_error);
+        json += file_json + ", \"output\": " + HeadlessQuote(target) + ", \"written\": " + (written ? "true" : "false") +
+                ", \"failed\": " + std::to_string(failed) + ", \"skipped\": " + std::to_string(skip) +
+                ", \"blocks\": " + HeadlessLuaString(L, "mep_mepml_headless", "json") + "}";
+        if (file_error.empty() && (!quiet || failed)) {
+            const std::string what = failed ? std::to_string(failed) + " block(s) failed" : "all blocks finished";
+            std::fprintf(stderr, "%s: %s%s\n", files[f].c_str(), what.c_str(),
+                         written ? (", wrote " + target).c_str() : ", unchanged");
+        }
+    }
+    char seconds[32];
+    std::snprintf(seconds, sizeof(seconds), "%.3f", clock());
+    json += std::string("], \"ok\": ") + (failed_blocks || failed_files ? "false" : "true") +
+            ", \"ran\": " + std::to_string(ran) + ", \"failed\": " + std::to_string(failed_blocks) +
+            ", \"skipped\": " + std::to_string(skipped) + ", \"seconds\": " + seconds + "}\n";
+    if (!report.empty()) {
+        std::ofstream o(report);
+        o << json;
+        if (!o) {
+            std::fprintf(stderr, "mep --run-mepml: could not write %s\n", report.c_str());
+            return 1;
+        }
+    }
+    if (files.size() > 1 && !quiet)
+        std::fprintf(stderr, "%d block(s) ran, %d failed, %d skipped\n", ran, failed_blocks, skipped);
+    return failed_blocks || failed_files ? 1 : 0;
+}
+#endif
+
 int main(int argc, char **argv) {
     // Installs the in-house GLFW/OpenGL gfx:: backend -- must run before
     // any other gfx:: call in this process (including on the background
@@ -70061,6 +70468,10 @@ int main(int argc, char **argv) {
     // file-in/file-out conversion, so it must branch off ahead of the
     // window, the font bakes and the session restore, none of which it
     // wants and the first of which would fail outright with no display.
+    // --run-mepml takes everything after it (options and files).
+    for (int i = 1; i < argc; i++) {
+        if (std::string(argv[i]) == "--run-mepml") return RunHeadlessMepml(std::vector<std::string>(argv + i + 1, argv + argc));
+    }
     for (int i = 1; i + 2 < argc; i++) {
         if (std::string(argv[i]) == "--export-org") {
             return RunHeadlessOrgExport(argv[i + 1], argv[i + 2]);
@@ -70374,12 +70785,15 @@ int main(int argc, char **argv) {
         } else if (a == "-h" || a == "--help") {
             std::printf("usage: mep [--project <dir>] [--no-session] [file]\n"
                         "       mep --export-org <in.org> <out.html>\n"
+                        "       mep --run-mepml [options] <file.mepml>...\n"
                         "  --project <dir>  open <dir> as the project (default: the current directory;\n"
                         "                   $MEP_PROJECT is honoured too)\n"
                         "  --no-session     neither restore nor save the project's workspaces/tabs,\n"
                         "                   nor the window size and zoom\n"
                         "  --export-org     render one Org file to standalone HTML and exit, with no\n"
-                        "                   window (what `just help` runs over help/*.org)\n");
+                        "                   window (what `just help` runs over help/*.org)\n"
+                        "  --run-mepml      run every code block of mepml documents, as C-c C-c does,\n"
+                        "                   with no window, and write their results (--run-mepml -h)\n");
             return 0;
         } else if (file_arg.empty()) {
             file_arg = a;

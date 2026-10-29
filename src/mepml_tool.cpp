@@ -16,6 +16,15 @@
 // (mepml_convert.h, ExportOptions); --no-notice leaves it out, as does
 // `//? Notice: no` in the document.
 //
+// `run` runs every code block of the documents and writes their results
+// into them, as the editor's C-c C-c does, with no window: it is `mep
+// --run-mepml` (main.cpp, RunHeadlessMepml), which holds the editor's block
+// runner, and is found beside this binary ($MEP_EXECUTABLE or --mep PATH
+// otherwise). `convert --run` and `build --run` run the blocks first and
+// then export, so a document compiles from any directory to any format in
+// one command; the export is written even when a block failed (the block
+// keeps its previous results), and the exit status is then 1.
+//
 // `build` is what the editor's export does: each FORMAT (the header's
 // `//? Export:`, else html, when none is given) is written into the
 // document's build directory (`build` beside it, or its `//? Build:`),
@@ -23,6 +32,7 @@
 // document's directory, with MEP_SOURCE, MEP_BUILD and MEP_OUT set
 // (mepml_convert.h, PostEnvironment).
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -30,6 +40,9 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "a11y_file.h"
 #include "mepml_convert.h"
@@ -190,13 +203,56 @@ int Inspect(int argc, char **argv) {
     return 0;
 }
 
+// The mep that runs code blocks: --mep, else $MEP_EXECUTABLE, else the
+// `mep` beside this binary, else whatever `mep` is on PATH.
+std::string g_mep;
+std::string MepExecutable() {
+    if (!g_mep.empty()) return g_mep;
+    if (const char *e = std::getenv("MEP_EXECUTABLE"); e && *e) return e;
+    std::error_code ec;
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec) {
+        const std::filesystem::path sibling = self.parent_path() / "mep";
+        if (std::filesystem::exists(sibling, ec)) return sibling.string();
+    }
+    return "mep";
+}
+
+// `mep --run-mepml ARGS...`, waited for. Its exit status (127 when it
+// could not be started).
+int RunBlocks(const std::vector<std::string> &args) {
+    std::vector<std::string> argv = {MepExecutable(), "--run-mepml"};
+    argv.insert(argv.end(), args.begin(), args.end());
+    std::vector<char *> c;
+    for (std::string &a : argv) c.push_back(a.data());
+    c.push_back(nullptr);
+    std::fflush(stdout);
+    std::fflush(stderr);
+    const pid_t pid = fork();
+    if (pid < 0) return 127;
+    if (pid == 0) {
+        execvp(c[0], c.data());
+        std::fprintf(stderr, "mep-mepml: cannot run %s (set $MEP_EXECUTABLE or pass --mep PATH)\n", c[0]);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return 127;
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}
+
 int Usage() {
     std::fprintf(stderr,
-                 "usage: mep-mepml convert [--beamer] [--no-notice] [TEX OPTIONS] IN OUT\n"
-                 "       mep-mepml build [--beamer] [--no-notice] [TEX OPTIONS] IN.mepml [FORMAT...]\n"
+                 "usage: mep-mepml convert [--run [RUN OPTIONS]] [--beamer] [--no-notice] [TEX OPTIONS] IN OUT\n"
+                 "       mep-mepml build [--run [RUN OPTIONS]] [-d DIR] [--no-post] [--beamer] [--no-notice]\n"
+                 "                       [TEX OPTIONS] IN.mepml [FORMAT...]\n"
                  "                                                export into the document's build directory\n"
-                 "                                                (//? Build:, `build` by default) in each FORMAT\n"
-                 "                                                (//? Export:, else html), then run its //? Post:\n"
+                 "                                                (//? Build:, `build` by default; -d/--out-dir DIR\n"
+                 "                                                instead) in each FORMAT (//? Export:, else html),\n"
+                 "                                                then run its //? Post: (not with --no-post)\n"
+                 "       mep-mepml run [RUN OPTIONS] FILE.mepml...  run every code block, as C-c C-c does, and\n"
+                 "                                                write the results into the document\n"
                  "       mep-mepml tree FILE                      the document's element tree, as JSON\n"
                  "       mep-mepml style FILE [--media a,b] [--sheet S.mepss]...\n"
                  "                                                the style each element computes to\n"
@@ -210,7 +266,15 @@ int Usage() {
                  "  TEX OPTIONS, for pdf: --tex-engine builtin|system ($MEP_TEX_ENGINE, else builtin)\n"
                  "  and --tex-command tectonic|pdflatex|xelatex|lualatex|latexmk|'ARGV'\n"
                  "  ($MEP_TEX_COMMAND, else tectonic; in an ARGV %%f is the .tex and %%o the output dir)\n"
-                 "  import to .mepml from: html md org rtf docx odt txt\n");
+                 "  import to .mepml from: html md org rtf docx odt txt\n"
+                 "  --run, with convert/build: run the code blocks first (in the document's directory,\n"
+                 "  writing their results into it), then export; the export is written even if a\n"
+                 "  block fails (it keeps its previous results), but the exit status is then 1\n"
+                 "  RUN OPTIONS: --timeout SECONDS (per block), --report FILE.json (each block's\n"
+                 "  outcome), --write-errors (a failed block's errors become its results),\n"
+                 "  -q/--quiet, -v/--verbose, --mep PATH (the mep that runs them; $MEP_EXECUTABLE,\n"
+                 "  else the mep beside this program, else mep on PATH); `run` also takes -o OUT\n"
+                 "  Options may come before or after the files.\n");
     return 2;
 }
 
@@ -228,6 +292,11 @@ int Convert(const std::string &in, const std::string &out, bool beamer, mepml::E
     // Everything goes through a mepml document.
     std::vector<std::string> lines;
     std::string err;
+    // OUT may be anywhere: its directory is made when missing.
+    if (!mepml::EnsureExportDir(std::filesystem::absolute(out, ec).string(), &err)) {
+        std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
+        return 1;
+    }
     if (fin == mepml::Format::Mepml) {
         if (!ReadLines(in, &lines)) {
             std::fprintf(stderr, "mep-mepml: cannot read %s\n", in.c_str());
@@ -301,7 +370,8 @@ int Convert(const std::string &in, const std::string &out, bool beamer, mepml::E
 
 // `build IN [FORMAT...]`: every format into the build directory, then the
 // Post command once.
-int Build(const std::string &in, std::vector<std::string> formats, bool beamer, const mepml::ExportOptions &opts) {
+int Build(const std::string &in, std::vector<std::string> formats, bool beamer, const mepml::ExportOptions &opts,
+          const std::string &out_dir, bool post) {
     if (mepml::FormatFromPath(in) != mepml::Format::Mepml) {
         std::fprintf(stderr, "mep-mepml: build takes a .mepml, not %s\n", in.c_str());
         return 2;
@@ -331,7 +401,9 @@ int Build(const std::string &in, std::vector<std::string> formats, bool beamer, 
         else if (f == "impress") f = "odp";
         const bool deck = f == "beamer";
         if (deck) f = "pdf";
-        const std::string out = mepml::ExportPath(doc, in, f);
+        const std::string out = out_dir.empty()
+                                    ? mepml::ExportPath(doc, in, f)
+                                    : (std::filesystem::path(out_dir) / std::filesystem::path(in).stem()).string() + "." + f;
         std::string err;
         if (!mepml::EnsureExportDir(out, &err)) {
             std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
@@ -343,7 +415,7 @@ int Build(const std::string &in, std::vector<std::string> formats, bool beamer, 
         outs.push_back(out);
     }
     std::string err;
-    if (!mepml::RunPostCommand(doc, in, outs, &err)) {
+    if (post && !mepml::RunPostCommand(doc, in, outs, &err)) {
         std::fprintf(stderr, "mep-mepml: %s\n", err.c_str());
         return 1;
     }
@@ -376,8 +448,13 @@ int main(int argc, char **argv) {
         const int rc = Inspect(argc, argv);
         return rc == 2 ? Usage() : rc;
     }
-    bool beamer = false;
+    if (argc < 2) return Usage();
+    const std::string cmd = argv[1];
+    if (cmd != "convert" && cmd != "build" && cmd != "run") return Usage();
+    bool beamer = false, run = cmd == "run", post = true;
     mepml::ExportOptions opts;
+    std::string out_dir;
+    std::vector<std::string> run_args, files;
     if (const char *e = std::getenv("MEP_TEX_ENGINE"); e && *e) g_tex.engine = e;
     if (const char *c = std::getenv("MEP_TEX_COMMAND"); c && *c) g_tex.command = c;
     {
@@ -387,21 +464,54 @@ int main(int argc, char **argv) {
         const std::filesystem::path tool = self.parent_path() / "mep-tex";
         if (std::filesystem::exists(tool, ec)) g_tex.builtin_tool = tool.string();
     }
-    int i = 2;
-    for (; i < argc && argv[i][0] == '-'; ++i) {
+    // Options anywhere; the rest are the files (and build's formats).
+    for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--beamer") beamer = true;
-        else if (a == "--no-notice") opts.notice = false;
-        else if (a == "--tex-engine" && i + 1 < argc) g_tex.engine = argv[++i];
-        else if (a == "--tex-command" && i + 1 < argc) g_tex.command = argv[++i];
-        else return Usage();
+        const bool has_value = i + 1 < argc;
+        if (a == "--beamer" && !run) beamer = true;
+        else if (a == "--no-notice" && !run) opts.notice = false;
+        else if (a == "--tex-engine" && has_value && !run) g_tex.engine = argv[++i];
+        else if (a == "--tex-command" && has_value && !run) g_tex.command = argv[++i];
+        else if ((a == "-d" || a == "--out-dir") && has_value && cmd == "build") out_dir = argv[++i];
+        else if (a == "--no-post" && cmd == "build") post = false;
+        else if (a == "--run") run = true;
+        else if (a == "--mep" && has_value) g_mep = argv[++i];
+        else if ((a == "--timeout" || a == "--report" || ((a == "-o" || a == "--output") && cmd == "run")) && has_value) {
+            run_args.push_back(a);
+            run_args.push_back(argv[++i]);
+        } else if (a == "--write-errors" || a == "-q" || a == "--quiet" || a == "-v" || a == "--verbose") {
+            run_args.push_back(a);
+        } else if (a == "-h" || a == "--help") {
+            Usage();
+            return 0;
+        } else if (a.size() > 1 && a[0] == '-') {
+            std::fprintf(stderr, "mep-mepml: unknown option %s\n", a.c_str());
+            return Usage();
+        } else {
+            files.push_back(a);
+        }
     }
     if (g_tex.engine != "builtin" && g_tex.engine != "system") return Usage();
-    if (argc < 2) return Usage();
-    if (std::string(argv[1]) == "build") {
-        if (i >= argc) return Usage();
-        return Build(argv[i], std::vector<std::string>(argv + i + 1, argv + argc), beamer, opts);
+    if (cmd == "run") {
+        if (files.empty()) return Usage();
+        run_args.insert(run_args.end(), files.begin(), files.end());
+        return RunBlocks(run_args);
     }
-    if (argc != i + 2 || std::string(argv[1]) != "convert") return Usage();
-    return Convert(argv[argc - 2], argv[argc - 1], beamer, opts);
+    if (files.empty() || (cmd == "convert" && files.size() != 2)) return Usage();
+    // --run: the blocks first, in place; a failure still exports (the
+    // failed blocks keep their previous results) but sets the exit status.
+    int run_rc = 0;
+    if (run) {
+        if (mepml::FormatFromPath(files[0]) != mepml::Format::Mepml) {
+            std::fprintf(stderr, "mep-mepml: --run takes a .mepml, not %s\n", files[0].c_str());
+            return 2;
+        }
+        run_args.push_back(files[0]);
+        run_rc = RunBlocks(run_args);
+        if (run_rc == 2 || run_rc == 127) return run_rc;
+    }
+    const int rc = cmd == "build"
+                       ? Build(files[0], std::vector<std::string>(files.begin() + 1, files.end()), beamer, opts, out_dir, post)
+                       : Convert(files[0], files[1], beamer, opts);
+    return rc != 0 ? rc : run_rc;
 }

@@ -69,6 +69,9 @@ directory's entries, an image (PNG, JPEG, GIF, BMP, SVG ...), or the first page
 of a PDF with its page count. Binary files show their size. The box stays level
 with the cursor row, on whichever side of the tree has more room, and goes away
 as soon as you move into another pane.</p>
+<p>The box appears once the cursor has rested on a row for two seconds, and
+the old one goes away as soon as you move; set <code>mep.tree_preview_delay</code> (in
+seconds, <code>0</code> for straight away) in your config to change the wait.</p>
 <p>The preview is on by default. <code>P</code> in the tree, <code>:MepFileTreePreview</code> or
 <code>&lt;leader&gt;fp</code> turns it off and on again; <code>mep.tree_preview = false</code> in your
 config starts with it off.</p>

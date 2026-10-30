@@ -5067,11 +5067,14 @@ const char *kBuiltinFileTree =
     // text file's first lines highlighted by its filetype, a directory's
     // entries, an image, or a PDF's first page. On by default; `P` in the
     // tree, :MepFileTreePreview or <leader>fp toggle it, and
-    // `mep.tree_preview = false` in init.lua starts with it off.
+    // `mep.tree_preview = false` in init.lua starts with it off. It appears
+    // once the cursor has rested on a row for mep.tree_preview_delay seconds.
     "mep.tree_preview = true\n"
     "local MEP_TREE_PREVIEW_LINES = 40\n"
     "local MEP_TREE_PREVIEW_LINE_MAX = 300\n"
+    "mep.tree_preview_delay = 2.0\n"
     "local mep_tree_preview_key = nil\n"
+    "local mep_tree_preview_want, mep_tree_preview_since = nil, 0\n"
     // Capture -> highlight group, kBuiltinSidebarPopout's resolver (chunk
     // locals aren't shared between kBuiltin* chunks).
     "local function mep_tree_preview_hl(capture)\n"
@@ -5141,9 +5144,18 @@ const char *kBuiltinFileTree =
     "  if not mep_tree_buf or mep.current_buffer() ~= mep_tree_buf then return end\n"
     "  local row = not mep_tree_help_open and mep_tree_rows and mep_tree_rows[mep.cursor()]\n"
     "  local key = row and (mep_tree_buf .. ':' .. row.path) or nil\n"
-    "  if key == mep_tree_preview_key then return end\n"
+    // A new row hides the old preview at once; the new one waits until the
+    // cursor has rested there for mep.tree_preview_delay seconds, so moving
+    // through the tree doesn't flash a box at every step.
+    "  if key ~= mep_tree_preview_want then\n"
+    "    mep_tree_preview_want, mep_tree_preview_since = key, mep.now()\n"
+    "    if mep_tree_preview_key then mep_tree_preview_key = nil; mep.file_preview_clear() end\n"
+    "    return\n"
+    "  end\n"
+    "  if not row or key == mep_tree_preview_key then return end\n"
+    "  if mep.now() - mep_tree_preview_since < (mep.tree_preview_delay or 0) then return end\n"
     "  mep_tree_preview_key = key\n"
-    "  if row then mep_tree_preview_show(row) else mep.file_preview_clear() end\n"
+    "  mep_tree_preview_show(row)\n"
     "end)\n"
     "function mep.tree_preview_toggle()\n"
     "  mep.tree_preview = not mep.tree_preview\n"

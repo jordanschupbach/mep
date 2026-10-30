@@ -75,6 +75,7 @@ the features live.
 | =<leader>ff= | Toggle file tree | [[file:file-tree.html][The file tree]] |
 | =<leader>fh= | Toggle hidden and git-ignored files in tree | [[file:file-tree.html][The file tree]] |
 | =<leader>fo= | Open file (native dialog) | [[file:file-tree.html][The file tree]] |
+| =<leader>fp= | Toggle file tree preview | [[file:file-tree.html][The file tree]] |
 | =<leader>fr= | Refresh file tree | [[file:file-tree.html][The file tree]] |
 | =<leader>gG= | Toggle git sidebar | [[file:git-panel.html][The git panel]] |
 | =<leader>gL= | Git graph (popout) | [[file:git-panel.html][The git panel]] |

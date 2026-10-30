@@ -996,6 +996,7 @@ add_library(mep_core STATIC
     src/editor.cpp
     src/editor_mepml.cpp
     src/editor_exec.cpp
+    src/editor_file_preview.cpp
     src/editor_mail.cpp
     src/mail.cpp
     src/mail_net.cpp

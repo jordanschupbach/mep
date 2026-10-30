@@ -29,6 +29,7 @@ It is a pane rather than a sidebar, so the usual pane keys work on it.
 | =R=       | refresh                                         |
 | =H=       | show or hide hidden and git-ignored files       |
 | =I=       | open the directory in the image viewer          |
+| =P=       | show or hide the preview beside the tree        |
 | =q=       | close the tree                                  |
 
 Navigation keys:
@@ -62,6 +63,19 @@ directory is dimmed the same way.
 the tree to refresh only on those keys and on its own =a= / =r= / =d= / =c=
 edits.
 
+* Previewing files
+
+While the tree has focus, a small box beside it previews the row under the
+cursor: the first lines of a text file (highlighted by its file type), a
+directory's entries, an image (PNG, JPEG, GIF, BMP, SVG ...), or the first page
+of a PDF with its page count. Binary files show their size. The box stays level
+with the cursor row, on whichever side of the tree has more room, and goes away
+as soon as you move into another pane.
+
+The preview is on by default. =P= in the tree, =:MepFileTreePreview= or
+=<leader>fp= turns it off and on again; =mep.tree_preview = false= in your
+config starts with it off.
+
 * Dragging onto a pane
 
 A file row can be dragged onto any pane. A drop-zone pinwheel appears under
@@ -73,6 +87,7 @@ that way and opens it in the new half.
 | Command / key   | Does                                        |
 |-----------------+---------------------------------------------|
 | =<leader>fh=    | toggle hidden and git-ignored files         |
+| =<leader>fp=    | toggle the file preview (=:MepFileTreePreview=) |
 | =<leader>fr=    | refresh the tree                            |
 | =<leader>fo=    | open a file through the native dialog        |
 | =<leader>ff=    | also the "find files" picker, when no tree is focused |

@@ -13145,6 +13145,68 @@ public:
     };
     void SetPickerDocPreview(PickerDocPreview::Kind kind, int buffer_id, int index);
     const PickerDocPreview &GetPickerDocPreview() const { return picker_doc_preview_; }
+
+    // --- File preview float (editor_file_preview.cpp) ---
+    // A small box beside a pane showing what the row under its cursor
+    // refers to: the file tree (kBuiltinFileTree) shows a text file's first
+    // lines, an image, or a PDF's first page as you move through it. Drawn
+    // by DrawFilePreviewFloat (main.cpp) only while `anchor_buffer` is the
+    // focused pane's buffer in Normal mode, so it never covers the editor
+    // once you leave the tree.
+    struct FilePreview {
+        enum class Kind { None, Text, Image };
+        Kind kind = Kind::None;
+        int anchor_buffer = -1;
+        std::string title;
+        // Kind::Text: the lines to show (a message such as "binary file" is
+        // just text with no spans).
+        std::string text;
+        std::vector<PickerHlSpan> spans;
+        // Kind::Image: decoded only once the cursor has rested on the row
+        // (pending_path set until then), so holding j over a folder of PDFs
+        // does not render every one of them on the way past.
+        std::string pending_path;
+        double requested_at = 0;
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        std::string info;         // "1920 x 1080", "PDF, 12 pages", or why it failed
+        unsigned generation = 0;  // bumped whenever rgba changes (texture re-upload)
+    };
+    /**
+     * @brief Shows text in the file preview float beside the pane showing `anchor_buffer`.
+     * @param anchor_buffer The buffer whose pane the float sits beside.
+     * @param title Caption (the file name).
+     * @param text The lines to show.
+     * @param spans Optional highlight spans over `text` (mep.picker_set_preview's shape).
+     */
+    void SetFilePreviewText(int anchor_buffer, const std::string &title, const std::string &text,
+                            std::vector<PickerHlSpan> spans);
+    /**
+     * @brief Shows an image (or a PDF's first page) in the file preview float, decoded once the cursor rests.
+     * @param anchor_buffer The buffer whose pane the float sits beside.
+     * @param title Caption (the file name).
+     * @param path The image or PDF file.
+     */
+    void SetFilePreviewVisual(int anchor_buffer, const std::string &title, const std::string &path);
+    /**
+     * @brief Hides the file preview float.
+     */
+    void ClearFilePreview();
+    /**
+     * @brief Decodes a pending image/PDF preview once its request is old enough; called every frame.
+     */
+    void TickFilePreview();
+    /**
+     * @brief Returns the file preview float's current content.
+     * @return The preview (kind None when hidden).
+     */
+    const FilePreview &GetFilePreview() const { return file_preview_; }
+    /**
+     * @brief Classifies a path for the file preview: "dir", "image", "pdf", "binary", "text" or "missing".
+     * @param path The path to classify.
+     * @return The kind name.
+     */
+    static std::string FilePreviewKind(const std::string &path);
     /**
      * @brief Returns the picker's current preview text.
      * @return The preview text, empty if no preview is set.
@@ -16311,6 +16373,17 @@ private:
     const unsigned char *svg_font_ = nullptr;
     size_t svg_font_len_ = 0;
     PickerDocPreview picker_doc_preview_;
+    FilePreview file_preview_;
+    // Recently decoded preview pictures, newest last, so moving back over a
+    // row is instant. Keyed by path + mtime.
+    struct FilePreviewCacheEntry {
+        std::string path;
+        long long mtime = 0;
+        std::vector<unsigned char> rgba;
+        int w = 0, h = 0;
+        std::string info;
+    };
+    std::vector<FilePreviewCacheEntry> file_preview_cache_;
     std::vector<std::string> picker_tabs_;
     int picker_active_tab_ = 0;
 

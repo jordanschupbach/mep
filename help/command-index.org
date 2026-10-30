@@ -121,6 +121,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepDocGen= | -- |
 | =:MepDocLookup= | -- |
 | =:MepFileTree= | [[file:file-tree.html][The file tree]] |
+| =:MepFileTreePreview= | [[file:file-tree.html][The file tree]] |
 | =:MepFormat= | [[file:formatting.html][Formatting]] |
 | =:MepGitBranches= | [[file:git-panel.html][The git panel]] |
 | =:MepGitCommit= | [[file:git-panel.html][The git panel]] |

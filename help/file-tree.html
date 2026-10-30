@@ -34,6 +34,7 @@ Nerd Font icon per file type.</p>
 <tr><td><code>R</code></td><td>refresh</td></tr>
 <tr><td><code>H</code></td><td>show or hide hidden and git-ignored files</td></tr>
 <tr><td><code>I</code></td><td>open the directory in the image viewer</td></tr>
+<tr><td><code>P</code></td><td>show or hide the preview beside the tree</td></tr>
 <tr><td><code>q</code></td><td>close the tree</td></tr>
 </table>
 <p>Navigation keys:</p>
@@ -61,6 +62,16 @@ directory is dimmed the same way.</p>
 <code>mep.tree_auto_refresh = false</code> in your config turns the polling off, leaving
 the tree to refresh only on those keys and on its own <code>a</code> / <code>r</code> / <code>d</code> / <code>c</code>
 edits.</p>
+<h1>Previewing files</h1>
+<p>While the tree has focus, a small box beside it previews the row under the
+cursor: the first lines of a text file (highlighted by its file type), a
+directory's entries, an image (PNG, JPEG, GIF, BMP, SVG ...), or the first page
+of a PDF with its page count. Binary files show their size. The box stays level
+with the cursor row, on whichever side of the tree has more room, and goes away
+as soon as you move into another pane.</p>
+<p>The preview is on by default. <code>P</code> in the tree, <code>:MepFileTreePreview</code> or
+<code>&lt;leader&gt;fp</code> turns it off and on again; <code>mep.tree_preview = false</code> in your
+config starts with it off.</p>
 <h1>Dragging onto a pane</h1>
 <p>A file row can be dragged onto any pane. A drop-zone pinwheel appears under
 the pointer: the centre opens the file in that pane, an edge splits the pane
@@ -69,6 +80,7 @@ that way and opens it in the new half.</p>
 <table>
 <tr><th>Command / key</th><th>Does</th></tr>
 <tr><td><code>&lt;leader&gt;fh</code></td><td>toggle hidden and git-ignored files</td></tr>
+<tr><td><code>&lt;leader&gt;fp</code></td><td>toggle the file preview (<code>:MepFileTreePreview</code>)</td></tr>
 <tr><td><code>&lt;leader&gt;fr</code></td><td>refresh the tree</td></tr>
 <tr><td><code>&lt;leader&gt;fo</code></td><td>open a file through the native dialog</td></tr>
 <tr><td><code>&lt;leader&gt;ff</code></td><td>also the "find files" picker, when no tree is focused</td></tr>

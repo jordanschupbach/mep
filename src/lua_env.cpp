@@ -7512,6 +7512,69 @@ int l_sidebar_set_preview(lua_State *L) {
     return 0;
 }
 
+// mep.file_preview_kind(path) -> kind, size: how the file preview float
+// would show `path` -- "dir", "image", "pdf", "binary", "text" or
+// "missing" -- and its size in bytes (0 for a directory).
+/**
+ * @brief Implements mep.file_preview_kind(path): classifies a path for the file preview float.
+ * @param L Lua state; arg 1 is the path.
+ * @return Number of values pushed (2: the kind name and the size in bytes).
+ */
+int l_file_preview_kind(lua_State *L) {
+    const std::string path = luaL_checkstring(L, 1);
+    const std::string kind = Editor::FilePreviewKind(path);
+    lua_pushlstring(L, kind.data(), kind.size());
+    std::error_code ec;
+    const std::uintmax_t size = kind == "dir" || kind == "missing" ? 0 : std::filesystem::file_size(path, ec);
+    lua_pushinteger(L, ec ? 0 : static_cast<lua_Integer>(size));
+    return 2;
+}
+
+// mep.file_preview_text(buffer_id, title, text [, spans]): show `text` in
+// the file preview float beside the pane showing buffer_id (see
+// Editor::FilePreview). `spans` has mep.picker_set_preview's shape.
+/**
+ * @brief Implements mep.file_preview_text(buffer_id, title, text, spans): shows text in the file preview float.
+ * @param L Lua state; arg 1 the anchor buffer id, arg 2 the caption, arg 3 the text, optional arg 4 highlight spans.
+ * @return Number of values pushed (0).
+ */
+int l_file_preview_text(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *title = luaL_checkstring(L, 2);
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 3, &len);
+    std::vector<PickerHlSpan> spans = ReadPreviewSpans(L, 4);
+    GetEditor(L)->SetFilePreviewText(buffer_id, title, std::string(text, len), std::move(spans));
+    return 0;
+}
+
+// mep.file_preview_visual(buffer_id, title, path): show an image or a
+// PDF's first page in the file preview float, decoded once the cursor
+// has rested on it for a moment.
+/**
+ * @brief Implements mep.file_preview_visual(buffer_id, title, path): shows a picture or PDF page in the file preview float.
+ * @param L Lua state; arg 1 the anchor buffer id, arg 2 the caption, arg 3 the image or PDF path.
+ * @return Number of values pushed (0).
+ */
+int l_file_preview_visual(lua_State *L) {
+    const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char *title = luaL_checkstring(L, 2);
+    const char *path = luaL_checkstring(L, 3);
+    GetEditor(L)->SetFilePreviewVisual(buffer_id, title, path);
+    return 0;
+}
+
+// mep.file_preview_clear(): hide the file preview float.
+/**
+ * @brief Implements mep.file_preview_clear(): hides the file preview float.
+ * @param L Lua state (no arguments).
+ * @return Number of values pushed (0).
+ */
+int l_file_preview_clear(lua_State *L) {
+    GetEditor(L)->ClearFilePreview();
+    return 0;
+}
+
 // mep.sidebar_popout_toggle([id]): pop the focused sidebar (or `id`, if
 // it is the focused one) out into the large centered float, or collapse
 // it back -- what mod1+m is bound to (kDefaultMod1Bindings, main.cpp).
@@ -17234,6 +17297,10 @@ const luaL_Reg kMepFuncs[] = {
     {"sidebar_active_tab", l_sidebar_active_tab},
     {"sidebar_set_on_preview", l_sidebar_set_on_preview},
     {"sidebar_set_preview", l_sidebar_set_preview},
+    {"file_preview_kind", l_file_preview_kind},
+    {"file_preview_text", l_file_preview_text},
+    {"file_preview_visual", l_file_preview_visual},
+    {"file_preview_clear", l_file_preview_clear},
     {"sidebar_popout_toggle", l_sidebar_popout_toggle},
     {"pane_maximize_toggle", l_pane_maximize_toggle},
     {"notify_sidebar_id", l_notify_sidebar_id},

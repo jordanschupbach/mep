@@ -798,6 +798,14 @@ bool g_show_help_overlay = false;
 // shown, then actually drawn once by the caller after the whole pane tree
 // finishes -- see the hover-tooltip comment on DrawPane's own hover block.
 bool g_hover_popup_pending = false;
+// Where the focused row-cursor pane (the file tree) drew its cursor row this
+// frame -- recorded by DrawPane, read by DrawFilePreviewFloat to put the
+// preview box level with the row it previews. pane_id -1: not drawn.
+struct RowCursorAnchor {
+    int pane_id = -1;
+    float y = 0;
+};
+RowCursorAnchor g_row_cursor_anchor;
 float g_hover_popup_x = 0, g_hover_popup_y = 0;
 // The top of the cursor's own row (g_hover_popup_y is its bottom), plus
 // whether the popup should prefer growing upward off of it. Only the
@@ -4762,6 +4770,7 @@ const char *kBuiltinFileTree =
     "  {'Y', 'copy the path'}, {'o', 'open with the OS'},\n"
     "  {'-', 'root up one directory'}, {'C', 'make the directory the root'}, {'R', 'refresh'},\n"
     "  {'H', 'show / hide hidden and git-ignored files'}, {'I', 'image viewer for the directory'}, {'q', 'close the tree'},\n"
+    "  {'P', 'show / hide the preview of the file under the cursor'},\n"
     "}\n"
     "local MEP_TREE_NAV_KEYS = {\n"
     "  {'j / k', 'move down / up'}, {'gg / G', 'first / last row'}, {'/', 'search'}, {'?', 'show / hide this help'},\n"
@@ -4893,6 +4902,8 @@ const char *kBuiltinFileTree =
     "    mep_tree_after_fs_change()\n"
     "  elseif k == 'q' then\n"
     "    if mep.pane_focus_buffer(mep_tree_buf) then mep.pane_close_buffer() end\n"
+    "  elseif k == 'P' then\n"
+    "    mep.tree_preview_toggle()\n"
     "  elseif k == '?' then\n"
     "    mep_tree_toggle_help()\n"
     "  elseif mep_tree_passthrough[k] then\n"
@@ -5050,6 +5061,98 @@ const char *kBuiltinFileTree =
     "    mep_tree_refresh_ignored()\n"
     "  end\n"
     "end)\n"
+    // ---- preview float ------------------------------------------------
+    // While the tree has focus, a small box beside it shows the row under
+    // the cursor (Editor::FilePreview, drawn by DrawFilePreviewFloat): a
+    // text file's first lines highlighted by its filetype, a directory's
+    // entries, an image, or a PDF's first page. On by default; `P` in the
+    // tree, :MepFileTreePreview or <leader>fp toggle it, and
+    // `mep.tree_preview = false` in init.lua starts with it off.
+    "mep.tree_preview = true\n"
+    "local MEP_TREE_PREVIEW_LINES = 40\n"
+    "local MEP_TREE_PREVIEW_LINE_MAX = 300\n"
+    "local mep_tree_preview_key = nil\n"
+    // Capture -> highlight group, kBuiltinSidebarPopout's resolver (chunk
+    // locals aren't shared between kBuiltin* chunks).
+    "local function mep_tree_preview_hl(capture)\n"
+    "  local map = mep.ts_capture_hl\n"
+    "  if not map then return nil end\n"
+    "  return map[capture] or map[capture:match('^([^.]+)') or '']\n"
+    "end\n"
+    "local function mep_tree_human_size(n)\n"
+    "  if n < 1024 then return n .. ' B' end\n"
+    "  if n < 1048576 then return string.format('%.1f KB', n / 1024) end\n"
+    "  if n < 1073741824 then return string.format('%.1f MB', n / 1048576) end\n"
+    "  return string.format('%.1f GB', n / 1073741824)\n"
+    "end\n"
+    "local function mep_tree_preview_show(row)\n"
+    "  local kind, size = mep.file_preview_kind(row.path)\n"
+    "  local title = row.is_dir and (row.name .. '/') or row.name\n"
+    "  if kind == 'image' or kind == 'pdf' then\n"
+    "    mep.file_preview_visual(mep_tree_buf, title, row.path)\n"
+    "  elseif kind == 'dir' then\n"
+    "    local entries = mep.list_dir(row.path) or {}\n"
+    "    table.sort(entries, function(a, b)\n"
+    "      if a.is_dir ~= b.is_dir then return a.is_dir end\n"
+    "      return a.name:lower() < b.name:lower()\n"
+    "    end)\n"
+    "    local names, spans = {}, {}\n"
+    "    for _, e in ipairs(entries) do\n"
+    "      if mep_tree_show_hidden or e.name:sub(1, 1) ~= '.' then\n"
+    "        names[#names + 1] = e.is_dir and (e.name .. '/') or e.name\n"
+    "        if e.is_dir then spans[#spans + 1] = {row = #names, col_start = 1, col_end = #e.name + 2, hl = 'Blue'} end\n"
+    "      end\n"
+    "      if #names >= MEP_TREE_PREVIEW_LINES then break end\n"
+    "    end\n"
+    "    mep.file_preview_text(mep_tree_buf, title, #names > 0 and table.concat(names, '\\n') or '(empty directory)', spans)\n"
+    "  elseif kind == 'binary' then\n"
+    "    mep.file_preview_text(mep_tree_buf, title, 'binary file, ' .. mep_tree_human_size(size or 0), {})\n"
+    "  elseif kind == 'text' then\n"
+    "    local lines = mep.read_lines(row.path, MEP_TREE_PREVIEW_LINES) or {}\n"
+    // A minified file is one enormous line: cut it before highlighting.
+    "    for i, l in ipairs(lines) do\n"
+    "      if #l > MEP_TREE_PREVIEW_LINE_MAX then lines[i] = l:sub(1, MEP_TREE_PREVIEW_LINE_MAX) end\n"
+    "    end\n"
+    "    local text = table.concat(lines, '\\n')\n"
+    "    local spans = {}\n"
+    "    local ft = mep_lsp_filetype and mep_lsp_filetype(row.path)\n"
+    "    if ft and ft ~= '' and mep.ts_captures then\n"
+    "      local ok, caps = pcall(mep.ts_captures, ft, text)\n"
+    "      if ok and caps then\n"
+    "        for _, c in ipairs(caps) do\n"
+    "          local hl = mep_tree_preview_hl(c.capture)\n"
+    "          if hl then spans[#spans + 1] = {row = c.row, col_start = c.col_start, col_end = c.col_end, hl = hl} end\n"
+    "        end\n"
+    "      end\n"
+    "    end\n"
+    "    mep.file_preview_text(mep_tree_buf, title, text, spans)\n"
+    "  else\n"
+    "    mep.file_preview_clear()\n"
+    "  end\n"
+    "end\n"
+    // Re-sent only when the row under the cursor changes; the float itself
+    // hides whenever the tree isn't the focused pane in Normal mode.
+    "mep.on_frame(function()\n"
+    "  if not mep.tree_preview then\n"
+    "    if mep_tree_preview_key then mep_tree_preview_key = nil; mep.file_preview_clear() end\n"
+    "    return\n"
+    "  end\n"
+    "  mep_tree_sync()\n"
+    "  if not mep_tree_buf or mep.current_buffer() ~= mep_tree_buf then return end\n"
+    "  local row = not mep_tree_help_open and mep_tree_rows and mep_tree_rows[mep.cursor()]\n"
+    "  local key = row and (mep_tree_buf .. ':' .. row.path) or nil\n"
+    "  if key == mep_tree_preview_key then return end\n"
+    "  mep_tree_preview_key = key\n"
+    "  if row then mep_tree_preview_show(row) else mep.file_preview_clear() end\n"
+    "end)\n"
+    "function mep.tree_preview_toggle()\n"
+    "  mep.tree_preview = not mep.tree_preview\n"
+    "  mep_tree_preview_key = nil\n"
+    "  if not mep.tree_preview then mep.file_preview_clear() end\n"
+    "  mep.notify('File tree preview ' .. (mep.tree_preview and 'on' or 'off'))\n"
+    "end\n"
+    "mep.command('MepFileTreePreview', function() mep.tree_preview_toggle() end)\n"
+    "mep.leader_map('fp', 'Toggle file tree preview', function() mep.tree_preview_toggle() end)\n"
     "mep.command('MepFileTree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('ff', 'Toggle file tree', function() mep.tree_toggle() end)\n"
     "mep.leader_map('fh', 'Toggle hidden and git-ignored files in tree', function()\n"
@@ -43095,6 +43198,143 @@ static float DrawPickerColoredRun(const std::string &text, const std::vector<gfx
     return cx;
 }
 
+// File preview float (Editor::FilePreview, editor_file_preview.cpp): a
+// compact box beside the focused file tree showing the row under its
+// cursor -- a text file's first lines, an image, a PDF's first page. Kept
+// small on purpose (at most ~40% of the screen across, ~45% down) and
+// level with the cursor row, on whichever side of the tree has room.
+gfx::Texture2D g_file_preview_tex{};
+unsigned g_file_preview_tex_gen = ~0u;
+
+/**
+ * @brief Draws the file preview float beside the focused pane it belongs to, if any.
+ */
+void DrawFilePreviewFloat() {
+    g_editor.TickFilePreview();
+    const Editor::FilePreview &fp = g_editor.GetFilePreview();
+    // GPU copy of the picture, re-uploaded only when it changes.
+    if (fp.generation != g_file_preview_tex_gen) {
+        g_file_preview_tex_gen = fp.generation;
+        if (g_file_preview_tex.id != 0) gfx::UnloadTexture(g_file_preview_tex);
+        g_file_preview_tex = gfx::Texture2D{};
+        if (fp.kind == Editor::FilePreview::Kind::Image && !fp.rgba.empty() && fp.w > 0 && fp.h > 0) {
+            gfx::Image img{};
+            img.data = const_cast<unsigned char *>(fp.rgba.data());
+            img.width = fp.w;
+            img.height = fp.h;
+            img.mipmaps = 1;
+            img.format = gfx::kPixelFormatR8G8B8A8;
+            g_file_preview_tex = gfx::LoadTextureFromImage(img);
+        }
+    }
+    const RowCursorAnchor anchor = g_row_cursor_anchor;
+    g_row_cursor_anchor = RowCursorAnchor{};
+    if (fp.kind == Editor::FilePreview::Kind::None) return;
+    if (g_editor.CurrentMode() != Mode::Normal || g_editor.CurrentBufferId() != fp.anchor_buffer) return;
+    const int pane_id = g_editor.ActivePaneId();
+    const gfx::Rectangle *pane_rect = nullptr;
+    for (const PaneScreenRect &pr : g_pane_screen_rects) {
+        if (pr.pane_id == pane_id) pane_rect = &pr.rect;
+    }
+    if (!pane_rect) return;
+
+    const float screen_w = static_cast<float>(gfx::GetScreenWidth());
+    const float screen_h = static_cast<float>(gfx::GetScreenHeight());
+    const float pad = 8.0f;
+    const float gap = 6.0f;
+    const float font_size = g_font_size;
+    const float line_h = font_size + 4.0f;
+    const float cap_size = MenuFontSize();
+    const float cap_h = cap_size + 8.0f;
+    // Room either side of the tree; the preview goes where there is more.
+    const float room_right = screen_w - (pane_rect->x + pane_rect->width) - gap - 8.0f;
+    const float room_left = pane_rect->x - gap - 8.0f;
+    const bool on_right = room_right >= room_left;
+    const float room = std::max(room_right, room_left);
+    const float max_w = std::min(room, std::max(240.0f, std::min(screen_w * 0.42f, 72.0f * g_char_width + 2.0f * pad)));
+    const float max_h = std::max(6.0f * line_h, screen_h * 0.45f);
+    if (max_w < 120.0f) return;
+
+    const std::string info = fp.kind == Editor::FilePreview::Kind::Image
+                                 ? (!fp.info.empty() ? fp.info : (fp.rgba.empty() ? "loading..." : ""))
+                                 : "";
+    const float title_w = gfx::MeasureTextEx(g_font, fp.title.c_str(), cap_size, 0).x;
+    const float info_w = info.empty() ? 0.0f : gfx::MeasureTextEx(g_font, info.c_str(), cap_size, 0).x + 16.0f;
+    float box_w = std::min(max_w, title_w + info_w + 2.0f * pad);
+    float box_h = cap_h + 2.0f * pad;
+
+    std::vector<std::string> lines;
+    float img_w = 0, img_h = 0;
+    if (fp.kind == Editor::FilePreview::Kind::Text) {
+        lines = SplitLines(fp.text);
+        while (!lines.empty() && lines.back().empty()) lines.pop_back();
+        const int max_rows = std::max(1, static_cast<int>((max_h - cap_h - 2.0f * pad) / line_h));
+        if (static_cast<int>(lines.size()) > max_rows) lines.resize(static_cast<size_t>(max_rows));
+        size_t longest = 0;
+        for (std::string &l : lines) {
+            std::replace(l.begin(), l.end(), '\t', ' ');  // one column per byte keeps spans aligned
+            longest = std::max(longest, l.size());
+        }
+        box_w = std::min(max_w, std::max(box_w, static_cast<float>(longest) * g_char_width + 2.0f * pad + 4.0f));
+        box_h += static_cast<float>(std::max<size_t>(lines.size(), 1)) * line_h;
+    } else if (g_file_preview_tex.id != 0) {
+        const float avail_w = max_w - 2.0f * pad;
+        const float avail_h = max_h - cap_h - 2.0f * pad;
+        // Small pictures (icons) are shown bigger, up to 4x; big ones shrink to fit.
+        const float scale = std::min({avail_w / static_cast<float>(fp.w), avail_h / static_cast<float>(fp.h), 4.0f});
+        img_w = std::floor(static_cast<float>(fp.w) * scale);
+        img_h = std::floor(static_cast<float>(fp.h) * scale);
+        box_w = std::min(max_w, std::max(box_w, img_w + 2.0f * pad));
+        box_h += img_h;
+    }
+    box_w = std::max(box_w, std::min(max_w, 160.0f));
+
+    const float box_x = on_right ? pane_rect->x + pane_rect->width + gap : pane_rect->x - gap - box_w;
+    const float want_y = anchor.pane_id == pane_id ? anchor.y - pad : pane_rect->y;
+    const float box_y = std::clamp(want_y, 4.0f, std::max(4.0f, screen_h - box_h - line_h * 2.0f));
+
+    gfx::DrawRectangle(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w), static_cast<int>(box_h),
+                       ResolveHlGroup("FloatBg"));
+    gfx::DrawRectangleLines(static_cast<int>(box_x), static_cast<int>(box_y), static_cast<int>(box_w), static_cast<int>(box_h),
+                            ResolveHlGroup("PickerBorder"));
+    gfx::BeginScissorMode(static_cast<int>(box_x) + 1, static_cast<int>(box_y) + 1, static_cast<int>(box_w) - 2,
+                          static_cast<int>(box_h) - 2);
+    const float cx = box_x + pad;
+    float cy = box_y + pad;
+    gfx::DrawTextEx(g_font, fp.title.c_str(), gfx::Vector2{cx, cy}, cap_size, 0, ResolveHlGroup("SidebarTitle"));
+    if (!info.empty()) {
+        const float iw = gfx::MeasureTextEx(g_font, info.c_str(), cap_size, 0).x;
+        gfx::DrawTextEx(g_font, info.c_str(), gfx::Vector2{std::max(cx + title_w + 16.0f, box_x + box_w - pad - iw), cy}, cap_size,
+                        0, ResolveHlGroup("Comment"));
+    }
+    cy += cap_h;
+    gfx::DrawLine(static_cast<int>(box_x) + 1, static_cast<int>(cy) - 4, static_cast<int>(box_x + box_w) - 1,
+                  static_cast<int>(cy) - 4, ResolveHlGroup("PickerBorder"));
+    if (fp.kind == Editor::FilePreview::Kind::Text) {
+        std::unordered_map<int, std::vector<PickerHlSpan>> spans_by_row;
+        for (const PickerHlSpan &sp : fp.spans) spans_by_row[sp.row].push_back(sp);
+        const size_t max_chars = static_cast<size_t>(std::max(1.0f, (box_w - 2.0f * pad) / g_char_width));
+        for (size_t i = 0; i < lines.size(); i++) {
+            const std::string &line = lines[i];
+            const float ly = cy + static_cast<float>(i) * line_h;
+            if (line.empty()) continue;
+            const size_t take = std::min(line.size(), max_chars);
+            auto sit = spans_by_row.find(static_cast<int>(i));
+            if (sit != spans_by_row.end()) {
+                DrawPickerColoredRun(line, PickerLineColors(line, sit->second, ResolveHlGroup("Normal")), 0, take, cx, ly);
+            } else {
+                gfx::DrawTextEx(g_font, line.substr(0, take).c_str(), gfx::Vector2{cx, ly}, font_size, 0, ResolveHlGroup("Normal"));
+            }
+        }
+        if (lines.empty()) gfx::DrawTextEx(g_font, "(empty)", gfx::Vector2{cx, cy}, font_size, 0, ResolveHlGroup("Comment"));
+    } else if (g_file_preview_tex.id != 0) {
+        const float ix = box_x + std::floor((box_w - img_w) * 0.5f);
+        const gfx::Rectangle src{0, 0, static_cast<float>(g_file_preview_tex.width), static_cast<float>(g_file_preview_tex.height)};
+        gfx::DrawTexturePro(g_file_preview_tex, src, gfx::Rectangle{ix, cy, img_w, img_h}, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+    }
+    gfx::EndScissorMode();
+}
+
 /**
  * @brief Draws the fuzzy picker overlay: prompt line, filtered results list, and (when a
  * source supplied one) a preview column -- either a colorscheme swatch grid or scrolled
@@ -62166,6 +62406,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             (pane.cursor.row == row ||
              (fold_here && pane.cursor.row >= fold_here->start_row && pane.cursor.row <= fold_here->end_row))) {
             int tint_slots = (row_wraps && pane.cursor.row == row) ? row_wrap_slots : 1;
+            if (buf.row_cursor && pane.cursor.row == row) g_row_cursor_anchor = {pane.id, row_block_y};
             // On a rendered mepml \toc/\bibliography, the line the cursor
             // is on (Editor::VirtualLineStep), not the block's first.
             int tint_offset = 0;
@@ -67205,6 +67446,7 @@ void DrawEditor() {
     // The floating editable pane (Todo 'e') sits above the docked
     // chrome like the popout below; the prompt/confirm overlays a key
     // pressed inside it may open still draw on top of it.
+    DrawFilePreviewFloat();
     DrawFloatPane();
     DrawSidebarPopout();
     if (g_editor.CurrentMode() == Mode::Prompt) DrawPromptOverlay();

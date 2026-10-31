@@ -41,6 +41,10 @@
 //     break early to get a better one later; this takes the first split that
 //     fits and recurses. Long chained calls (`a.b().c().d()`) in particular
 //     wrap less prettily than clang-format's.
+//   - An explicit backslash continuation between tokens keeps its line
+//     break, even if the expression fits on one line. The backslash stays
+//     and the following line gets continuation indentation, so chained calls
+//     can be laid out one per line and repeated formatting keeps that layout.
 //   - No comment reflowing. A `//` comment that is too long stays too long,
 //     and a block comment's interior is only re-indented when every line of
 //     it starts with a single `*` -- the standard `/* ... \n * ... \n */`

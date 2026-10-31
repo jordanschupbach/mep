@@ -301,6 +301,50 @@ void TestPreprocessor() {
     Expect("#if defined(A)&&!defined(B)\n#endif\n", "#if defined(A) && !defined(B)\n#endif\n");
 }
 
+void TestExplicitContinuations() {
+    // A backslash explicitly requests a break, even when the expression
+    // fits. Keep the marker so formatting the result again is stable.
+    const std::string splice = "\\\n";
+    Expect("Obj . size (2) " + splice + ".color (\"green\") " + splice + ".plot (handle);\n",
+           "Obj.size(2) " + splice + "    .color(\"green\") " + splice + "    .plot(handle);\n");
+    Expect("void f(){\nObj.size(2) " + splice + ".color(\"green\") " + splice + ".plot(handle);\n}\n",
+           "void f() {\n    Obj.size(2) " + splice + "        .color(\"green\") " + splice +
+               "        .plot(handle);\n}\n");
+    // Breaks on either side of a member-access operator are supported.
+    Expect("Obj.size(2). " + splice + "color(\"green\"). " + splice + "plot(handle);\n",
+           "Obj.size(2). " + splice + "    color(\"green\"). " + splice + "    plot(handle);\n");
+    // CRLF input normalizes to LF as it does elsewhere in the formatter.
+    Expect("Obj.size(2)\\\r\n    .plot(handle);\r\n", "Obj.size(2) " + splice + "    .plot(handle);\n");
+    // Ordinary newlines still use the formatter's usual packing behavior.
+    Expect("Obj.size(2)\n    .color(\"green\")\n    .plot(handle);\n",
+           "Obj.size(2).color(\"green\").plot(handle);\n");
+    Expect("int f(int a, " + splice + "      int b);\n", "int f(int a, " + splice + "    int b);\n");
+    // Markers at unwrapped-line boundaries must also survive.
+    Expect("void f(){ " + splice + "g(); " + splice + "h();\n}\n",
+           "void f() { " + splice + "    g(); " + splice + "    h();\n}\n");
+    ExpectW("Obj.size(2) " + splice + ".color(\"green\") " + splice + ".plot(handle);\n", 20,
+            "Obj.size(2) " + splice + "    .color(\"green\") " + splice + "    .plot(handle);\n");
+    Expect("Obj.size(2) " + splice + ".color(\"green\").plot(handle);\n",
+           "Obj.size(2) " + splice + "    .color(\"green\").plot(handle);\n");
+    Expect("ptr->size(2) " + splice + "->plot(handle);\n",
+           "ptr->size(2) " + splice + "    ->plot(handle);\n");
+    Expect("void f() { " + splice + "}\n", "void f() { " + splice + "}\n");
+    Expect("/* note */ " + splice + "\nint x;\n", "/* note */ " + splice + "int x;\n");
+    // Continuations inside tokens belong to those tokens and stay verbatim.
+    Expect("const char *s = \"green" + splice + "light\";\n",
+           "const char *s = \"green" + splice + "light\";\n");
+    Expect("// comment " + splice + "continued\nint x;\n",
+           "// comment " + splice + "continued\nint x;\n");
+    // Explicit breaks must not consume the splitter's recursion budget.
+    std::string chain = "Obj.size(2)";
+    std::string want = chain;
+    for (int i = 0; i < 150; i++) {
+        chain += " " + splice + ".size(2)";
+        want += " " + splice + "    .size(2)";
+    }
+    Expect(chain + ";\n", want + ";\n");
+}
+
 void TestComments() {
     // A trailing comment gets the configured gap no matter what it had.
     Expect("int x = 1; // note\n", "int x = 1;  // note\n");
@@ -381,10 +425,6 @@ void TestRefusals() {
         CHECK(!r.error.empty());
         CHECK(r.text.empty());
     }
-    // The same splice with whitespace on either side is just whitespace.
-    cppfmt::Result ok = cppfmt::Format("int f(int a, \\\n      int b);\n");
-    CHECK(ok.ok);
-    CHECK(ok.text == "int f(int a, int b);\n");
 }
 
 void TestNestingGuard() {
@@ -593,6 +633,7 @@ int main() {
     TestBracelessBodies();
     TestSplitting();
     TestPreprocessor();
+    TestExplicitContinuations();
     TestComments();
     TestBlankLines();
     TestLexer();

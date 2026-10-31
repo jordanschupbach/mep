@@ -73,6 +73,7 @@ struct Token {
     bool pp = false;        // part of a preprocessor directive
     bool pp_lead = false;   // the `#` that opens one
     bool starts_line = false;
+    bool continuation_after = false;  // explicit backslash break outside a directive
 
     // Annotations, all filled by Annotate() and all *cosmetic*: guessing any
     // of them wrong changes spacing, never the token stream (see cpp_format.h).
@@ -418,6 +419,7 @@ bool Lexer::Run() {
                 // both sides, because then it welds two spellings into one
                 // token that this formatter would be free to pull apart
                 // again; with whitespace on either side it is whitespace.
+                // Keep those safe splices as explicit layout requests.
                 bool tight = i_ > 0 && !std::isspace(static_cast<unsigned char>(s_[i_ - 1]));
                 size_t after = i_ + ((s_[i_ + 1] == '\n') ? 2 : 3);
                 tight = tight && after < n &&
@@ -425,8 +427,12 @@ bool Lexer::Run() {
                 if (!in_pp_ && tight) {
                     return Fail("backslash line continuation joins two tokens");
                 }
+                if (!in_pp_ && pending_newlines_ == 0 && !tokens_.empty() && !tokens_.back().pp) {
+                    tokens_.back().continuation_after = true;
+                }
                 i_ = after;
                 line_++;
+                line_start_ = i_;
                 continue;
             }
             break;
@@ -2003,7 +2009,8 @@ size_t Emitter::JoinSpan(const std::vector<Line> &ls, size_t k) const {
         // two characters cannot push a line over on their own. Empty means
         // the `{` really is this line's last token -- a comment written
         // inside the braces is attached to this line and is not nothing.
-        if (span == 2 && ls[k + 1].lo == L.hi && t_[L.hi - 1].text == "{" &&
+        if (span == 2 && ls[k + 1].lo == L.hi && !t_[L.hi - 1].continuation_after &&
+            t_[L.hi - 1].text == "{" &&
             t_[ls[k + 1].lo].text == "}") {
             return 2;
         }
@@ -2064,6 +2071,21 @@ std::string Emitter::ReindentBlockComment(const std::string &text, int indent) c
 
 void Emitter::EmitRange(size_t lo, size_t hi, int cont, int depth) {
     if (lo >= hi) return;
+    // Honor explicit breaks before any width-based flattening or splitting.
+    // Iterate over them so a long fluent chain cannot exhaust the recursion
+    // budget. Each subrange has no interior explicit break of its own.
+    size_t start = lo;
+    for (size_t j = lo; j + 1 < hi; j++) {
+        if (!t_[j].continuation_after) continue;
+        EmitRange(start, j + 1, cont, depth + 1);
+        Add(" \\");
+        Break(cont);
+        start = j + 1;
+    }
+    if (start != lo) {
+        EmitRange(start, hi, cont, depth + 1);
+        return;
+    }
     if (depth > kMaxSplitDepth) {
         Add(Render(lo, hi));
         return;
@@ -2398,11 +2420,13 @@ void Emitter::EmitLine(const Line &l) {
         t_[l.lo].text.find('\n') != std::string::npos) {
         cur_ = Pad(indent);
         Add(ReindentBlockComment(t_[l.lo].text, indent));
+        if (t_[l.hi - 1].continuation_after) Add(" \\");
         Flush();
         return;
     }
     cur_ = Pad(indent);
     EmitRange(l.lo, l.hi, indent + o_.continuation_indent, 0);
+    if (t_[l.hi - 1].continuation_after) Add(" \\");
     Flush();
 }
 

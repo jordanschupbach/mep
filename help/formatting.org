@@ -162,6 +162,20 @@ int a[] = {1, 2, 3,};   // stays one per line
 int b[] = {1, 2, 3};    // stays on one line
 #+end_src
 
+To keep a chained call or another expression on separate lines, end each
+line you want to keep broken with a backslash. =gf= preserves the backslash
+and the break, even when the whole expression would fit, and indents the
+continuation lines:
+
+#+begin_src cpp
+Obj.size(2) \
+    .color("green") \
+    .plot(handle);
+#+end_src
+
+Keep the backslash immediately before the newline. Ordinary line breaks
+within an expression can still be joined by the formatter.
+
 It is not =clang-format=, though, and the differences are deliberate:
 
 - *Short forms are preserved, not imposed.* =if (c) return;= and =int f() {

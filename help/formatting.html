@@ -131,6 +131,15 @@ comma" <code>black</code> has and <code>clang-format</code> reads the same way. 
 and it collapses back onto one line:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cpp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cpp"><span class="tok-orange">int</span> a[] = {<span class="tok-cyan">1</span>, <span class="tok-cyan">2</span>, <span class="tok-cyan">3</span>,};   <span class="tok-comment">// stays one per line</span>
 <span class="tok-orange">int</span> b[] = {<span class="tok-cyan">1</span>, <span class="tok-cyan">2</span>, <span class="tok-cyan">3</span>};    <span class="tok-comment">// stays on one line</span></code></pre></div>
+<p>To keep a chained call or another expression on separate lines, end each
+line you want to keep broken with a backslash. <code>gf</code> preserves the backslash
+and the break, even when the whole expression would fit, and indents the
+continuation lines:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cpp</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cpp">Obj.<span class="tok-blue">size</span>(<span class="tok-cyan">2</span>) \
+    .<span class="tok-blue">color</span>(<span class="tok-green">"green"</span>) \
+    .<span class="tok-blue">plot</span>(handle);</code></pre></div>
+<p>Keep the backslash immediately before the newline. Ordinary line breaks
+within an expression can still be joined by the formatter.</p>
 <p>It is not <code>clang-format</code>, though, and the differences are deliberate:</p>
 <ul>
 <li><b>Short forms are preserved, not imposed.</b> <code>if (c) return;</code> and =int f() { return 1; }= stay on one line if that is how they were written and they fit. Nothing is ever <b>joined</b> onto one line that the input had apart, so the mixed style real C++ is written in survives instead of being flattened one way or the other.</li>

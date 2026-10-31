@@ -938,3 +938,11 @@ test-cpp-ui:
 # Actual editor, PTY, object panels, figures, and teardown on a private X11 display.
 test-cpp-ui-live: build-native
     python3 tools/cpp_ui_live_check.py --build-dir {{native_build_dir}}
+
+# Document UI, compiled previews, and language UI inside literate code blocks.
+test-mepml-ui-live: build-native
+    python3 tools/mepml_ui_live_check.py --build-dir {{native_build_dir}}
+
+# Elapsed-time notifications from batch jobs, terminals, GUI and web programs.
+test-mepml-run-live: build-native
+    python3 tools/mepml_run_live_check.py --build-dir {{native_build_dir}}

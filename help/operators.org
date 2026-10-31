@@ -55,6 +55,19 @@ Instead of a motion, an operator can take a text object: =i= for "inner" or
 =i= takes the contents, =a= takes the delimiters too: =di(= empties the
 parentheses, =da(= removes them as well.
 
+For paragraphs, =ip= selects the current run of non-blank lines, without
+its separating blank lines; on a blank line it selects that blank run.
+Lines containing only spaces or tabs count as blank. =ap= includes the
+adjacent blank lines too, preferring those after the paragraph. Both
+objects operate on whole lines: =vip= highlights the paragraph, =dip=
+deletes it, and =yap= copies it together with its separator.
+
+Paragraph objects accept counts: =2ap= covers two paragraphs with their
+separators; =2ip= covers two successive runs (text then blank lines, or
+blank lines then text). Operator and object counts multiply, as in
+=2d2ap=. Repeating =ip= or =ap= in Visual mode extends the selection
+from its active end; =o= switches which end grows.
+
 The value of text objects is that they do not depend on where in the thing
 the cursor is. =ciw= changes the word you are on whether the cursor sits at
 its start, middle or end -- unlike =cw=, which only changes from the cursor

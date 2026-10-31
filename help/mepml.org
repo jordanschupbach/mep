@@ -44,6 +44,7 @@ restyles all of them.
 |-----------------------+-----------------------------------------------------------|
 | play button, =gr=     | export the document and open the result beside it         |
 | =<leader>rr=          | the same                                                  |
+| =<leader>uu=, =<leader>lu= | toggle document UI; in a code block, toggle that language's UI |
 | ~=~                   | line the HTML export beside it up with the cursor's line  |
 | =C-c C-c=             | run the code block under the cursor                       |
 | =<leader>kx=          | the same                                                  |
@@ -112,6 +113,37 @@ reads the way it exports, results showing. A rendered =\toc= or =\bibliography= 
 =za= on it collapses the block to its title and a count (/Contents • 3
 headings/), and =za= again, =zR= or its =+= opens it. The Structure sidebar
 lists the headings.
+
+* Document UI
+
+=<leader>uu= (also =<leader>lu= or =:MepLanguageUi=) in prose opens a
+layout for writing: your source on the left, the compiled document at the
+top right, and Outline, Code Blocks and Problems tabs at the bottom
+right. Click a heading, block or problem to jump to its source. These
+lists refresh as you edit.
+
+Opening the mode saves and compiles the document through the same path
+as =<leader>rr=, including its =//? Export:= format (HTML by default).
+Use =<leader>rr= in the source to refresh the compiled view; it reuses the
+preview pane and leaves focus in your source. Presentation formats that
+normally open in an external program still do so.
+
+Inside a code block, =<leader>uu= chooses the block's
+[[file:language-ui.html][language UI]] instead, when one is available. This works from the
+document UI too: the previous layout closes before the language layout
+opens. The block opens as editable source; =:w= saves it back to the
+document, and closing the mode copies back any unsaved edits and returns
+to the document. The source file's directory is used for the temporary
+code file, so relative imports and includes retain their base directory.
+The temporary file is removed when the mode closes.
+
+The toggle from a preview, console or panel closes the active layout.
+An unsupported block language falls back to the document UI.
+
+#+begin_src lua
+mep.opt.mepml_ui_preview_share = 0.5  -- width of the right column
+mep.opt.mepml_ui_info_share = 0.3     -- height of its navigation panels
+#+end_src
 
 * Document options and comments
 
@@ -633,6 +665,13 @@ The header is =```{lang, Name=value, ...}=, or just =```lang=.
 block (=C-c C-c=) writes its output between the =result_begin:= and
 =result_end= markers, creating them under the block if they aren't there
 yet. =eval=false= stops a block from running.
+
+When a block finishes, a notification reports its elapsed time in seconds,
+for example /Done running python block at line 12 in 1.234 s/. The time
+includes preparation and compilation, when needed. Failed runs report
+their duration and the reason instead. The message appears in the status
+line and stays in Notifications history. Terminal and GUI programs report
+their duration when they exit or are stopped, rather than when launched.
 
 In the editor a code block is drawn as a card: a title bar with its
 language, its header options and a play button (click it to run the

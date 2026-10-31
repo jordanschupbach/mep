@@ -130,6 +130,7 @@
 #include "persist.h"
 #include "language_ui_csharp.h"
 #include "language_ui_cpp.h"
+#include "language_ui_document.h"
 
 namespace {
 
@@ -9160,9 +9161,10 @@ const char *kBuiltinLsp =
 
 // Language-specific UI modes (<leader>lu): a per-tab toggle that hands off
 // to a language module registered in mep.language_ui_modes[lang] --
-// mep.language_for_buffer maps the current buffer's file extension to a
-// language key via mep.language_ui_extensions (populated by each module,
-// e.g. kBuiltinLanguageUiR below adds {r = 'r'}), and mode.open() builds
+// mep.language_for_buffer maps file extensions to a language key via
+// mep.language_ui_extensions. The document adapter's language_ui_context
+// gives embedded code priority for the toggle, while Run stays file-based.
+// Each module registers its extensions, and mode.open() builds
 // whatever pane layout that language wants and returns a {close=, run_source=}
 // handle: close() tears the layout back down, and the optional run_source(fname)
 // lets the Run button (kBuiltinRunButton) redirect "run this file" into the
@@ -9184,18 +9186,22 @@ const char *kBuiltinLanguageUi =
     "function mep.language_ui_toggle()\n"
     "  local tid = mep.current_tab_id()\n"
     "  local active = mep.language_ui_active[tid]\n"
+    "  local context = mep.language_ui_context and mep.language_ui_context()\n"
+    "  local lang = context and context.lang or mep.language_for_buffer()\n"
     "  if active then\n"
+    "    if active.close() == false then return end\n"
     "    mep.language_ui_active[tid] = nil\n"
-    "    active.close()\n"
-    "    return\n"
+    "    if not lang or lang == active.lang then return end\n"
+    "    if context then mep.buffer_switch(context.buf); mep.set_cursor(context.row, context.col) end\n"
     "  end\n"
-    "  local lang = mep.language_for_buffer()\n"
     "  local mode = lang and mep.language_ui_modes[lang]\n"
     "  if not mode then\n"
     "    mep.notify('No language UI mode registered' .. (lang and (' for \"' .. lang .. '\"') or ' for this file'), 'warn')\n"
     "    return\n"
     "  end\n"
-    "  local handle = mode.open()\n"
+    "  local handle\n"
+    "  if context and context.block then handle = mep.language_ui_open_block(mode, context) else handle = mode.open() end\n"
+    "  if not handle then return end\n"
     "  mep.language_ui_active[tid] = {lang = lang, close = handle.close, run_source = handle.run_source, prefer_session_run = handle.prefer_session_run}\n"
     "end\n"
     "mep.command('MepLanguageUi', mep.language_ui_toggle)\n"
@@ -30277,7 +30283,7 @@ const char *kBuiltinMepml =
     "  for i = 1, #s do h = ((h ~ s:byte(i)) * 16777619) & 0xffffffff end\n"
     "  return string.format('%08x', h)\n"
     "end\n"
-    "function mep_mepml_run_web(blk, lang, on_done)\n"
+    "function mep_mepml_run_web(blk, lang, on_done, started_at)\n"
     "  on_done = on_done or function() end\n"
     "  local buf = mep.current_buffer()\n"
     "  local dir = mep_mepml_dir(mep.filename())\n"
@@ -30286,11 +30292,11 @@ const char *kBuiltinMepml =
     // names -- a script, a picture -- are the document's.
     "    local path = dir .. '/.mep-web-' .. mep_mepml_web_hash(blk.code) .. '.html'\n"
     "    local f = io.open(path, 'w')\n"
-    "    if not f then mep.notify('mepml: cannot write ' .. path, 'warn') on_done() return end\n"
+    "    if not f then on_done({status = 'failed', reason = 'cannot write ' .. path}) return end\n"
     "    f:write(blk.code)\n"
     "    f:close()\n"
     "    if path:sub(1, 1) ~= '/' then path = (os.getenv('PWD') or '.') .. '/' .. path end\n"
-    "    mep.mepml_web_start(buf, blk.fence_row, 'file://' .. path)\n"
+    "    mep.mepml_web_start(buf, blk.fence_row, 'file://' .. path, nil, nil, started_at)\n"
     "    on_done()\n"
     "    return\n"
     "  end\n"
@@ -30298,17 +30304,16 @@ const char *kBuiltinMepml =
     "  for _, o in ipairs(blk.option_list) do args[#args + 1] = ':' .. o.name .. ' ' .. o.value end\n"
     "  local args_str = table.concat(args, ' ')\n"
     "  local lang_def, exe = mep_org_babel_resolve_lang(lang, args_str)\n"
-    "  if not lang_def then mep.notify('mepml: ' .. tostring(exe), 'warn') on_done() return end\n"
+    "  if not lang_def then on_done({status = 'failed', reason = tostring(exe)}) return end\n"
     "  local script = mep_org_babel_prepare_script(lang, lang_def, {}, mep_mepml_split(blk.code), args_str, {}, nil)\n"
     "  mep_org_babel_prepare_exec(lang_def, exe, script, args_str, dir, function(argv, extra, stage)\n"
     "    if not argv then\n"
-    "      mep.notify('mepml: ' .. tostring(stage or 'build') .. ' failed', 'warn')\n"
     "      mep.mepml_splice_results(buf, blk.fence_row, blk.code, table.concat(extra or {}, '\\n'))\n"
-    "      on_done()\n"
+    "      on_done({status = 'failed', reason = tostring(stage or 'build') .. ' failed'})\n"
     "      return\n"
     "    end\n"
     "    mep.notify('Starting the ' .. lang .. ' web app...')\n"
-    "    mep.mepml_web_start(buf, blk.fence_row, '', argv, extra)\n"
+    "    mep.mepml_web_start(buf, blk.fence_row, '', argv, extra, started_at)\n"
     "    on_done()\n"
     "  end)\n"
     "end\n"
@@ -30409,7 +30414,8 @@ const char *kBuiltinMepml =
     "end\n"
     // `on_done(status)` says how the run went, for a caller that keeps
     // count (mep --run-mepml): status.status is 'ok', 'failed' or
-    // 'skipped', status.reason why when it is not ok. `opts` (optional):
+    // 'skipped', status.reason why when it is not ok. Completed batch runs
+    // include status.seconds (elapsed wall time). `opts` (optional):
     // headless = true skips the blocks that only make sense in a window
     // (terminal, gui, web) instead of starting them; keep_failed = true
     // leaves a failed block's old results in place rather than writing its
@@ -30433,29 +30439,47 @@ const char *kBuiltinMepml =
     "  local interactive = res == 'web' or res == 'app' or lang == 'exec-gui' or lang == 'gui' or lang == 'exec'\n"
     "    or lang == 'executable' or res == 'terminal' or res == 'exec' or res == 'exec-gui'\n"
     "  if interactive and opts.headless then skip('results=' .. (res ~= '' and res or lang) .. ' runs only in the editor') return end\n"
+    // Read the clock at each endpoint: mep.now() stays fixed within a
+    // frame, which would report zero for synchronous mep-lua blocks.
+    "  local started_at = mep.clock()\n"
+    "  local function completed(status)\n"
+    "    status.seconds = math.max(0, mep.clock() - started_at)\n"
+    "    local label = lang .. ' block at line ' .. blk.fence_row\n"
+    "    local duration = string.format('%.3f s', status.seconds)\n"
+    "    if status.status == 'failed' then\n"
+    "      mep.notify('mepml: ' .. label .. ' failed after ' .. duration .. ': ' .. tostring(status.reason), 'warn')\n"
+    "    else\n"
+    "      mep.notify('Done running ' .. label .. ' in ' .. duration)\n"
+    "    end\n"
+    "    on_done(status)\n"
+    "  end\n"
     "  -- results=web: what the block makes is a web page -- an html block is\n"
     "  -- the page, any other block a program serving one (a Shiny app ...).\n"
-    "  if res == 'web' or res == 'app' then mep_mepml_run_web(blk, lang, on_done) return end\n"
+    "  if res == 'web' or res == 'app' then\n"
+    "    mep_mepml_run_web(blk, lang, function(status)\n"
+    "      if status and status.status == 'failed' then completed(status) else on_done(status) end\n"
+    "    end, started_at)\n"
+    "    return\n"
+    "  end\n"
     "  -- An exec-gui block's program opens a window, shown inside its results.\n"
     "  if lang == 'exec-gui' or lang == 'gui' then\n"
-    "    mep.mepml_gui_start(mep.current_buffer(), blk.fence_row)\n"
+    "    mep.mepml_gui_start(mep.current_buffer(), blk.fence_row, nil, nil, started_at)\n"
     "    on_done({status = 'ok'})\n"
     "    return\n"
     "  end\n"
     "  if lang == 'exec' or lang == 'executable' or res == 'terminal' then\n"
-    "    mep.mepml_terminal_start(mep.current_buffer(), blk.fence_row)\n"
+    "    mep.mepml_terminal_start(mep.current_buffer(), blk.fence_row, nil, nil, started_at)\n"
     "    on_done({status = 'ok'})\n"
     "    return\n"
     "  end\n"
     "  local buf = mep.current_buffer()\n"
     "  -- `failure`: why the run failed, or nil when it did not.\n"
     "  local function finish(text, failure)\n"
-    "    if failure and opts.keep_failed then on_done({status = 'failed', reason = failure, output = text}) return end\n"
+    "    if failure and opts.keep_failed then completed({status = 'failed', reason = failure, output = text}) return end\n"
     "    if not mep.mepml_splice_results(buf, blk.fence_row, blk.code, text) then\n"
-    "      mep.notify('mepml: the block changed while it ran; results discarded', 'warn')\n"
     "      failure = failure or 'the block changed while it ran; results discarded'\n"
     "    end\n"
-    "    on_done({status = failure and 'failed' or 'ok', reason = failure, output = failure and text or nil})\n"
+    "    completed({status = failure and 'failed' or 'ok', reason = failure, output = failure and text or nil})\n"
     "  end\n"
     "  if lang == 'mep-lua' then\n"
     "    local chunk, err = load(blk.code, '=mep-lua block', 't')\n"
@@ -30475,8 +30499,7 @@ const char *kBuiltinMepml =
     "  local args_str = table.concat(args, ' ')\n"
     "  local lang_def, exe = mep_org_babel_resolve_lang(lang, args_str)\n"
     "  if not lang_def then\n"
-    "    mep.notify('mepml: ' .. tostring(exe), 'warn')\n"
-    "    on_done({status = 'failed', reason = tostring(exe)})\n"
+    "    completed({status = 'failed', reason = tostring(exe)})\n"
     "    return\n"
     "  end\n"
     "  -- results=exec: the block is a program in its language -- written out,\n"
@@ -30489,14 +30512,13 @@ const char *kBuiltinMepml =
     "    if lang_def.compiled then mep.notify('Compiling ' .. lang .. ' block...') end\n"
     "    mep_org_babel_prepare_exec(lang_def, exe, script, args_str, mep_mepml_dir(mep.filename()), function(argv, extra, stage)\n"
     "      if not argv then\n"
-    "        mep.notify('mepml: ' .. tostring(stage or 'build') .. ' failed', 'warn')\n"
     "        finish(table.concat(extra or {}, '\\n'), tostring(stage or 'build') .. ' failed')\n"
     "        return\n"
     "      end\n"
     "      if res == 'exec-gui' then\n"
-    "        mep.mepml_gui_start(buf, blk.fence_row, argv, extra)\n"
+    "        mep.mepml_gui_start(buf, blk.fence_row, argv, extra, started_at)\n"
     "      else\n"
-    "        mep.mepml_terminal_start(buf, blk.fence_row, argv, extra)\n"
+    "        mep.mepml_terminal_start(buf, blk.fence_row, argv, extra, started_at)\n"
     "      end\n"
     "      on_done({status = 'ok'})\n"
     "    end)\n"
@@ -30566,9 +30588,6 @@ const char *kBuiltinMepml =
     "      failure = tostring(verb or 'run') .. ' exited with ' .. tostring(code)\n"
     "      local e = table.concat(err or {}, '\\n')\n"
     "      if e ~= '' then text = text .. (text ~= '' and '\\n' or '') .. e end\n"
-    "      mep.notify('mepml: ' .. tostring(verb or 'run') .. ' exited with ' .. tostring(code), 'warn')\n"
-    "    else\n"
-    "      mep.notify('Done running ' .. lang .. ' block')\n"
     "    end\n"
     "    if fig_path then\n"
     "      local ok, why = mep_mepml_capture_figure(dir, before, target_before, fig_path, fig)\n"
@@ -30576,7 +30595,6 @@ const char *kBuiltinMepml =
     "        mep.org_image_invalidate(fig_path)  -- a re-run redraws, not a cached texture\n"
     "        text = text .. (text ~= '' and '\\n' or '') .. (video and '\\\\video(' or '\\\\image(') .. fig .. ')'\n"
     "      else\n"
-    "        mep.notify('mepml: ' .. why, 'warn')\n"
     "        failure = failure or why\n"
     "      end\n"
     "    end\n"
@@ -36294,6 +36312,7 @@ const char *kBuiltinRunButton =
     "    return\n"
     "  end\n"
     "  mep_run_button_org_running[fname] = true\n"
+    "  local show_output = mep.mepml_ui_output_target and mep.mepml_ui_output_target()\n"
     "  local function done() mep_run_button_org_running[fname] = nil end\n"
     "  local ok, err = pcall(function()\n"
     "    mep.cmd('write')\n"
@@ -36314,7 +36333,7 @@ const char *kBuiltinRunButton =
     "      done()\n"
     "      if path:match('%.pptx$') or path:match('%.odp$') then mep.open_url(path) mep.notify('Run: wrote ' .. path)\n"
     "      else\n"
-    "        mep_run_button_show_org_output(path, 'Run')\n"
+    "        if show_output then show_output(path) else mep_run_button_show_org_output(path, 'Run') end\n"
     // A Beamer deck shows a whole slide at a time.\n"
     "        local pdf = path:match('%.pdf$') and deck and mep_run_button_pane_for_path(path)\n"
     "        if pdf then mep.pdf_fit_page(pdf) end\n"
@@ -70416,7 +70435,7 @@ function mep_mepml_headless_start(opts)
     local out, cut = '', false
     if st.status == 'failed' then out, cut = tail(st.output, 40) end
     local r = {index = H.index, line = b.first - 1, lang = b.lang, status = st.status, reason = st.reason or '',
-               seconds = now() - H.started, output = out}
+               seconds = st.seconds or (now() - H.started), output = out}
     H.results[#H.results + 1] = r
     if r.status == 'failed' then H.failed = H.failed + 1 elseif r.status == 'skipped' then H.skipped = H.skipped + 1 end
     if not opts.quiet or r.status == 'failed' then
@@ -71023,6 +71042,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinAi);
     lua->DoString(kBuiltinTabTerminal);
     lua->DoString(kBuiltinRunButton);
+    lua->DoString(BuiltinLanguageUiDocument());
     lua->DoString(kBuiltinPaneZoom);
     lua->DoString(kBuiltinPdfAi);
     lua->DoString(kBuiltinAiTerminal);

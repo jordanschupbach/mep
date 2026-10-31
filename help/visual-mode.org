@@ -19,6 +19,13 @@ Press the same key again, or =Esc=, to leave. Any [[file:motions.html][motion]] 
 selection, and a text object sets it outright: =viw= selects a word, =vi(=
 the inside of a parenthesised group.
 
+=vip= selects the whole current paragraph, stopping at an empty line or
+a line containing only spaces or tabs. =vap= includes the separating
+blank lines as well. Repeat =ip= or =ap= to extend the selection, or use a
+count, such as =v2ap= for two paragraphs. =o= lets you extend it in the
+opposite direction. Switching to a character object, such as =iw=,
+returns to character selection.
+
 * Acting on a selection
 
 Every [[file:operators.html][operator]] works: =d= deletes it, =y= yanks it, =c= changes it, =gu=

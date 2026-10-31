@@ -26,6 +26,19 @@ than as a whole separate application.</p>
 </table>
 <p>At most <b>one</b> mode is active per tab, so switching languages swaps the
 layout rather than accumulating panels.</p>
+<p>In a MEPML, Org or R Markdown code block, the toggle chooses the block's
+language. It opens an editable source buffer for that block alongside the
+language's usual console and panels. <code>:w</code> copies edits back and saves the
+document; closing the UI copies back any remaining edits and returns to
+the document, where they can be saved or undone. Run and send-to-console
+operate on the extracted code. A block's <code>include</code> file opens directly.
+If the block was also changed in the document, closing keeps the source
+buffer open and reports the conflict so neither version is overwritten.</p>
+<p>In MEPML prose, the toggle opens the <a href="mepml.html">document UI</a> instead:
+source on the left, compiled output on the right, and Outline, Code Blocks
+and Problems tabs below the output. Pressing the toggle from a supported
+code block switches this layout to that language's UI. From a mode's
+console, preview or panels, the toggle closes the layout.</p>
 <h1>What ships</h1>
 <table>
 <tr><th>Language</th><th>Page</th></tr>
@@ -37,9 +50,10 @@ layout rather than accumulating panels.</p>
 <tr><td>Clojure</td><td><a href="clojure-mode.html">Clojure mode</a></td></tr>
 <tr><td>Crystal</td><td><a href="crystal-mode.html">Crystal mode</a></td></tr>
 <tr><td>C#</td><td><a href="csharp-mode.html">C# mode</a></td></tr>
+<tr><td>MEPML</td><td><a href="mepml.html">Document preview and navigation</a></td></tr>
 </table>
-<p>Each shares the same shape: a console, a Help tab, and panels specific to
-the language.</p>
+<p>The programming language modes share the same shape: a console, a Help
+tab, and panels specific to the language.</p>
 <h1><code>gh</code>, in context</h1>
 <p><code>gh</code> ("go help") opens documentation for the symbol under the cursor. What
 answers depends on where you are:</p>

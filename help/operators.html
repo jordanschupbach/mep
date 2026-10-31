@@ -53,6 +53,17 @@ line -- <code>gq</code> wraps the prose under them without pulling it up into th
 </table>
 <p><code>i</code> takes the contents, <code>a</code> takes the delimiters too: <code>di(</code> empties the
 parentheses, <code>da(</code> removes them as well.</p>
+<p>For paragraphs, <code>ip</code> selects the current run of non-blank lines, without
+its separating blank lines; on a blank line it selects that blank run.
+Lines containing only spaces or tabs count as blank. <code>ap</code> includes the
+adjacent blank lines too, preferring those after the paragraph. Both
+objects operate on whole lines: <code>vip</code> highlights the paragraph, <code>dip</code>
+deletes it, and <code>yap</code> copies it together with its separator.</p>
+<p>Paragraph objects accept counts: <code>2ap</code> covers two paragraphs with their
+separators; <code>2ip</code> covers two successive runs (text then blank lines, or
+blank lines then text). Operator and object counts multiply, as in
+<code>2d2ap</code>. Repeating <code>ip</code> or <code>ap</code> in Visual mode extends the selection
+from its active end; <code>o</code> switches which end grows.</p>
 <p>The value of text objects is that they do not depend on where in the thing
 the cursor is. <code>ciw</code> changes the word you are on whether the cursor sits at
 its start, middle or end -- unlike <code>cw</code>, which only changes from the cursor

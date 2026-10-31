@@ -4427,7 +4427,7 @@ int l_mepml_terminal_start(lua_State *L) {
     const std::vector<std::string> temps = strings_at(4);
     const int id = GetEditor(L)->MepmlTerminalStart(static_cast<int>(luaL_checkinteger(L, 1)),
                                                     static_cast<int>(luaL_checkinteger(L, 2)) - 1,
-                                                    has_argv ? &argv : nullptr, temps);
+                                                    has_argv ? &argv : nullptr, temps, luaL_optnumber(L, 5, 0.0));
     if (id < 0) lua_pushnil(L);
     else lua_pushinteger(L, id);
     return 1;
@@ -4460,7 +4460,8 @@ int l_mepml_gui_start(lua_State *L) {
     const std::vector<std::string> argv = strings_at(3);
     const std::vector<std::string> temps = strings_at(4);
     const int id = GetEditor(L)->MepmlGuiStart(static_cast<int>(luaL_checkinteger(L, 1)),
-                                               static_cast<int>(luaL_checkinteger(L, 2)) - 1, has_argv ? &argv : nullptr, temps);
+                                               static_cast<int>(luaL_checkinteger(L, 2)) - 1, has_argv ? &argv : nullptr, temps,
+                                               luaL_optnumber(L, 5, 0.0));
     if (id < 0) lua_pushnil(L);
     else lua_pushinteger(L, id);
     return 1;
@@ -4492,7 +4493,8 @@ int l_mepml_web_start(lua_State *L) {
     const std::vector<std::string> server = strings_at(4);
     const std::vector<std::string> temps = strings_at(5);
     const int id = GetEditor(L)->MepmlWebStart(static_cast<int>(luaL_checkinteger(L, 1)),
-                                               static_cast<int>(luaL_checkinteger(L, 2)) - 1, url, server, temps);
+                                               static_cast<int>(luaL_checkinteger(L, 2)) - 1, url, server, temps,
+                                               luaL_optnumber(L, 6, 0.0));
     if (id < 0) lua_pushnil(L);
     else lua_pushinteger(L, id);
     return 1;

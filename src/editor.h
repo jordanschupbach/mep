@@ -11411,7 +11411,7 @@ public:
      * @return The run's id, or -1 (with a status message) when it cannot start.
      */
     int MepmlTerminalStart(int buffer_id, int fence_row, const std::vector<std::string> *argv = nullptr,
-                           const std::vector<std::string> &temp_files = {});
+                           const std::vector<std::string> &temp_files = {}, double started_at = 0.0);
     /**
      * @brief Stops a running block: SIGTERM to its process group, SIGKILL if already asked once.
      * @param run_id The run.
@@ -11568,7 +11568,7 @@ public:
      * @return The run's id, or -1 (with a status message) when it cannot start.
      */
     int MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::string> *argv = nullptr,
-                      const std::vector<std::string> &temp_files = {});
+                      const std::vector<std::string> &temp_files = {}, double started_at = 0.0);
     /**
      * @brief Shows a results=web block's page in mep's own web view (the one :Browser uses), in its results.
      * @param buffer_id The mepml buffer.
@@ -11579,7 +11579,7 @@ public:
      * @return The run's id, or -1 (with a status message) when it cannot start.
      */
     int MepmlWebStart(int buffer_id, int fence_row, const std::string &url, const std::vector<std::string> &server_argv,
-                      const std::vector<std::string> &temp_files = {});
+                      const std::vector<std::string> &temp_files = {}, double started_at = 0.0);
     /**
      * @brief Whether `run_id` is a GUI run (not a terminal one).
      */
@@ -15217,13 +15217,16 @@ private:
     // Returns false for an unrecognized or unmatched object (e.g. `di"` on
     // a line with no quotes) -- callers should then leave the buffer
     // untouched, matching Vim's "operator just cancels" behavior.
+    // Paragraph objects honor count; other objects currently consume it
+    // without extending their range.
     bool ResolveTextObject(char scope, char obj, CursorPos cursor, CursorPos *start, CursorPos *end,
-                            bool *linewise) const;
+                            bool *linewise, int count = 1) const;
     void WordObjectRange(CursorPos cursor, bool around, bool big, CursorPos *start, CursorPos *end) const;
     bool QuoteObjectRange(CursorPos cursor, char quote, bool around, CursorPos *start, CursorPos *end) const;
     bool BracketObjectRange(CursorPos cursor, char open_c, char close_c, bool around, CursorPos *start,
                              CursorPos *end) const;
-    void ParagraphObjectRange(CursorPos cursor, bool around, CursorPos *start, CursorPos *end) const;
+    bool ParagraphObjectRange(CursorPos cursor, bool around, CursorPos *start, CursorPos *end,
+                              int count = 1, int direction = 1) const;
     // Finds the bracket pair enclosing (or, if the cursor sits exactly on
     // one, starting at) `cursor`, honoring nesting depth. Shared by %'s
     // motion (which searches forward from the cursor for the *nearest*
@@ -15763,6 +15766,7 @@ private:
     // (IsTerminalBuffer, ReapExitedTerminals) may see them.
     struct MepmlTermRun {
         TerminalSession sess;
+        double started_at = 0.0;  // steady-clock seconds, including babel preparation when supplied
         int buffer_id = -1;
         std::string code;   // the block's command: finds the block again after edits
         int fence_row = -1;  // last known (MepmlScan keeps it current)
@@ -15851,6 +15855,7 @@ private:
     unsigned Mod1Bit() const;  // mod1_ as a gui_embed::KeyMod bit
     struct MepmlGuiRun {
         std::unique_ptr<mep::gui_embed::EmbeddedApp> app;
+        double started_at = 0.0;
         int buffer_id = -1;
         std::string code;   // finds the block again after edits
         int fence_row = -1;
@@ -15877,7 +15882,7 @@ private:
     // `argv` as a program with a window of its own.
     int MepmlGuiStartImpl(int buffer_id, int fence_row, const std::vector<std::string> *argv,
                           const std::vector<std::string> &temp_files, const std::string *web_url,
-                          const std::vector<std::string> *server_argv);
+                          const std::vector<std::string> *server_argv, double started_at);
     /** @brief A web run's server printed `line` (MepmlWebStart): the first http(s) address in it is loaded. */
     void MepmlWebServerLine(int run_id, const std::string &line);
     /** @brief A web run's server ended: before it named an address, the run ends too, with its output. */
@@ -16892,6 +16897,9 @@ private:
     // otherwise. Kept separate from pending_find_/pending_g_ since it can
     // co-occur with a pending operator the same way those do.
     char pending_textobj_scope_ = 0;
+    // Retain the active end after `o` even for a one-line paragraph,
+    // whose linewise anchor and cursor can have identical coordinates.
+    int visual_direction_ = 1;
     // For ';' and ',' to repeat the last f/F/t/T.
     char last_find_cmd_ = 0;
     char last_find_char_ = 0;

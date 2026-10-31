@@ -25,6 +25,12 @@ Useful whenever the range is easier to see than to describe.</p>
 <p>Press the same key again, or <code>Esc</code>, to leave. Any <a href="motions.html">motion</a> extends the
 selection, and a text object sets it outright: <code>viw</code> selects a word, <code>vi(</code>
 the inside of a parenthesised group.</p>
+<p><code>vip</code> selects the whole current paragraph, stopping at an empty line or
+a line containing only spaces or tabs. <code>vap</code> includes the separating
+blank lines as well. Repeat <code>ip</code> or <code>ap</code> to extend the selection, or use a
+count, such as <code>v2ap</code> for two paragraphs. <code>o</code> lets you extend it in the
+opposite direction. Switching to a character object, such as <code>iw</code>,
+returns to character selection.</p>
 <h1>Acting on a selection</h1>
 <p>Every <a href="operators.html">operator</a> works: <code>d</code> deletes it, <code>y</code> yanks it, <code>c</code> changes it, <code>gu</code>
 and <code>gU</code> change its case, <code>gq</code> reflows it, <code>~</code> toggles case.</p>

@@ -3861,8 +3861,20 @@ void Editor::MepmlFitCards() {
 // ---------------------------------------------------------------------------
 // Terminals inside mepml results
 
+namespace {
+double MepmlRunClock() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+std::string MepmlRunFinished(int fence_row, double started_at, const std::string &outcome) {
+    char duration[64];
+    std::snprintf(duration, sizeof(duration), "%.3f s", std::max(0.0, MepmlRunClock() - started_at));
+    return "mepml: block at line " + std::to_string(fence_row + 1) + " " + outcome + " after " + duration;
+}
+}  // namespace
+
 int Editor::MepmlTerminalStart(int buffer_id, int fence_row, const std::vector<std::string> *argv,
-                               const std::vector<std::string> &temp_files) {
+                               const std::vector<std::string> &temp_files, double started_at) {
     // The prepared program's files go once it has run, or now if it never does.
     auto drop_temps = [&temp_files] {
         for (const std::string &f : temp_files) {
@@ -3907,6 +3919,7 @@ int Editor::MepmlTerminalStart(int buffer_id, int fence_row, const std::vector<s
 
     const int id = next_mepml_term_++;
     MepmlTermRun &run = mepml_terms_[id];
+    run.started_at = started_at > 0.0 ? started_at : MepmlRunClock();
     run.buffer_id = buffer_id;
     run.code = blk->code;
     run.fence_row = fence_row;
@@ -4108,6 +4121,11 @@ void Editor::MepmlTerminalsTick() {
             mepml_term_focus_ = -1;
             if (mode_ == Mode::Terminal) mode_ = Mode::Normal;
         }
+        const bool failed = run.stops == 0 && run.sess.exit_code != 0;
+        const std::string outcome = run.stops > 0 ? "stopped"
+                                  : failed ? "failed (exit status " + std::to_string(run.sess.exit_code) + ")"
+                                           : "finished";
+        Notify(MepmlRunFinished(run.fence_row, run.started_at, outcome), failed ? NotifyLevel::Warn : NotifyLevel::Info);
         RemoveTempFiles(run.temp_files);
         it = mepml_terms_.erase(it);
     }
@@ -4215,23 +4233,24 @@ mepml::Document Editor::MepmlParseForExport(const std::vector<std::string> &tags
 }
 
 int Editor::MepmlGuiStart(int buffer_id, int fence_row, const std::vector<std::string> *argv,
-                          const std::vector<std::string> &temp_files) {
-    return MepmlGuiStartImpl(buffer_id, fence_row, argv, temp_files, nullptr, nullptr);
+                          const std::vector<std::string> &temp_files, double started_at) {
+    return MepmlGuiStartImpl(buffer_id, fence_row, argv, temp_files, nullptr, nullptr, started_at);
 }
 
 int Editor::MepmlWebStart(int buffer_id, int fence_row, const std::string &url, const std::vector<std::string> &server_argv,
-                          const std::vector<std::string> &temp_files) {
+                          const std::vector<std::string> &temp_files, double started_at) {
     if (url.empty() && server_argv.empty()) {
         status_message_ = "Nothing to show: no page and no web app";
         RemoveTempFiles(temp_files);
         return -1;
     }
-    return MepmlGuiStartImpl(buffer_id, fence_row, nullptr, temp_files, &url, &server_argv);
+    return MepmlGuiStartImpl(buffer_id, fence_row, nullptr, temp_files, &url, &server_argv, started_at);
 }
 
 int Editor::MepmlGuiStartImpl(int buffer_id, int fence_row, const std::vector<std::string> *argv,
                               const std::vector<std::string> &temp_files, const std::string *web_url,
-                              const std::vector<std::string> *server_argv) {
+                              const std::vector<std::string> *server_argv, double started_at) {
+    if (started_at <= 0.0) started_at = MepmlRunClock();
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) {
         RemoveTempFiles(temp_files);
         return -1;
@@ -4298,6 +4317,7 @@ int Editor::MepmlGuiStartImpl(int buffer_id, int fence_row, const std::vector<st
     }
     const int id = next_mepml_term_++;
     MepmlGuiRun &run = mepml_guis_[id];
+    run.started_at = started_at;
     run.app = std::move(app);
     run.web_view = web_view;
     run.buffer_id = buffer_id;
@@ -4506,6 +4526,10 @@ void Editor::MepmlGuisTick() {
         }
         if (mepml_gui_focus_ == it->first) mepml_gui_focus_ = -1;
         if (run.server_job != 0) JobManager::Instance().Kill(run.server_job);
+        const bool failed = !run.server_failure.empty() || (run.app->Stops() == 0 && run.app->ExitCode() != 0);
+        const std::string outcome = failed ? "failed" : run.app->Stops() > 0 ? "stopped" : "finished";
+        if (run.started_at > 0.0)
+            Notify(MepmlRunFinished(run.fence_row, run.started_at, outcome), failed ? NotifyLevel::Warn : NotifyLevel::Info);
         run.app.reset();
         RemoveTempFiles(run.temp_files);
         it = mepml_guis_.erase(it);
@@ -4540,7 +4564,17 @@ void Editor::MepmlWebServerExit(int run_id, int code) {
     if (it == mepml_guis_.end()) return;
     MepmlGuiRun &run = it->second;
     run.server_job = 0;
-    if (run.server_url) return;  // its page stays, as a browser's would
+    if (run.server_url) {
+        // The page stays, as a browser's would, but its program has ended.
+        // Report that now, and don't report its runtime again on page close.
+        const bool failed = code != 0 && run.app->Stops() == 0;
+        const std::string outcome = run.app->Stops() > 0 ? "stopped"
+                                  : failed ? "failed (exit status " + std::to_string(code) + ")"
+                                           : "finished";
+        Notify(MepmlRunFinished(run.fence_row, run.started_at, outcome), failed ? NotifyLevel::Warn : NotifyLevel::Info);
+        run.started_at = 0.0;
+        return;
+    }
     run.server_failure = code == 127 ? "[the program could not be started]"
                                      : "[the program ended without printing a web address]";
     run.app->Stop();

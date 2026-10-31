@@ -48,6 +48,7 @@ restyles all of them.</p>
 <tr><th>Key / command</th><th>Does</th></tr>
 <tr><td>play button, <code>gr</code></td><td>export the document and open the result beside it</td></tr>
 <tr><td><code>&lt;leader&gt;rr</code></td><td>the same</td></tr>
+<tr><td><code>&lt;leader&gt;uu</code>, <code>&lt;leader&gt;lu</code></td><td>toggle document UI; in a code block, toggle that language's UI</td></tr>
 <tr><td><code>=</code></td><td>line the HTML export beside it up with the cursor's line</td></tr>
 <tr><td><code>C-c C-c</code></td><td>run the code block under the cursor</td></tr>
 <tr><td><code>&lt;leader&gt;kx</code></td><td>the same</td></tr>
@@ -116,6 +117,29 @@ reads the way it exports, results showing. A rendered <code>\toc</code> or <code
 <code>za</code> on it collapses the block to its title and a count (/Contents • 3
 headings/), and <code>za</code> again, <code>zR</code> or its <code>+</code> opens it. The Structure sidebar
 lists the headings.</p>
+<h1>Document UI</h1>
+<p><code>&lt;leader&gt;uu</code> (also <code>&lt;leader&gt;lu</code> or <code>:MepLanguageUi</code>) in prose opens a
+layout for writing: your source on the left, the compiled document at the
+top right, and Outline, Code Blocks and Problems tabs at the bottom
+right. Click a heading, block or problem to jump to its source. These
+lists refresh as you edit.</p>
+<p>Opening the mode saves and compiles the document through the same path
+as <code>&lt;leader&gt;rr</code>, including its <code>//? Export:</code> format (HTML by default).
+Use <code>&lt;leader&gt;rr</code> in the source to refresh the compiled view; it reuses the
+preview pane and leaves focus in your source. Presentation formats that
+normally open in an external program still do so.</p>
+<p>Inside a code block, <code>&lt;leader&gt;uu</code> chooses the block's
+<a href="language-ui.html">language UI</a> instead, when one is available. This works from the
+document UI too: the previous layout closes before the language layout
+opens. The block opens as editable source; <code>:w</code> saves it back to the
+document, and closing the mode copies back any unsaved edits and returns
+to the document. The source file's directory is used for the temporary
+code file, so relative imports and includes retain their base directory.
+The temporary file is removed when the mode closes.</p>
+<p>The toggle from a preview, console or panel closes the active layout.
+An unsupported block language falls back to the document UI.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.mepml_ui_preview_share = <span class="tok-cyan">0.5</span>  <span class="tok-comment">-- width of the right column</span>
+<span class="tok-cyan">mep</span>.opt.mepml_ui_info_share = <span class="tok-cyan">0.3</span>     <span class="tok-comment">-- height of its navigation panels</span></code></pre></div>
 <h1>Document options and comments</h1>
 <pre>//? Title: Some title
 //? Option: OptionA=10
@@ -533,6 +557,12 @@ echo "Hello, world"
 block (<code>C-c C-c</code>) writes its output between the <code>result_begin:</code> and
 <code>result_end</code> markers, creating them under the block if they aren't there
 yet. <code>eval=false</code> stops a block from running.</p>
+<p>When a block finishes, a notification reports its elapsed time in seconds,
+for example <i>Done running python block at line 12 in 1.234 s</i>. The time
+includes preparation and compilation, when needed. Failed runs report
+their duration and the reason instead. The message appears in the status
+line and stays in Notifications history. Terminal and GUI programs report
+their duration when they exit or are stopped, rather than when launched.</p>
 <p>In the editor a code block is drawn as a card: a title bar with its
 language, its header options and a play button (click it to run the
 block), and its results as an <code>output</code> card underneath. The raw lines come
@@ -1395,12 +1425,32 @@ become TeX.</p>
 <span class="tok-blue">mep-mepml</span> build notes.mepml                <span class="tok-comment"># what the editor's export does: the</span>
                                            <span class="tok-comment"># //? Export: format (html by default)</span>
                                            <span class="tok-comment"># into the build directory, then Post:</span>
-<span class="tok-blue">mep-mepml</span> build notes.mepml org md html    <span class="tok-comment"># several formats, Post: once after all</span></code></pre></div>
+<span class="tok-blue">mep-mepml</span> build notes.mepml org md html    <span class="tok-comment"># several formats, Post: once after all</span>
+<span class="tok-blue">mep-mepml</span> build notes.mepml md <span class="tok-red">-d</span> out/     <span class="tok-comment"># into out/ instead of the build directory</span>
+<span class="tok-blue">mep-mepml</span> run notes.mepml                  <span class="tok-comment"># run every code block, as C-c C-c does</span>
+<span class="tok-blue">mep-mepml</span> build <span class="tok-red">--run</span> notes.mepml pdf      <span class="tok-comment"># run the blocks, then export</span>
+<span class="tok-blue">mep-mepml</span> convert <span class="tok-red">--run</span> notes.mepml ~/x.md <span class="tok-comment"># the same, to one file anywhere</span></code></pre></div>
 <p><code>convert</code> writes the file it is given (and copies the pictures it names
 beside it, as above) and runs nothing after;
 <code>build</code> is the editor's export with the document's <code>Build:</code> and <code>Post:</code>
-honoured, so a <code>just</code> recipe or a Makefile builds a document the way the
-play button does.</p>
+honoured (<code>-d DIR</code> writes into <code>DIR</code> instead, <code>--no-post</code> skips <code>Post:</code>),
+so a <code>just</code> recipe or a Makefile builds a document the way the play button
+does. Paths may be relative to any directory, and options may come before
+or after them.</p>
+<p><code>run</code> (and <code>--run</code> on <code>convert</code> or <code>build</code>) runs the code blocks with no
+window: <code>mep --run-mepml</code>, the editor's own runner, so a block runs with the
+same languages, <code>flags</code>, <code>file=</code> figures and result formats as <code>C-c C-c</code> on
+it, in the document's directory, top to bottom. The results are written into
+the document, which is only rewritten when they changed (and not at all if it
+was edited meanwhile). Each block's outcome -- finished, failed (with its
+errors) or skipped (<code>eval</code>"no"=, or a terminal, window or web block, which
+need the editor) -- is printed, and the exit status is 1 when one failed. A
+failed block keeps its previous results unless <code>--write-errors</code> is given.
+<code>--timeout SECONDS</code> stops a block that runs too long, <code>--report FILE.json</code>
+writes every block's outcome, <code>-o OUT</code> (with <code>run</code>) writes the run document
+elsewhere, <code>-q</code> reports only failures. With <code>--run</code>, the export is written
+even when a block failed. <code>mep-mepml</code> finds <code>mep</code> beside itself, or through
+<code>$MEP_EXECUTABLE</code> or <code>--mep PATH</code>.</p>
 <p>and Lua functions: <code>mep.mepml_export(path)</code> writes the current buffer in
 the format <code>path</code> names, <code>mep.mepml_export_as(fmt)</code> also does PDF, and
 <code>mep.mepml_import(in, out)</code> writes <code>out</code>.</p>

@@ -5773,6 +5773,22 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
         return;
     }
 
+    // A linewise selection may end just below a long wrapped paragraph.
+    // Rounding the new view top to a whole buffer row would throw that
+    // paragraph off screen and show only its last source line, with empty
+    // space below. Keep its visible tail by scrolling only the slots needed
+    // to reveal the selection's active end. Large jumps still use the normal
+    // targeting below; a cursor row taller than the view cannot fit whole.
+    if (pane.id == CurPane().id && mode_ == Mode::VisualLine && wrap_cols > 0) {
+        const int cursor_slots = PaneRowSlots(pane, buf, pane.cursor.row, wrap_cols);
+        const int top = PaneSlotOffsetOfRow(pane, buf, pane.cursor.row, wrap_cols, slot_cap);
+        const int move = top < 0 ? top : std::max(0, top + cursor_slots - visible_lines);
+        if (cursor_slots <= visible_lines && std::abs(move) <= visible_lines) {
+            if (move != 0) ScrollPaneBySlots(pane, buf, move, wrap_cols);
+            return;
+        }
+    }
+
     // --- The view's top row is part-way scrolled off -------------------
     //
     // Which happens after a figure traversal: the cursor has stepped off
@@ -25199,11 +25215,11 @@ bool Editor::DispatchNormalKey(int cp) {
             char scope = pending_textobj_scope_;
             pending_textobj_scope_ = 0;
             pending_op_ = 0;
+            const int count = std::max(1, pending_op_count_) * std::max(1, TakeRawCount());
             pending_op_count_ = 0;
-            TakeRawCount();  // text objects don't take a count in mep (yet); discard rather than leak it
             CursorPos tstart, tend;
             bool linewise = false;
-            if (ResolveTextObject(scope, c, start, &tstart, &tend, &linewise)) {
+            if (ResolveTextObject(scope, c, start, &tstart, &tend, &linewise, count)) {
                 ApplyOperator(op, tstart, tend, linewise);
             }
             return true;
@@ -26727,6 +26743,33 @@ void Editor::DispatchVisualKey(int cp) {
     if (pending_textobj_scope_) {
         char scope = pending_textobj_scope_;
         pending_textobj_scope_ = 0;
+        const int count = std::max(1, TakeRawCount());
+        if (c == 'p') {
+            CursorPos previous_start, previous_end, first, last;
+            VisualRange(previous_start, previous_end);
+            const CursorPos anchor = CurPane().visual_anchor;
+            int direction = visual_direction_;
+            if (cursor.row != anchor.row) direction = cursor.row > anchor.row ? 1 : -1;
+            else if (cursor.col != anchor.col) direction = cursor.col > anchor.col ? 1 : -1;
+            CursorPos from = cursor;
+            // Once a whole paragraph (or blank run) is already selected,
+            // another ip/ap grows outwards from the active end. A partial
+            // selection first expands to the containing paragraph.
+            ParagraphObjectRange(cursor, false, &first, &last);
+            if (mode_ == Mode::VisualLine && previous_start.row <= first.row && previous_end.row >= last.row) {
+                from.row = direction > 0 ? last.row + 1 : first.row - 1;
+                from.col = 0;
+                if (from.row < 0 || from.row >= Buf().LineCount()) return;
+            }
+            if (!ParagraphObjectRange(from, scope == 'a', &first, &last, count, direction)) return;
+            first.row = std::min(first.row, previous_start.row);
+            last.row = std::max(last.row, previous_end.row);
+            mode_ = Mode::VisualLine;
+            visual_direction_ = direction;
+            CurPane().visual_anchor = direction > 0 ? first : last;
+            cursor = direction > 0 ? last : first;
+            return;
+        }
         CursorPos tstart, tend;
         bool linewise = false;
         if (ResolveTextObject(scope, c, cursor, &tstart, &tend, &linewise)) {
@@ -26735,6 +26778,7 @@ void Editor::DispatchVisualKey(int cp) {
                 mode_ = Mode::VisualLine;
                 cursor = tend;
             } else {
+                mode_ = Mode::Visual;
                 // tend is an exclusive charwise end; Visual mode's own
                 // selection is inclusive on both ends (see
                 // ApplyOperatorToSelectionOrCurrentLine's `+1`), so land the
@@ -26838,6 +26882,9 @@ void Editor::DispatchVisualKey(int cp) {
     switch (c) {
         case 'o': {
             CursorPos &anchor = CurPane().visual_anchor;
+            if (cursor.row != anchor.row) visual_direction_ = cursor.row > anchor.row ? 1 : -1;
+            else if (cursor.col != anchor.col) visual_direction_ = cursor.col > anchor.col ? 1 : -1;
+            visual_direction_ = -visual_direction_;
             std::swap(anchor, cursor);
             return;
         }
@@ -32401,11 +32448,13 @@ void Editor::EnterNormal() {
 
 void Editor::EnterVisual(bool linewise) {
     mode_ = linewise ? Mode::VisualLine : Mode::Visual;
+    visual_direction_ = 1;
     CurPane().visual_anchor = CurPane().cursor;
 }
 
 void Editor::EnterVisualBlock() {
     mode_ = Mode::VisualBlock;
+    visual_direction_ = 1;
     CurPane().visual_anchor = CurPane().cursor;
     block_to_eol_ = false;
 }
@@ -33090,33 +33139,46 @@ void Editor::WordObjectRange(CursorPos cursor, bool around, bool big, CursorPos 
     *end = {row, excl_end};
 }
 
-// Paragraphs are blank-line-delimited, same simplified reading as {/}
-// above. "Around" pulls in one adjacent run of the opposite kind (e.g. the
-// blank lines right after a text paragraph), same as Vim.
-void Editor::ParagraphObjectRange(CursorPos cursor, bool around, CursorPos *start, CursorPos *end) const {
-    int n = Buf().LineCount();
+// Unlike {/}, Vim's paragraph objects also treat spaces/tabs as a blank
+// separator. ip counts alternating text/blank runs; ap takes a text run
+// with adjacent blanks. Resolve the whole range before changing selection.
+bool Editor::ParagraphObjectRange(CursorPos cursor, bool around, CursorPos *start, CursorPos *end,
+                                  int count, int direction) const {
+    const int n = Buf().LineCount();
+    auto blank = [&](int row) { return Buf().lines[static_cast<size_t>(row)].find_first_not_of(" \t") == std::string::npos; };
     int row = cursor.row;
-    bool on_blank = Buf().lines[static_cast<size_t>(row)].empty();
-    int top = row, bottom = row;
-    while (top > 0 && Buf().lines[static_cast<size_t>(top) - 1].empty() == on_blank) top--;
-    while (bottom + 1 < n && Buf().lines[static_cast<size_t>(bottom) + 1].empty() == on_blank) bottom++;
-    if (around) {
-        int extra_bottom = bottom;
-        while (extra_bottom + 1 < n && Buf().lines[static_cast<size_t>(extra_bottom) + 1].empty() != on_blank) extra_bottom++;
-        if (extra_bottom > bottom) {
-            bottom = extra_bottom;
-        } else {
-            int extra_top = top;
-            while (extra_top > 0 && Buf().lines[static_cast<size_t>(extra_top - 1)].empty() != on_blank) extra_top--;
-            top = extra_top;
+    int first = row, last = row;
+    for (int i = 0; i < std::max(1, count); i++) {
+        if (row < 0 || row >= n) return false;
+        const bool on_blank = blank(row);
+        int top = row, bottom = row;
+        while (top > 0 && blank(top - 1) == on_blank) top--;
+        while (bottom + 1 < n && blank(bottom + 1) == on_blank) bottom++;
+        if (around) {
+            if (direction > 0 && bottom + 1 < n) {
+                const bool extra_blank = blank(bottom + 1);
+                do { bottom++; } while (bottom + 1 < n && blank(bottom + 1) == extra_blank);
+            } else if (direction < 0 && top > 0) {
+                const bool extra_blank = blank(top - 1);
+                do { top--; } while (top > 0 && blank(top - 1) == extra_blank);
+            } else if (!on_blank) {
+                // At EOF prefer preceding blanks; at BOF, following ones.
+                // A trailing blank run itself must never pull in prose.
+                if (direction > 0) while (top > 0 && blank(top - 1)) top--;
+                else while (bottom + 1 < n && blank(bottom + 1)) bottom++;
+            }
         }
+        first = std::min(first, top);
+        last = std::max(last, bottom);
+        row = direction > 0 ? bottom + 1 : top - 1;
     }
-    *start = {top, 0};
-    *end = {bottom, 0};  // inclusive, matching the linewise convention used throughout (e.g. dd's range)
+    *start = {first, 0};
+    *end = {last, 0};  // inclusive linewise endpoints
+    return true;
 }
 
 bool Editor::ResolveTextObject(char scope, char obj, CursorPos cursor, CursorPos *start, CursorPos *end,
-                                bool *linewise) const {
+                                bool *linewise, int count) const {
     *linewise = false;
     bool around = (scope == 'a');
     switch (obj) {
@@ -33140,9 +33202,8 @@ bool Editor::ResolveTextObject(char scope, char obj, CursorPos cursor, CursorPos
         case '>':
             return BracketObjectRange(cursor, '<', '>', around, start, end);
         case 'p':
-            ParagraphObjectRange(cursor, around, start, end);
             *linewise = true;
-            return true;
+            return ParagraphObjectRange(cursor, around, start, end, count);
         default: return false;
     }
 }

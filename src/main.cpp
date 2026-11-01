@@ -30607,6 +30607,8 @@ const char *kBuiltinMepml =
     // (`on_done` and `opts` as mep_mepml_run_block takes them; mep --run-mepml passes both.)
     "function mep.mepml_run_block_at(row, on_done, opts) mep_mepml_run_block(row, on_done, opts) end\n"
     "mep.command('MepmlExecute', mep.mepml_execute)\n"
+    "mep.command('MepmlBlockSettings', function() mep.org_block_settings() end)\n"
+    "mep.leader_map('kS', 'mepml: code block settings', mep.org_block_settings)\n"
     // A \video on (or near) the cursor's row plays or pauses, as a click
     // on its picture does.
     "mep.command('MepmlVideoToggle', function()\n"
@@ -65596,8 +65598,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // `src` and `example` (OrgBlockHasSettings, org_doc.h); a
             // `quote`/`export` block gets a card and no gear, the same
             // way it gets no play button.
-            // (Not for mepml: the popup edits org header arguments.)
-            if (OrgBlockHasSettings(card.kind) && !is_mepml_buffer) {
+            if (OrgBlockHasSettings(card.kind)) {
                 const float gear_w = std::max(20.0f, chip_h + 4.0f);
                 const gfx::Rectangle gear_rect{right_limit - gear_w, chip_y, gear_w, chip_h};
                 // Dropped on a card too narrow for it, same as the play
@@ -65624,7 +65625,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                     if (gear_hover) {
                         const std::string what = card.is_src ? (card.lang.empty() ? std::string("src") : card.lang)
                                                               : card.kind;
-                        g_pane_control_tooltip_text = "Settings for this " + what + " block (<leader>os)";
+                        g_pane_control_tooltip_text = "Settings for this " + what + " block (" +
+                            (is_mepml_buffer ? std::string("<leader>kS") : std::string("<leader>os")) + ")";
                         // Same full-row anchor height the play button
                         // hands the shared tooltip, and for the same
                         // reason (see its own comment above).

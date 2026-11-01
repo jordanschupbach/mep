@@ -4300,6 +4300,7 @@ enum class SettingsPanelSource {
     // Header arguments of an org block: a committed value is written into
     // the buffer, and the rows are re-read from the block afterwards.
     OrgBlock,
+    MepmlBlock,
     // mep's own preferences: a committed value goes to a Lua callback,
     // which applies it and persists it. The rows are owned by whoever
     // opened the panel and are never re-derived from a buffer.
@@ -14159,6 +14160,9 @@ private:
     // on, keeping the focused row. Closes the popup if the block is gone
     // (the buffer was edited underneath it).
     void OrgSettingsReload();
+    void BeginMepmlBlockSettings(int fence_row);
+    void MepmlSettingsReload();
+    void MepmlSettingsApply(int index, const std::string &value);
     // Commits the staged value of the row being edited and returns to
     // row navigation. A no-op when nothing is being edited.
     void OrgSettingsCommitEdit();

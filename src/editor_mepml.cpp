@@ -3542,6 +3542,154 @@ void Editor::MepmlTableLayout(const mepml::Document &doc, const std::vector<mepm
     }
 }
 
+namespace {
+std::vector<OrgHeaderArgSpec> MepmlSettingSpecs(const std::string &lang) {
+    std::vector<OrgHeaderArgSpec> out;
+    auto text = [&](const char *section, const char *key, const char *hint) {
+        OrgHeaderArgSpec spec;
+        spec.section = section; spec.key = key; spec.label = key; spec.hint = hint;
+        out.push_back(std::move(spec));
+    };
+    auto choice = [&](const char *section, const char *key, std::vector<std::string> values, const char *hint) {
+        text(section, key, hint);
+        out.back().kind = OrgHeaderArgKind::kChoice;
+        out.back().choices = std::move(values);
+        out.back().list_popup = true;
+        out.back().allow_custom = true;
+    };
+    choice("Execution", "eval", {"", "true", "false", "no", "never"}, "Whether this block may run. Clear to use the default.");
+    choice("Results", "results", {"", "verbatim", "html", "svg", "markdown", "terminal", "exec", "exec-gui", "web", "video"},
+           "Printed text, rendered markup, or an interactive program. Clear to use the default.");
+    text("", "file", "Figure or video path, relative to the document; the program receives it as MEP_FILE.");
+    choice("Export", "exports", {"", "both", "code", "results", "none"}, "Which parts of this block an export includes; clear to inherit the document's Exports header.");
+    choice("", "echo", {"", "true", "false"}, "Show the code in exports; false leaves just the results.");
+    text("Included source", "include", "Source file to read, run and edit inside this block, relative to the document.");
+    text("", "lines", "Included line range: 10-20, 10, 10- or -20.");
+    text("", "region", "Named region of the included file.");
+    choice("", "dedent", {"", "true", "false"}, "Strip the included lines' shared indentation.");
+    for (const auto &entry : std::vector<std::pair<std::string, double>>{{"rows", 16}, {"cols", 80}}) {
+        text(entry.first == "rows" ? "Interactive display" : "", entry.first.c_str(), "Terminal or embedded window size. Clear to use its default.");
+        OrgHeaderArgSpec &spec = out.back();
+        spec.kind = OrgHeaderArgKind::kNumber;
+        spec.min_value = entry.first == "rows" ? 3 : 10;
+        spec.max_value = entry.first == "rows" ? 200 : 400;
+        spec.default_value = entry.second;
+    }
+    // Reuse the language backend's catalogue, but omit Org's result facets,
+    // tangling/session/cache settings and switches: MEPML runs those paths
+    // differently. Custom options remain editable below regardless.
+    const std::unordered_set<std::string> common = {"cmdline", "cmd", "nix-shell", "stdin", "prologue", "epilogue", "noweb", "noweb-ref", "noweb-sep"};
+    bool language_section = false;
+    std::string section, shown_section;
+    for (OrgHeaderArgSpec spec : OrgHeaderArgSpecsFor("src", lang)) {
+        if (!spec.section.empty()) {
+            section = spec.section;
+            language_section = section == "Compilation" || section.rfind("Language:", 0) == 0;
+        }
+        if (spec.kind == OrgHeaderArgKind::kSwitch || (!language_section && !common.count(spec.key))) continue;
+        spec.label = spec.key;
+        spec.section = section == shown_section ? "" : section;
+        shown_section = section;
+        if (spec.kind == OrgHeaderArgKind::kChoice) { spec.list_popup = true; spec.allow_custom = true; }
+        out.push_back(std::move(spec));
+    }
+    return out;
+}
+}  // namespace
+
+void Editor::BeginMepmlBlockSettings(int fence_row) {
+    EndSettingsPanelSession();
+    settings_source_ = SettingsPanelSource::MepmlBlock;
+    org_settings_buffer_ = CurrentBufferId();
+    org_settings_begin_row_ = fence_row;
+    org_settings_index_ = 0;
+    org_settings_editing_ = false;
+    org_settings_pending_.clear();
+    org_settings_pending_cursor_ = 0;
+    overlay_previous_mode_ = mode_;
+    mode_ = Mode::OrgBlockSettings;
+    MepmlSettingsReload();
+}
+
+void Editor::MepmlSettingsReload() {
+    org_settings_rows_.clear();
+    if (org_settings_buffer_ < 0 || org_settings_buffer_ >= static_cast<int>(buffers_.size())) { CloseOrgBlockSettings(); return; }
+    const mepml::Document doc = MepmlParseBuffer(buffers_[static_cast<size_t>(org_settings_buffer_)]);
+    const mepml::Block *block = nullptr;
+    for (const mepml::Block &b : doc.blocks)
+        if (b.origin.empty() && b.kind == mepml::BlockKind::Code && b.code_line_start - 1 == org_settings_begin_row_) block = &b;
+    if (!block) { CloseOrgBlockSettings(); return; }
+    org_settings_title_ = (block->lang.empty() ? "Code" : block->lang) + " block settings";
+    std::vector<OrgHeaderArgSpec> specs = MepmlSettingSpecs(block->lang);
+    std::unordered_set<std::string> keys;
+    for (const OrgHeaderArgSpec &spec : specs) keys.insert(spec.key);
+    bool additional = false;
+    for (const mepml::Option &option : block->options) {
+        const std::string key = Lowered(option.name);
+        if (!keys.insert(key).second) continue;
+        OrgHeaderArgSpec spec;
+        spec.section = additional ? "" : "Additional options"; spec.key = key; spec.label = option.name;
+        additional = true;
+        spec.hint = "Option written on this block. Clear its value to remove it.";
+        specs.push_back(std::move(spec));
+    }
+    for (OrgHeaderArgSpec &spec : specs) {
+        OrgBlockSettingRow row;
+        row.spec = std::move(spec);
+        for (const mepml::Option &option : block->options) {
+            if (Lowered(option.name) == row.spec.key) { row.value = option.value.s; row.row = option.line; }
+        }
+        org_settings_rows_.push_back(std::move(row));
+    }
+    OrgBlockSettingRow add;
+    add.spec.section = additional ? "" : "Additional options";
+    add.spec.label = "Add option";
+    add.spec.hint = "Enter name=value to add any other block option. Changes are undoable source edits.";
+    org_settings_rows_.push_back(std::move(add));
+    org_settings_index_ = std::clamp(org_settings_index_, 0, static_cast<int>(org_settings_rows_.size()) - 1);
+}
+
+void Editor::MepmlSettingsApply(int index, const std::string &value) {
+    const OrgBlockSettingRow row = org_settings_rows_[static_cast<size_t>(index)];
+    if (row.value == value) return;
+    std::string key = row.spec.key, setting = value;
+    if (key.empty()) {
+        const size_t eq = value.find('=');
+        key = value.substr(0, eq);
+        const size_t start = key.find_first_not_of(" \t"), end = key.find_last_not_of(" \t");
+        key = start == std::string::npos ? "" : key.substr(start, end - start + 1);
+        if (eq == std::string::npos || key.empty() || key.find_first_of(" \t\n,{}\"'\\:") != std::string::npos) {
+            Notify("Use name=value to add a block option", NotifyLevel::Warn); return;
+        }
+        setting = mepml::Value::Parse(value.substr(eq + 1)).s;
+    }
+    if (org_settings_buffer_ < 0 || org_settings_buffer_ >= static_cast<int>(buffers_.size())) return;
+    const Buffer &buf = buffers_[static_cast<size_t>(org_settings_buffer_)];
+    const mepml::Document doc = MepmlParseBuffer(buf);
+    const mepml::Block *block = nullptr;
+    for (const mepml::Block &b : doc.blocks)
+        if (b.origin.empty() && b.kind == mepml::BlockKind::Code && b.code_line_start - 1 == org_settings_begin_row_) block = &b;
+    if (!block) { CloseOrgBlockSettings(); return; }
+    int target = org_settings_begin_row_;
+    for (const mepml::Option &option : block->options) if (Lowered(option.name) == Lowered(key)) target = option.line;
+    std::vector<std::string> header;
+    for (int r = block->line_start; r <= org_settings_begin_row_; r++) {
+        const std::string &before = buf.lines[static_cast<size_t>(r)];
+        const std::string after = mepml::SetCodeOptionOnLine(before, key, r == target ? setting : "");
+        if (!after.empty()) header.push_back(after);
+    }
+    const int new_fence = block->line_start + static_cast<int>(header.size()) - 1;
+    const int previous_fence = org_settings_begin_row_;
+    ReplaceLinesAt(org_settings_buffer_, block->line_start, previous_fence + 1, header);
+    if (CurrentBufferId() == org_settings_buffer_) {
+        CursorPos &cursor = CurPane().cursor;
+        if (cursor.row > previous_fence) cursor.row += new_fence - previous_fence;
+        else if (cursor.row >= block->line_start) cursor.row = std::min(cursor.row, new_fence);
+    }
+    org_settings_begin_row_ = new_fence;
+    MepmlSettingsReload();
+}
+
 void Editor::MepmlBuildCards(const mepml::Document &doc) {
     std::vector<OrgBlockCard> &cards = mepml_block_cards_[CurrentBufferId()];
     cards.clear();

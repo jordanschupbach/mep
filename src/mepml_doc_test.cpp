@@ -68,6 +68,30 @@ int main() {
         CHECK(Value::Parse("value1").kind == ValueKind::String && Value::Parse("value1").s == "value1");
     }
 
+    // Block settings write decoded values back through MEPML's syntax,
+    // without treating commas or option names inside strings as options.
+    {
+        const std::string value = "a, b/\\folder/\"quoted\"\nnext";
+        for (const std::string &fence : {std::string("```python"), std::string("```{python}"), std::string("```python {eval=false}")}) {
+            const std::string updated = SetCodeOptionOnLine(fence, "file", value);
+            const Document doc = Parse({updated, "pass", "```"});
+            CHECK(doc.diagnostics.empty() && doc.blocks.size() == 1);
+            CHECK(doc.blocks[0].lang == "python");
+            CHECK(doc.blocks[0].options.back().name == "file" && doc.blocks[0].options.back().value.s == value);
+            CHECK(SetCodeOptionOnLine(updated, "file", "").find("file=") == std::string::npos);
+        }
+        CHECK(SetCodeOptionOnLine("```{python, dedent, keep=1}", "dedent", "false") == "```{python, dedent=false, keep=1}");
+        CHECK(SetCodeOptionOnLine("```{cpp, eval=false, EVAL=true}", "eval", "true") == "```{cpp, eval=true}");
+        CHECK(SetCodeOptionOnLine("```{cpp, flags=\"-Dx,eval=false\", eval=false}", "eval", "true") ==
+              "```{cpp, flags=\"-Dx,eval=false\", eval=true}");
+        CHECK(SetCodeOptionOnLine("  ```{cpp, keep=1}", "keep", "") == "  ```cpp");
+        CHECK(SetCodeOptionOnLine("//? Option: file=old.png", "file", "new figure.png") == "//? Option: file=\"new figure.png\"");
+        CHECK(SetCodeOptionOnLine("//? file: old.png", "file", "new.png") == "//? file: new.png");
+        CHECK(SetCodeOptionOnLine("//? Option: file=old.png", "file", "").empty());
+        CHECK(SetCodeOptionOnLine("//? file: old.png", "file", "").empty());
+        CHECK(SetCodeOptionOnLine("//? Option: keep=1", "file", "") == "//? Option: keep=1");
+    }
+
     // --- Inline emphasis: each marker, and their boundary rules.
     {
         struct Case {

@@ -3088,6 +3088,62 @@ std::string FenceWithOption(const std::string &fence, const std::string &name, c
     }
 }
 
+std::string SetCodeOptionOnLine(const std::string &line, const std::string &name, const std::string &value) {
+    if (name.empty()) return line;
+    const size_t indent = line.find_first_not_of(" \t");
+    if (indent == std::string::npos) return line;
+    const std::string text = Trim(line.substr(indent)), want = Lower(name);
+    std::string encoded = value;
+    if (value.find_first_of(" \t\n,{}\"'\\") != std::string::npos) {
+        encoded = "\"";
+        for (char c : value) {
+            if (c == '\n') encoded += "\\n";
+            else if (c == '\t') encoded += "\\t";
+            else { if (c == '\\' || c == '"') encoded += '\\'; encoded += c; }
+        }
+        encoded += '"';
+    }
+    if (text.rfind("//?", 0) == 0) {
+        const size_t colon = text.find(':', 3);
+        if (colon == std::string::npos) return line;
+        const std::string key = Trim(text.substr(3, colon - 3));
+        Option option;
+        if (Lower(key) == "option") {
+            if (!ParseAssignment(text.substr(colon + 1), &option) || Lower(option.name) != want) return line;
+            return value.empty() ? "" : line.substr(0, indent) + "//? " + key + ": " + option.name + "=" + encoded;
+        }
+        if (Lower(key) != want) return line;
+        return value.empty() ? "" : line.substr(0, indent) + "//? " + key + ": " + encoded;
+    }
+    if (text.rfind("```", 0) != 0) return line;
+    const std::string head = Trim(text.substr(3));
+    const size_t brace = head.find('{');
+    std::string lang = brace == std::string::npos ? head : Trim(head.substr(0, brace));
+    std::vector<std::string> options;
+    if (brace != std::string::npos) {
+        const size_t close = head.rfind('}');
+        options = SplitOptions(head.substr(brace + 1, close == std::string::npos ? std::string::npos : close - brace - 1));
+        if (brace == 0 && !options.empty() && options[0].find('=') == std::string::npos) {
+            lang = options.front();
+            options.erase(options.begin());
+        }
+    }
+    std::vector<std::string> updated;
+    bool found = false;
+    for (const std::string &option : options) {
+        const std::string key = Trim(option.substr(0, option.find('=')));
+        if (Lower(key) != want) { updated.push_back(option); continue; }
+        if (!found && !value.empty()) updated.push_back(key + "=" + encoded);
+        found = true;
+    }
+    if (!found && value.empty()) return line;
+    if (!found) updated.push_back(name + "=" + encoded);
+    if (updated.empty()) return line.substr(0, indent) + "```" + lang;
+    std::string out = line.substr(0, indent) + "```{" + lang;
+    for (const std::string &option : updated) { if (out.back() != '{') out += ", "; out += option; }
+    return out + "}";
+}
+
 // ---------------------------------------------------------------------------
 // User commands and export conditions
 

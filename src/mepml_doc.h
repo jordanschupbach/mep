@@ -547,6 +547,10 @@ std::string IncludeLinesOption(const std::string &spec, int count);
 // `fence` with the value of its option `name` replaced by `value` (the
 // fence as it was when it has no such option).
 std::string FenceWithOption(const std::string &fence, const std::string &name, const std::string &value);
+// Edits a code fence or an affiliated //? option line. Values are decoded
+// text; quoting/escaping is added as needed. An empty value removes the
+// option. An empty return removes an option-only //? line altogether.
+std::string SetCodeOptionOnLine(const std::string &line, const std::string &name, const std::string &value);
 
 // ---------------------------------------------------------------------------
 // User commands and export conditions.

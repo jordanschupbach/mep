@@ -50,6 +50,7 @@ restyles all of them.
 | =<leader>kx=          | the same                                                  |
 | =C-c C-k=             | stop the block running under the cursor (a terminal)      |
 | =<leader>ks=          | the same                                                  |
+| =<leader>kS=          | edit the code block's options (also its top-right gear button) |
 | =<leader>kt=          | type into the running block's terminal                    |
 | =<leader>ka=          | run every code block, top to bottom                       |
 | =<leader>ke=          | export as... (fuzzy-pick a format, or All formats)        |
@@ -70,6 +71,7 @@ restyles all of them.
 | =gf=                  | format: the code block under the cursor, else the whole document (prose to =:set textwidth=, then every block) -- see [[file:formatting.html][Formatting]] |
 | =:MepmlExecute=       | run the code block under the cursor                       |
 | =:MepmlExecuteAll=    | run every code block                                      |
+| =:MepmlBlockSettings= | edit the options of the code block under the cursor       |
 | =:MepmlVideoToggle=   | play or pause the =\video= on (or near) the cursor's row   |
 | =:MepmlStop=          | stop the running block under the cursor                   |
 | =:MepmlTerminal=      | type into the running block's terminal                    |
@@ -677,6 +679,22 @@ In the editor a code block is drawn as a card: a title bar with its
 language, its header options and a play button (click it to run the
 block), and its results as an =output= card underneath. The raw lines come
 back when the cursor is on them.
+
+The gear button at the top right of a code card opens its settings menu.
+=<leader>kS= or =:MepmlBlockSettings= opens the same menu from the block's
+source. It offers MEPML's execution, results, export, included-source and
+terminal/window options, followed by the selected language's options
+(compiler flags for C++, plot dimensions for R, and so on).
+
+Click a field or press Enter to edit it. Choices open a searchable
+dropdown, numbers can be typed or stepped, and text fields accept paths
+and commands. An unset value is shown as =--=; clearing a field removes
+that option. Options already on the block appear even when they are
+custom ones. /Add option/ accepts =name=value= for an additional option.
+
+Each committed change edits the MEPML source and can be undone with =u=
+after closing the menu. Existing =//?= options are edited where they were
+written; new ones go on the fence. The code and results stay intact.
 
 A block with a =file= option draws a figure:
 

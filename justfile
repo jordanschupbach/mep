@@ -946,3 +946,7 @@ test-mepml-ui-live: build-native
 # Elapsed-time notifications from batch jobs, terminals, GUI and web programs.
 test-mepml-run-live: build-native
     python3 tools/mepml_run_live_check.py --build-dir {{native_build_dir}}
+
+# Click a MEPML code card's settings gear and edit its source options.
+test-mepml-settings-live: build-native
+    python3 tools/mepml_settings_live_check.py --build-dir {{native_build_dir}}

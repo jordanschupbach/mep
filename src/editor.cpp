@@ -2385,6 +2385,7 @@ void Editor::RunOrgBabelBlockAt(int begin_row) {
 // back into it.
 
 void Editor::BeginOrgBlockSettings(int begin_row) {
+    if (LspFiletype(Buf().filename) == "mepml") { BeginMepmlBlockSettings(begin_row); return; }
     const int buffer_id = CurrentBufferId();
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     const OrgBlockCard *card = nullptr;
@@ -2423,6 +2424,17 @@ void Editor::BeginOrgBlockSettings(int begin_row) {
 bool Editor::OpenOrgBlockSettingsAtCursor() {
     const int buffer_id = CurrentBufferId();
     const int row = Cursor().row;
+    if (LspFiletype(Buf().filename) == "mepml") {
+        const mepml::Document doc = MepmlParseBuffer(Buf());
+        for (const mepml::Block &block : doc.blocks) {
+            if (block.origin.empty() && block.kind == mepml::BlockKind::Code && row >= block.line_start && row <= block.line_end) {
+                BeginMepmlBlockSettings(block.code_line_start - 1);
+                return mode_ == Mode::OrgBlockSettings;
+            }
+        }
+        Notify("Block settings: not in a code block", NotifyLevel::Warn);
+        return false;
+    }
     int begin_row = -1;
     for (const OrgBlockCard &card : OrgBlockCards(buffer_id)) {
         // The card's own extent, affiliated `#+HEADER:` lines included:
@@ -2451,6 +2463,7 @@ void Editor::OrgSettingsReload() {
     // value. (OrgSettingsApply does not call this for that source anyway;
     // this guard is so a future caller cannot reintroduce the bug.)
     if (settings_source_ == SettingsPanelSource::MepSettings) return;
+    if (settings_source_ == SettingsPanelSource::MepmlBlock) { MepmlSettingsReload(); return; }
     org_settings_rows_.clear();
     org_settings_results_.clear();
     if (org_settings_buffer_ < 0 || org_settings_buffer_ >= static_cast<int>(buffers_.size())) {
@@ -2512,6 +2525,7 @@ void Editor::OrgSettingsReload() {
 
 void Editor::OrgSettingsApply(int index, const std::string &value) {
     if (index < 0 || index >= static_cast<int>(org_settings_rows_.size())) return;
+    if (settings_source_ == SettingsPanelSource::MepmlBlock) { MepmlSettingsApply(index, value); return; }
     if (settings_source_ == SettingsPanelSource::MepSettings) {
         SettingRow &row = org_settings_rows_[static_cast<size_t>(index)];
         if (value == row.value) return;  // nothing changed

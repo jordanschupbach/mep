@@ -3158,6 +3158,25 @@ if(NOT EMSCRIPTEN)
     add_dependencies(tests mep-editor-text-object-test)
 endif()
 
+if(NOT EMSCRIPTEN)
+    add_executable(mep-editor-block-settings-test EXCLUDE_FROM_ALL src/editor_block_settings_test.cpp
+        src/collab_crdt.cpp src/collab_session.cpp ${MEP_COLLAB_WEBSOCKET_SOURCE})
+    target_link_libraries(mep-editor-block-settings-test PRIVATE mep_core)
+    target_include_directories(mep-editor-block-settings-test PRIVATE src)
+    target_compile_options(mep-editor-block-settings-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-editor-block-settings-test PRIVATE ${MEP_SANITIZE_FLAGS})
+    target_precompile_headers(mep-editor-block-settings-test PRIVATE ${MEP_PCH_HEADERS})
+    if(OpenSSL_FOUND)
+        target_link_libraries(mep-editor-block-settings-test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(NOT WIN32)
+        target_link_libraries(mep-editor-block-settings-test PRIVATE Threads::Threads)
+    else()
+        target_link_libraries(mep-editor-block-settings-test PRIVATE ws2_32)
+    endif()
+    add_dependencies(tests mep-editor-block-settings-test)
+endif()
+
 # mep-bench (plans/PERFORMANCE_PLAN.md): the headless benchmark suite for
 # mep's own libraries -- editor core, syntax, codecs, regex, search, git,
 # documents. Each src/bench/*.cpp registers its benchmarks with MEP_BENCH;
@@ -3578,7 +3597,7 @@ if(NOT EMSCRIPTEN)
         mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test
         mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test
-        mep-editor-fold-test mep-editor-reload-test mep-editor-text-object-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test
+        mep-editor-fold-test mep-editor-reload-test mep-editor-text-object-test mep-editor-block-settings-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test
         mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test
         mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test
         mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test

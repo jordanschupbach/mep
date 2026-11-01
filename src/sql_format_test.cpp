@@ -84,6 +84,18 @@ int main(int argc, char **argv) {
     if (argc > 1 && std::strcmp(argv[1], "--format") == 0) return FormatFiles(argc, argv);
 
     Same("short select", "select a,b from t where x=1;\n", "SELECT a, b\nFROM t\nWHERE x = 1;\n");
+    Same("trailing comment on the last column",
+         "create table t (\n    a int,\n    b text  -- a note\n);\n",
+         "CREATE TABLE t (\n    a int,\n    b text -- a note\n);\n");
+    Same("blank line after a heading comment",
+         "-- Schema\n\ncreate table t (a);\n\n-- Data\n\ninsert into t values (1);\n",
+         "-- Schema\n\nCREATE TABLE t (\n    a\n);\n\n-- Data\n\nINSERT INTO t\nVALUES (1);\n");
+    Same("comment directly above a statement",
+         "-- the rows\nselect a from t;\n", "-- the rows\nSELECT a\nFROM t;\n");
+    Same("trailing comment on the last select item",
+         "select customer_id, first_name, last_name, email_address, phone_number, created_at -- when\nfrom customers;\n",
+         "SELECT\n    customer_id,\n    first_name,\n    last_name,\n    email_address,\n    phone_number,\n"
+         "    created_at -- when\nFROM customers;\n");
     Same("keywords keep case when asked", "select a from t;\n", "select a\nfrom t;\n",
          [] {
              sqlfmt::Options o;

@@ -1,0 +1,39 @@
+#+TITLE: SQL in mep
+
+=bookstore.sql= is a small SQLite bookstore (authors, a genre tree, books,
+customers, orders) for trying out mep's SQL support:
+
+- *Highlighting and outline*: mep's own tree-sitter grammar
+  (=grammars/tree-sitter-sql=). The structure sidebar lists the tables,
+  views, indexes and triggers.
+- *Language server* (=mep-sql-lsp=, help: =sql-lsp=): SQLite's own syntax
+  errors, plus checks against the schema (unknown or ambiguous columns,
+  wrong argument counts, =x = NULL=, ...). It also gives completion
+  (=b.= offers =book='s columns), hover (=K=), signature help, go to
+  definition, references and rename.
+- *Formatting*: =gf= lays the file out one clause per line with uppercase
+  keywords, and leaves the file alone if it cannot parse it
+  (help: =formatting=).
+- *SQL mode*: =<leader>uu= opens a =sqlite3= console on the database plus
+  Schema, Results, History and Help panels (help: =sql-mode=).
+
+* Try it
+
+1. Open =bookstore.sql= and press =<leader>uu=.
+2. =<leader>rr= runs the whole file, which (re)builds =bookstore.db= next
+   to it. It is safe to run again: the file starts by dropping what it
+   creates. The Schema panel fills in.
+3. Put the cursor on one of the queries near the end and press
+   =<leader>re=: the rows appear in Results.
+4. =gh= on =json_each=, =RANK= or a table name shows its documentation or
+   schema in Help.
+5. Uncomment the deliberate mistakes at the bottom of the file, one at a
+   time, to see the language server's diagnostics.
+
+The first line, =-- database: bookstore.db=, is what ties the file to the
+database. Both the console and the language server read it. Without that
+line, SQL mode uses a scratch database for the session.
+
+From a shell, without mep: =sqlite3 bookstore.db < bookstore.sql=.
+
+=bookstore.db= is generated, and =.gitignore= keeps it out of the repo.

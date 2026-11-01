@@ -58,10 +58,10 @@ commands: at the start of a line, with no statement pending.</p>
 <li>the other <code>.sql</code> files in the workspace;</li>
 <li>a database, when the file names one in a comment among its first lines:</li>
 </ol>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sql</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sql">-- Monthly report queries.
--- database: ../data/shop.db
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sql</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sql"><span class="tok-comment">-- Monthly report queries.</span>
+<span class="tok-comment">-- database: ../data/shop.db</span>
 
-SELECT label, price FROM items WHERE price &lt; 10;</code></pre></div>
+<span class="tok-purple">SELECT</span> label, price <span class="tok-purple">FROM</span> <span class="tok-orange">items</span> <span class="tok-purple">WHERE</span> price &lt; <span class="tok-cyan">10</span>;</code></pre></div>
 <p>The path is relative to the <code>.sql</code> file's directory (<code>~</code> is your home).
 The server reads that database's schema by running</p>
 <pre>sqlite3 -readonly -batch -json PATH "SELECT type, name, tbl_name, sql FROM sqlite_schema"</pre>

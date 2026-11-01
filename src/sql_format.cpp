@@ -198,6 +198,7 @@ public:
                 Through(st->first - 1);  // leading comments
                 if (next_ == st->first && last_ >= 0 && Type(last_) == SqlTok::Comment) {
                     if (LineOf(next_) > EndLineOf(last_)) Break(0);
+                    if (LineOf(next_) - EndLineOf(last_) >= 2) blank_ = true;
                 }
                 Statement(*st, 0, c.end_tok);
             }
@@ -333,11 +334,20 @@ private:
             next_ = i + 1;
             return;
         }
-        if (pending_break_) Break(cur_indent_);
+        // A blank line the source had next to a comment survives (at most one): it is what separates a
+        // section's heading comment from the statement under it.
+        const bool blank_gap = last_ >= 0 && LineOf(i) - EndLineOf(last_) >= 2 &&
+                               (t == SqlTok::Comment || Type(last_) == SqlTok::Comment);
+        if (pending_break_) {
+            Break(cur_indent_);
+            if (blank_gap) blank_ = true;
+        }
         if (t == SqlTok::Comment && cur_has_ && last_ >= 0 && LineOf(i) > EndLineOf(last_)) {
             Break(cur_indent_);  // a comment that had its own line keeps it
+            if (blank_gap) blank_ = true;
         } else if (cur_has_ && last_ >= 0 && Type(last_) == SqlTok::Comment && LineOf(i) > EndLineOf(last_)) {
             Break(cur_indent_);  // ... and so does what followed it on the next line
+            if (blank_gap) blank_ = true;
         }
         if (cur_has_ && SpaceBetween(last_, i, unary_)) cur_ += ' ';
         const bool was_operand = last_ >= 0 && cur_has_ && Operand(Type(last_));
@@ -926,6 +936,12 @@ private:
             if (n < rp && Type(Sig(n, rp)) == SqlTok::Comma) {
                 Through(Sig(n, rp));
                 n = Sig(n, rp) + 1;
+                while (n < rp && Type(n) == SqlTok::Comment && LineOf(n) == EndLineOf(n - 1)) {
+                    Through(n);
+                    n++;
+                }
+            } else {
+                // the last item has no comma, but a comment on its line still belongs to it
                 while (n < rp && Type(n) == SqlTok::Comment && LineOf(n) == EndLineOf(n - 1)) {
                     Through(n);
                     n++;

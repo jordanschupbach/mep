@@ -23,10 +23,10 @@ and <code>.nullvalue NULL</code>. If <code>sqlite3</code> is not on your <code>P
 so and opens nothing.</p>
 <h1>Which database</h1>
 <p>A comment among the file's first lines names the database:</p>
-<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sql</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sql">-- Orders, by customer
--- database: data/shop.db
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sql</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sql"><span class="tok-comment">-- Orders, by customer</span>
+<span class="tok-comment">-- database: data/shop.db</span>
 
-SELECT ...</code></pre></div>
+<span class="tok-purple">SELECT</span> ...</code></pre></div>
 <p>The path is relative to the <code>.sql</code> file's directory, and <code>~</code> is your home
 directory. A database that does not exist yet is created by the first
 statement that writes to it. mep's SQL language server reads the same

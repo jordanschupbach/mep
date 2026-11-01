@@ -68,7 +68,7 @@ Status legend: `[ ]` not started, `[~]` in progress, `[x]` done,
 | rust | [x] | [ ] | [ ] | [ ] | [ ] | `rust.so`; rust-analyzer |
 | scala | [x] | [ ] | [ ] | [ ] | [ ] | `scala.so`; metals |
 | scheme | [x] | [ ] | [ ] | [ ] | [ ] | `scheme.so`; none |
-| sql | [x] | [ ] | [ ] | [ ] | [ ] | `sql.so`; none |
+| sql | [x] | [x] | [x] | [x] | [x] |  |
 | tcl | [x] | [ ] | [ ] | [ ] | [ ] | `tcl.so`; none |
 | typescript | [x] | [ ] | [ ] | [ ] | [ ] | `typescript.so`; typescript-language-server |
 | zig | [x] | [ ] | [ ] | [ ] | [ ] | `zig.so`; zls |
@@ -458,6 +458,52 @@ Run, grammar, LSP and UI predate this plan (help/lisp-lsp.org, help/language-ui.
   is not valid UTF-8 is refused (dotnet format writes U+FFFD over the bytes;
   the file is Shift-JIS). Not yet: reading a project's `.editorconfig`
   (help/formatting.org has the dotnet format entry for that).
+
+### sql  `[x]`
+
+Dialect: SQLite 3 (the dev shell's `sqlite3`, also the Run button's). A
+`-- database: PATH` line among a file's leading comments ties it to a
+database file: the language server reads its schema, the UI mode's console
+opens it. Example: `examples/sql/bookstore.sql`.
+
+- Run `[x]`: `sqlite3 < <file>`.
+- Grammar `[x]` (2026-11-01): `grammars/tree-sitter-sql` (README there), a
+  port of DerekStride/tree-sitter-sql 0.3.11 (MIT): all 523 node types / 53
+  fields kept, 11 added. Corpus: 2,567 files (sqlfluff's fixtures for 30
+  dialects, PostgreSQL's regression/contrib/PL scripts, the repo's own):
+  `--old-clean` passes (all 59,970 statements the old grammar parsed cleanly
+  identical), 7 reviewed differences; files with errors 2,096 -> 1,963, none
+  new; ERROR bytes -19%; recovery -16.1%; fuzz clean (the old scanner failed
+  UBSan on every file). Fixes: psql meta-commands and sqlite3 dot-commands as
+  extras, `;;`, `EXPLAIN (...)`, `DO $$`, GRANT/REVOKE, COLLATE in ORDER BY,
+  LIKE ESCAPE, bare VACUUM/RESET; scanner rewritten (state freed while
+  serialized, leaked on restore, `$$x$y$$`); numbers were highlighted as
+  strings (Lua patterns in `#match?`). Oracle: `tools/ts_grammar_diff/sql_check.py`.
+- LSP `[x]` (2026-11-01): `mep-sql-lsp` (help/sql-lsp.org). Its own lexer and
+  parser after SQLite's `parse.y`, with SQLite's error texts: agrees with
+  sqlite3_prepare_v2 on all comparable statements of SQLite's test suite
+  (71,470) and 2,884 nixpkgs .sql files (69,248), same message and offset
+  every time; mutation test 3,234/3,234 rejected mutants flagged, 0 false
+  syntax errors. 23 codes; precision 99.4% (SQLite's tests) / 99.96%
+  (nixpkgs). Schema from the file, the workspace and the `-- database:` file
+  (read through `sqlite3 -readonly`); vocabulary generated from sqlite3 and
+  its docs (`just sql-lsp-vocab`). Completion, hover, signature help,
+  definition/references/rename (tables, columns, CTEs, aliases), outline,
+  folds, formatting, `--lint`, `--describe NAME` (the UI mode's Help).
+- UI `[x]` (2026-11-01): help/sql-mode.org. The sqlite3 CLI as the console
+  (a scratch database file per session when there is no `-- database:`);
+  Schema, History, Results, Help panels refreshed by separate read-only
+  sqlite3 jobs, so nothing runs twice. `<leader>re` sends the statement(s)
+  at the cursor/selection, rows captured into Results; `<leader>rr` `.read`s
+  the file. sql/sqlite blocks in Org, MEPML and Rmd open it too.
+- Format `[x]` (2026-11-01): `src/sql_format.cpp` (`mep.format_sql`, the
+  `sql` entry; mep-sql-lsp formats with it). Clause-per-line layout in the
+  sqlfluff/pgFormatter style (compared with both; differences in
+  help/formatting.org), uppercase keywords (or `keyword_case='preserve'`).
+  The result is re-lexed and must give the same tokens and comments.
+  SQLite's test suite: 40,085 scripts formatted, 271 refused (242 at
+  syntax errors SQLite reports too), idempotent everywhere, SQLite's
+  verdict never changed; ASan + UBSan clean.
 
 ### dart, ...
 

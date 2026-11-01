@@ -17114,6 +17114,7 @@ const char *kBuiltinSyntax =
     "  scala = 'scala', zig = 'zig', nim = 'nim', crystal = 'cr', java = 'java',\n"
     "  kotlin = 'kt', haskell = 'hs', ocaml = 'ml', d = 'd',\n"
     "  lisp = 'lisp', ['common-lisp'] = 'lisp', commonlisp = 'lisp',\n"
+    "  sql = 'sql', sqlite = 'sql',\n"
     "}\n"
     // Org emphasis markup (*bold*/\/italic\//_underline_/+strike+/=verbatim=/
     // ~code~), a hand-rolled scanner since the org grammar has no emphasis

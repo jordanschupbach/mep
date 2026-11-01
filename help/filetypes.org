@@ -17,6 +17,7 @@
 | Org          | Treesitter    | =mep-org-lsp=                |                |           |
 | Maxima       | per-line lexer | =mep-maxima-lsp=            | built in       | =maxima=  |
 | Common Lisp  | Treesitter    | =mep-lisp-lsp=               | built in       | =sbcl=    |
+| SQL          | per-line lexer | =mep-sql-lsp=, =sqls=       | built in       | =sqlite3= |
 | mepml        | Treesitter    | =mep-mepml-lsp=              | LSP (tables)   |           |
 | Go           | grammar via =just fetch-grammars= | =gopls=  | LSP            |           |
 | Rust         | grammar via =just fetch-grammars= | =rust-analyzer= | LSP     |           |

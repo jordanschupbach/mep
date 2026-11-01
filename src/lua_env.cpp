@@ -26,6 +26,7 @@
 #include "git/git_job.h"
 #include "maxima_format.h"
 #include "bash_format.h"
+#include "sql_format.h"
 #include "clojure_format.h"
 #include "crystal_format.h"
 #include "csharp_format.h"
@@ -522,6 +523,54 @@ int l_format_bash(lua_State *L) {
         lua_pushlstring(L, r.error.data(), r.error.size());
         if (r.error_line > 0) {
             lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_sql(text[, width[, spec]]) -> the text formatted as SQL, or nil plus an error message
+//
+// mep's own SQL formatter (sql_format.h), the builtin behind `gf` in a .sql
+// buffer: SQLite's dialect, one clause per line, keywords upper case,
+// lists broken one item per line when they do not fit in `width` (80 when
+// nil). `spec` is the mep.format_languages entry: its `indent` (a number of
+// spaces, or '\t') and `keyword_case` ('upper', or 'preserve' to leave
+// keywords as written) override the defaults. On a script with a syntax
+// error -- or a layout it cannot prove kept every token -- it returns nil,
+// the reason and the 1-based line, and the caller leaves the buffer alone.
+int l_format_sql(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    sqlfmt::Options opt;
+    if (lua_type(L, 2) == LUA_TNUMBER) {
+        const lua_Integer w = lua_tointeger(L, 2);
+        if (w >= 20 && w <= 1000) opt.width = static_cast<int>(w);
+    }
+    if (lua_istable(L, 3)) {
+        lua_getfield(L, 3, "indent");
+        if (lua_type(L, -1) == LUA_TNUMBER) {
+            const lua_Integer n = lua_tointeger(L, -1);
+            if (n > 0 && n <= 16) opt.indent_width = static_cast<int>(n);
+        } else if (lua_type(L, -1) == LUA_TSTRING && std::string(lua_tostring(L, -1)) == "\t") {
+            opt.use_tabs = true;
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "keyword_case");
+        if (lua_type(L, -1) == LUA_TSTRING && std::string(lua_tostring(L, -1)) == "preserve") {
+            opt.upper_keywords = false;
+        }
+        lua_pop(L, 1);
+    }
+    const sqlfmt::Result r = sqlfmt::Format(std::string(src, len), opt);
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line >= 0) {
+            lua_pushinteger(L, r.error_line + 1);
         } else {
             lua_pushnil(L);
         }
@@ -16915,6 +16964,7 @@ const luaL_Reg kMepFuncs[] = {
     {"format_r", l_format_r},
     {"format_maxima", l_format_maxima},
     {"format_bash", l_format_bash},
+    {"format_sql", l_format_sql},
     {"format_clojure", l_format_clojure},
     {"format_crystal", l_format_crystal},
     {"format_csharp", l_format_csharp},

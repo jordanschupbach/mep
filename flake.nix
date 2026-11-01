@@ -397,13 +397,13 @@
             # nothing installs them either. Copying only `mep` here (this
             # installPhase replaces the one CMake's own install(TARGETS)
             # rules would have run) therefore shipped a build with no
-            # Python, C, C++, R, org, mepml, Maxima, Common Lisp or Bash language support at
+            # Python, C, C++, R, org, mepml, Maxima, Common Lisp, Bash or SQL language support at
             # all: no diagnostics, no hover, no LSP completion and no
             # parameter hints, failing silently except for one "failed to
             # start (not on PATH?)" toast. Keep in sync with the
             # install(TARGETS ...) lines in CMakeLists.txt.
             for tool in mep-org-lsp mep-mepml-lsp mep-r-lsp mep-python-lsp \
-                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-lisp-lsp mep-bash-lsp mep-clojure-lsp mep-mepml mep-tex; do
+                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-lisp-lsp mep-bash-lsp mep-clojure-lsp mep-sql-lsp mep-mepml mep-tex; do
               install -Dm755 "$tool" "$out/bin/$tool"
             done
             # :Browser's web view on Linux (gui_embed_webview_x11.cpp finds

@@ -7932,6 +7932,18 @@ const char *kBuiltinLsp =
     // `bash -n`, and the checks after them are its own (help/bash-lsp.org).
     // The same binary is a command-line linter: `mep-bash-lsp --lint FILE...`.
     "  bash_ls = {cmd = {mep.bundled_tool('mep-bash-lsp')}, filetypes = {'sh', 'bash'}},\n"
+    // mep's own SQL server (src/sql_lsp_server.cpp), bundled the same way,
+    // for SQLite's dialect: its parser's syntax errors are sqlite3_prepare's
+    // own, word for word. It knows the schema from the file's DDL, the
+    // workspace's other .sql files and -- given a `-- database: PATH`
+    // header line -- that database's, read with `sqlite3 -readonly`
+    // (help/sql-lsp.org). Also `mep-sql-lsp --lint FILE...` and
+    // `--describe NAME`. sqls and sql-language-server (other dialects,
+    // live connections) keep entries without filetypes: give one {'sql'}
+    // (and clear sql_ls's) in init.lua to use it instead.
+    "  sql_ls = {cmd = {mep.bundled_tool('mep-sql-lsp')}, filetypes = {'sql'}},\n"
+    "  sqls = {cmd = {'sqls'}, filetypes = {}},\n"
+    "  sqlls = {cmd = {'sql-language-server', 'up', '--method', 'stdio'}, filetypes = {}},\n"
     // mep's own Clojure server (src/clojure_lsp_server.cpp), bundled the
     // same way. No JVM: its reader's errors are the JVM reader's, the
     // vocabulary of clojure.core is generated from Clojure itself, and it
@@ -17979,6 +17991,11 @@ const char *kBuiltinFormat =
     // `indent` ('\\t' or a number of spaces) and `case_indent` (true or
     // false) force what is otherwise read off the file.
     "  sh = {builtin = 'format_bash', name = \"mep's Bash formatter\"},\n"
+    // SQL: mep's own (src/sql_format.cpp), SQLite's dialect over the SQL
+    // language server's parser, one clause per line the way sqlfluff and
+    // pgFormatter lay it out. `indent` (spaces, or '\\t') and
+    // `keyword_case` ('upper' or 'preserve') override its defaults.
+    "  sql = {builtin = 'format_sql', name = \"mep's SQL formatter\", width = 80},\n"
     // Clojure: mep's own (src/clojure_format.cpp), cljfmt's layout with its
     // default options, checked against cljfmt on a corpus.
     "  clj = {builtin = 'format_clojure', name = \"mep's Clojure formatter\"},\n"

@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (224)</h1>
+<h1>The bindings (227)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -31,6 +31,7 @@ that it does nothing.</p>
 <tr><td><code>mep.buf_clear_latex_preview</code></td><td>clears the current buffer's math preview popup fragment</td></tr>
 <tr><td><code>mep.buf_clear_latex_rows</code></td><td>clears the current buffer's whole rendered-LaTeX row registry</td></tr>
 <tr><td><code>mep.buf_clear_org_lsp_status</code></td><td>clears the current buffer's org src-block LSP status registry</td></tr>
+<tr><td><code>mep.buf_latex_inline_list</code></td><td>lists the current buffer's registered inline-math spans</td></tr>
 <tr><td><code>mep.buf_set_image_row</code></td><td>registers an inline-image target for a line of the current buffer</td></tr>
 <tr><td><code>mep.buf_set_latex_preview</code></td><td>sets the current buffer's math preview popup fragment</td></tr>
 <tr><td><code>mep.buf_set_latex_row</code></td><td>registers a rendered LaTeX fragment for a source-line span of the current buffer</td></tr>
@@ -169,6 +170,7 @@ that it does nothing.</p>
 <tr><td><code>mep.org_images_toggle</code></td><td>toggles inline org image rendering on/off</td></tr>
 <tr><td><code>mep.org_latex_popup_toggle</code></td><td>toggles the math preview popup</td></tr>
 <tr><td><code>mep.org_latex_popup_visible</code></td><td>reports whether the formula being edited is previewed in a popup</td></tr>
+<tr><td><code>mep.org_latex_scan_delta</code></td><td>the same shape as</td></tr>
 <tr><td><code>mep.org_latex_scan_fragments</code></td><td>scans the buffer for LaTeX fragments (block and inline)</td></tr>
 <tr><td><code>mep.org_latex_toggle</code></td><td>toggles inline org LaTeX rendering on/off</td></tr>
 <tr><td><code>mep.org_latex_visible</code></td><td>reports whether inline org LaTeX rendering is currently on</td></tr>
@@ -206,6 +208,7 @@ that it does nothing.</p>
 <tr><td><code>mep.org_table_align</code></td><td>reformats the org table under the cursor to align its columns</td></tr>
 <tr><td><code>mep.org_table_auto_align</code></td><td>realigns the org table the cursor just moved out of</td></tr>
 <tr><td><code>mep.org_table_wrap_scan</code></td><td>rebuilds the wrapped display layout for over-wide org tables</td></tr>
+<tr><td><code>mep.org_table_wrap_stale</code></td><td>whether a table's inline maths rendered since its layout was planned</td></tr>
 <tr><td><code>mep.org_table_wrap_toggle</code></td><td>toggles wrapped rendering of over-wide org tables</td></tr>
 <tr><td><code>mep.org_tangle_comment</code></td><td>renders the comment lines that bracket one tangled block</td></tr>
 <tr><td><code>mep.org_tangle_options</code></td><td>reads a block's tangle-side header arguments</td></tr>

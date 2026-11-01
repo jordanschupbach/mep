@@ -1027,6 +1027,11 @@ add_library(mep_core STATIC
     # server's parser.
     src/bash_format.cpp
     src/bash_parse.cpp
+    # mep's own SQL formatter (mep.format_sql), over the SQL language
+    # server's SQLite parser.
+    src/sql_format.cpp
+    src/sql_parse.cpp
+    src/sql_lex.cpp
     # mep's own Clojure formatter (mep.format_clojure), over its reader.
     src/clojure_format.cpp
     src/clojure_reader.cpp
@@ -2343,6 +2348,40 @@ target_compile_options(mep-bash-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANIT
 target_link_options(mep-bash-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-bash-lsp-test)
 
+# mep's own SQL language server and linter (SQLite's dialect): the wire
+# half (src/sql_lsp_server.cpp, also `mep-sql-lsp --lint FILE...` and
+# `--describe NAME`) over the analysis half (src/sql_lsp*.cpp) and a
+# hand-written SQLite parser (src/sql_lex.cpp, src/sql_parse.cpp) whose
+# syntax errors are sqlite3_prepare's own (tools/sql_parse_check.py).
+# Same reasoning as mep-bash-lsp above: no mep_core, built by default
+# because kBuiltinLsp's `sql_ls` entry spawns it, skipped on Emscripten.
+set(MEP_SQL_LSP_SOURCES src/sql_lex.cpp src/sql_parse.cpp src/sql_lsp_analysis.cpp src/sql_lsp_features.cpp
+    src/sql_lsp_vocab.cpp src/sql_lsp_names.cpp src/sql_format.cpp)
+if(NOT EMSCRIPTEN)
+    add_executable(mep-sql-lsp src/sql_lsp_server.cpp ${MEP_SQL_LSP_SOURCES})
+    target_include_directories(mep-sql-lsp PRIVATE src)
+    target_compile_options(mep-sql-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-sql-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-sql-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# The SQL parser and analysis driven directly: no process, no client, no
+# SQLite.
+add_executable(mep-sql-lsp-test EXCLUDE_FROM_ALL src/sql_lsp_test.cpp ${MEP_SQL_LSP_SOURCES})
+target_include_directories(mep-sql-lsp-test PRIVATE src)
+target_compile_options(mep-sql-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-sql-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-sql-lsp-test)
+
+# mep's own SQL formatter (sql_format.cpp). `--format FILE...` prints each
+# file formatted, for checking it against a corpus.
+add_executable(mep-sql-format-test EXCLUDE_FROM_ALL src/sql_format_test.cpp src/sql_format.cpp src/sql_parse.cpp
+               src/sql_lex.cpp)
+target_include_directories(mep-sql-format-test PRIVATE src)
+target_compile_options(mep-sql-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-sql-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-sql-format-test)
+
 # Pure DOM/CSS test: intentionally links only html_doc.cpp, so selector and
 # cascade behavior can be verified without opening a window.
 add_executable(mep-html-doc-test EXCLUDE_FROM_ALL src/html_doc_test.cpp src/html_doc.cpp src/js_engine.cpp src/regex.cpp src/svg_doc.cpp src/wav_doc.cpp)
@@ -3595,7 +3634,7 @@ if(NOT EMSCRIPTEN)
         mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test
         mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-format-test mep-mepml-style-test
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
-        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-vterm-test mep-spell-test
+        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test
         mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test
         mep-editor-fold-test mep-editor-reload-test mep-editor-text-object-test mep-editor-block-settings-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test

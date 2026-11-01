@@ -23,6 +23,7 @@ stale copy from disk.
 | Common Lisp (=.lisp=, =.lsp=, =.cl=, =.asd=) | *built in* -- mep's own, nothing to install |
 | Crystal (=.cr=)      | *built in* -- mep's own, nothing to install |
 | C# (=.cs=)           | *built in* -- mep's own, nothing to install |
+| SQL (=.sql=)         | *built in* -- mep's own, nothing to install |
 | mepml (=.mepml=)     | *built in* -- see /mepml documents/ below |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
@@ -30,11 +31,11 @@ That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.
 
-C, C++, Python, R, Maxima, shell scripts, Clojure, Common Lisp, Crystal
-and C# need nothing installed at all: all ten formatters are built into
+C, C++, Python, R, Maxima, shell scripts, Clojure, Common Lisp, Crystal,
+C# and SQL need nothing installed at all: all eleven formatters are built into
 mep, so =gf= on a =.c=, =.cpp=, =.h=, =.py=, =.R=, =.mac=, =.sh=, =.clj=,
-=.lisp=, =.cr= or =.cs= buffer works on a machine with no =clang-format=,
-no =black=, no =air=, no =shfmt=, no =cljfmt=, no Emacs and no Python, R,
+=.lisp=, =.cr=, =.cs= or =.sql= buffer works on a machine with no =clang-format=,
+no =black=, no =air=, no =shfmt=, no =cljfmt=, no =sqlfluff=, no Emacs and no Python, R,
 Maxima, JVM, Lisp, Crystal or .NET toolchain, and answers instantly because
 nothing is spawned.
 
@@ -541,6 +542,99 @@ mep.format_languages.sh = {'shfmt', '--filename', '{}'}
 mep.format_languages.bash = mep.format_languages.sh
 #+end_src
 
+* The SQL formatter
+
+SQL files are laid out by mep itself, over the same SQLite parser mep's
+[[file:sql-lsp.html][SQL language server]] uses, in the common "one clause
+per line" style that sqlfluff's and pgFormatter's defaults both produce:
+
+#+begin_src sql
+select o.id,c.name,sum(o.total) as spent from orders o join customers c on c.id=o.customer_id where o.status='paid' and o.created_at>date('now','-30 days') group by o.id,c.name order by spent desc limit 10;
+#+end_src
+
+becomes
+
+#+begin_src sql
+SELECT o.id, c.name, sum(o.total) AS spent
+FROM orders o
+JOIN customers c ON c.id = o.customer_id
+WHERE o.status = 'paid' AND o.created_at > date('now', '-30 days')
+GROUP BY o.id, c.name
+ORDER BY spent DESC
+LIMIT 10;
+#+end_src
+
+- Keywords in upper case; names, strings and comments exactly as written
+  (a type name such as =integer= is a name to SQLite, and so is a keyword
+  used as one: a column called =key=, the =replace()= function).
+- One clause per line: =SELECT=, =FROM=, each =JOIN= (with its =ON= or
+  =USING= on the same line when it fits, else indented below), =WHERE=,
+  =GROUP BY=, =HAVING=, =WINDOW=, =ORDER BY=, =LIMIT=; =INSERT INTO=,
+  =VALUES=, =ON CONFLICT=, =RETURNING=; =UPDATE=, =SET=; =DELETE FROM=;
+  the =UNION= between two =SELECT=s on a line of its own.
+- A clause's list stays on the clause's line when it fits in the width,
+  else one item per line, a level in, with trailing commas. A =WHERE= or
+  =HAVING= that does not fit breaks before each top-level =AND= / =OR=.
+- Subqueries and CTE bodies are indented a level inside their
+  parentheses, the =)= back at the start; a call or list that does not fit
+  opens up the same way, and so does a long =CASE= (one =WHEN= per line).
+- =CREATE TABLE= gets one column definition or constraint per line, the
+  types lined up; =CREATE TRIGGER='s body statements are formatted as
+  statements between =BEGIN= and =END=; a virtual table's module
+  arguments are left exactly as written (the module parses them, not
+  SQLite).
+- Comments stay where they were; blank lines between statements are
+  kept, at most one. The =sqlite3= shell's =.commands= lines and the
+  =-- database:= header pass through untouched.
+
+** It will not rewrite a script it cannot prove it preserved
+
+The result is tokenized again and must be the same tokens as the input,
+comments included, apart from whitespace and the case of keywords, and
+must parse without error. A file with a syntax error -- by SQLite's
+rules, so a PostgreSQL-only statement counts -- is left exactly as it was,
+with SQLite's message and the line.
+
+On SQLite's own test suite (40,356 SQL blocks) and every =.sql= file in
+nixpkgs' sources (2,884 files):
+
+| corpus        | formatted | refused | at a syntax error SQLite reports too | not idempotent | SQLite's verdict changed | crashes |
+|---------------+-----------+---------+--------------------------------------+----------------+--------------------------+---------|
+| SQLite tests  |    40,085 |     271 | 242                                  |              0 |                        0 |       0 |
+| nixpkgs .sql  |       577 |   2,307 | 2,286                                |              0 |                        0 |       0 |
+
+The other refusals are errors SQLite raises while parsing that its
+syntax-only check does not ("ORDER BY clause should come after UNION ALL
+not before"), or syntax errors after an earlier statement where SQLite
+had already stopped on a semantic error. Most of nixpkgs' =.sql= files are
+PostgreSQL or MySQL. "Verdict changed" re-runs each statement of the
+formatted file through SQLite and compares the result -- error or not, and
+which error -- with the original's. The corpus runs clean under
+AddressSanitizer and UndefinedBehaviorSanitizer.
+
+Compared with sqlfluff (=--dialect sqlite=) and pgFormatter on mep's
+example files, the layout of clauses, subqueries and CTEs is the same; the
+differences are deliberate: a short select list stays on the =SELECT= line
+(sqlfluff always puts several targets on lines of their own), =CREATE
+TABLE= column types are aligned, a =VALUES= list that does not fit gets
+one row per line, and no rewriting beyond layout and keyword case
+(sqlfluff's =fix= also turns =JOIN= into =INNER JOIN= and reorders =ON=
+comparisons).
+
+** Options
+
+#+begin_src lua
+mep.format_languages.sql.width = 100              -- the margin (80)
+mep.format_languages.sql.indent = 2               -- spaces per level (4), or '\t' for tabs
+mep.format_languages.sql.keyword_case = 'preserve' -- leave keywords as written
+#+end_src
+
+To use sqlfluff instead:
+
+#+begin_src lua
+mep.format_languages.sql = {'sqlfluff', 'fix', '--dialect', 'sqlite', '-'}
+#+end_src
+
 * The Clojure formatter
 
 Clojure files are laid out the way =cljfmt= lays them out with its default
@@ -914,7 +1008,7 @@ nearest =air.toml= rather than from =width= above.
 * Line width
 
 The built-in formatters wrap at *100 columns* for C++, *88* for Python and
-*80* for C and R -- =width= in each one's table entry, and the subsections
+*80* for C, R and SQL -- =width= in each one's table entry, and the subsections
 above change it. The Bash one does not wrap: like =shfmt=, it keeps a
 script's own line breaks, and so do the Clojure, Common Lisp, Crystal and
 C# ones.

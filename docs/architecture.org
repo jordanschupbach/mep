@@ -305,6 +305,26 @@ ships two *servers* of its own:
 - =src/bash_lsp_server.cpp= — the =mep-bash-lsp= binary: the same stdio
   JSON-RPC shape and =--lint=. It claims =sh= and =bash=;
   bash-language-server stays registered without a filetype.
+- =src/sql_lex.cpp= and =src/sql_parse.cpp= (=src/sql_ast.h=) — SQLite's
+  SQL: a port of tokenize.c (keyword table, the context-sensitive
+  WINDOW/OVER/FILTER words) and a recursive-descent reading of parse.y
+  with its =%fallback= rules, building an AST. A script is cut where
+  =sqlite3_complete()= cuts it and each statement parsed alone; the
+  syntax errors are =sqlite3_prepare='s own message on the same token
+  (=tools/sql_parse_check.py= measures it against libsqlite3).
+- =src/sql_lsp_analysis.cpp= — the schema model (the file's DDL, the
+  workspace's, a =-- database:= file's) and the resolver: every table,
+  column, CTE, alias and window occurrence tied to what it names, and the
+  calibrated checks found on the way. =src/sql_lsp_features.cpp=
+  (diagnostics, completion, hover, signature help, navigation, rename,
+  outline, folds), =src/sql_lsp_vocab.cpp= (statement docs, =--describe=)
+  and the generated =src/sql_lsp_names.cpp= (SQLite's functions and
+  PRAGMAs, =scripts/gen_sql_lsp_vocab.py=) work over it.
+- =src/sql_lsp_server.cpp= — the =mep-sql-lsp= binary: stdio JSON-RPC,
+  =--lint=, =--describe=; it reads a =-- database:= file's schema by
+  running =sqlite3 -readonly=. It claims =sql=; =sqls= and
+  =sql-language-server= stay registered without a filetype.
+  =src/sql_format.cpp= is the formatter (=mep.format_sql=, =gf=).
 
 Code *inside* a =#+begin_src= block is handled separately, by
 =kBuiltinOrgPolyglot='s per-block shadow buffers talking to a real server

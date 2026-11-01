@@ -78,7 +78,10 @@ usually what you want.</p>
 </table>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.c_ui_hex_page = <span class="tok-cyan">1024</span>   <span class="tok-comment">-- bytes per page</span></code></pre></div>
 <h1>Help</h1>
-<p><code>gh</code> on a symbol opens its <code>man</code> page in the Help tab. <code>K</code> retains LSP hover.</p>
+<p><code>gh</code> on a symbol opens its <code>man</code> page in the Help tab. <code>gk</code> shows the LSP hover
+docs (signature, Doxygen comment) in the Help tab instead, bringing the tab to
+the front, or reopening it if it was closed, without moving focus off the
+source. <code>K</code> still shows the hover popup.</p>
 <h1>C++ compiler and library flags</h1>
 <p>The console inherits compiler flags from Run Setup. Additional flags, including
 pkg-config substitutions, can be configured before opening the mode:</p>

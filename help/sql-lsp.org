@@ -1,0 +1,263 @@
+#+TITLE: The SQL language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="17">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+SQL files get a language server of their own, =mep-sql-lsp=, built and
+shipped with mep. Open a =.sql= file and it attaches by itself -- nothing
+to install. It speaks *SQLite's* dialect: a hand-written SQLite parser (a
+port of SQLite's tokenizer and a recursive-descent reading of its
+grammar), a name resolver, and SQLite's functions, PRAGMAs and statements
+described from SQLite's own documentation.
+
+The same binary is a command-line linter and a documentation lookup; see
+/From the command line/ below.
+
+* The same syntax errors as SQLite
+
+Its syntax errors are SQLite's, word for word and on the same token:
+
+#+begin_example
+near "FROM": syntax error
+incomplete input
+unrecognized token: "^"
+#+end_example
+
+Like the =sqlite3= shell, it cuts the file into statements where
+=sqlite3_complete()= would (a =;= ends a statement, except inside
+=CREATE TRIGGER ... END=) and reports at most one syntax error per
+statement; the next statement starts fresh.
+
+This is checked against SQLite itself (=tools/sql_parse_check.py=, which
+prepares every statement with =sqlite3_prepare_v2= and compares the
+verdict, the message and =sqlite3_error_offset=):
+
+| Corpus                                          | Statements | Agree  | Same message and offset | Wrongly rejected | Missed |
+|-------------------------------------------------+------------+--------+-------------------------+------------------+--------|
+| SQLite's own test suite (40,356 SQL blocks)     | 71,470     | 71,466 | 340 of 340 errors       | 0                | 0      |
+| every =.sql= in nixpkgs' sources (2,884 files)  | 69,248     | 69,064 | 43,611 of 43,611 errors | 0                | 0      |
+
+The few statements left over are ones SQLite stops on for another reason
+before it reaches the syntax error (a table that already exists, an
+unknown database), so there is nothing to compare. Most of the nixpkgs
+files are PostgreSQL or MySQL, which is why so many of their statements
+are syntax errors -- to SQLite they are.
+
+Deleting one token at random from a statement SQLite accepts: of 3,000
+such mutants of SQLite's tests, SQLite rejects 2,119 as syntax errors and
+the server reports a syntax error for all 2,119; of
+2,000 from nixpkgs, 1,115 and all 1,115. It never reports one for any of
+the 1,380 mutants SQLite still accepts.
+
+Lines of the =sqlite3= shell's own commands (=.headers on=, =.mode
+column=) are not SQL and are skipped, where the shell would read them as
+commands: at the start of a line, with no statement pending.
+
+* The schema it knows
+
+Names are checked against:
+
+1. the file's own =CREATE TABLE=, =CREATE VIEW=, =CREATE INDEX=, =CREATE
+   TRIGGER= and =CREATE VIRTUAL TABLE= statements (=ALTER TABLE= applied),
+   wherever they are in the file;
+2. the other =.sql= files in the workspace;
+3. a database, when the file names one in a comment among its first
+   lines:
+
+#+begin_src sql
+-- Monthly report queries.
+-- database: ../data/shop.db
+
+SELECT label, price FROM items WHERE price < 10;
+#+end_src
+
+The path is relative to the =.sql= file's directory (=~= is your home).
+The server reads that database's schema by running
+
+#+begin_example
+sqlite3 -readonly -batch -json PATH "SELECT type, name, tbl_name, sql FROM sqlite_schema"
+#+end_example
+
+and parsing each =CREATE= statement with its own parser, so it knows
+every table, view and column -- and re-reads it only when the file
+changes. That is the only thing the server ever runs, and the database is
+opened read-only. Without =sqlite3= on =PATH=, or without the file, the
+header line gets an Information diagnostic saying so, and the checks fall
+back to the file's own DDL.
+
+On top of the schema, each statement brings its own names: CTEs (=WITH=),
+FROM-clause aliases, result-column aliases (usable in =WHERE=, =GROUP
+BY=, =HAVING= and =ORDER BY=, as SQLite allows), named windows, =NEW= and
+=OLD= in a trigger, =excluded= in an upsert, =rowid=, and the columns of
+=json_each=, =json_tree=, =generate_series= and the =pragma_*= table
+functions.
+
+* What it reports
+
+| Code                     | Severity        | What it means                                                         |
+|--------------------------+-----------------+-----------------------------------------------------------------------|
+| =syntax-error=           | error           | what SQLite says, in its words                                        |
+| =invalid-clause=         | error           | SQLite's parser rejects it after reading it (=unknown table option=, =unknown join type=, an =ORDER BY= before =UNION=) |
+| =unknown-table=          | error / warning | =no such table: x=                                                    |
+| =unknown-column=         | error / warning | =no such column: x=, =table t has no column named x=, a =USING= column one side lacks |
+| =ambiguous-column=       | error           | =ambiguous column name: x=: two tables in the FROM clause have it     |
+| =unknown-function=       | warning         | =no such function: f= -- SQLite's built-ins are all known; an application can define more |
+| =wrong-arity=            | error           | =wrong number of arguments to function f()=                           |
+| =misused-aggregate=      | error           | =count()=, =sum()=, ... in a =WHERE= clause                            |
+| =unknown-window=         | error           | =OVER w= with no =WINDOW w AS (...)=                                  |
+| =star-without-from=      | error           | =SELECT *= with no FROM clause                                        |
+| =insert-count=           | error           | =table t has 3 columns but 2 values were supplied=, =2 values for 3 columns= |
+| =values-count=           | error           | rows of a =VALUES= list with different numbers of terms                |
+| =compound-column-count=  | error           | the two sides of a =UNION= / =INTERSECT= / =EXCEPT= differ in width    |
+| =cte-column-count=       | error           | =WITH c(a, b) AS (SELECT 1)=                                          |
+| =view-column-count=      | error           | =CREATE VIEW v(a, b) AS SELECT 1=                                     |
+| =duplicate-column=       | error           | a column named twice in one =CREATE TABLE=                            |
+| =duplicate-cte=          | error           | two CTEs of one =WITH= with the same name                             |
+| =duplicate-alias=        | warning         | the same name twice in one FROM clause                                |
+| =compare-null=           | warning         | =x = NULL= is never true: =IS NULL= was meant                          |
+| =unused-cte=             | warning         | a CTE the statement never reads                                       |
+| =double-quoted-string=   | warning         | ="text"= where no column has that name: SQLite quietly makes it a string, other databases do not |
+| =unknown-pragma=         | warning         | a PRAGMA SQLite does not have (it silently does nothing)              |
+| =database-unavailable=   | information     | the =-- database:= file could not be read                             |
+
+The name checks are *errors* when a database was read (then the schema is
+known for certain) and *warnings* when only the file's own DDL is.
+
+** Calibration
+
+A checker that knows only part of the schema would be wrong more often
+than right, so the name checks hold back:
+
+- =unknown-table= only runs when the file (or the workspace) declares
+  tables of its own, or a database was read. A file of queries against a
+  database it does not name gets no unknown-name reports at all.
+- =unknown-column= only runs when every table in scope has a known column
+  list: a virtual table whose module is not one with column arguments
+  (=fts3=/=fts4=/=fts5=, =rtree=, =geopoly= are), a view over =SELECT *=
+  of an unknown table, or an unknown table itself switches it off for
+  that statement.
+- A table created further down the file, or created twice (=DROP= then
+  =CREATE= again), is known with every column either version has; an
+  =INSERT= without a column list is only counted against a table created
+  once. =ALTER TABLE ... ADD=, =RENAME= and =DROP COLUMN= are applied in
+  order: a statement before the =ALTER= sees the old columns, one after
+  it the new ones.
+- A virtual table's hidden columns (fts's =docid=, =rank=, the column
+  named after the table, a =languageid== column) can be named but are not
+  in =*= or in an =INSERT='s value count; a generated column is in =*= but
+  is not counted either. The shadow tables a virtual table keeps its data
+  in (=docs_content=, =docs_segdir=, =r_node=, ...) are known tables.
+- =misused-aggregate= is not reported inside a subquery, where the
+  aggregate may belong to the enclosing query; =min()= and =max()= with
+  two or more arguments are the scalar functions.
+- =cte-column-count= only for a CTE that is used (SQLite ignores an unused
+  one).
+- A statement with a syntax error is not checked beyond it.
+
+Measured with =tools/sql_parse_check.py lint=, which compares every
+diagnostic with SQLite's verdict on the statement it is in (the statement
+being run against the schema built by the file's earlier statements):
+
+| corpus       | statements SQLite rejects | reported, SQLite agrees | reported, SQLite accepts | warnings on accepted statements | in view / trigger bodies |
+|--------------+---------------------------+-------------------------+--------------------------+---------------------------------+--------------------------|
+| SQLite tests |                    38,728 |                   2,816 |                       17 |                             219 |                      308 |
+| nixpkgs .sql |                    17,370 |                   9,549 |                        4 |                              17 |                      470 |
+
+"Reported, SQLite accepts" are the false positives: an error the server
+reports on a statement SQLite runs. The 17 in SQLite's tests are corner
+cases of its own test suite (a column named by a CTE inside =CREATE
+INDEX=, =x1.d= naming a column through a parenthesised join's alias,
+=INSERT ... SELECT *= copying a table with a generated column, a
+table-valued function in parentheses). Every code other than
+=unknown-table=, =unknown-column=, =insert-count= and =star-without-from=
+has no false positive on either corpus. "Warnings on accepted statements" are the advisory checks doing
+their job -- an unknown =PRAGMA= (158 of SQLite's are its debug-build-only
+ones), an unused CTE, a double-quoted string -- since SQLite accepts all
+of those silently. SQLite only resolves the names in a view's or a
+trigger's body when it is used, so those reports cannot be scored against
+the =CREATE= statement and are counted on their own.
+
+Most statements SQLite rejects in these corpora are rejected for reasons
+no static check can know (a missing extension, a constraint violated by
+the data, a PostgreSQL function); the count of 38,728 is every rejected
+statement, not every catchable one.
+
+* What else it does
+
+- *Completion* offers, by position: the columns of a table or alias after
+  =alias.= (=NEW.=, =OLD.= and =excluded.= included); table and view names
+  after =FROM=, =JOIN=, =INTO=, =UPDATE=, =TABLE=; a table's columns
+  inside =INSERT INTO t (=; PRAGMA names after =PRAGMA=; statements at
+  the start of one; and in an expression the columns of the FROM clause's
+  tables, SQLite's functions (with their signature) and keywords.
+- *Hover* shows a function's signatures and SQLite's description of it, a
+  table's or view's =CREATE= statement, a column's table and type, a CTE's
+  or alias's columns, a PRAGMA, and what a statement keyword does
+  (=SELECT=, =CREATE TABLE=, =ON CONFLICT=, ...).
+- *Signature help* inside a function call: every documented form (=substr(X,Y)=
+  and =substr(X,Y,Z)=), the argument being typed highlighted.
+- *Go to definition*, *references*, *highlights* and *rename* work on
+  tables, columns, views, CTEs and their columns, aliases and windows.
+  Definition jumps into the workspace file that declares a table; rename
+  only touches names the file itself declares (a table from the database
+  or another file cannot be renamed from here), and quotes a new name
+  that is a keyword or not a plain identifier.
+- The *outline* lists the statements: tables with their columns, views,
+  indexes, triggers, and each query with its CTEs.
+- *Folding* covers multi-line statements, parenthesized lists and
+  subqueries, trigger bodies and runs of comment lines.
+- *Formatting* is mep's SQL formatter, the one =gf= runs (see
+  [[file:formatting.html][Formatting]]). A file with a syntax error is
+  left alone.
+
+* From the command line
+
+#+begin_src sh
+mep-sql-lsp --lint queries/*.sql
+cat report.sql | mep-sql-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+report.sql:12:8: warning: no such column: totl [unknown-column]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+A =-- database:= header is read here too.
+
+#+begin_src sh
+mep-sql-lsp --describe substr
+mep-sql-lsp --describe 'PRAGMA journal_mode'
+mep-sql-lsp --describe 'create table'
+mep-sql-lsp --describe items.price --database shop.db
+#+end_src
+
+prints the documentation of a function, PRAGMA, statement or keyword as
+plain text -- the signature lines, a blank line, the description wrapped
+at 78 columns -- and with =--database=, a table's columns and =CREATE=
+statement, or a column's table and type. A name it does not know prints
+nothing and exits 1.
+
+With no arguments, =mep-sql-lsp= is the language server on stdio.
+
+* Other dialects
+
+The server reads SQLite's SQL only: PostgreSQL's or MySQL's syntax is a
+syntax error to it, as it would be to SQLite. For those, =sqls= and
+=sql-language-server= are registered without a filetype; give one the
+=sql= files instead:
+
+#+begin_src lua
+mep.lsp_servers.sqls.filetypes = {'sql'}
+mep.lsp_servers.sql_ls.filetypes = {}
+#+end_src
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:formatting.html][Formatting]] -- =gf=, and the SQL formatter's layout.

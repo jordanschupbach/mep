@@ -1,0 +1,124 @@
+#+TITLE: SQL mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="41">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.sql= file.
+The tab becomes a database workspace: your SQL, the =sqlite3= shell below
+it, and panels showing the database's schema and what your last query
+returned. The dialect is SQLite's.
+
+The console is the =sqlite3= command-line shell (under =rlwrap=, for line
+editing, when that is installed), started with =.headers on=, =.mode box=
+and =.nullvalue NULL=. If =sqlite3= is not on your =PATH=, the toggle says
+so and opens nothing.
+
+* Which database
+
+A comment among the file's first lines names the database:
+
+#+begin_src sql
+-- Orders, by customer
+-- database: data/shop.db
+
+SELECT ...
+#+end_src
+
+The path is relative to the =.sql= file's directory, and =~= is your home
+directory. A database that does not exist yet is created by the first
+statement that writes to it. mep's SQL language server reads the same
+line.
+
+Without one, the console opens a scratch database file for the session --
+a file rather than =:memory:=, so the panels can read it. =-- database:
+:memory:= gives you an in-memory database anyway, but then the Schema
+panel cannot see inside it.
+
+=:MepSqlUiDatabase PATH= switches the open console to another database
+(the shell's =.open=); with no argument it shows which one is open.
+
+* Working in it
+
+| Key / command            | Does                                                                |
+|--------------------------+---------------------------------------------------------------------|
+| =<leader>re=             | run the statement at the cursor in the console; its rows go to Results |
+| =<leader>re= in Visual   | run every statement in the selection                                |
+| =<leader>rr=             | =.read= the whole file in the console                               |
+| =gh=                     | help for the name under the cursor, in the Help panel               |
+| =:MepSqlUiHelp NAME=     | the same, for a name you type                                       |
+| =:MepSqlUiDatabase PATH= | switch the console to another database                              |
+
+=<leader>re= finds the statement around the cursor the way the shell does:
+a =;= ends it unless it is inside a string, a quoted name, a comment, or the
+=BEGIN ... END= of a =CREATE TRIGGER=. Between statements it takes the one
+above. A line starting with =.= (=.tables=, =.schema t=) is a shell
+command and runs as itself.
+
+A statement you send runs *once*, in the console -- an =INSERT= sent once
+inserts once. Its rows are captured on the way, so the console shows only
+the =.read= line mep typed and any error, and Results shows the rows. An
+error names the line of your file it is on. =<leader>rr= is different: the
+whole file runs in the console, and its output stays there.
+
+Statements you type into the console yourself show their output there, as
+in any =sqlite3=.
+
+* The panels
+
+| Panel   | Shows                                                                          |
+|---------+--------------------------------------------------------------------------------|
+| Schema  | the database's tables and views with their columns, types, primary keys and =NOT NULL=, row counts, indexes and triggers |
+| History | what you sent from mep this session, newest first; click one to run it again  |
+| Results | the rows of the last statements you sent, as a grid, with the row count and time |
+| Help    | for a table, view, index or trigger, its columns and definition; for a column, the tables that have it; for a function, keyword or =PRAGMA=, mep's SQL documentation |
+
+Clicking a table or view in Schema shows its first rows in Results.
+Clicking a column inserts its name at the cursor in your SQL.
+
+Results is an ordinary buffer: long rows scroll sideways, and you can
+search and copy from it. A cell is cut at =mep.opt.sql_ui_max_col_width=
+characters, and only the first =mep.opt.sql_ui_row_limit= rows are drawn,
+with the full count above them. For a statement that changes rows, Results
+gives the number changed.
+
+The panels read the database file with a separate read-only =sqlite3=, never
+through your console, so they refresh after each statement you send and
+whenever the file changes -- after something you typed in the console, too.
+They see what is committed: rows inside a transaction you have not
+committed yet show up once you =COMMIT=.
+
+* Things to know
+
+- *Interrupting a statement* (=Ctrl-C= in the console) also stops the rest
+  of what was sent with it, and leaves the console printing JSON until you
+  send the next statement from mep (or type =.mode box=).
+- A =.mode= in what you send, or in the file =<leader>rr= runs, becomes the
+  console's mode from then on.
+- In a MEPML, Org or R Markdown code block whose language is =sql= or
+  =sqlite=, the toggle opens this mode for the block, with a scratch
+  database unless the block has its own =-- database:= line.
+
+* Options
+
+#+begin_src lua
+mep.opt.sql_ui_sqlite3 = '/usr/local/bin/sqlite3'  -- the console's sqlite3
+mep.opt.sql_ui_rlwrap = false          -- without rlwrap
+mep.opt.sql_ui_mode = 'column'         -- the console's .mode (default 'box')
+mep.opt.sql_ui_timer = true            -- .timer on in the console
+mep.opt.sql_ui_init = {'.bail on'}     -- more shell commands to start with
+mep.opt.sql_ui_row_limit = 1000        -- rows Results draws
+mep.opt.sql_ui_preview_limit = 200     -- rows a Schema click previews
+mep.opt.sql_ui_max_col_width = 40      -- widest cell in Results
+mep.opt.sql_ui_null = 'NULL'           -- how NULL is shown
+mep.opt.sql_ui_row_counts = false      -- skip count(*) for the Schema panel
+#+end_src
+
+Counting rows reads every table, which takes a while on a large database;
+=sql_ui_row_counts = false= turns it off.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:org-babel.html][Org Babel]] -- running SQL blocks in documents.

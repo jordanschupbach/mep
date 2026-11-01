@@ -69,7 +69,15 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
 #endif
     if (use_pty_) {
         int master_fd = -1;
-        pid_t pid = forkpty(&master_fd, nullptr, nullptr, nullptr);
+        // A real size from the start: the pane's own ResizePty only arrives
+        // a frame later, and a program that reads its width at startup sees
+        // 0 columns until then -- rlwrap refuses to run at all ("My terminal
+        // reports width=0"), which killed a language UI console that lost
+        // that race.
+        struct winsize initial_ws {};
+        initial_ws.ws_col = 80;
+        initial_ws.ws_row = 24;
+        pid_t pid = forkpty(&master_fd, nullptr, nullptr, &initial_ws);
         if (pid < 0) {
             spawn_failed_ = true;
             finished_ = true;

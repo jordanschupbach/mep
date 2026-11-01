@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SQL mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="41">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>SQL mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.sql</code> file.
+The tab becomes a database workspace: your SQL, the <code>sqlite3</code> shell below
+it, and panels showing the database's schema and what your last query
+returned. The dialect is SQLite's.</p>
+<p>The console is the <code>sqlite3</code> command-line shell (under <code>rlwrap</code>, for line
+editing, when that is installed), started with <code>.headers on</code>, <code>.mode box</code>
+and <code>.nullvalue NULL</code>. If <code>sqlite3</code> is not on your <code>PATH</code>, the toggle says
+so and opens nothing.</p>
+<h1>Which database</h1>
+<p>A comment among the file's first lines names the database:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sql</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sql">-- Orders, by customer
+-- database: data/shop.db
+
+SELECT ...</code></pre></div>
+<p>The path is relative to the <code>.sql</code> file's directory, and <code>~</code> is your home
+directory. A database that does not exist yet is created by the first
+statement that writes to it. mep's SQL language server reads the same
+line.</p>
+<p>Without one, the console opens a scratch database file for the session --
+a file rather than <code>:memory:</code>, so the panels can read it. =-- database:
+:memory:= gives you an in-memory database anyway, but then the Schema
+panel cannot see inside it.</p>
+<p><code>:MepSqlUiDatabase PATH</code> switches the open console to another database
+(the shell's <code>.open</code>); with no argument it shows which one is open.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the statement at the cursor in the console; its rows go to Results</td></tr>
+<tr><td><code>&lt;leader&gt;re</code> in Visual</td><td>run every statement in the selection</td></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td><code>.read</code> the whole file in the console</td></tr>
+<tr><td><code>gh</code></td><td>help for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>:MepSqlUiHelp NAME</code></td><td>the same, for a name you type</td></tr>
+<tr><td><code>:MepSqlUiDatabase PATH</code></td><td>switch the console to another database</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> finds the statement around the cursor the way the shell does:
+a <code>;</code> ends it unless it is inside a string, a quoted name, a comment, or the
+<code>BEGIN ... END</code> of a <code>CREATE TRIGGER</code>. Between statements it takes the one
+above. A line starting with <code>.</code> (<code>.tables</code>, <code>.schema t</code>) is a shell
+command and runs as itself.</p>
+<p>A statement you send runs <b>once</b>, in the console -- an <code>INSERT</code> sent once
+inserts once. Its rows are captured on the way, so the console shows only
+the <code>.read</code> line mep typed and any error, and Results shows the rows. An
+error names the line of your file it is on. <code>&lt;leader&gt;rr</code> is different: the
+whole file runs in the console, and its output stays there.</p>
+<p>Statements you type into the console yourself show their output there, as
+in any <code>sqlite3</code>.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Schema</td><td>the database's tables and views with their columns, types, primary keys and <code>NOT NULL</code>, row counts, indexes and triggers</td></tr>
+<tr><td>History</td><td>what you sent from mep this session, newest first; click one to run it again</td></tr>
+<tr><td>Results</td><td>the rows of the last statements you sent, as a grid, with the row count and time</td></tr>
+<tr><td>Help</td><td>for a table, view, index or trigger, its columns and definition; for a column, the tables that have it; for a function, keyword or <code>PRAGMA</code>, mep's SQL documentation</td></tr>
+</table>
+<p>Clicking a table or view in Schema shows its first rows in Results.
+Clicking a column inserts its name at the cursor in your SQL.</p>
+<p>Results is an ordinary buffer: long rows scroll sideways, and you can
+search and copy from it. A cell is cut at <code>mep.opt.sql_ui_max_col_width</code>
+characters, and only the first <code>mep.opt.sql_ui_row_limit</code> rows are drawn,
+with the full count above them. For a statement that changes rows, Results
+gives the number changed.</p>
+<p>The panels read the database file with a separate read-only <code>sqlite3</code>, never
+through your console, so they refresh after each statement you send and
+whenever the file changes -- after something you typed in the console, too.
+They see what is committed: rows inside a transaction you have not
+committed yet show up once you <code>COMMIT</code>.</p>
+<h1>Things to know</h1>
+<ul>
+<li><b>Interrupting a statement</b> (<code>Ctrl-C</code> in the console) also stops the rest of what was sent with it, and leaves the console printing JSON until you send the next statement from mep (or type <code>.mode box</code>).</li>
+<li>A <code>.mode</code> in what you send, or in the file <code>&lt;leader&gt;rr</code> runs, becomes the console's mode from then on.</li>
+<li>In a MEPML, Org or R Markdown code block whose language is <code>sql</code> or <code>sqlite</code>, the toggle opens this mode for the block, with a scratch database unless the block has its own <code>-- database:</code> line.</li>
+</ul>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.sql_ui_sqlite3 = <span class="tok-green">'/usr/local/bin/sqlite3'</span>  <span class="tok-comment">-- the console's sqlite3</span>
+<span class="tok-cyan">mep</span>.opt.sql_ui_rlwrap = <span class="tok-cyan">false</span>          <span class="tok-comment">-- without rlwrap</span>
+<span class="tok-cyan">mep</span>.opt.sql_ui_mode = <span class="tok-green">'column'</span>         <span class="tok-comment">-- the console's .mode (default 'box')</span>
+<span class="tok-cyan">mep</span>.opt.sql_ui_timer = <span class="tok-cyan">true</span>            <span class="tok-comment">-- .timer on in the console</span>
+<span class="tok-cyan">mep</span>.opt.sql_ui_init = <span class="tok-blue">{</span><span class="tok-green">'.bail on'</span><span class="tok-blue">}</span>     <span class="tok-comment">-- more shell commands to start with</span>
+<span class="tok-cyan">mep</span>.opt.sql_ui_row_limit = <span class="tok-cyan">1000</span>        <span class="tok-comment">-- rows Results draws</span>
+<span class="tok-cyan">mep</span>.opt.sql_ui_preview_limit = <span class="tok-cyan">200</span>     <span class="tok-comment">-- rows a Schema click previews</span>
+<span class="tok-cyan">mep</span>.opt.sql_ui_max_col_width = <span class="tok-cyan">40</span>      <span class="tok-comment">-- widest cell in Results</span>
+<span class="tok-cyan">mep</span>.opt.sql_ui_null = <span class="tok-green">'NULL'</span>           <span class="tok-comment">-- how NULL is shown</span>
+<span class="tok-cyan">mep</span>.opt.sql_ui_row_counts = <span class="tok-cyan">false</span>      <span class="tok-comment">-- skip count(*) for the Schema panel</span></code></pre></div>
+<p>Counting rows reads every table, which takes a while on a large database;
+<code>sql_ui_row_counts = false</code> turns it off.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="org-babel.html">Org Babel</a> -- running SQL blocks in documents.</li>
+</ul>
+</body>
+</html>

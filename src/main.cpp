@@ -131,6 +131,7 @@
 #include "language_ui_csharp.h"
 #include "language_ui_cpp.h"
 #include "language_ui_document.h"
+#include "language_ui_sql.h"
 
 namespace {
 
@@ -71000,6 +71001,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinLanguageUiClojure);
     lua->DoString(kBuiltinLanguageUiCrystal);
     lua->DoString(BuiltinLanguageUiCsharp());
+    lua->DoString(BuiltinLanguageUiSql());
     lua->DoString(kBuiltinCompletion);
     lua->DoString(kBuiltinMenubarBindings);
     // After kBuiltinLsp: reuses its mep_lsp_uri/mep_lsp_result helpers.

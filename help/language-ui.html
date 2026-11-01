@@ -50,6 +50,7 @@ console, preview or panels, the toggle closes the layout.</p>
 <tr><td>Clojure</td><td><a href="clojure-mode.html">Clojure mode</a></td></tr>
 <tr><td>Crystal</td><td><a href="crystal-mode.html">Crystal mode</a></td></tr>
 <tr><td>C#</td><td><a href="csharp-mode.html">C# mode</a></td></tr>
+<tr><td>SQL (SQLite)</td><td><a href="sql-mode.html">SQL mode</a></td></tr>
 <tr><td>MEPML</td><td><a href="mepml.html">Document preview and navigation</a></td></tr>
 </table>
 <p>The programming language modes share the same shape: a console, a Help
@@ -58,7 +59,7 @@ tab, and panels specific to the language.</p>
 <p><code>gh</code> ("go help") opens documentation for the symbol under the cursor. What
 answers depends on where you are:</p>
 <ul>
-<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++ (with live C++ object inspection in Data), <code>DESCRIBE</code> for Common Lisp, <code>help</code> and <code>man</code> for Bash, <code>doc</code> for Clojure, the standard library's doc comments for Crystal, the .NET reference documentation for C#;</li>
+<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++ (with live C++ object inspection in Data), <code>DESCRIBE</code> for Common Lisp, <code>help</code> and <code>man</code> for Bash, <code>doc</code> for Clojure, the standard library's doc comments for Crystal, the .NET reference documentation for C#, the database's own schema (and mep's SQL documentation for functions and keywords) for SQL;</li>
 <li>otherwise, the LSP hover popup, the same one <code>K</code> opens.</li>
 </ul>
 <p><code>&lt;leader&gt;hs</code> and <code>:MepGoHelp</code> do the same thing.</p>

@@ -48,6 +48,7 @@ console, preview or panels, the toggle closes the layout.
 | Clojure     | [[file:clojure-mode.html][Clojure mode]]    |
 | Crystal     | [[file:crystal-mode.html][Crystal mode]]    |
 | C#          | [[file:csharp-mode.html][C# mode]]          |
+| SQL (SQLite) | [[file:sql-mode.html][SQL mode]]           |
 | MEPML       | [[file:mepml.html][Document preview and navigation]] |
 
 The programming language modes share the same shape: a console, a Help
@@ -61,7 +62,8 @@ answers depends on where you are:
 - in a language UI mode, its own Help tab -- R's =help()=, Python's pydoc,
   =man= for C and C++ (with live C++ object inspection in Data), =DESCRIBE= for Common Lisp, =help= and =man= for
   Bash, =doc= for Clojure, the standard library's doc comments for
-  Crystal, the .NET reference documentation for C#;
+  Crystal, the .NET reference documentation for C#, the database's own
+  schema (and mep's SQL documentation for functions and keywords) for SQL;
 - otherwise, the LSP hover popup, the same one =K= opens.
 
 =<leader>hs= and =:MepGoHelp= do the same thing.

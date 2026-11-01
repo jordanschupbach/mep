@@ -158,8 +158,8 @@ automatic refresh, leaving the command.
 
 * Servers mep knows about
 
-Forty-two. Each is used when its command is on =$PATH=; the org, R,
-Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal and C# ones ship with mep itself:
+Forty-five. Each is used when its command is on =$PATH=; the org, R,
+Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C# and SQL ones ship with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
@@ -179,6 +179,7 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal and C# ones ship wit
 | Zig             | =zls=                              |
 | Elixir          | =elixir-ls=                        |
 | Bash            | =mep-bash-lsp= (ships with mep), or =bash-language-server= |
+| SQL (SQLite)    | =mep-sql-lsp= (ships with mep), or =sqls=, =sql-language-server= |
 | R               | =mep-r-lsp= (ships with mep)       |
 | Perl            | Perl's =PLS=                       |
 | Fortran         | =fortls=                           |
@@ -206,12 +207,12 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal and C# ones ship wit
 
 If a server is missing, nothing breaks -- the file simply opens without one.
 
-* The twelve mep brings itself
+* The thirteen mep brings itself
 
 =mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp=, =mep-cpp-lsp=, =mep-c-lsp=,
 =mep-maxima-lsp=, =mep-lisp-lsp=, =mep-bash-lsp=, =mep-clojure-lsp=,
-=mep-crystal-lsp=, =mep-csharp-lsp= and =mep-mepml-lsp= are mep's own servers, built and installed alongside =mep=,
-so org, R, Python, C++, C, Maxima, Common Lisp, shell, Clojure, Crystal, C# and mepml files get diagnostics and
+=mep-crystal-lsp=, =mep-csharp-lsp=, =mep-sql-lsp= and =mep-mepml-lsp= are mep's own servers, built and installed alongside =mep=,
+so org, R, Python, C++, C, Maxima, Common Lisp, shell, Clojure, Crystal, C#, SQL and mepml files get diagnostics and
 completion with nothing to install. See
 [[file:org-lsp.html][The org language server]], [[file:r-lsp.html][The R language server]],
 [[file:python-lsp.html][The Python language server]], [[file:cpp-lsp.html][The C++ language server]],
@@ -220,12 +221,13 @@ completion with nothing to install. See
 [[file:bash-lsp.html][The Bash language server]],
 [[file:clojure-lsp.html][The Clojure language server]],
 [[file:crystal-lsp.html][The Crystal language server]],
-[[file:csharp-lsp.html][The C# language server]] and
+[[file:csharp-lsp.html][The C# language server]],
+[[file:sql-lsp.html][The SQL language server]] and
 [[file:mepml-lsp.html][The mepml language server]].
 
-Python, C++, C, Bash, Clojure, Crystal and C# are the languages where mep's own server is
+Python, C++, C, Bash, Clojure, Crystal, C# and SQL are the languages where mep's own server is
 preferred over an external one out of the box: =pyright=, =clangd=,
-=bash-language-server=, =clojure-lsp=, =crystalline= and =OmniSharp= stay registered but claim no filetype of their own, and one line in
+=bash-language-server=, =clojure-lsp=, =crystalline=, =OmniSharp=, =sqls= and =sql-language-server= stay registered but claim no filetype of their own, and one line in
 =init.lua= swaps any of them back. =.h= goes to the C++ server, which reads C
 as well; a project whose headers are all C can hand it over with
 =mep.lsp_servers.c_ls.filetypes = {'c', 'h'}=.

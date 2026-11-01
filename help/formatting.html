@@ -29,17 +29,18 @@ stale copy from disk.</p>
 <tr><td>Common Lisp (<code>.lisp</code>, <code>.lsp</code>, <code>.cl</code>, <code>.asd</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Crystal (<code>.cr</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>C# (<code>.cs</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>SQL (<code>.sql</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>mepml (<code>.mepml</code>)</td><td><b>built in</b> -- see <i>mepml documents</i> below</td></tr>
 <tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
 </table>
 <p>That is a deliberately short table. Most languages already have a formatter
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.</p>
-<p>C, C++, Python, R, Maxima, shell scripts, Clojure, Common Lisp, Crystal
-and C# need nothing installed at all: all ten formatters are built into
+<p>C, C++, Python, R, Maxima, shell scripts, Clojure, Common Lisp, Crystal,
+C# and SQL need nothing installed at all: all eleven formatters are built into
 mep, so <code>gf</code> on a <code>.c</code>, <code>.cpp</code>, <code>.h</code>, <code>.py</code>, <code>.R</code>, <code>.mac</code>, <code>.sh</code>, <code>.clj</code>,
-<code>.lisp</code>, <code>.cr</code> or <code>.cs</code> buffer works on a machine with no <code>clang-format</code>,
-no <code>black</code>, no <code>air</code>, no <code>shfmt</code>, no <code>cljfmt</code>, no Emacs and no Python, R,
+<code>.lisp</code>, <code>.cr</code>, <code>.cs</code> or <code>.sql</code> buffer works on a machine with no <code>clang-format</code>,
+no <code>black</code>, no <code>air</code>, no <code>shfmt</code>, no <code>cljfmt</code>, no <code>sqlfluff</code>, no Emacs and no Python, R,
 Maxima, JVM, Lisp, Crystal or .NET toolchain, and answers instantly because
 nothing is spawned.</p>
 <h1>Org code blocks</h1>
@@ -380,6 +381,62 @@ with the line, for a syntax error.</p>
 <p>To use <code>shfmt</code> instead:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.sh = <span class="tok-blue">{</span><span class="tok-green">'shfmt'</span>, <span class="tok-green">'--filename'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span>
 <span class="tok-cyan">mep</span>.format_languages.bash = <span class="tok-cyan">mep</span>.format_languages.sh</code></pre></div>
+<h1>The SQL formatter</h1>
+<p>SQL files are laid out by mep itself, over the same SQLite parser mep's
+<a href="sql-lsp.html">SQL language server</a> uses, in the common "one clause
+per line" style that sqlfluff's and pgFormatter's defaults both produce:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sql</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sql">select o.id,c.name,sum(o.total) as spent from orders o join customers c on c.id=o.customer_id where o.status='paid' and o.created_at&gt;date('now','-30 days') group by o.id,c.name order by spent desc limit 10;</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sql</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sql">SELECT o.id, c.name, sum(o.total) AS spent
+FROM orders o
+JOIN customers c ON c.id = o.customer_id
+WHERE o.status = 'paid' AND o.created_at &gt; date('now', '-30 days')
+GROUP BY o.id, c.name
+ORDER BY spent DESC
+LIMIT 10;</code></pre></div>
+<ul>
+<li>Keywords in upper case; names, strings and comments exactly as written (a type name such as <code>integer</code> is a name to SQLite, and so is a keyword used as one: a column called <code>key</code>, the <code>replace()</code> function).</li>
+<li>One clause per line: <code>SELECT</code>, <code>FROM</code>, each <code>JOIN</code> (with its <code>ON</code> or <code>USING</code> on the same line when it fits, else indented below), <code>WHERE</code>, <code>GROUP BY</code>, <code>HAVING</code>, <code>WINDOW</code>, <code>ORDER BY</code>, <code>LIMIT</code>; <code>INSERT INTO</code>, <code>VALUES</code>, <code>ON CONFLICT</code>, <code>RETURNING</code>; <code>UPDATE</code>, <code>SET</code>; <code>DELETE FROM</code>; the <code>UNION</code> between two =SELECT=s on a line of its own.</li>
+<li>A clause's list stays on the clause's line when it fits in the width, else one item per line, a level in, with trailing commas. A <code>WHERE</code> or <code>HAVING</code> that does not fit breaks before each top-level <code>AND</code> / <code>OR</code>.</li>
+<li>Subqueries and CTE bodies are indented a level inside their parentheses, the <code>)</code> back at the start; a call or list that does not fit opens up the same way, and so does a long <code>CASE</code> (one <code>WHEN</code> per line).</li>
+<li><code>CREATE TABLE</code> gets one column definition or constraint per line, the types lined up; <code>CREATE TRIGGER</code>'s body statements are formatted as statements between <code>BEGIN</code> and <code>END</code>; a virtual table's module arguments are left exactly as written (the module parses them, not SQLite).</li>
+<li>Comments stay where they were; blank lines between statements are kept, at most one. The <code>sqlite3</code> shell's <code>.commands</code> lines and the <code>-- database:</code> header pass through untouched.</li>
+</ul>
+<h2>It will not rewrite a script it cannot prove it preserved</h2>
+<p>The result is tokenized again and must be the same tokens as the input,
+comments included, apart from whitespace and the case of keywords, and
+must parse without error. A file with a syntax error -- by SQLite's
+rules, so a PostgreSQL-only statement counts -- is left exactly as it was,
+with SQLite's message and the line.</p>
+<p>On SQLite's own test suite (40,356 SQL blocks) and every <code>.sql</code> file in
+nixpkgs' sources (2,884 files):</p>
+<table>
+<tr><th>corpus</th><th>formatted</th><th>refused</th><th>at a syntax error SQLite reports too</th><th>not idempotent</th><th>SQLite's verdict changed</th><th>crashes</th></tr>
+<tr><td>SQLite tests</td><td>40,085</td><td>271</td><td>242</td><td>0</td><td>0</td><td>0</td></tr>
+<tr><td>nixpkgs .sql</td><td>577</td><td>2,307</td><td>2,286</td><td>0</td><td>0</td><td>0</td></tr>
+</table>
+<p>The other refusals are errors SQLite raises while parsing that its
+syntax-only check does not ("ORDER BY clause should come after UNION ALL
+not before"), or syntax errors after an earlier statement where SQLite
+had already stopped on a semantic error. Most of nixpkgs' <code>.sql</code> files are
+PostgreSQL or MySQL. "Verdict changed" re-runs each statement of the
+formatted file through SQLite and compares the result -- error or not, and
+which error -- with the original's. The corpus runs clean under
+AddressSanitizer and UndefinedBehaviorSanitizer.</p>
+<p>Compared with sqlfluff (<code>--dialect sqlite</code>) and pgFormatter on mep's
+example files, the layout of clauses, subqueries and CTEs is the same; the
+differences are deliberate: a short select list stays on the <code>SELECT</code> line
+(sqlfluff always puts several targets on lines of their own), =CREATE
+TABLE= column types are aligned, a <code>VALUES</code> list that does not fit gets
+one row per line, and no rewriting beyond layout and keyword case
+(sqlfluff's <code>fix</code> also turns <code>JOIN</code> into <code>INNER JOIN</code> and reorders <code>ON</code>
+comparisons).</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.sql.width = <span class="tok-cyan">100</span>              <span class="tok-comment">-- the margin (80)</span>
+<span class="tok-cyan">mep</span>.format_languages.sql.indent = <span class="tok-cyan">2</span>               <span class="tok-comment">-- spaces per level (4), or '\t' for tabs</span>
+<span class="tok-cyan">mep</span>.format_languages.sql.keyword_case = <span class="tok-green">'preserve'</span> <span class="tok-comment">-- leave keywords as written</span></code></pre></div>
+<p>To use sqlfluff instead:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.sql = <span class="tok-blue">{</span><span class="tok-green">'sqlfluff'</span>, <span class="tok-green">'fix'</span>, <span class="tok-green">'--dialect'</span>, <span class="tok-green">'sqlite'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span></code></pre></div>
 <h1>The Clojure formatter</h1>
 <p>Clojure files are laid out the way <code>cljfmt</code> lays them out with its default
 options, by mep itself -- no JVM, no <code>cljfmt</code> binary. It also runs for
@@ -637,7 +694,7 @@ token, against the input -- finds a difference it did not intend.</p>
 nearest <code>air.toml</code> rather than from <code>width</code> above.</p>
 <h1>Line width</h1>
 <p>The built-in formatters wrap at <b>100 columns</b> for C++, <b>88</b> for Python and
-<b>80</b> for C and R -- <code>width</code> in each one's table entry, and the subsections
+<b>80</b> for C, R and SQL -- <code>width</code> in each one's table entry, and the subsections
 above change it. The Bash one does not wrap: like <code>shfmt</code>, it keeps a
 script's own line breaks, and so do the Clojure, Common Lisp, Crystal and
 C# ones.

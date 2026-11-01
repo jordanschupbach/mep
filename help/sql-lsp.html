@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The SQL language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="17">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The SQL language server</h1>
+<h1>What it is</h1>
+<p>SQL files get a language server of their own, <code>mep-sql-lsp</code>, built and
+shipped with mep. Open a <code>.sql</code> file and it attaches by itself -- nothing
+to install. It speaks <b>SQLite's</b> dialect: a hand-written SQLite parser (a
+port of SQLite's tokenizer and a recursive-descent reading of its
+grammar), a name resolver, and SQLite's functions, PRAGMAs and statements
+described from SQLite's own documentation.</p>
+<p>The same binary is a command-line linter and a documentation lookup; see
+<i>From the command line</i> below.</p>
+<h1>The same syntax errors as SQLite</h1>
+<p>Its syntax errors are SQLite's, word for word and on the same token:</p>
+<pre>near "FROM": syntax error
+incomplete input
+unrecognized token: "^"</pre>
+<p>Like the <code>sqlite3</code> shell, it cuts the file into statements where
+<code>sqlite3_complete()</code> would (a <code>;</code> ends a statement, except inside
+<code>CREATE TRIGGER ... END</code>) and reports at most one syntax error per
+statement; the next statement starts fresh.</p>
+<p>This is checked against SQLite itself (<code>tools/sql_parse_check.py</code>, which
+prepares every statement with <code>sqlite3_prepare_v2</code> and compares the
+verdict, the message and <code>sqlite3_error_offset</code>):</p>
+<table>
+<tr><th>Corpus</th><th>Statements</th><th>Agree</th><th>Same message and offset</th><th>Wrongly rejected</th><th>Missed</th></tr>
+<tr><td>SQLite's own test suite (40,356 SQL blocks)</td><td>71,470</td><td>71,466</td><td>340 of 340 errors</td><td>0</td><td>0</td></tr>
+<tr><td>every <code>.sql</code> in nixpkgs' sources (2,884 files)</td><td>69,248</td><td>69,064</td><td>43,611 of 43,611 errors</td><td>0</td><td>0</td></tr>
+</table>
+<p>The few statements left over are ones SQLite stops on for another reason
+before it reaches the syntax error (a table that already exists, an
+unknown database), so there is nothing to compare. Most of the nixpkgs
+files are PostgreSQL or MySQL, which is why so many of their statements
+are syntax errors -- to SQLite they are.</p>
+<p>Deleting one token at random from a statement SQLite accepts: of 3,000
+such mutants of SQLite's tests, SQLite rejects 2,119 as syntax errors and
+the server reports a syntax error for all 2,119; of
+2,000 from nixpkgs, 1,115 and all 1,115. It never reports one for any of
+the 1,380 mutants SQLite still accepts.</p>
+<p>Lines of the <code>sqlite3</code> shell's own commands (<code>.headers on</code>, =.mode
+column=) are not SQL and are skipped, where the shell would read them as
+commands: at the start of a line, with no statement pending.</p>
+<h1>The schema it knows</h1>
+<p>Names are checked against:</p>
+<ol>
+<li>the file's own <code>CREATE TABLE</code>, <code>CREATE VIEW</code>, <code>CREATE INDEX</code>, =CREATE TRIGGER= and <code>CREATE VIRTUAL TABLE</code> statements (<code>ALTER TABLE</code> applied), wherever they are in the file;</li>
+<li>the other <code>.sql</code> files in the workspace;</li>
+<li>a database, when the file names one in a comment among its first lines:</li>
+</ol>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sql</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sql">-- Monthly report queries.
+-- database: ../data/shop.db
+
+SELECT label, price FROM items WHERE price &lt; 10;</code></pre></div>
+<p>The path is relative to the <code>.sql</code> file's directory (<code>~</code> is your home).
+The server reads that database's schema by running</p>
+<pre>sqlite3 -readonly -batch -json PATH "SELECT type, name, tbl_name, sql FROM sqlite_schema"</pre>
+<p>and parsing each <code>CREATE</code> statement with its own parser, so it knows
+every table, view and column -- and re-reads it only when the file
+changes. That is the only thing the server ever runs, and the database is
+opened read-only. Without <code>sqlite3</code> on <code>PATH</code>, or without the file, the
+header line gets an Information diagnostic saying so, and the checks fall
+back to the file's own DDL.</p>
+<p>On top of the schema, each statement brings its own names: CTEs (<code>WITH</code>),
+FROM-clause aliases, result-column aliases (usable in <code>WHERE</code>, =GROUP
+BY=, <code>HAVING</code> and <code>ORDER BY</code>, as SQLite allows), named windows, <code>NEW</code> and
+<code>OLD</code> in a trigger, <code>excluded</code> in an upsert, <code>rowid</code>, and the columns of
+<code>json_each</code>, <code>json_tree</code>, <code>generate_series</code> and the <code>pragma_*</code> table
+functions.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>what SQLite says, in its words</td></tr>
+<tr><td><code>invalid-clause</code></td><td>error</td><td>SQLite's parser rejects it after reading it (<code>unknown table option</code>, <code>unknown join type</code>, an <code>ORDER BY</code> before <code>UNION</code>)</td></tr>
+<tr><td><code>unknown-table</code></td><td>error / warning</td><td><code>no such table: x</code></td></tr>
+<tr><td><code>unknown-column</code></td><td>error / warning</td><td><code>no such column: x</code>, <code>table t has no column named x</code>, a <code>USING</code> column one side lacks</td></tr>
+<tr><td><code>ambiguous-column</code></td><td>error</td><td><code>ambiguous column name: x</code>: two tables in the FROM clause have it</td></tr>
+<tr><td><code>unknown-function</code></td><td>warning</td><td><code>no such function: f</code> -- SQLite's built-ins are all known; an application can define more</td></tr>
+<tr><td><code>wrong-arity</code></td><td>error</td><td><code>wrong number of arguments to function f()</code></td></tr>
+<tr><td><code>misused-aggregate</code></td><td>error</td><td><code>count()</code>, <code>sum()</code>, ... in a <code>WHERE</code> clause</td></tr>
+<tr><td><code>unknown-window</code></td><td>error</td><td><code>OVER w</code> with no <code>WINDOW w AS (...)</code></td></tr>
+<tr><td><code>star-without-from</code></td><td>error</td><td><code>SELECT *</code> with no FROM clause</td></tr>
+<tr><td><code>insert-count</code></td><td>error</td><td><code>table t has 3 columns but 2 values were supplied</code>, <code>2 values for 3 columns</code></td></tr>
+<tr><td><code>values-count</code></td><td>error</td><td>rows of a <code>VALUES</code> list with different numbers of terms</td></tr>
+<tr><td><code>compound-column-count</code></td><td>error</td><td>the two sides of a <code>UNION</code> / <code>INTERSECT</code> / <code>EXCEPT</code> differ in width</td></tr>
+<tr><td><code>cte-column-count</code></td><td>error</td><td><code>WITH c(a, b) AS (SELECT 1)</code></td></tr>
+<tr><td><code>view-column-count</code></td><td>error</td><td><code>CREATE VIEW v(a, b) AS SELECT 1</code></td></tr>
+<tr><td><code>duplicate-column</code></td><td>error</td><td>a column named twice in one <code>CREATE TABLE</code></td></tr>
+<tr><td><code>duplicate-cte</code></td><td>error</td><td>two CTEs of one <code>WITH</code> with the same name</td></tr>
+<tr><td><code>duplicate-alias</code></td><td>warning</td><td>the same name twice in one FROM clause</td></tr>
+<tr><td><code>compare-null</code></td><td>warning</td><td><code>x = NULL</code> is never true: <code>IS NULL</code> was meant</td></tr>
+<tr><td><code>unused-cte</code></td><td>warning</td><td>a CTE the statement never reads</td></tr>
+<tr><td><code>double-quoted-string</code></td><td>warning</td><td>="text"= where no column has that name: SQLite quietly makes it a string, other databases do not</td></tr>
+<tr><td><code>unknown-pragma</code></td><td>warning</td><td>a PRAGMA SQLite does not have (it silently does nothing)</td></tr>
+<tr><td><code>database-unavailable</code></td><td>information</td><td>the <code>-- database:</code> file could not be read</td></tr>
+</table>
+<p>The name checks are <b>errors</b> when a database was read (then the schema is
+known for certain) and <b>warnings</b> when only the file's own DDL is.</p>
+<h2>Calibration</h2>
+<p>A checker that knows only part of the schema would be wrong more often
+than right, so the name checks hold back:</p>
+<ul>
+<li><code>unknown-table</code> only runs when the file (or the workspace) declares tables of its own, or a database was read. A file of queries against a database it does not name gets no unknown-name reports at all.</li>
+<li><code>unknown-column</code> only runs when every table in scope has a known column list: a virtual table whose module is not one with column arguments (<code>fts3=/=fts4=/=fts5</code>, <code>rtree</code>, <code>geopoly</code> are), a view over <code>SELECT *</code> of an unknown table, or an unknown table itself switches it off for that statement.</li>
+<li>A table created further down the file, or created twice (<code>DROP</code> then <code>CREATE</code> again), is known with every column either version has; an <code>INSERT</code> without a column list is only counted against a table created once. <code>ALTER TABLE ... ADD</code>, <code>RENAME</code> and <code>DROP COLUMN</code> are applied in order: a statement before the <code>ALTER</code> sees the old columns, one after it the new ones.</li>
+<li>A virtual table's hidden columns (fts's <code>docid</code>, <code>rank</code>, the column named after the table, a <code>languageid=</code> column) can be named but are not in <code>*</code> or in an <code>INSERT</code>'s value count; a generated column is in <code>*</code> but is not counted either. The shadow tables a virtual table keeps its data in (<code>docs_content</code>, <code>docs_segdir</code>, <code>r_node</code>, ...) are known tables.</li>
+<li><code>misused-aggregate</code> is not reported inside a subquery, where the aggregate may belong to the enclosing query; <code>min()</code> and <code>max()</code> with two or more arguments are the scalar functions.</li>
+<li><code>cte-column-count</code> only for a CTE that is used (SQLite ignores an unused one).</li>
+<li>A statement with a syntax error is not checked beyond it.</li>
+</ul>
+<p>Measured with <code>tools/sql_parse_check.py lint</code>, which compares every
+diagnostic with SQLite's verdict on the statement it is in (the statement
+being run against the schema built by the file's earlier statements):</p>
+<table>
+<tr><th>corpus</th><th>statements SQLite rejects</th><th>reported, SQLite agrees</th><th>reported, SQLite accepts</th><th>warnings on accepted statements</th><th>in view / trigger bodies</th></tr>
+<tr><td>SQLite tests</td><td>38,728</td><td>2,816</td><td>17</td><td>219</td><td>308</td></tr>
+<tr><td>nixpkgs .sql</td><td>17,370</td><td>9,549</td><td>4</td><td>17</td><td>470</td></tr>
+</table>
+<p>"Reported, SQLite accepts" are the false positives: an error the server
+reports on a statement SQLite runs. The 17 in SQLite's tests are corner
+cases of its own test suite (a column named by a CTE inside =CREATE
+INDEX=, <code>x1.d</code> naming a column through a parenthesised join's alias,
+<code>INSERT ... SELECT *</code> copying a table with a generated column, a
+table-valued function in parentheses). Every code other than
+<code>unknown-table</code>, <code>unknown-column</code>, <code>insert-count</code> and <code>star-without-from</code>
+has no false positive on either corpus. "Warnings on accepted statements" are the advisory checks doing
+their job -- an unknown <code>PRAGMA</code> (158 of SQLite's are its debug-build-only
+ones), an unused CTE, a double-quoted string -- since SQLite accepts all
+of those silently. SQLite only resolves the names in a view's or a
+trigger's body when it is used, so those reports cannot be scored against
+the <code>CREATE</code> statement and are counted on their own.</p>
+<p>Most statements SQLite rejects in these corpora are rejected for reasons
+no static check can know (a missing extension, a constraint violated by
+the data, a PostgreSQL function); the count of 38,728 is every rejected
+statement, not every catchable one.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Completion</b> offers, by position: the columns of a table or alias after <code>alias.</code> (<code>NEW.</code>, <code>OLD.</code> and <code>excluded.</code> included); table and view names after <code>FROM</code>, <code>JOIN</code>, <code>INTO</code>, <code>UPDATE</code>, <code>TABLE</code>; a table's columns inside <code>INSERT INTO t (</code>; PRAGMA names after <code>PRAGMA</code>; statements at the start of one; and in an expression the columns of the FROM clause's tables, SQLite's functions (with their signature) and keywords.</li>
+<li><b>Hover</b> shows a function's signatures and SQLite's description of it, a table's or view's <code>CREATE</code> statement, a column's table and type, a CTE's or alias's columns, a PRAGMA, and what a statement keyword does (<code>SELECT</code>, <code>CREATE TABLE</code>, <code>ON CONFLICT</code>, ...).</li>
+<li><b>Signature help</b> inside a function call: every documented form (<code>substr(X,Y)</code> and <code>substr(X,Y,Z)</code>), the argument being typed highlighted.</li>
+<li><b>Go to definition</b>, <b>references</b>, <b>highlights</b> and <b>rename</b> work on tables, columns, views, CTEs and their columns, aliases and windows. Definition jumps into the workspace file that declares a table; rename only touches names the file itself declares (a table from the database or another file cannot be renamed from here), and quotes a new name that is a keyword or not a plain identifier.</li>
+<li>The <b>outline</b> lists the statements: tables with their columns, views, indexes, triggers, and each query with its CTEs.</li>
+<li><b>Folding</b> covers multi-line statements, parenthesized lists and subqueries, trigger bodies and runs of comment lines.</li>
+<li><b>Formatting</b> is mep's SQL formatter, the one <code>gf</code> runs (see <a href="formatting.html">Formatting</a>). A file with a syntax error is left alone.</li>
+</ul>
+<h1>From the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-sql-lsp</span> <span class="tok-red">--lint</span> queries/*.sql
+<span class="tok-blue">cat</span> report.sql | <span class="tok-blue">mep-sql-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>report.sql:12:8: warning: no such column: totl [unknown-column]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+A <code>-- database:</code> header is read here too.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-sql-lsp</span> <span class="tok-red">--describe</span> substr
+<span class="tok-blue">mep-sql-lsp</span> <span class="tok-red">--describe</span> <span class="tok-green">'PRAGMA journal_mode'</span>
+<span class="tok-blue">mep-sql-lsp</span> <span class="tok-red">--describe</span> <span class="tok-green">'create table'</span>
+<span class="tok-blue">mep-sql-lsp</span> <span class="tok-red">--describe</span> items.price <span class="tok-red">--database</span> shop.db</code></pre></div>
+<p>prints the documentation of a function, PRAGMA, statement or keyword as
+plain text -- the signature lines, a blank line, the description wrapped
+at 78 columns -- and with <code>--database</code>, a table's columns and <code>CREATE</code>
+statement, or a column's table and type. A name it does not know prints
+nothing and exits 1.</p>
+<p>With no arguments, <code>mep-sql-lsp</code> is the language server on stdio.</p>
+<h1>Other dialects</h1>
+<p>The server reads SQLite's SQL only: PostgreSQL's or MySQL's syntax is a
+syntax error to it, as it would be to SQLite. For those, <code>sqls</code> and
+<code>sql-language-server</code> are registered without a filetype; give one the
+<code>sql</code> files instead:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.sqls.filetypes = <span class="tok-blue">{</span><span class="tok-green">'sql'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.sql_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="formatting.html">Formatting</a> -- <code>gf</code>, and the SQL formatter's layout.</li>
+</ul>
+</body>
+</html>

@@ -24,6 +24,7 @@
 <tr><td><code>pasteindent</code> / <code>pi</code></td><td>on</td><td>re-indent a pasted block to fit where it lands</td></tr>
 <tr><td><code>pyindent</code></td><td>on</td><td>re-align a Python buffer's indentation on save</td></tr>
 <tr><td><code>smarttab</code> / <code>sta</code></td><td>on</td><td>one Backspace/Delete press per indent level</td></tr>
+<tr><td><code>pdfautoreload</code> / <code>par</code></td><td>on</td><td>an open PDF follows its file on disk</td></tr>
 <tr><td><code>textwidth=N</code> / <code>tw=N</code></td><td>80</td><td>the column <code>gq</code> wraps to</td></tr>
 </table>
 <p>Prefix a boolean with <code>no</code> to turn it off: <code>:set nowrap</code>.</p>
@@ -58,6 +59,15 @@ whole indent level -- back to the previous four-column tab stop rather than one
 space at a time -- and Delete do the same forwards. Spaces that are not
 indentation (between words, or anywhere after text on the line) still go one at
 a time.</p>
+<h2>PDF viewers: <code>pdfautoreload</code></h2>
+<p>A PDF open in a viewer pane re-reads itself when the file changes on disk --
+recompile a LaTeX document beside mep and the pane shows the new build a
+moment later, on the same page and at the same scroll and zoom you were
+reading at. mep looks at the file a few times a second and waits for it to
+stop changing before decoding it, so a compiler still writing its output is
+never read half-way; a file that disappears (a <code>latexmk -c</code>, say) leaves the
+last build on screen until the next one lands. <code>:set nopdfautoreload</code> turns
+this off for the session.</p>
 <h1><code>mep.opt</code> options</h1>
 <h2>Editing and session</h2>
 <table>

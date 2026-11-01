@@ -1,0 +1,21 @@
+{
+  "grammars": [
+    {
+      "name": "sql",
+      "camelcase": "SQL",
+      "scope": "source.sql",
+      "path": ".",
+      "file-types": ["sql"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "^(sql)$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "SQL, mep's own grammar (a port of DerekStride/tree-sitter-sql 0.3.11)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

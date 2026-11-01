@@ -71,7 +71,7 @@ at runtime by `dlopen()`ing a `<canonical-name>.so` and pulling its
    needed, since every grammar on that list was confirmed to ship a
    committed parser (the ones that don't, like Perl's own
    `tree-sitter-perl/tree-sitter-perl`, use a different upstream instead
-   or are left off entirely, same call this file already makes for sql/
+   or are left off entirely, same call this file already makes for
    latex/swift below). `just run` picks these up automatically,
    prepending `.ts-grammars/lib` to `$MEP_TS_PARSER_PATH` when it exists
    rather than replacing it, so this composes with the Nix devShell path
@@ -107,11 +107,13 @@ the browser build.
 Grammars considered but never vendorable at all (upstream ships no
 generated `parser.c`, only `grammar.js`/`grammar.json` — would need the
 tree-sitter CLI + a Node/Rust toolchain to compile, which is exactly the
-kind of extra build-time dependency this project avoids): `tree-sitter-sql`
-(derekstride), `tree-sitter-latex` (latex-lsp), `tree-sitter-swift`
-(alex-pinkus). SQL/Swift are not in `DynamicLanguageTable` either (no
-`highlights.scm` was ever fetched for them) — those files render through
-`kBuiltinSyntax`'s hand-rolled fallback lexer today, not Treesitter.
+kind of extra build-time dependency this project avoids):
+`tree-sitter-latex` (latex-lsp), `tree-sitter-swift` (alex-pinkus).
+Swift is not in `DynamicLanguageTable` either (no `highlights.scm` was
+ever fetched for it) — those files render through `kBuiltinSyntax`'s
+hand-rolled fallback lexer today, not Treesitter. (SQL was the third:
+derekstride's `tree-sitter-sql` was loaded from the Nix devShell's `.so`
+until mep's own port of it, `grammars/tree-sitter-sql`, was compiled in.)
 LaTeX **is** registered there now (`tex`/`sty`/`cls`, plus `bib` via its
 sibling `tree-sitter-bibtex`, with queries written from scratch in
 `src/treesitter_queries.h` — upstream ships none): "not vendorable"

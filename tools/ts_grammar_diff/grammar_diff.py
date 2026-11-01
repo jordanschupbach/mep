@@ -203,6 +203,25 @@ LANGUAGES = {
         tokens=['{', '}', '(', ')', ';', '<', '>', '=>', '$"', '@"', '"""', '#if', '#endif', '?', '?.', ':',
                 'where', 'async ', 'await ', '[', ']', 'new ', 'switch'],
     ),
+    'sql': dict(
+        globs=['*.sql'],
+        # sqlfluff's dialect fixtures (each a statement set its own parser
+        # reads: ANSI, PostgreSQL, MySQL/MariaDB, SQLite, T-SQL, BigQuery,
+        # Snowflake, Spark, Oracle... 30 dialects), then PostgreSQL's
+        # regression and contrib tests (psql scripts: `\set`, `\d` and
+        # COPY data lines included, as people's .sql files have them).
+        sources=[('sqlfluff.src', ['test/fixtures/dialects/*.sql']),
+                 ('postgresql.src', ['*.sql'])],
+        dedupe=True,
+        # SQL has no one reference parser. sql_check.py accepts a file
+        # SQLite parses (executed statement by statement into :memory:,
+        # only syntax errors count) or PostgreSQL's parser does (pglast,
+        # when importable); a file only another dialect accepts is
+        # "rejected", so the gate is --old-clean.
+        oracle=['python3', '-I', str(Path(__file__).resolve().parent / 'sql_check.py'), '{}'],
+        tokens=['$$', '$tag$', "'", '"', '`', '[', ']', '(', ')', ';', '--', '/*', '*/', 'BEGIN', 'END', 'CASE ',
+                'SELECT ', 'FROM ', 'WHERE ', ',', '::', 'E\''],
+    ),
     'org': dict(
         globs=['*.org'],
         # Emacs's Org manual and friends, and four Org packages' docs and

@@ -1,0 +1,25 @@
+# Corpus files whose trees differ from DerekStride/tree-sitter-sql 0.3.11's
+# (the grammar mep loaded dynamically before this one) in a statement the
+# old grammar seemed to parse without errors, each reviewed: in every one
+# the old tree was error recovery after all -- a zero-width MISSING node
+# (which the dump does not count as an error) or a statement under a
+# whole-file ERROR root -- and this grammar parses the statement as written.
+# Every other difference is in a file both grammars have errors in.
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff (grammar-diff).
+
+# `x LIKE '^_f' ESCAPE '^'`: the old tree read `'^_f'` as the left side of a
+# second LIKE whose operator was a zero-width MISSING keyword_like.
+*/dialects/ansi/escape.sql                                # LIKE ... ESCAPE (old: MISSING keyword_like)
+
+# A bare `VACUUM` / `RESET` (PostgreSQL, Redshift, Spark): the old tree
+# had a zero-width MISSING identifier for the table / setting name.
+*/dialects/postgres/vacuum.sql                            # bare VACUUM (old: MISSING identifier)
+*/dialects/redshift/vacuum.sql                            # bare VACUUM (old: MISSING identifier)
+*/src/test/regress/sql/sanity_check.sql                   # bare VACUUM (old: MISSING identifier)
+*/src/test/regress/sql/transactions.sql                   # bare VACUUM (old: MISSING identifier)
+*/dialects/sparksql/reset.sql                             # bare RESET (old: MISSING identifier)
+
+# plperl function bodies: the old tree's root is one ERROR over the whole
+# file, so the last `select ...;` only looked clean; this one parses the
+# file's other statements (the Perl inside $$ is still an error).
+*/src/pl/plperl/sql/plperl_util.sql                       # old root was ERROR

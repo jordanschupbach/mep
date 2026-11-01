@@ -46,6 +46,7 @@
 #include "clojure_queries.h"
 #include "crystal_queries.h"
 #include "c_sharp_queries.h"
+#include "sql_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -72,6 +73,7 @@ const TSLanguage *tree_sitter_bash(void);             // mep's own: grammars/tre
 const TSLanguage *tree_sitter_clojure(void);          // mep's own: grammars/tree-sitter-clojure
 const TSLanguage *tree_sitter_crystal(void);          // mep's own: grammars/tree-sitter-crystal
 const TSLanguage *tree_sitter_c_sharp(void);          // mep's own: grammars/tree-sitter-c_sharp
+const TSLanguage *tree_sitter_sql(void);              // mep's own: grammars/tree-sitter-sql
 }
 
 // The process-wide caches below -- parse trees and row answers per key,
@@ -180,6 +182,7 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"bb", {tree_sitter_clojure, kHighlightsClojure}},
         {"cr", {tree_sitter_crystal, kHighlightsCrystal}},
         {"cs", {tree_sitter_c_sharp, kHighlightsCSharp}},
+        {"sql", {tree_sitter_sql, kHighlightsSQL}},
     };
     return table;
 }
@@ -235,6 +238,7 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"bb", {tree_sitter_clojure, kFoldsClojure}},
         {"cr", {tree_sitter_crystal, kFoldsCrystal}},
         {"cs", {tree_sitter_c_sharp, kFoldsCSharp}},
+        {"sql", {tree_sitter_sql, kFoldsSQL}},
     };
     return table;
 }
@@ -291,6 +295,7 @@ const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
         {"bb", {tree_sitter_clojure, kStructureClojure}},
         {"cr", {tree_sitter_crystal, kStructureCrystal}},
         {"cs", {tree_sitter_c_sharp, kStructureCSharp}},
+        {"sql", {tree_sitter_sql, kStructureSQL}},
     };
     return table;
 }
@@ -458,7 +463,6 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"scm", {"scheme", kHighlightsScheme}},
         {"ss", {"scheme", kHighlightsScheme}},
         {"tcl", {"tcl", kHighlightsTcl}},
-        {"sql", {"sql", kHighlightsSql}},
         {"g", {"gap", kHighlightsGap}},
         {"gi", {"gap", kHighlightsGap}},
         {"gd", {"gap", kHighlightsGap}},

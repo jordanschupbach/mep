@@ -541,6 +541,7 @@ mep_grammar(bash Bash)
 mep_grammar(clojure Clojure)
 mep_grammar(crystal Crystal)
 mep_grammar(c_sharp CSharp)
+mep_grammar(sql SQL)
 
 # Regenerating a grammar needs neither the tree-sitter CLI nor Node
 # (tools/ts_generate/README.md): mep-ts-generate runs grammar.js on mep's

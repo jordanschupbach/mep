@@ -1226,6 +1226,75 @@ void TestCSharp() {
 }
 
 // ---------------------------------------------------------------------------
+// SQL: mep's own grammar (grammars/tree-sitter-sql), compiled in
+// ---------------------------------------------------------------------------
+
+void TestSQL() {
+    CHECK(TreesitterHasGrammar("sql"));
+    CHECK(TreesitterHasFoldQuery("sql"));
+    CHECK(TreesitterHasStructureQuery("sql"));
+    const std::string src =
+        ".mode column\n"
+        "\\set ON_ERROR_STOP on\n"
+        "-- Tables.\n"
+        "CREATE TABLE IF NOT EXISTS shop.fruit (\n"
+        "    id INTEGER PRIMARY KEY,\n"
+        "    name TEXT NOT NULL\n"
+        ");\n"
+        "CREATE VIEW red AS SELECT name FROM fruit WHERE color = 'red';\n"
+        "CREATE INDEX fruit_name ON fruit (name);\n"
+        "CREATE FUNCTION add(a integer, b integer) RETURNS integer\n"
+        "LANGUAGE 'sql' AS $$ SELECT a + b $$;\n"
+        "WITH cheap AS (\n"
+        "    SELECT id, price FROM sale WHERE price < 1.5\n"
+        ")\n"
+        "SELECT f.name, count(*) AS n /* how many */\n"
+        "FROM fruit AS f JOIN cheap AS c ON c.id = f.id\n"
+        "ORDER BY f.name COLLATE \"C\" DESC;;\n"
+        "EXPLAIN (COSTS OFF) SELECT 1;\n"
+        "GRANT SELECT, USAGE ON TABLE fruit TO PUBLIC WITH GRANT OPTION;\n"
+        "DO $body$ BEGIN RAISE NOTICE 'hi'; END $body$;\n";
+    ExpectCaptures("sql", src, ".mode", "keyword.directive");
+    ExpectCaptures("sql", src, "\\set", "keyword.directive");
+    ExpectCaptures("sql", src, "-- Tables", "comment");
+    ExpectCaptures("sql", src, "CREATE", "keyword");
+    ExpectCaptures("sql", src, "fruit (", "type");
+    ExpectCaptures("sql", src, "INTEGER", "type.builtin");
+    ExpectCaptures("sql", src, "PRIMARY", "keyword");
+    ExpectCaptures("sql", src, "'red'", "string");
+    ExpectCaptures("sql", src, "'sql'", "");  // a name, like an unquoted `LANGUAGE sql`
+    ExpectCaptures("sql", src, "count(", "type function.call");
+    ExpectCaptures("sql", src, "1.5", "string float");
+    ExpectCaptures("sql", src, "1;", "string number");
+    ExpectCaptures("sql", src, "/* how", "comment");
+    ExpectCaptures("sql", src, "AS f", "keyword");
+    ExpectCaptures("sql", src, "f JOIN", "variable");
+    ExpectCaptures("sql", src, "name COLLATE", "field");
+    ExpectCaptures("sql", src, "COLLATE", "attribute");
+    ExpectCaptures("sql", src, "COSTS", "keyword");
+    ExpectCaptures("sql", src, "OFF", "keyword");
+    ExpectCaptures("sql", src, "GRANT SELECT", "keyword");
+    ExpectCaptures("sql", src, "USAGE", "keyword");
+    ExpectCaptures("sql", src, "PUBLIC", "");
+    ExpectCaptures("sql", src, "$body$ BEGIN", "string");
+
+    ExpectOutline("sql", src,
+                  "0:struct:shop.fruit@3\n"
+                  "0:class:red@7\n"
+                  "0:variable:fruit_name@8\n"
+                  "0:function:add@9\n"
+                  "0:variable:cheap@11\n");
+
+    bool table = false, cte = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("sql", src)) {
+        table = table || (f.start_row == 3 && f.end_row == 6);
+        cte = cte || (f.start_row == 11 && f.end_row == 13);
+    }
+    CHECK(table);
+    CHECK(cte);
+}
+
+// ---------------------------------------------------------------------------
 // JavaScript: mep's own grammar (grammars/tree-sitter-javascript), compiled in
 // ---------------------------------------------------------------------------
 
@@ -1796,7 +1865,20 @@ void TestIncrementalRowsMatchWholeText() {
     for (int i = 0; i < 50; i++)
         cs += "void F" + std::to_string(i) + "(int x)\n{\n    var s = $\"v {x} " + std::to_string(i) +
               " {{y}}\";\n    var r = $$\"\"\"\n        {\"k\": {{x}}}\n        \"\"\";\n    var v = @\"a\"\"b\";\n}\n\n";
+    // SQL's scanner keeps a function body's open dollar-quote tag; a DO
+    // block's body is one dollar-quoted string token.
+    std::string sql;
+    for (int i = 0; i < 50; i++)
+        sql += "CREATE FUNCTION f" + std::to_string(i) + "(a int) RETURNS int AS $fn$\n  SELECT a + " +
+               std::to_string(i) + "\n$fn$;\nDO $$ BEGIN PERFORM 'x$y'; END $$;\nSELECT 'it''s', \"q\" FROM t; -- c\n\n";
     const std::vector<Case> cases = {
+        {"sql", sql,
+         {{"AS $fn$\n  SELECT a + 3\n$fn$", "AS $fn$\n  SELECT a + 3\n$fx$"},  // a body's close tag no longer matches...
+          {"END $$;\nSELECT 'it''s', \"q\" FROM t; -- c\n\nCREATE FUNCTION f9",
+           "END $;\nSELECT 'it''s', \"q\" FROM t; -- c\n\nCREATE FUNCTION f9"},  // a DO body runs on
+          {"SELECT a + 20\n$fn$", "SELECT a + 20\n$$"},
+          {"AS $fn$\n  SELECT a + 30", "AS $q$\n  SELECT a + 30"},  // a different tag opens
+          {"'it''s'", "'it''s"}}},                                   // a string left open
         {"md", md,
          {{"A paragraph with *emphasis*", "A paragraph with *emph"},          // opens emphasis across lines
           {"to a third line **strong**.", "to a third line* **strong**."},  // ...and closes it two lines on
@@ -1924,6 +2006,7 @@ int main() {
     TestClojure();
     TestCrystal();
     TestCSharp();
+    TestSQL();
     TestCpp();
     TestOrg();
     TestMarkdown();

@@ -103,3 +103,4 @@ changes.
 | lua | identical (47 node types, 23 fields) | 3,192 of 3,214 identical; 22 known differences, 0 unexplained | clean, 6,214 files | 87% fewer error bytes; better in 955 files, worse in 435 |
 | c | identical (125 node types, 39 fields) | `--old-clean`: 49,606 clean items checked, 0 unexplained differences; error bytes -2.7% | clean, 3,870 files | C_RECOVERY |
 | python | identical (123 node types, 32 fields) | 7,508 of 7,523 identical; 15 known differences (one old-scanner bug), 0 unexplained | clean, 10,523 files | 9.6% fewer error bytes; better in 258 files, worse in 145 |
+| sql | old API intact (523 node types, 53 fields; +11 new for the additions) | `--old-clean`: 59,970 clean items, 0 unexplained; 7 known differences; error bytes -19.0% | clean, 5,567 files | 16.1% fewer error bytes; better in 1,555 files, worse in 59 |

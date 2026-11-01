@@ -28,7 +28,7 @@
 # newer/more actively developed tree-sitter-perl/tree-sitter-perl --  that
 # one ships no committed src/parser.c (would need the tree-sitter CLI to
 # generate one, the exact "not vendorable without extra tooling" case
-# third_party/README.md already documents for sql/latex/swift). mep's own
+# third_party/README.md already documents for latex/swift). mep's own
 # kHighlightsPerl (src/treesitter_queries.h) is written directly against
 # ganezdragon's grammar's own node types for exactly this reason -- don't
 # repoint this line at the other repo without rewriting that query too.

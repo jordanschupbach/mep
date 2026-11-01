@@ -1,0 +1,322 @@
+================================================================================
+psql meta-commands
+================================================================================
+
+\set ON_ERROR_STOP on
+SELECT 1 \gset
+\echo done
+
+--------------------------------------------------------------------------------
+
+(program
+  (psql_meta_command)
+  (statement
+    (select
+      (keyword_select)
+      (select_expression
+        (term
+          (literal)))))
+  (psql_meta_command)
+  (psql_meta_command))
+
+================================================================================
+sqlite3 dot-commands
+================================================================================
+
+.headers on
+.mode column
+SELECT a.b FROM a;
+
+--------------------------------------------------------------------------------
+
+(program
+  (sqlite_dot_command)
+  (sqlite_dot_command)
+  (statement
+    (select
+      (keyword_select)
+      (select_expression
+        (term
+          (field
+            (object_reference
+              (identifier))
+            (identifier)))))
+    (from
+      (keyword_from)
+      (relation
+        (object_reference
+          (identifier))))))
+
+================================================================================
+Empty statements
+================================================================================
+
+SELECT 1;;
+;
+
+--------------------------------------------------------------------------------
+
+(program
+  (statement
+    (select
+      (keyword_select)
+      (select_expression
+        (term
+          (literal))))))
+
+================================================================================
+EXPLAIN with an option list
+================================================================================
+
+EXPLAIN (ANALYZE, COSTS OFF, FORMAT JSON, BUFFERS) SELECT 1;
+
+--------------------------------------------------------------------------------
+
+(program
+  (statement
+    (keyword_explain)
+    (keyword_analyze)
+    (identifier)
+    (keyword_off)
+    (keyword_format)
+    (identifier)
+    (identifier)
+    (select
+      (keyword_select)
+      (select_expression
+        (term
+          (literal))))))
+
+================================================================================
+EXPLAIN of a parenthesized query
+================================================================================
+
+EXPLAIN (SELECT 1);
+
+--------------------------------------------------------------------------------
+
+(program
+  (statement
+    (keyword_explain)
+    (select
+      (keyword_select)
+      (select_expression
+        (term
+          (literal))))))
+
+================================================================================
+Quoted LANGUAGE and a C function
+================================================================================
+
+CREATE FUNCTION f(int) RETURNS int AS 'MODULE_PATHNAME', 'f' LANGUAGE 'c';
+
+--------------------------------------------------------------------------------
+
+(program
+  (statement
+    (create_function
+      (keyword_create)
+      (keyword_function)
+      (object_reference
+        (identifier))
+      (function_arguments
+        (function_argument
+          (int
+            (keyword_int))))
+      (keyword_returns)
+      (int
+        (keyword_int))
+      (function_body
+        (keyword_as)
+        (literal)
+        (literal))
+      (function_language
+        (keyword_language)
+        (identifier)))))
+
+================================================================================
+DO block
+================================================================================
+
+DO $$ BEGIN RAISE NOTICE 'x$y'; END $$;
+DO LANGUAGE plpgsql $body$ SELECT 1 $body$;
+
+--------------------------------------------------------------------------------
+
+(program
+  (statement
+    (do_statement
+      (keyword_do)
+      (literal)))
+  (statement
+    (do_statement
+      (keyword_do)
+      (function_language
+        (keyword_language)
+        (identifier))
+      (literal))))
+
+================================================================================
+GRANT and REVOKE
+================================================================================
+
+GRANT SELECT (a, b), UPDATE ON TABLE t, s.u TO alice, ROLE bob WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO PUBLIC;
+GRANT USAGE ON SCHEMA api TO web_anon;
+GRANT admin TO carol WITH ADMIN OPTION;
+REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION f(int) FROM dave CASCADE;
+
+--------------------------------------------------------------------------------
+
+(program
+  (statement
+    (grant_statement
+      (keyword_grant)
+      (privilege
+        (keyword_select)
+        (identifier)
+        (identifier))
+      (privilege
+        (keyword_update))
+      (keyword_on)
+      (keyword_table)
+      (object_reference
+        (identifier))
+      (object_reference
+        (identifier)
+        (identifier))
+      (keyword_to)
+      (identifier)
+      (keyword_role)
+      (identifier)
+      (keyword_with)
+      (keyword_grant)
+      (keyword_option)))
+  (statement
+    (grant_statement
+      (keyword_grant)
+      (keyword_all)
+      (keyword_privileges)
+      (keyword_on)
+      (keyword_all)
+      (keyword_tables)
+      (keyword_in)
+      (keyword_schema)
+      (identifier)
+      (keyword_to)
+      (identifier)))
+  (statement
+    (grant_statement
+      (keyword_grant)
+      (privilege
+        (keyword_usage))
+      (keyword_on)
+      (keyword_schema)
+      (object_reference
+        (identifier))
+      (keyword_to)
+      (identifier)))
+  (statement
+    (grant_statement
+      (keyword_grant)
+      (privilege
+        (identifier))
+      (keyword_to)
+      (identifier)
+      (keyword_with)
+      (keyword_admin)
+      (keyword_option)))
+  (statement
+    (revoke_statement
+      (keyword_revoke)
+      (keyword_grant)
+      (keyword_option)
+      (keyword_for)
+      (privilege
+        (keyword_execute))
+      (keyword_on)
+      (keyword_function)
+      (object_reference
+        (identifier))
+      (int
+        (keyword_int))
+      (keyword_from)
+      (identifier)
+      (keyword_cascade))))
+
+================================================================================
+COLLATE in ORDER BY, LIKE ... ESCAPE
+================================================================================
+
+SELECT name FROM t WHERE name LIKE 'a^_%' ESCAPE '^' ORDER BY name COLLATE "C" DESC;
+
+--------------------------------------------------------------------------------
+
+(program
+  (statement
+    (select
+      (keyword_select)
+      (select_expression
+        (term
+          (field
+            (identifier)))))
+    (from
+      (keyword_from)
+      (relation
+        (object_reference
+          (identifier)))
+      (where
+        (keyword_where)
+        (binary_expression
+          (field
+            (identifier))
+          (keyword_like)
+          (literal)
+          (keyword_escape)
+          (literal)))
+      (order_by
+        (keyword_order)
+        (keyword_by)
+        (order_target
+          (field
+            (identifier))
+          (keyword_collate)
+          (identifier)
+          (direction
+            (keyword_desc)))))))
+
+================================================================================
+Bare VACUUM and RESET
+================================================================================
+
+VACUUM;
+VACUUM FULL;
+RESET;
+
+--------------------------------------------------------------------------------
+
+(program
+  (statement
+    (keyword_vacuum))
+  (statement
+    (keyword_vacuum)
+    (keyword_full))
+  (statement
+    (reset_statement
+      (keyword_reset))))
+
+================================================================================
+Dollar-quoted string ending after a lone $
+================================================================================
+
+SELECT $$x$y$$;
+
+--------------------------------------------------------------------------------
+
+(program
+  (statement
+    (select
+      (keyword_select)
+      (select_expression
+        (term
+          (literal))))))

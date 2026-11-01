@@ -243,6 +243,7 @@ bash-grammar: (grammar-generate "bash")
 clojure-grammar: (grammar-generate "clojure")
 crystal-grammar: (grammar-generate "crystal")
 c_sharp-grammar: (grammar-generate "c_sharp")
+sql-grammar: (grammar-generate "sql")
 
 # Replacing a vendored tree-sitter grammar with mep's own: the tools in
 # tools/ts_grammar_diff (README there; plans/TREESITTER_GRAMMAR_PLAN.md).

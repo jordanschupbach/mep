@@ -227,8 +227,8 @@
             # tcl babel backends' languages, and the Run button's.
             tree-sitter-scheme
             tree-sitter-tcl
-            # SQL/GAP/Maxima: the remaining babel/Run-button languages.
-            tree-sitter-sql
+            # GAP/Maxima: the remaining babel/Run-button languages. (SQL,
+            # added with them, is compiled in: grammars/tree-sitter-sql.)
             tsGrammarGap
             tsGrammarMaxima
             # Filetypes src/treesitter.cpp already had a query for but no

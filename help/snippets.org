@@ -48,7 +48,7 @@ trigger was on.
 
 * What ships
 
-Curated sets for =c=, =cpp=, =go=, =lua=, =py=, =rs=, =nix= and =envrc=.
+Curated sets for =c=, =cpp=, =go=, =lua=, =py=, =rs=, =sql=, =nix= and =envrc=.
 
 The =py= set includes =print=, which expands to =print()= with the cursor
 between the parentheses.
@@ -89,6 +89,53 @@ Each plot snippet (=pltline= through =pltgrid=) is a complete, runnable
 script: the imports, some example data, the plot call, labels and
 =plt.show()=. Expand one into an empty file and run it as is, or tab
 through the tabstops to swap in your own data and labels.
+
+* SQL
+
+The =sql= set is SQLite's dialect, the same one the [[file:sql-lsp.html][SQL language server]]
+and Org's =sqlite3= blocks use. Statement bodies are laid out the way the
+formatter (=gf=) lays them out, one clause per line, and their default text
+is valid SQL, so a snippet you have not filled in yet still parses.
+
+| Trigger    | Inserts                                                   |
+|------------+-----------------------------------------------------------|
+| =db=       | the =-- database: PATH= header the language server reads  |
+| =shell=    | =.headers on= and a =.mode= choice for the sqlite3 shell  |
+| =import=   | =.mode csv= and =.import FILE TABLE=                      |
+| =sel=      | =SELECT= / =FROM= / =WHERE=                               |
+| =peek=     | =SELECT *= with a =LIMIT=                                 |
+| =count=    | =SELECT COUNT(*)=                                         |
+| =seld=     | =SELECT DISTINCT=                                         |
+| =selg=     | an aggregate with =GROUP BY=, =HAVING= and =ORDER BY=     |
+| =selj=     | a two-table join                                          |
+| =cte=      | a =WITH= query                                            |
+| =rcte=     | a =WITH RECURSIVE= counter                                |
+| =ins=      | =INSERT INTO= ... =VALUES=                                |
+| =insm=     | a multi-row =INSERT=                                      |
+| =inssel=   | =INSERT INTO= ... =SELECT=                                |
+| =upsert=   | =INSERT= ... =ON CONFLICT DO UPDATE=, using =excluded=    |
+| =upd=      | =UPDATE= / =SET= / =WHERE=                                |
+| =del=      | =DELETE FROM= / =WHERE=                                   |
+| =ct=       | =CREATE TABLE IF NOT EXISTS= with an =INTEGER PRIMARY KEY= |
+| =idx= =uidx= | an index (unique for =uidx=) named after table and column |
+| =view=     | =CREATE VIEW=                                             |
+| =trig=     | =CREATE TRIGGER= with a =BEGIN= ... =END= body            |
+| =drop=     | =DROP TABLE/VIEW/INDEX/TRIGGER IF EXISTS=                 |
+| =addcol= =rentab= =rencol= | the =ALTER TABLE= forms                   |
+| =txn=      | =BEGIN TRANSACTION;= ... =COMMIT;=                        |
+| =save=     | =SAVEPOINT= ... =RELEASE=                                 |
+| =fkon= =wal= | =PRAGMA foreign_keys = ON= / =journal_mode = WAL=       |
+| =pragma=   | =table_info=, =index_list= or =foreign_key_list=          |
+| =eqp=      | =EXPLAIN QUERY PLAN=                                      |
+| =attach=   | =ATTACH DATABASE=                                         |
+| =jeach=    | a row per element of a JSON column, via =json_each=       |
+
+Some are pieces that go inside a statement rather than whole statements:
+=join= (a choice of =JOIN= / =LEFT JOIN= / =INNER JOIN=), =ord=, =lim=,
+=case=, =win= (=ROW_NUMBER= / =RANK= / =DENSE_RANK= =OVER (...)=), =exists=,
+=ret= (=RETURNING=), and the column definitions =col=, =ref= and =fk=.
+Column types are a choice field: =Ctrl-J= cycles =TEXT=, =INTEGER=, =REAL=,
+=BLOB= and =NUMERIC=.
 
 * Adding your own
 

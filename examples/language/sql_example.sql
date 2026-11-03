@@ -10,11 +10,14 @@ CREATE TABLE fruit (
     color TEXT NOT NULL
 );
 
+
+
 CREATE TABLE sale (
     fruit_id INTEGER NOT NULL REFERENCES fruit (id),
     qty      INTEGER NOT NULL,
     price    REAL NOT NULL
 );
+
 
 INSERT INTO fruit (id, name, color) VALUES
     (1, 'apple', 'red'),
@@ -42,8 +45,12 @@ WITH by_color AS (
     JOIN sale AS s ON s.fruit_id = f.id
     GROUP BY f.color
 )
+
 SELECT color,
        ROUND(revenue, 2) AS revenue,
        ROUND(100.0 * revenue / SUM(revenue) OVER (), 1) AS pct
 FROM by_color
 ORDER BY revenue DESC;
+
+
+

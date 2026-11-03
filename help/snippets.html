@@ -48,7 +48,7 @@ while the cursor is inside a snippet; elsewhere it indents as usual.</p>
 <code>Ctrl-K</code> cycle it. Lines after the first are indented like the line the
 trigger was on.</p>
 <h1>What ships</h1>
-<p>Curated sets for <code>c</code>, <code>cpp</code>, <code>go</code>, <code>lua</code>, <code>py</code>, <code>rs</code>, <code>nix</code> and <code>envrc</code>.</p>
+<p>Curated sets for <code>c</code>, <code>cpp</code>, <code>go</code>, <code>lua</code>, <code>py</code>, <code>rs</code>, <code>sql</code>, <code>nix</code> and <code>envrc</code>.</p>
 <p>The <code>py</code> set includes <code>print</code>, which expands to <code>print()</code> with the cursor
 between the parentheses.</p>
 <h1>Python: numpy and matplotlib</h1>
@@ -85,6 +85,50 @@ completion popup. The bodies assume the usual aliases, which <code>npimp</code>,
 script: the imports, some example data, the plot call, labels and
 <code>plt.show()</code>. Expand one into an empty file and run it as is, or tab
 through the tabstops to swap in your own data and labels.</p>
+<h1>SQL</h1>
+<p>The <code>sql</code> set is SQLite's dialect, the same one the <a href="sql-lsp.html">SQL language server</a>
+and Org's <code>sqlite3</code> blocks use. Statement bodies are laid out the way the
+formatter (<code>gf</code>) lays them out, one clause per line, and their default text
+is valid SQL, so a snippet you have not filled in yet still parses.</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>db</code></td><td>the <code>-- database: PATH</code> header the language server reads</td></tr>
+<tr><td><code>shell</code></td><td><code>.headers on</code> and a <code>.mode</code> choice for the sqlite3 shell</td></tr>
+<tr><td><code>import</code></td><td><code>.mode csv</code> and <code>.import FILE TABLE</code></td></tr>
+<tr><td><code>sel</code></td><td><code>SELECT</code> / <code>FROM</code> / <code>WHERE</code></td></tr>
+<tr><td><code>peek</code></td><td><code>SELECT *</code> with a <code>LIMIT</code></td></tr>
+<tr><td><code>count</code></td><td><code>SELECT COUNT(*)</code></td></tr>
+<tr><td><code>seld</code></td><td><code>SELECT DISTINCT</code></td></tr>
+<tr><td><code>selg</code></td><td>an aggregate with <code>GROUP BY</code>, <code>HAVING</code> and <code>ORDER BY</code></td></tr>
+<tr><td><code>selj</code></td><td>a two-table join</td></tr>
+<tr><td><code>cte</code></td><td>a <code>WITH</code> query</td></tr>
+<tr><td><code>rcte</code></td><td>a <code>WITH RECURSIVE</code> counter</td></tr>
+<tr><td><code>ins</code></td><td><code>INSERT INTO</code> ... <code>VALUES</code></td></tr>
+<tr><td><code>insm</code></td><td>a multi-row <code>INSERT</code></td></tr>
+<tr><td><code>inssel</code></td><td><code>INSERT INTO</code> ... <code>SELECT</code></td></tr>
+<tr><td><code>upsert</code></td><td><code>INSERT</code> ... <code>ON CONFLICT DO UPDATE</code>, using <code>excluded</code></td></tr>
+<tr><td><code>upd</code></td><td><code>UPDATE</code> / <code>SET</code> / <code>WHERE</code></td></tr>
+<tr><td><code>del</code></td><td><code>DELETE FROM</code> / <code>WHERE</code></td></tr>
+<tr><td><code>ct</code></td><td><code>CREATE TABLE IF NOT EXISTS</code> with an <code>INTEGER PRIMARY KEY</code></td></tr>
+<tr><td><code>idx</code> <code>uidx</code></td><td>an index (unique for <code>uidx</code>) named after table and column</td></tr>
+<tr><td><code>view</code></td><td><code>CREATE VIEW</code></td></tr>
+<tr><td><code>trig</code></td><td><code>CREATE TRIGGER</code> with a <code>BEGIN</code> ... <code>END</code> body</td></tr>
+<tr><td><code>drop</code></td><td><code>DROP TABLE/VIEW/INDEX/TRIGGER IF EXISTS</code></td></tr>
+<tr><td><code>addcol</code> <code>rentab</code> <code>rencol</code></td><td>the <code>ALTER TABLE</code> forms</td></tr>
+<tr><td><code>txn</code></td><td><code>BEGIN TRANSACTION;</code> ... <code>COMMIT;</code></td></tr>
+<tr><td><code>save</code></td><td><code>SAVEPOINT</code> ... <code>RELEASE</code></td></tr>
+<tr><td><code>fkon</code> <code>wal</code></td><td><code>PRAGMA foreign_keys = ON</code> / <code>journal_mode = WAL</code></td></tr>
+<tr><td><code>pragma</code></td><td><code>table_info</code>, <code>index_list</code> or <code>foreign_key_list</code></td></tr>
+<tr><td><code>eqp</code></td><td><code>EXPLAIN QUERY PLAN</code></td></tr>
+<tr><td><code>attach</code></td><td><code>ATTACH DATABASE</code></td></tr>
+<tr><td><code>jeach</code></td><td>a row per element of a JSON column, via <code>json_each</code></td></tr>
+</table>
+<p>Some are pieces that go inside a statement rather than whole statements:
+<code>join</code> (a choice of <code>JOIN</code> / <code>LEFT JOIN</code> / <code>INNER JOIN</code>), <code>ord</code>, <code>lim</code>,
+<code>case</code>, <code>win</code> (<code>ROW_NUMBER</code> / <code>RANK</code> / <code>DENSE_RANK</code> <code>OVER (...)</code>), <code>exists</code>,
+<code>ret</code> (<code>RETURNING</code>), and the column definitions <code>col</code>, <code>ref</code> and <code>fk</code>.
+Column types are a choice field: <code>Ctrl-J</code> cycles <code>TEXT</code>, <code>INTEGER</code>, <code>REAL</code>,
+<code>BLOB</code> and <code>NUMERIC</code>.</p>
 <h1>Adding your own</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.snippets.py = <span class="tok-cyan">mep</span>.snippets.py <span class="tok-purple">or</span> <span class="tok-blue">{</span><span class="tok-blue">}</span>
 <span class="tok-cyan">mep</span>.snippets.py[<span class="tok-green">'main'</span>] = <span class="tok-blue">{</span>

@@ -394,6 +394,85 @@ void TestHoverAndSignature() {
     CHECK(!SqlLspSignatureAt(L("SELECT (1, "), 0, 11).found);
 }
 
+// The hover text over the first occurrence of `word` (after `from`) in a one-line script.
+std::string HoverOn(const std::string &script, const std::string &word, size_t from = 0) {
+    const size_t at = script.find(word, from);
+    CHECK(at != std::string::npos);
+    const auto h = SqlLspHover(L(script), 0, static_cast<int>(at));
+    return h.found ? h.text : std::string();
+}
+
+bool Mentions(const std::string &text, const std::string &needle) { return text.find(needle) != std::string::npos; }
+
+void TestKeywordAndTypeHover() {
+    const std::string t =
+        "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(40) NOT NULL UNIQUE, "
+        "score DOUBLE PRECISION DEFAULT NULL, w BLOB, n DECIMAL(10, 2) CHECK (n > 0), "
+        "p INT REFERENCES t (id) ON DELETE CASCADE) STRICT;";
+    // Types: the affinity rules, multi-word names and sizes, the rowid alias.
+    CHECK(Mentions(HoverOn(t, "INTEGER"), "INTEGER affinity"));
+    CHECK(Mentions(HoverOn(t, "INTEGER"), "alias for the rowid"));
+    CHECK(Mentions(HoverOn(t, "VARCHAR"), "VARCHAR(40)"));
+    CHECK(Mentions(HoverOn(t, "VARCHAR"), "TEXT affinity"));
+    CHECK(Mentions(HoverOn(t, "PRECISION"), "DOUBLE PRECISION"));
+    CHECK(Mentions(HoverOn(t, "PRECISION"), "REAL affinity"));
+    CHECK(Mentions(HoverOn(t, "BLOB"), "BLOB affinity"));
+    CHECK(Mentions(HoverOn(t, "DECIMAL"), "NUMERIC affinity"));
+    CHECK(Mentions(HoverOn(t, "INT "), "INTEGER affinity"));
+    CHECK(!Mentions(HoverOn(t, "INT "), "alias for the rowid"));
+    CHECK(Mentions(HoverOn("SELECT CAST(x AS TEXT) FROM t;", "TEXT"), "TEXT affinity"));
+    // Keywords, alone and in phrases, from either word of the phrase.
+    CHECK(Mentions(HoverOn(t, "IF"), "IF NOT EXISTS"));
+    CHECK(Mentions(HoverOn(t, "NOT"), "IF NOT EXISTS"));
+    CHECK(Mentions(HoverOn(t, "EXISTS"), "IF NOT EXISTS"));
+    CHECK(Mentions(HoverOn(t, "TABLE"), "Creates a table"));
+    CHECK(Mentions(HoverOn(t, "PRIMARY"), "identify a row"));
+    CHECK(Mentions(HoverOn(t, "KEY"), "identify a row"));
+    CHECK(Mentions(HoverOn(t, "AUTOINCREMENT"), "sqlite_sequence"));
+    const size_t nn = t.find("NOT NULL");
+    CHECK(Mentions(HoverOn(t, "NOT", nn), "may never hold NULL"));
+    CHECK(Mentions(HoverOn(t, "NULL", nn), "may never hold NULL"));
+    CHECK(Mentions(HoverOn(t, "UNIQUE"), "same value"));
+    CHECK(Mentions(HoverOn(t, "DEFAULT"), "INSERT does not give one"));
+    CHECK(Mentions(HoverOn(t, "NULL,"), "missing value"));
+    CHECK(Mentions(HoverOn(t, "CHECK"), "CHECK constraint"));
+    CHECK(Mentions(HoverOn(t, "REFERENCES"), "foreign key"));
+    CHECK(Mentions(HoverOn(t, "CASCADE"), "foreign key"));
+    CHECK(Mentions(HoverOn(t, "STRICT"), "enforce its column types"));
+    const std::string wr = "CREATE TABLE k (a TEXT PRIMARY KEY) WITHOUT ROWID;";
+    CHECK(Mentions(HoverOn(wr, "WITHOUT"), "B-tree keyed"));
+    CHECK(Mentions(HoverOn(wr, "ROWID"), "B-tree keyed"));
+    CHECK(Mentions(HoverOn("SELECT CURRENT_TIMESTAMP;", "CURRENT_TIMESTAMP"), "current UTC time"));
+    const std::string g = "CREATE TABLE b (c INT, p REAL GENERATED ALWAYS AS (c / 100.0) VIRTUAL);";
+    CHECK(Mentions(HoverOn(g, "VIRTUAL"), "generated column"));
+    CHECK(Mentions(HoverOn("CREATE VIRTUAL TABLE f USING fts5(x);", "VIRTUAL"), "implemented by a module"));
+    CHECK(Mentions(HoverOn("INSERT INTO t VALUES (1) ON CONFLICT (a) DO UPDATE SET a = 2;", "SET"), "upsert"));
+    CHECK(Mentions(HoverOn("UPDATE t SET a = 1;", "SET"), "Changes the columns"));
+    const std::string q = "SELECT a FROM t WHERE a IS NOT NULL AND b NOT IN (1) OR c LIKE 'x%' "
+                          "AND d BETWEEN 1 AND 2 AND NOT e;";
+    CHECK(Mentions(HoverOn(q, "IS"), "Tests whether a value is NULL"));
+    CHECK(Mentions(HoverOn(q, "NOT"), "Tests whether a value is NULL"));
+    CHECK(Mentions(HoverOn(q, "NOT", q.find("b NOT")), "equals one of"));
+    CHECK(Mentions(HoverOn(q, "IN "), "equals one of"));
+    CHECK(Mentions(HoverOn(q, "AND"), "Logical operators"));
+    CHECK(Mentions(HoverOn(q, "OR"), "Logical operators"));
+    CHECK(Mentions(HoverOn(q, "LIKE"), "Pattern matching"));
+    CHECK(Mentions(HoverOn(q, "BETWEEN"), "both ends"));
+    CHECK(Mentions(HoverOn(q, "NOT e"), "Logical negation"));
+    CHECK(Mentions(HoverOn(q, "FROM"), "reads rows from"));
+    CHECK(Mentions(HoverOn("SELECT * FROM a LEFT JOIN b USING (id);", "LEFT"), "Combines the rows"));
+    CHECK(Mentions(HoverOn("SELECT * FROM a WHERE NOT EXISTS (SELECT 1);", "EXISTS"), "at least one row"));
+    // END closes a CASE here, and BEGIN/END a trigger body, not a transaction.
+    CHECK(Mentions(HoverOn("SELECT CASE WHEN a THEN 1 END FROM t;", "END"), "conditional expression"));
+    CHECK(Mentions(HoverOn("CREATE TRIGGER g AFTER INSERT ON t BEGIN SELECT 1; END;", "END"), "Creates a trigger"));
+    CHECK(Mentions(HoverOn("END;", "END"), "Ends the current transaction"));
+    CHECK(Mentions(HoverOn("INSERT OR REPLACE INTO t VALUES (1);", "REPLACE"), "conflict resolution"));
+    // The doc table is binary-searched, so it has to stay sorted.
+    size_t n = 0;
+    const SqlLspKeywordDoc *docs = SqlLspKeywordDocTable(&n);
+    for (size_t i = 1; i < n; i++) CHECK(std::string(docs[i - 1].name) < std::string(docs[i].name));
+}
+
 void TestNavigation() {
     const std::string doc = std::string(kSchema) +
                             "SELECT u.name, o.total FROM users u JOIN orders o ON o.user_id = u.id WHERE u.name = 'x';\n"
@@ -545,6 +624,7 @@ int main() {
     TestDatabaseContext();
     TestCompletion();
     TestHoverAndSignature();
+    TestKeywordAndTypeHover();
     TestNavigation();
     TestSymbolsAndFolds();
     TestDescribe();

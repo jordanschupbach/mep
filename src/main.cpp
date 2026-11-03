@@ -15148,7 +15148,10 @@ const char *kBuiltinSnippets =
     "  local cond = conds and conds[name]\n"
     "  return not cond or cond()\n"
     "end\n"
-    "function mep.snippet_expand(name)\n"
+    // at_cursor: insert at the cursor instead of in place of a just-typed
+    // trigger word -- the picker's case, where nothing was typed and taking
+    // #name characters before the cursor would delete the user's text.
+    "function mep.snippet_expand(name, at_cursor)\n"
     "  local ft = mep_snippet_filetype()\n"
     "  local set = ft and mep.snippets[ft]\n"
     "  local body = set and mep_snippet_allowed(ft, name) and set[name]\n"
@@ -15161,7 +15164,7 @@ const char *kBuiltinSnippets =
     "  if not body then mep.notify('No snippet: ' .. tostring(name), 'warn') return end\n"
     "  local row, col = mep.cursor()\n"
     "  local line = mep.get_line(row)\n"
-    "  local trig_start = math.max(1, col - #name)\n"
+    "  local trig_start = at_cursor and col or math.max(1, col - #name)\n"
     "  local before = line:sub(1, trig_start - 1)\n"
     "  local after = line:sub(col)\n"
     "  mep_snippet_splice(row, before, after, body)\n"
@@ -15205,6 +15208,83 @@ const char *kBuiltinSnippets =
     "  local word = mep.get_line(row):sub(1, col - 1):match('[%w_]+$')\n"
     "  if word then mep.snippet_expand(word) end\n"
     "end\n"
+    // The picker's preview: the snippet as it would be inserted (the same
+    // parser mep.snippet_splice uses, via mep.snippet_parse), syntax
+    // highlighted as the snippet's filetype, its placeholders on a Yellow
+    // tint (the text keeps its syntax colour),
+    // then a list of the tabstops in jump order. Tabs become four spaces
+    // because the preview column draws them as nothing.
+    "local function mep_snippet_preview_hl(capture)\n"
+    "  local map = mep.ts_capture_hl\n"
+    "  if not map then return nil end\n"
+    "  return map[capture] or map[capture:match('^([^.]+)') or '']\n"
+    "end\n"
+    "function mep_snippet_preview(ft, name)\n"
+    "  local set = ft and mep.snippets[ft]\n"
+    "  local body = set and set[name]\n"
+    "  if type(body) == 'function' then\n"
+    "    local ok, b = pcall(body)\n"
+    "    body = ok and b or nil\n"
+    "  end\n"
+    "  if type(body) ~= 'table' then mep.picker_set_preview('') return end\n"
+    "  local lines, stops = mep.snippet_parse(body)\n"
+    "  local colmap = {}\n"
+    "  for i, l in ipairs(lines) do\n"
+    "    local out, map, c = {}, {}, 1\n"
+    "    for j = 1, #l do\n"
+    "      map[j] = c\n"
+    "      local ch = l:sub(j, j)\n"
+    "      if ch == '\\t' then out[#out + 1] = '    ' c = c + 4 else out[#out + 1] = ch c = c + 1 end\n"
+    "    end\n"
+    "    map[#l + 1] = c\n"
+    "    lines[i], colmap[i] = table.concat(out), map\n"
+    "  end\n"
+    "  local function at(row, col) return colmap[row] and colmap[row][col] or col end\n"
+    "  local text = table.concat(lines, '\\n')\n"
+    "  local spans = {}\n"
+    "  if mep.ts_captures then\n"
+    "    local ok, caps = pcall(mep.ts_captures, ft, text)\n"
+    "    if ok and caps then\n"
+    "      for _, c in ipairs(caps) do\n"
+    "        local hl = mep_snippet_preview_hl(c.capture)\n"
+    "        if hl then spans[#spans + 1] = {row = c.row, col_start = c.col_start, col_end = c.col_end, hl = hl} end\n"
+    "      end\n"
+    "    end\n"
+    "  end\n"
+    // Placeholders: a tint behind the text, so its syntax colour shows through.
+    "  for _, st in ipairs(stops) do\n"
+    "    for r = st.s_row, st.e_row do\n"
+    "      local cs = r == st.s_row and st.s_col or 1\n"
+    "      local ce = r == st.e_row and st.e_col or #(colmap[r] or {1})\n"
+    "      if ce > cs then spans[#spans + 1] = {row = r, col_start = at(r, cs), col_end = at(r, ce), hl = 'Yellow', bg = true} end\n"
+    "    end\n"
+    "  end\n"
+    "  local out = {text, ''}\n"
+    "  local row = #lines + 1\n"
+    "  local function add(line, hl)\n"
+    "    out[#out + 1] = line\n"
+    "    row = row + 1\n"
+    "    if hl then spans[#spans + 1] = {row = row, col_start = 1, col_end = #line + 1, hl = hl} end\n"
+    "  end\n"
+    "  if not mep_snippet_allowed(ft, name) then add('(not available at the cursor here)', 'Warn') end\n"
+    "  if #stops > 0 then add('Tab jumps through:', 'Comment') end\n"
+    "  for _, st in ipairs(stops) do\n"
+    "    local what\n"
+    "    if #st.choices > 0 then\n"
+    "      local names = {}\n"
+    "      for i, c in ipairs(st.choices) do names[i] = c == '' and '(none)' or c end\n"
+    "      what = 'one of: ' .. table.concat(names, ' | ')\n"
+    "    elseif st.num == 0 then\n"
+    "      what = 'end (cursor stops here)'\n"
+    "    else\n"
+    "      local first = st.s_row == st.e_row and lines[st.s_row]:sub(at(st.s_row, st.s_col), at(st.e_row, st.e_col) - 1) or nil\n"
+    "      what = (first and first ~= '') and first or (st.s_row ~= st.e_row and '(several lines)' or '(empty)')\n"
+    "    end\n"
+    "    add(string.format('  $%d  %s', st.num, what), nil)\n"
+    "    spans[#spans + 1] = {row = row, col_start = 3, col_end = 5 + #tostring(st.num) - 1, hl = 'Yellow'}\n"
+    "  end\n"
+    "  mep.picker_set_preview(table.concat(out, '\\n'), spans)\n"
+    "end\n"
     "function mep.snippets_picker()\n"
     "  local ft = mep_snippet_filetype()\n"
     "  local set = ft and mep.snippets[ft]\n"
@@ -15212,7 +15292,9 @@ const char *kBuiltinSnippets =
     "  local items = {}\n"
     "  for name, _ in pairs(set) do items[#items + 1] = name end\n"
     "  table.sort(items)\n"
-    "  mep.picker_open('Snippets', items, function(item) if item then mep.snippet_expand(item) end end)\n"
+    "  mep.picker_open('Snippets', items, function(item) if item then mep.snippet_expand(item, true) end end,\n"
+    "    nil, nil, function(item) if item and item ~= '' then mep_snippet_preview(ft, item) end end)\n"
+    "  if items[1] then mep_snippet_preview(ft, items[1]) end\n"
     "end\n"
     "mep.command('MepSnippets', mep.snippets_picker)\n"
     "mep.command('MepSnippetNext', function() mep.snippet_jump(1) end)\n"
@@ -43285,6 +43367,7 @@ static std::vector<gfx::Color> PickerLineColors(const std::string &text, const s
                                             gfx::Color default_color) {
     std::vector<gfx::Color> colors(text.size(), default_color);
     for (const PickerHlSpan &s : spans) {
+        if (s.bg) continue;
         gfx::Color c = ResolveHlGroup(s.hl_group);
         int cs = std::max(0, s.col_start);
         int ce = std::min(static_cast<int>(text.size()), s.col_end);
@@ -43655,7 +43738,19 @@ void DrawPickerOverlay() {
                 while (pos < raw_line.size() && row < max_preview_rows) {
                     size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars));
                     if (has_line_spans) {
-                        DrawPickerColoredRun(raw_line, line_colors, pos, take, px, list_y + static_cast<float>(row * line_h));
+                        const float ry = list_y + static_cast<float>(row * line_h);
+                        // Background spans first, clipped to this wrapped piece.
+                        for (const PickerHlSpan &sp : sit->second) {
+                            if (!sp.bg) continue;
+                            const size_t a = std::max(pos, static_cast<size_t>(std::max(0, sp.col_start)));
+                            const size_t b = std::min(pos + take, static_cast<size_t>(std::max(0, sp.col_end)));
+                            if (b <= a) continue;
+                            const float x0 = px + gfx::MeasureTextEx(g_font, raw_line.substr(pos, a - pos).c_str(), g_font_size, 0).x;
+                            const float w = gfx::MeasureTextEx(g_font, raw_line.substr(a, b - a).c_str(), g_font_size, 0).x;
+                            gfx::DrawRectangle(static_cast<int>(x0), static_cast<int>(ry), static_cast<int>(w), line_h,
+                                               gfx::Fade(ResolveHlGroup(sp.hl_group), 0.28f));
+                        }
+                        DrawPickerColoredRun(raw_line, line_colors, pos, take, px, ry);
                         pos += take;
                         row++;
                         continue;

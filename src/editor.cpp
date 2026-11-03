@@ -26037,6 +26037,12 @@ void Editor::HandleInsertInput() {
     // editor's completion UX); everything else (ordinary typing
     // included) falls through to normal Insert handling below and
     // re-triggers UpdateCompletionPopup() at the end of this function.
+    // Ghost text and the word popup are usually up together mid-word (the
+    // popup opens at a 2-char prefix), so letting the popup take Tab meant
+    // Copilot's suggestion could never be accepted with Tab. Tab goes to
+    // the ghost text unless the user moved onto a popup entry with
+    // Ctrl-N/Ctrl-P; Enter and Ctrl-Y still accept the popup.
+    const bool copilot_owns_tab = !note_buffer && InlineSuggestionVisible() && !completion_user_selected_;
     if (completion_open_) {
         if (escape) {
             DismissCompletionPopup();
@@ -26062,15 +26068,14 @@ void Editor::HandleInsertInput() {
                 return;
             }
             if (enter || tab_key) completion_open_ = false;
-        } else if (tab_key || enter || ctrl_y) {
+        } else if ((tab_key && !copilot_owns_tab) || enter || ctrl_y) {
             AcceptCompletion();
             return;
         }
     }
-    // Inline suggestion / "ghost text" (kBuiltinCopilot): claims Tab only
-    // on frames the completion popup above didn't already take it (that
-    // block returns), so the popup's own Tab-accepts-the-selected-word
-    // behavior is untouched. Alt-Right / Alt-Ctrl-Right take one word or
+    // Inline suggestion / "ghost text" (kBuiltinCopilot): wins Tab over an
+    // open completion popup unless the user picked a popup entry by hand
+    // (see copilot_owns_tab above). Alt-Right / Alt-Ctrl-Right take one word or
     // one line of it, Ctrl-] throws it away -- copilot.vim's own key set,
     // so muscle memory carries over. Ctrl-L accepts it too, and is the
     // only key that does in a note buffer, where Tab belongs to snippets.
@@ -26082,6 +26087,7 @@ void Editor::HandleInsertInput() {
         }
         if (ctrl_l || (tab_key && !note_buffer)) {
             AcceptInlineSuggestion();
+            completion_open_ = false;
             return;
         }
         if (alt && (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right))) {

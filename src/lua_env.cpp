@@ -5755,6 +5755,62 @@ int l_snippet_info(lua_State *L) {
     return 1;
 }
 
+// mep.snippet_parse(body) -> lines, stops: a snippet body (an array of
+// template lines) expanded exactly as mep.snippet_splice would insert it,
+// without touching any buffer. `lines` is the plain text; `stops` is an
+// array of {num=, s_row=, s_col=, e_row=, e_col=, choices={...}} (rows and
+// cols 1-indexed into `lines`, e exclusive), ordered by num with the exit
+// point ($0) last. The snippets picker's preview is built on it.
+/**
+ * @brief Implements mep.snippet_parse(body): expands snippet template lines into text plus tabstop positions.
+ * @param L Lua state; arg 1 is the array of template lines.
+ * @return Number of values pushed (2: the expanded lines and the stops).
+ */
+int l_snippet_parse(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::string> body;
+    const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, 1));
+    for (lua_Integer i = 1; i <= n; i++) {
+        lua_rawgeti(L, 1, i);
+        size_t len = 0;
+        const char *line = lua_tolstring(L, -1, &len);
+        body.emplace_back(line ? std::string(line, len) : std::string());
+        lua_pop(L, 1);
+    }
+    std::vector<std::string> lines;
+    std::vector<Editor::SnippetStop> stops;
+    std::vector<Editor::SnippetMirror> mirrors;
+    Editor::SnippetParse(body, &lines, &stops, &mirrors);
+    lua_createtable(L, static_cast<int>(lines.size()), 0);
+    for (size_t i = 0; i < lines.size(); i++) {
+        lua_pushlstring(L, lines[i].data(), lines[i].size());
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    lua_createtable(L, static_cast<int>(stops.size()), 0);
+    for (size_t i = 0; i < stops.size(); i++) {
+        const Editor::SnippetStop &st = stops[i];
+        lua_createtable(L, 0, 6);
+        lua_pushinteger(L, st.num);
+        lua_setfield(L, -2, "num");
+        lua_pushinteger(L, st.s.row + 1);
+        lua_setfield(L, -2, "s_row");
+        lua_pushinteger(L, st.s.col + 1);
+        lua_setfield(L, -2, "s_col");
+        lua_pushinteger(L, st.e.row + 1);
+        lua_setfield(L, -2, "e_row");
+        lua_pushinteger(L, st.e.col + 1);
+        lua_setfield(L, -2, "e_col");
+        lua_createtable(L, static_cast<int>(st.choices.size()), 0);
+        for (size_t c = 0; c < st.choices.size(); c++) {
+            lua_pushlstring(L, st.choices[c].data(), st.choices[c].size());
+            lua_rawseti(L, -2, static_cast<lua_Integer>(c + 1));
+        }
+        lua_setfield(L, -2, "choices");
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 2;
+}
+
 // mep.completion_state() -> {open=, selected=, items={text...}}: the
 // Insert-mode completion menu as it stands (selected is 1-indexed).
 /**
@@ -7534,6 +7590,9 @@ std::vector<PickerHlSpan> ReadPreviewSpans(lua_State *L, int idx) {
                 span.col_start = col_start;
                 span.col_end = col_end;
                 span.hl_group = lua_tostring(L, -1);
+                lua_getfield(L, -2, "bg");
+                span.bg = lua_toboolean(L, -1);
+                lua_pop(L, 1);
                 spans.push_back(std::move(span));
             }
             lua_pop(L, 1);
@@ -8141,7 +8200,9 @@ int l_picker_set_query(lua_State *L) {
 // `spans` (optional) is an array of {row=, col_start=, col_end=, hl=}
 // (1-indexed row/col_start, col_end exclusive -- same convention as
 // mep.ts_captures) giving per-span syntax highlighting over `text`; a
-// span's `row` indexes 1-based into `text` split on '\n'. First consumer
+// span's `row` indexes 1-based into `text` split on '\n'. A span with
+// `bg = true` tints the background in its colour instead, leaving the text
+// the colour the other spans give it. First consumer
 // is kBuiltinPickerSources' mep.buffer_search (main.cpp).
 /**
  * @brief Implements mep.picker_set_preview(text, spans): sets (or clears) the picker's preview-column text and optional per-span syntax highlighting.
@@ -17134,6 +17195,7 @@ const luaL_Reg kMepFuncs[] = {
     {"snippet_choice_cycle", l_snippet_choice_cycle},
     {"insert_typed_count", l_insert_typed_count},
     {"snippet_info", l_snippet_info},
+    {"snippet_parse", l_snippet_parse},
     {"completion_state", l_completion_state},
     {"docs_signature_info", l_docs_signature_info},
     {"picker_preview_file", l_picker_preview_file},

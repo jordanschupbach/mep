@@ -483,6 +483,9 @@ struct PickerHlSpan {
     int col_start = 0;
     int col_end = 0;
     std::string hl_group;
+    // A background tint in hl_group's colour behind the text, which keeps
+    // the colour other spans give it (only the picker preview draws these).
+    bool bg = false;
 };
 
 // One colour of a block card as a style gives it: a highlight group (or a

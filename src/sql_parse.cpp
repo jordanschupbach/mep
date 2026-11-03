@@ -512,6 +512,7 @@ private:
             Expect(SqlTok::RP);
         }
         *last = LastTok();
+        p_->type_spans.emplace_back(*first, *last);
     }
 
     /** @brief signed ::= plus_num | minus_num. */

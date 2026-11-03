@@ -2,6 +2,7 @@
 // diagnostics, completion, hover, signature help, navigation, rename,
 // outline, folding and the formatting adapter. See sql_lsp.h.
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <set>
 
@@ -81,6 +82,66 @@ std::string ObjectHover(const SqlLspObject &o) {
         out += "```sql\n" + o.sql + "\n```\n";
     } else if (!o.columns.empty()) {
         out += "```\n" + ColumnsBlock(o) + "```\n";
+    }
+    return out;
+}
+
+// SQLite's column affinity for a declared type name (datatype3.html, section 3.1): the first rule that
+// matches wins.
+std::string SqlUpper(std::string s) {
+    for (char &c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
+const char *TypeAffinity(const std::string &upper) {
+    if (upper.find("INT") != std::string::npos) return "INTEGER";
+    if (upper.find("CHAR") != std::string::npos || upper.find("CLOB") != std::string::npos ||
+        upper.find("TEXT") != std::string::npos)
+        return "TEXT";
+    if (upper.empty() || upper.find("BLOB") != std::string::npos) return "BLOB";
+    if (upper.find("REAL") != std::string::npos || upper.find("FLOA") != std::string::npos ||
+        upper.find("DOUB") != std::string::npos)
+        return "REAL";
+    return "NUMERIC";
+}
+
+std::string TypeHover(const SqlParse &p, int first, int last) {
+    std::string name, upper;
+    for (int t = first; t <= last; t++) {
+        const SqlTok tt = p.tokens[static_cast<size_t>(t)].type;
+        if (tt == SqlTok::Comment) continue;
+        const std::string text(p.Text(t));
+        if (!name.empty() && tt != SqlTok::LP && tt != SqlTok::RP && tt != SqlTok::Comma &&
+            p.tokens[static_cast<size_t>(t - 1)].type != SqlTok::LP && p.tokens[static_cast<size_t>(t - 1)].type != SqlTok::Comma)
+            name += ' ';
+        name += text;
+        if (tt != SqlTok::LP && tt != SqlTok::RP && tt != SqlTok::Comma) upper += SqlUpper(SqlDequote(text)) + " ";
+    }
+    const std::string affinity = TypeAffinity(upper);
+    std::string out = "```sql\n" + name + "\n```\n\n**type** with " + affinity + " affinity. ";
+    static const struct {
+        const char *affinity, *doc;
+    } kDocs[] = {
+        {"INTEGER", "Values that look like numbers are stored as integers when that loses nothing, else as REAL; "
+                    "other text and blobs are stored as they are."},
+        {"TEXT", "Numbers are converted to text before being stored; NULL and blobs are stored as they are."},
+        {"BLOB", "Values are stored exactly as given, with no conversion."},
+        {"REAL", "Numbers, and text that looks like one, are stored as floating point."},
+        {"NUMERIC", "Text that looks like a number is converted to INTEGER or REAL, whichever keeps it exactly; "
+                    "anything else is stored as it is."},
+    };
+    for (const auto &k : kDocs) {
+        if (std::string(k.affinity) == affinity) out += k.doc;
+    }
+    out += "\n\nSQLite does not enforce a declared type: it picks the affinity from the name (INT anywhere "
+           "gives INTEGER; else CHAR, CLOB or TEXT gives TEXT; BLOB or no type gives BLOB; REAL, FLOA or DOUB "
+           "gives REAL; anything else NUMERIC), and any column can still hold any value -- unless the table is "
+           "STRICT, where only INT, INTEGER, REAL, TEXT, BLOB and ANY are allowed and are enforced.";
+    for (const SqlStmt &st : p.stmts) {
+        for (const SqlColumnDef &c : st.coldefs) {
+            if (c.type_first == first && c.primary_key && SqlUpper(c.type) == "INTEGER")
+                out += "\n\nDeclared exactly INTEGER PRIMARY KEY, this column is an alias for the rowid.";
+        }
     }
     return out;
 }
@@ -534,6 +595,35 @@ SqlLspHoverInfo SqlLspHover(const std::vector<std::string> &lines, int line, int
         h.found = !h.text.empty();
         return h;
     }
+    // A type name (column definition or CAST): SQLite's affinity rules. Type words are plain identifiers,
+    // and one with a size looks like a function call (DECIMAL(10, 2)), so this comes first.
+    if (type == SqlTok::Id || type == SqlTok::String) {
+        for (const auto &span : p.type_spans) {
+            if (tok < span.first || tok > span.second) continue;
+            h.text = TypeHover(p, span.first, span.second);
+            h.found = true;
+            return h;
+        }
+    }
+    // STRICT and the ROWID of WITHOUT ROWID are table options SQLite matches by name, not keywords.
+    if (type == SqlTok::Id) {
+        const std::string w = SqlLower(std::string(p.Text(tok)));
+        for (const SqlStmt &st : p.stmts) {
+            if (st.kind != SqlStmt::CreateTable || tok < st.first || tok > st.last) continue;
+            int body_end = st.first;
+            if (!st.coldefs.empty()) body_end = std::max(body_end, st.coldefs.back().last);
+            if (!st.constraints.empty()) body_end = std::max(body_end, st.constraints.back().last);
+            const SqlLspKeywordDoc *d = nullptr;
+            if (tok > body_end && w == "strict" && st.strict) d = SqlLspFindKeywordDoc("strict");
+            if (tok > body_end && w == "rowid" && st.without_rowid) d = SqlLspFindKeywordDoc("without rowid");
+            if (d) {
+                h.text = "```sql\n" + std::string(d->synopsis) + "\n```\n\n" + d->doc;
+                h.found = true;
+                return h;
+            }
+            break;
+        }
+    }
     // A function call?
     int next = tok + 1;
     while (static_cast<size_t>(next) < p.tokens.size() && p.tokens[static_cast<size_t>(next)].type == SqlTok::Comment) next++;
@@ -556,22 +646,55 @@ SqlLspHoverInfo SqlLspHover(const std::vector<std::string> &lines, int line, int
         }
     }
     if (SqlIsKeyword(type)) {
-        // Two-word statements first ("CREATE TABLE", "GROUP BY", "ON CONFLICT"), both ways round.
-        const SqlLspKeywordDoc *d = nullptr;
+        auto skip = [&](int t, int step) {
+            while (t >= 0 && static_cast<size_t>(t) < p.tokens.size() &&
+                   p.tokens[static_cast<size_t>(t)].type == SqlTok::Comment)
+                t += step;
+            return t;
+        };
         auto word_at = [&](int t) {
             return t >= 0 && static_cast<size_t>(t) < p.tokens.size() && SqlIsKeyword(p.tokens[static_cast<size_t>(t)].type)
                        ? SqlLower(std::string(p.Text(t)))
                        : std::string();
         };
         const std::string w = SqlLower(word);
-        const std::string after = word_at(next);
-        int next2 = next + 1;
-        while (static_cast<size_t>(next2) < p.tokens.size() && p.tokens[static_cast<size_t>(next2)].type == SqlTok::Comment) next2++;
-        if (!after.empty()) d = SqlLspFindKeywordDoc(w + " " + after + " " + word_at(next2));
-        if (!d && !after.empty()) d = SqlLspFindKeywordDoc(w + " " + after);
-        if (!d && prev >= 0) d = SqlLspFindKeywordDoc(word_at(prev) + " " + w);
-        if (!d && (w == "unique" || w == "virtual") && prev >= 0) d = SqlLspFindKeywordDoc("create " + w + " " + after);
-        if (!d && w == "create" && (after == "unique")) d = SqlLspFindKeywordDoc("create index");
+        const int prev2 = prev >= 0 ? skip(prev - 1, -1) : -1;
+        const int next2 = skip(next + 1, 1);
+        const std::string before2 = word_at(prev2), before = word_at(prev), after = word_at(next),
+                          after2 = word_at(next2);
+        const SqlLspKeywordDoc *d = nullptr;
+        // BEGIN/END of a trigger body and END of a CASE are not the transaction statements.
+        if (w == "begin" || w == "end") {
+            for (const SqlStmt &st : p.stmts) {
+                if (tok < st.first || tok > st.last) continue;
+                if (st.kind == SqlStmt::CreateTrigger) d = SqlLspFindKeywordDoc("create trigger");
+                if (w == "end") {
+                    int depth = 0;
+                    for (int t = tok - 1; t >= st.first && !d; t--) {
+                        const SqlTok tt = p.tokens[static_cast<size_t>(t)].type;
+                        if (tt == SqlTok::End) depth++;
+                        else if (tt == SqlTok::Case && depth-- == 0) d = SqlLspFindKeywordDoc("case");
+                    }
+                }
+                break;
+            }
+        }
+        // The longest phrase around the word that has an entry: three words, then two, then the word
+        // alone ("IF NOT EXISTS", "NOT NULL", "PRIMARY KEY", "GROUP BY", ...). A phrase is only tried
+        // when every word of it is a keyword.
+        auto phrase = [&](std::initializer_list<const std::string *> words) -> const SqlLspKeywordDoc * {
+            std::string s;
+            for (const std::string *x : words) {
+                if (x->empty()) return nullptr;
+                s += (s.empty() ? "" : " ") + *x;
+            }
+            return SqlLspFindKeywordDoc(s);
+        };
+        if (!d) d = phrase({&before2, &before, &w});
+        if (!d) d = phrase({&before, &w, &after});
+        if (!d) d = phrase({&w, &after, &after2});
+        if (!d) d = phrase({&before, &w});
+        if (!d) d = phrase({&w, &after});
         if (!d) d = SqlLspFindKeywordDoc(w);
         if (d) {
             h.text = "```sql\n" + std::string(d->synopsis) + "\n```\n\n" + d->doc;

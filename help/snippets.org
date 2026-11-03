@@ -11,7 +11,11 @@ Org, LaTeX or Markdown note, =Tab= never expands a word; accept the trigger
 from the popup instead (=Ctrl-Y=), see [[file:org-notes.html][Note-taking]].
 
 =<leader>yy= (=:MepSnippets=) opens a picker of every snippet available for
-the current filetype.
+the current filetype. Its preview shows the highlighted snippet as it would
+be inserted, syntax-coloured, with each field's default text tinted and a
+list of the fields in the order =Tab= visits them (a choice field lists its
+options). A snippet picked there goes in at the cursor; nothing before the
+cursor is replaced.
 
 * Fields
 

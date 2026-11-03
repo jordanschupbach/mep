@@ -194,8 +194,12 @@ statement, not every catchable one.
   tables, SQLite's functions (with their signature) and keywords.
 - *Hover* shows a function's signatures and SQLite's description of it, a
   table's or view's =CREATE= statement, a column's table and type, a CTE's
-  or alias's columns, a PRAGMA, and what a statement keyword does
-  (=SELECT=, =CREATE TABLE=, =ON CONFLICT=, ...).
+  or alias's columns, a PRAGMA, and what a keyword does -- statements
+  (=SELECT=, =CREATE TABLE=, =ON CONFLICT=), constraints (=NOT NULL=,
+  =PRIMARY KEY=, =UNIQUE=, =REFERENCES=, =STRICT=), operators (=IS NULL=,
+  =IN=, =LIKE=, =BETWEEN=) and the rest, read as the phrase around the
+  word. Over a type name (=INTEGER=, =VARCHAR(40)=, =CAST(x AS REAL)=) it
+  gives the affinity SQLite derives from it and what that means.
 - *Signature help* inside a function call: every documented form (=substr(X,Y)=
   and =substr(X,Y,Z)=), the argument being typed highlighted.
 - *Go to definition*, *references*, *highlights* and *rename* work on

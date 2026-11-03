@@ -18,7 +18,11 @@ popup, so you do not have to remember them -- start typing and look. In an
 Org, LaTeX or Markdown note, <code>Tab</code> never expands a word; accept the trigger
 from the popup instead (<code>Ctrl-Y</code>), see <a href="org-notes.html">Note-taking</a>.</p>
 <p><code>&lt;leader&gt;yy</code> (<code>:MepSnippets</code>) opens a picker of every snippet available for
-the current filetype.</p>
+the current filetype. Its preview shows the highlighted snippet as it would
+be inserted, syntax-coloured, with each field's default text tinted and a
+list of the fields in the order <code>Tab</code> visits them (a choice field lists its
+options). A snippet picked there goes in at the cursor; nothing before the
+cursor is replaced.</p>
 <h1>Fields</h1>
 <p>A snippet can place the cursor in several spots in turn. The cursor lands
 on the first field with its default text selected: typing replaces it,

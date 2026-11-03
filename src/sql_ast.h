@@ -29,6 +29,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // --- Tokens -------------------------------------------------------------
@@ -339,6 +340,8 @@ struct SqlParse {
     std::vector<SqlChunk> chunks;
     std::vector<SqlStmt> stmts;
     std::vector<SqlSyntaxError> errors;
+    // Every type name's tokens, inclusive (column definitions and CAST ... AS type).
+    std::vector<std::pair<int, int>> type_spans;
     // The token text.
     std::string_view Text(int tok) const;
     std::string Upper(int tok) const;

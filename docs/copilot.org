@@ -3,6 +3,11 @@
 Inline AI completions, on by default. As you type, the suggestion appears
 dimmed in place — as if it were already written — and =Tab= accepts it.
 
+Until you're set up it stays silent: if no language server is installed,
+it won't start, or you aren't signed in, Copilot quietly does nothing for
+the rest of the session. Running any =:Copilot…= command switches the
+error messages back on and retries.
+
 | Key            | In Insert mode, while a suggestion is showing |
 |----------------+-----------------------------------------------|
 | =Tab=          | accept the whole suggestion                   |
@@ -19,7 +24,8 @@ whenever that popup is open, so the two never fight over the key.
 
 mep drives GitHub's own =copilot-language-server=. Install it with
 =npm i -g @github/copilot-language-server=, or let mep fall back to
-=npx=, or point =mep.copilot_server_cmd= at your own build. Then:
+=npx= (only after an explicit =:Copilot…= command, since it downloads the
+package), or point =mep.copilot_server_cmd= at your own build. Then:
 
 #+begin_example
 :CopilotLogin

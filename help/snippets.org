@@ -141,6 +141,48 @@ Some are pieces that go inside a statement rather than whole statements:
 Column types are a choice field: =Ctrl-J= cycles =TEXT=, =INTEGER=, =REAL=,
 =BLOB= and =NUMERIC=.
 
+* Nix: dependencies
+
+The =nix= set is built around adding dependencies fast. Start a file with
+a whole-file snippet, then drop language fragments into its package list.
+
+| Trigger   | Inserts                                                   |
+|-----------+-----------------------------------------------------------|
+| =shell=   | a =shell.nix= with an empty =packages = with pkgs; [ ]=   |
+| =flake=   | a =flake.nix= with an empty dev shell package list        |
+| =pyshell= =pyflake= | the same, with Python, numpy and matplotlib     |
+| =rshell= =rflake=   | the same, with R, ggplot2 and dplyr             |
+| =dsshell= | a =shell.nix= with both Python and R                      |
+
+The fragments are one list item each and assume =with pkgs;=, as =shell=
+and =flake= set up. A =*pkgs= fragment is a language with its libraries
+bundled in, the libraries being a field you type over:
+
+| Trigger       | Inserts                                                 |
+|---------------+---------------------------------------------------------|
+| =pypkgs=      | =python3.withPackages=, the Python version a choice     |
+| =jupyterpkgs= | Python with JupyterLab and an =ipykernel=               |
+| =rpkgs=       | =rWrapper.override { packages = with rPackages; ... }=  |
+| =jlpkgs=      | =julia.withPackages [ "Plots" ... ]=                    |
+| =luapkgs=     | =lua5_4.withPackages=, the Lua version a choice         |
+| =perlpkgs=    | =perl.withPackages=                                     |
+| =rubypkgs=    | =ruby.withPackages=                                     |
+| =hspkgs=      | =haskellPackages.ghcWithPackages=                       |
+| =octpkgs=     | =octave.withPackages=                                   |
+| =texpkgs=     | =texliveSmall.withPackages=, the scheme a choice        |
+| =agdapkgs=    | =agda.withPackages= with the standard library           |
+| =pgpkgs=      | =postgresql.withPackages= with PostGIS                  |
+| =emacspkgs=   | Emacs with =emacsWithPackages=                          |
+
+A =*dev= fragment is a plain list of toolchain packages: =pydev= (uv, ruff,
+pyright), =cdev=, =cppdev=, =rustdev=, =godev=, =nodedev=, =javadev=,
+=zigdev=, =ocamldev=, =hsdev= and =luadev=. =hook= adds a =shellHook=,
+and =unfree= the =import nixpkgs= line that allows unfree packages.
+
+Inside a fragment's library list, a library is its nixpkgs name without the
+set's prefix: what =nix search nixpkgs python3Packages.scipy= finds is
+written =scipy=, and =rPackages.tidyr= is written =tidyr=.
+
 * Adding your own
 
 #+begin_src lua

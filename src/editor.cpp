@@ -6628,8 +6628,16 @@ void Editor::VisualBlockRange(int &top, int &bottom, int &left, int &right) cons
     const CursorPos &c = CurPane().cursor;
     top = std::min(a.row, c.row);
     bottom = std::max(a.row, c.row);
-    left = std::min(a.col, c.col);
-    right = block_to_eol_ ? -1 : std::max(a.col, c.col);
+    int col = BlockCursorCol();
+    left = std::min(a.col, col);
+    right = block_to_eol_ ? -1 : std::max(a.col, col);
+}
+
+int Editor::BlockCursorCol() const {
+    const CursorPos &c = CurPane().cursor;
+    int len = LineLen(c.row);
+    int clamped = std::max(0, std::min(block_want_col_, std::max(0, len - 1)));
+    return c.col == clamped ? std::max(c.col, block_want_col_) : c.col;
 }
 
 std::string Editor::CurrentVisualSelectionText() const {
@@ -26890,11 +26898,24 @@ void Editor::DispatchVisualKey(int cp) {
         bool linewise = false, inclusive = false;
         if (ResolveMotion(c, cursor, pending_count_, &target, &linewise, &inclusive)) {
             pending_count_ = 0;
+            // Visual Block keeps its column across shorter lines (Vim's
+            // curswant): j/k move from the wanted column, not the clamped
+            // one, and every other motion sets a new wanted column.
+            bool vertical = (c == 'j' || c == 'k');
+            if (mode_ == Mode::VisualBlock) {
+                if (vertical) {
+                    target.col = BlockCursorCol();
+                } else {
+                    int len = LineLen(target.row);
+                    block_want_col_ = std::max(0, std::min(target.col, std::max(0, len - 1)));
+                }
+            }
             cursor = target;
             // Visual Block's own "sticky $" (see block_to_eol_): '$' extends
             // every row of the block to its own actual end until some other
             // motion changes the column extent.
-            if (mode_ == Mode::VisualBlock) block_to_eol_ = (c == '$');
+            if (mode_ == Mode::VisualBlock && !vertical) block_to_eol_ = (c == '$');
+            if (mode_ == Mode::VisualBlock && vertical) block_want_col_ = target.col;
             return;
         }
     }
@@ -26905,6 +26926,12 @@ void Editor::DispatchVisualKey(int cp) {
             if (cursor.row != anchor.row) visual_direction_ = cursor.row > anchor.row ? 1 : -1;
             else if (cursor.col != anchor.col) visual_direction_ = cursor.col > anchor.col ? 1 : -1;
             visual_direction_ = -visual_direction_;
+            if (mode_ == Mode::VisualBlock) {
+                // Swap the wanted column too, so the block keeps its width.
+                int want = BlockCursorCol();
+                block_want_col_ = anchor.col;
+                cursor.col = want;
+            }
             std::swap(anchor, cursor);
             return;
         }
@@ -32477,6 +32504,7 @@ void Editor::EnterVisualBlock() {
     visual_direction_ = 1;
     CurPane().visual_anchor = CurPane().cursor;
     block_to_eol_ = false;
+    block_want_col_ = CurPane().cursor.col;
 }
 
 void Editor::EnterCommand() {

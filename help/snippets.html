@@ -133,6 +133,43 @@ is valid SQL, so a snippet you have not filled in yet still parses.</p>
 <code>ret</code> (<code>RETURNING</code>), and the column definitions <code>col</code>, <code>ref</code> and <code>fk</code>.
 Column types are a choice field: <code>Ctrl-J</code> cycles <code>TEXT</code>, <code>INTEGER</code>, <code>REAL</code>,
 <code>BLOB</code> and <code>NUMERIC</code>.</p>
+<h1>Nix: dependencies</h1>
+<p>The <code>nix</code> set is built around adding dependencies fast. Start a file with
+a whole-file snippet, then drop language fragments into its package list.</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>shell</code></td><td>a <code>shell.nix</code> with an empty <code>packages = with pkgs; [ ]</code></td></tr>
+<tr><td><code>flake</code></td><td>a <code>flake.nix</code> with an empty dev shell package list</td></tr>
+<tr><td><code>pyshell</code> <code>pyflake</code></td><td>the same, with Python, numpy and matplotlib</td></tr>
+<tr><td><code>rshell</code> <code>rflake</code></td><td>the same, with R, ggplot2 and dplyr</td></tr>
+<tr><td><code>dsshell</code></td><td>a <code>shell.nix</code> with both Python and R</td></tr>
+</table>
+<p>The fragments are one list item each and assume <code>with pkgs;</code>, as <code>shell</code>
+and <code>flake</code> set up. A <code>*pkgs</code> fragment is a language with its libraries
+bundled in, the libraries being a field you type over:</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>pypkgs</code></td><td><code>python3.withPackages</code>, the Python version a choice</td></tr>
+<tr><td><code>jupyterpkgs</code></td><td>Python with JupyterLab and an <code>ipykernel</code></td></tr>
+<tr><td><code>rpkgs</code></td><td><code>rWrapper.override { packages = with rPackages; ... }</code></td></tr>
+<tr><td><code>jlpkgs</code></td><td><code>julia.withPackages [ "Plots" ... ]</code></td></tr>
+<tr><td><code>luapkgs</code></td><td><code>lua5_4.withPackages</code>, the Lua version a choice</td></tr>
+<tr><td><code>perlpkgs</code></td><td><code>perl.withPackages</code></td></tr>
+<tr><td><code>rubypkgs</code></td><td><code>ruby.withPackages</code></td></tr>
+<tr><td><code>hspkgs</code></td><td><code>haskellPackages.ghcWithPackages</code></td></tr>
+<tr><td><code>octpkgs</code></td><td><code>octave.withPackages</code></td></tr>
+<tr><td><code>texpkgs</code></td><td><code>texliveSmall.withPackages</code>, the scheme a choice</td></tr>
+<tr><td><code>agdapkgs</code></td><td><code>agda.withPackages</code> with the standard library</td></tr>
+<tr><td><code>pgpkgs</code></td><td><code>postgresql.withPackages</code> with PostGIS</td></tr>
+<tr><td><code>emacspkgs</code></td><td>Emacs with <code>emacsWithPackages</code></td></tr>
+</table>
+<p>A <code>*dev</code> fragment is a plain list of toolchain packages: <code>pydev</code> (uv, ruff,
+pyright), <code>cdev</code>, <code>cppdev</code>, <code>rustdev</code>, <code>godev</code>, <code>nodedev</code>, <code>javadev</code>,
+<code>zigdev</code>, <code>ocamldev</code>, <code>hsdev</code> and <code>luadev</code>. <code>hook</code> adds a <code>shellHook</code>,
+and <code>unfree</code> the <code>import nixpkgs</code> line that allows unfree packages.</p>
+<p>Inside a fragment's library list, a library is its nixpkgs name without the
+set's prefix: what <code>nix search nixpkgs python3Packages.scipy</code> finds is
+written <code>scipy</code>, and <code>rPackages.tidyr</code> is written <code>tidyr</code>.</p>
 <h1>Adding your own</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.snippets.py = <span class="tok-cyan">mep</span>.snippets.py <span class="tok-purple">or</span> <span class="tok-blue">{</span><span class="tok-blue">}</span>
 <span class="tok-cyan">mep</span>.snippets.py[<span class="tok-green">'main'</span>] = <span class="tok-blue">{</span>

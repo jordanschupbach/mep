@@ -5167,6 +5167,11 @@ public:
      * @param right Output: the right column of the block, or -1 if the block extends to each row's end.
      */
     void VisualBlockRange(int &top, int &bottom, int &left, int &right) const;
+    /**
+     * @brief The Visual Block cursor's column for the block's extent: block_want_col_ while the cursor still sits where clamping it would land, else the cursor's own column.
+     * @return The column the block's cursor-side edge uses.
+     */
+    int BlockCursorCol() const;
     // Read-only text of the current Visual selection (charwise/linewise
     // joined with '\n' between lines, blockwise one row's slice per line
     // same as a blockwise register's own text) -- "" if none is active.
@@ -17116,6 +17121,12 @@ private:
     // extent (approximates Vim's "sticky $" -- not a byte-for-byte match
     // of every edge case Vim handles, but the common one).
     bool block_to_eol_ = false;
+    // The cursor's wanted column in Mode::VisualBlock (Vim's curswant):
+    // j/k across a shorter line clamp the cursor, but the block keeps its
+    // width. Only trusted while the cursor still sits where clamping this
+    // column would put it (see BlockCursorCol), so a cursor moved by
+    // anything else falls back to its own column.
+    int block_want_col_ = 0;
     // Block-insert (I/A) in progress: which rows/column to replicate
     // block_insert_typed_ onto once Escape closes the Insert session (see
     // FinishVisualBlockInsert).

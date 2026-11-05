@@ -5412,7 +5412,7 @@ const char *kBuiltinFileTree =
     "  {label = 'zlib', lang = 'c', attr = 'zlib', pc = 'zlib'},\n"
     "}\n"
     // .envrc body: byte-for-byte the repo's own .envrc / the `envrc` snippet
-    // (kBuiltinSnippets) so nix-direnv caching behaves identically.
+    // (kBuiltinSnippetsParts) so nix-direnv caching behaves identically.
     // Presets: one checkbox that ticks a working set of the
     // package rows above (so they stay visible and can be unticked one by
     // one) and, on create, adds what a notebook needs that isn't in that
@@ -14497,7 +14497,7 @@ const char *kBuiltinCompletion =
     "mep_lsp_completion_pending = {row = nil, start_col = nil}\n"
     // text -> LSP InsertTextFormat (1 = PlainText, 2 = Snippet) for
     // whatever candidate text mep_lsp_completion_cache most recently
-    // offered -- Phase 23's completion-accept hook (kBuiltinSnippets)
+    // offered -- Phase 23's completion-accept hook (kBuiltinSnippetsParts)
     // consults this after AcceptCompletion (editor.cpp) splices the raw
     // text in, to tell a real `${1:x}`-style Snippet item apart from an
     // ordinary PlainText one before deciding whether to re-expand it
@@ -14682,7 +14682,7 @@ const char *kBuiltinCompletion =
     // completion candidates too. In a code buffer accepting one inserts
     // the trigger word itself, same as any buffer word, and Tab expands
     // it; in a note buffer (org/tex/markdown) accepting it expands it
-    // (kBuiltinSnippets' accept hook), snippets sort ahead of everything
+    // (kBuiltinSnippetsParts' accept hook), snippets sort ahead of everything
     // else, and they are offered from the first typed letter -- the other
     // sources still wait for two (buffer words) or three (LSP).
     "    local ft = mep_snippet_filetype and mep_snippet_filetype()\n"
@@ -14820,7 +14820,10 @@ const char *kBuiltinCompletion =
 // 2-language starter set. Registered under this codebase's own "filetype"
 // convention (mep_lsp_filetype -- the raw file extension, e.g. 'py'/'rs',
 // not a collapsed vim-style filetype name like 'python'/'rust').
-const char *kBuiltinSnippets =
+// Split in two (a single literal over 64 KB fails -Woverlength-strings
+// under -Werror) and joined back into one Lua chunk at load time, so the
+// mep_snippets_* locals stay visible to the mep.snippets table.
+const char *const kBuiltinSnippetsParts[] = {
     "local mep_snippets_js = {\n"
     "  func = {'function ${1:name}(${2:args}) {', '\\t${0}', '}'},\n"
     "  arrow = {'const ${1:name} = (${2:args}) => {', '\\t${0}', '}'},\n"
@@ -14839,6 +14842,232 @@ const char *kBuiltinSnippets =
     "  func = {'${1:name}() {', '\\t${0}', '}'},\n"
     "  case = {'case ${1:value} in', '\\t${2:pattern})', '\\t\\t${0}', '\\t\\t;;', 'esac'},\n"
     "}\n"
+    // R: base language, files, stats and graphics, then the tidyverse
+    // (dplyr dp*, tidyr tr*, readr/readxl rd*, ggplot2 gg*, purrr pr*,
+    // stringr str*, lubridate lub*), data.table dt*, broom, lme4,
+    // testthat and shiny. Package calls are pkg::-qualified except
+    // ggplot2 and testthat, whose code reads unqualified. Every default
+    // expansion and choice variant was run in R when these were written,
+    // so keep the bodies runnable: 2-space indents, the native |> pipe,
+    // and no field reference inside another field's default (the parser
+    // keeps `$2` in a default as literal text). Shared by r and R below.
+    "local mep_snippets_r = {\n"
+    "  shebang = {'#!/usr/bin/env Rscript'},\n"
+    "  sec = {'# ${1:Section} ----'},\n"
+    "  fun = {'${1:name} <- function(${2:x}) {', '  ${0:x}', '}'},\n"
+    "  ['if'] = {'if (${1:condition}) {', '  ${0:NULL}', '}'},\n"
+    "  ife = {'if (${1:condition}) {', '  ${2:NULL}', '} else {', '  ${0:NULL}', '}'},\n"
+    "  elif = {'if (${1:condition}) {', '  ${2:NULL}', '} else if (${3:other}) {', '  ${4:NULL}', '} else {', '  ${0:NULL}', '}'},\n"
+    "  ifel = {'ifelse(${1:x > 0}, ${2:\"pos\"}, ${3:\"neg\"})'},\n"
+    "  ['for'] = {'for (${1:i} in ${2:seq_len(10)}) {', '  print($1)${0}', '}'},\n"
+    "  forsq = {'for (${1:i} in seq_along(${2:x})) {', '  print($2[[$1]])${0}', '}'},\n"
+    "  ['while'] = {'while (${1:condition}) {', '  ${0:break}', '}'},\n"
+    "  ['repeat'] = {'repeat {', '  ${1:NULL}', '  if (${2:TRUE}) break', '}'},\n"
+    "  switch = {'switch(${1:type},', '  ${2:a} = ${3:\"first\"},', '  ${4:b} = ${5:\"second\"},', '  ${6:stop(\"unknown type\")}', ')'},\n"
+    "  tryc = {'tryCatch(', '  {', '    ${1:log(-1)}', '  },', '  warning = function(w) {', '    message(\"warning: \", conditionMessage(w))', '  },', '  error = function(e) {', '    message(\"error: \", conditionMessage(e))', '  },', '  finally = {', '    ${0:NULL}', '  }', ')'},\n"
+    "  stop = {'stop(${1:\"something went wrong\"}, call. = FALSE)'},\n"
+    "  stopif = {'stopifnot(${1:is.numeric(x)}, ${2:length(x) > 0})'},\n"
+    "  lib = {'library(${1:dplyr})'},\n"
+    "  req = {'if (!requireNamespace(${1:\"pkg\"}, quietly = TRUE)) {', '  install.packages($1)', '}'},\n"
+    "  src = {'source(${1:\"script.R\"})'},\n"
+    "  args = {'args <- commandArgs(trailingOnly = TRUE)', '${1:path} <- if (length(args) > 0) args[[1]] else ${2:\"input.csv\"}'},\n"
+    "  main = {'main <- function() {', '  ${0:NULL}', '}', '', 'if (sys.nframe() == 0) {', '  main()', '}'},\n"
+    "  doc = {'#\\' ${1:Title}', '#\\'', '#\\' @param ${2:x} ${3:Description.}', '#\\' @return ${4:Description.}', '#\\' @export'},\n"
+    "  timer = {'elapsed <- system.time({', '  ${0:Sys.sleep(0.1)}', '})', 'print(elapsed)'},\n"
+    "  fmt = {'sprintf(${1:\"%s = %.2f\"}, ${2:\"x\"}, ${3:pi})'},\n"
+    "  msg = {'message(${1:\"value: \"}, ${2:x})'},\n"
+    "  seed = {'set.seed(${1:42})'},\n"
+    "  env = {'${1:value} <- Sys.getenv(${2:\"HOME\"}, unset = ${3:NA})'},\n"
+    "  regex = {'${1:hits} <- regmatches(${2:x}, gregexpr(${3:\"[0-9]+\"}, $2))'},\n"
+    "  date = {'${1:d} <- as.Date(${2:\"2024-01-31\"})', 'format($1, ${3:\"%d %B %Y\"})'},\n"
+    "  df = {'${1:df} <- data.frame(', '  ${2:name} = ${3:c(\"a\", \"b\", \"c\")},', '  ${4:value} = ${5:c(1, 2, 3)}', ')'},\n"
+    "  lst = {'${1:x} <- list(${2:a} = ${3:1}, ${4:b} = ${5:\"two\"})'},\n"
+    "  lapply = {'${1:out} <- lapply(${2:x}, function(${3:el}) {', '  ${0:el}', '})'},\n"
+    "  sapply = {'${1:out} <- sapply(${2:x}, function(${3:el}) ${0:el * 2})'},\n"
+    "  vapply = {'${1:out} <- vapply(${2:x}, function(${3:el}) ${4:el * 2}, ${5|numeric(1),character(1),logical(1),integer(1)|})'},\n"
+    "  mapply = {'${1:out} <- Map(function(${2:a}, ${3:b}) ${4:a + b}, ${5:xs}, ${6:ys})'},\n"
+    "  apply = {'${1:out} <- apply(${2:m}, ${3|1,2|}, ${4:sum})'},\n"
+    "  docall = {'${1:combined} <- do.call(rbind, ${2:list_of_dfs})'},\n"
+    "  reduce = {'${1:total} <- Reduce(${2:`+`}, ${3:x}, accumulate = ${4|FALSE,TRUE|})'},\n"
+    "  filter = {'${1:kept} <- Filter(function(${2:el}) ${3:el > 0}, ${4:x})'},\n"
+    "  agg = {'${1:summary} <- aggregate(${2:value} ~ ${3:name}, data = ${4:df}, FUN = ${5|mean,sum,length,median|})'},\n"
+    "  split = {'${1:groups} <- split(${2:df}, ${3:df$name})'},\n"
+    "  readcsv = {'${1:df} <- read.csv(${2:\"data.csv\"}${3:, stringsAsFactors = FALSE})'},\n"
+    "  writecsv = {'write.csv(${1:df}, ${2:\"out.csv\"}, row.names = FALSE)'},\n"
+    "  readrds = {'${1:obj} <- readRDS(${2:\"data.rds\"})'},\n"
+    "  saverds = {'saveRDS(${1:obj}, ${2:\"data.rds\"})'},\n"
+    "  readlines = {'${1:lines} <- readLines(${2:\"input.txt\"}, warn = FALSE)'},\n"
+    "  writelines = {'writeLines(${1:lines}, ${2:\"output.txt\"})'},\n"
+    "  files = {'for (${1:path} in list.files(${2:\".\"}, pattern = ${3:\"[.]csv$\"}, full.names = TRUE)) {', '  print($1)${0}', '}'},\n"
+    "  mkdir = {'dir.create(${1:\"out\"}, showWarnings = FALSE, recursive = TRUE)'},\n"
+    "  s3 = {'new_${1:thing} <- function(${2:x}) {', '  structure(list($2 = $2), class = \"$1\")', '}', '', 'print.$1 <- function(x, ...) {', '  cat(\"<$1>\\\\n\")', '  invisible(x)', '}'},\n"
+    "  s4 = {'setClass(${1:\"Person\"}, representation(${2:name} = ${3:\"character\"}, ${4:age} = ${5:\"numeric\"}))'},\n"
+    "  r6 = {'${1:Counter} <- R6::R6Class(${2:\"Counter\"},', '  public = list(', '    ${3:count} = ${4:0},', '    ${5:add} = function(${6:n = 1}) {', '      self$$3 <- self$$3 + ${7:n}', '      invisible(self)', '    }', '  )', ')'},\n"
+    "  rnorm = {'${1:x} <- rnorm(${2:100}, mean = ${3:0}, sd = ${4:1})'},\n"
+    "  runif = {'${1:x} <- runif(${2:100}, min = ${3:0}, max = ${4:1})'},\n"
+    "  lmfit = {'${1:fit} <- lm(${2:y ~ x}, data = ${3:df})', 'summary($1)'},\n"
+    "  glmfit = {'${1:fit} <- glm(${2:y ~ x}, data = ${3:df}, family = ${4|binomial,poisson,gaussian|})', 'summary($1)'},\n"
+    "  pred = {'${1:pred} <- predict(${2:fit}, newdata = ${3:new_df}${4:, type = \"response\"})'},\n"
+    "  ttest = {'t.test(${1:x}, ${2:y})'},\n"
+    "  cortest = {'cor.test(${1:x}, ${2:y}, method = ${3|\"pearson\",\"spearman\",\"kendall\"|})'},\n"
+    "  chisq = {'chisq.test(table(${1:df$a}, ${2:df$b}))'},\n"
+    "  anova = {'${1:fit} <- aov(${2:value} ~ ${3:group}, data = ${4:df})', 'summary($1)', 'TukeyHSD($1)'},\n"
+    "  plot = {'plot(${1:x}, ${2:y}, main = ${3:\"Title\"}, xlab = ${4:\"x\"}, ylab = ${5:\"y\"}${6:, pch = 19})'},\n"
+    "  hist = {'hist(${1:x}, breaks = ${2:30}, main = ${3:\"Histogram\"}, xlab = ${4:\"x\"})'},\n"
+    "  boxplot = {'boxplot(${1:value} ~ ${2:group}, data = ${3:df}, main = ${4:\"Title\"})'},\n"
+    "  png = {'${1|png,pdf,svg|}(\"${2:plot}.$1\")', '${0:plot(1:10)}', 'invisible(dev.off())'},\n"
+    "  par = {'old <- par(mfrow = c(${1:1}, ${2:2}))', '${0:plot(1:10)}', 'par(old)'},\n"
+    "  tidyimp = {'library(dplyr)', 'library(tidyr)', 'library(readr)', 'library(ggplot2)'},\n"
+    "  dpfilter = {'${1:df} |>', '  dplyr::filter(${2:value > 1})'},\n"
+    "  dpmutate = {'${1:df} |>', '  dplyr::mutate(${2:double} = ${3:value * 2})'},\n"
+    "  dpselect = {'${1:df} |>', '  dplyr::select(${2:name, value})'},\n"
+    "  dparrange = {'${1:df} |>', '  dplyr::arrange(${2:dplyr::desc(value)})'},\n"
+    "  dpsumm = {'${1:df} |>', '  dplyr::group_by(${2:name}) |>', '  dplyr::summarise(${3:total} = ${4|sum,mean,median,max,min|}(${5:value}), n = dplyr::n(), .groups = \"drop\")'},\n"
+    "  dpcount = {'${1:df} |>', '  dplyr::count(${2:name}, sort = TRUE)'},\n"
+    "  dpjoin = {'${1:left} |>', '  dplyr::${2|left_join,inner_join,full_join,anti_join|}(${3:right}, by = ${4:\"id\"})'},\n"
+    "  dprename = {'${1:df} |>', '  dplyr::rename(${2:new_name} = ${3:name})'},\n"
+    "  dpdistinct = {'${1:df} |>', '  dplyr::distinct(${2:name}, .keep_all = TRUE)'},\n"
+    "  dpcase = {'dplyr::case_when(', '  ${1:value < 2} ~ ${2:\"low\"},', '  ${3:value < 4} ~ ${4:\"mid\"},', '  .default = ${5:\"high\"}', ')'},\n"
+    "  dpacross = {'${1:df} |>', '  dplyr::mutate(dplyr::across(dplyr::where(is.numeric), ${2:\\\\(v) v / max(v)}))'},\n"
+    "  dpslice = {'${1:df} |>', '  dplyr::${2|slice_max,slice_min|}(${3:value}, n = ${4:3})'},\n"
+    "  dpchain = {'${1:result} <- ${2:df} |>', '  dplyr::filter(${3:value > 0}) |>', '  dplyr::group_by(${4:name}) |>', '  dplyr::summarise(${5:total} = sum(${6:value}), .groups = \"drop\") |>', '  dplyr::arrange(dplyr::desc($5))'},\n"
+    "  trlonger = {'${1:df} |>', '  tidyr::pivot_longer(${2:-name}, names_to = ${3:\"key\"}, values_to = ${4:\"val\"})'},\n"
+    "  trwider = {'${1:df} |>', '  tidyr::pivot_wider(names_from = ${2:year}, values_from = ${3:value})'},\n"
+    "  trsep = {'${1:df} |>', '  tidyr::separate_wider_delim(${2:code}, delim = ${3:\"-\"}, names = c(${4:\"part1\", \"part2\"}))'},\n"
+    "  trdropna = {'${1:df} |>', '  tidyr::drop_na(${2:value})'},\n"
+    "  rdcsv = {'${1:df} <- readr::read_csv(${2:\"data.csv\"}, show_col_types = FALSE)'},\n"
+    "  rdwrite = {'readr::write_csv(${1:df}, ${2:\"out.csv\"})'},\n"
+    "  rdexcel = {'${1:df} <- readxl::read_excel(${2:\"data.xlsx\"}, sheet = ${3:1})'},\n"
+    "  gg = {'ggplot(${1:df}, aes(x = ${2:x}, y = ${3:y})) +', '  geom_${4|point,line,col,boxplot,violin,smooth|}() +', '  labs(title = ${5:\"Title\"}, x = ${6:\"x\"}, y = ${7:\"y\"})'},\n"
+    "  ggpoint = {'ggplot(${1:df}, aes(x = ${2:x}, y = ${3:y}${4:, colour = group})) +', '  geom_point() +', '  theme_minimal()'},\n"
+    "  ggline = {'ggplot(${1:df}, aes(x = ${2:x}, y = ${3:y}${4:, colour = group})) +', '  geom_line() +', '  theme_minimal()'},\n"
+    "  gghist = {'ggplot(${1:df}, aes(x = ${2:x})) +', '  geom_histogram(bins = ${3:30}) +', '  theme_minimal()'},\n"
+    "  ggbox = {'ggplot(${1:df}, aes(x = ${2:group}, y = ${3:y})) +', '  geom_boxplot() +', '  theme_minimal()'},\n"
+    "  ggbar = {'ggplot(${1:df}, aes(x = ${2:name}, y = ${3:value})) +', '  geom_col() +', '  theme_minimal()'},\n"
+    "  ggsmooth = {'geom_smooth(method = ${1|\"lm\",\"loess\"|}, se = ${2|TRUE,FALSE|})'},\n"
+    "  ggfacet = {'facet_wrap(~ ${1:group}${2:, scales = \"free_y\"})'},\n"
+    "  gglabs = {'labs(title = ${1:\"Title\"}, subtitle = ${2:NULL}, x = ${3:\"x\"}, y = ${4:\"y\"}, colour = ${5:NULL})'},\n"
+    "  ggtheme = {'theme_${1|minimal,bw,classic,light|}(base_size = ${2:12})'},\n"
+    "  ggsave = {'ggsave(${1:\"plot.png\"}, plot = ${2:p}, width = ${3:7}, height = ${4:5}, dpi = ${5:300})'},\n"
+    "  prmap = {'${1:out} <- purrr::${2|map,map_dbl,map_chr,map_lgl,map_int|}(${3:x}, ${4:\\\\(el) el * 2})'},\n"
+    "  prmap2 = {'${1:out} <- purrr::map2(${2:xs}, ${3:ys}, ${4:\\\\(a, b) a + b})'},\n"
+    "  prwalk = {'purrr::walk(${1:x}, ${2:\\\\(el) print(el)})'},\n"
+    "  strdetect = {'stringr::str_detect(${1:x}, ${2:\"a\"})'},\n"
+    "  strreplace = {'stringr::str_replace_all(${1:x}, ${2:\"a\"}, ${3:\"b\"})'},\n"
+    "  strextract = {'stringr::str_extract(${1:x}, ${2:\"[0-9]+\"})'},\n"
+    "  lubparse = {'${1:d} <- lubridate::${2|ymd,dmy,mdy,ymd_hms|}(${3:\"2024-01-31\"})'},\n"
+    "  lubfloor = {'lubridate::floor_date(${1:d}, unit = ${2|\"month\",\"week\",\"year\",\"day\"|})'},\n"
+    "  dtread = {'${1:dt} <- data.table::fread(${2:\"data.csv\"})'},\n"
+    "  dtq = {'${1:dt}[${2:value > 1}, .(${3:total} = sum(${4:value})), by = ${5:name}]'},\n"
+    "  broom = {'broom::tidy(${1:fit}, conf.int = TRUE)'},\n"
+    "  lmer = {'${1:fit} <- lme4::lmer(${2:value ~ x + (1 | group)}, data = ${3:df})', 'summary($1)'},\n"
+    "  test = {'test_that(${1:\"it works\"}, {', '  ${0:expect_equal(1 + 1, 2)}', '})'},\n"
+    "  expect = {'expect_${1|equal,identical|}(${2:actual}, ${3:expected})'},\n"
+    "  expectt = {'expect_${1|true,false|}(${2:is.numeric(x)})'},\n"
+    "  experr = {'expect_error(${1:stop(\"boom\")})'},\n"
+    "  expwarn = {'expect_warning(${1:log(-1)})'},\n"
+    "  shiny = {'library(shiny)', '', 'ui <- fluidPage(', '  titlePanel(${1:\"App\"}),', '  sliderInput(\"n\", ${2:\"Number of points\"}, min = 10, max = 500, value = 100),', '  plotOutput(\"plot\")', ')', '', 'server <- function(input, output, session) {', '  output$plot <- renderPlot({', '    ${0:hist(rnorm(input$n))}', '  })', '}', '', 'shinyApp(ui, server)'},\n"
+    "}\n"
+    // C++ (C++20/23): program structure, classes, control flow, strings,
+    // containers, <algorithm>/<ranges>, files, <chrono>, <random>,
+    // threads, then whole-program starters for gtest, Catch2, fmt,
+    // spdlog, nlohmann/json, Eigen and Google Benchmark. Every default
+    // expansion and choice variant was compiled with g++ and clang++
+    // (-std=c++23 -Wall -Wextra) and run when these were written, so keep
+    // the bodies compiling: 4-space indents and no field reference inside
+    // another field's default (the parser keeps `$2` in a default as
+    // literal text). ponce/iostream/memory/helloworld are the old cpp set,
+    // ported from ~/projects/nvim's plugin/luasnip.lua. Shared by every
+    // C++ extension (and Org's C++ blocks) below; .h stays unclaimed,
+    // since it is as often C.
+    "local mep_snippets_cpp = {\n"
+    "  ponce = {'#pragma once'},\n"
+    "  iostream = {'#include <iostream>'},\n"
+    "  memory = {'#include <memory>'},\n"
+    "  helloworld = {'#include <iostream>', '', 'int main(void) {', '  std::cout << \"Hello World!\" << std::endl;', '  return 0;', '}'},\n"
+    "  main = {'int main() {', '    ${0}', '    return 0;', '}'},\n"
+    "  maina = {'#include <string>', '#include <vector>', '', 'int main(int argc, char* argv[]) {', '    const std::vector<std::string> args(argv + 1, argv + argc);', '    ${0}', '    return 0;', '}'},\n"
+    "  inc = {'#include <${1:vector}>'},\n"
+    "  incq = {'#include \"${1:header.h}\"'},\n"
+    "  guard = {'#ifndef ${1:MY_HEADER_H}', '#define $1', '', '${0}', '', '#endif  // $1'},\n"
+    "  ns = {'namespace ${1:name} {', '', '${0}', '', '}  // namespace $1'},\n"
+    "  using = {'using ${1:Ints} = ${2:std::vector<int>};'},\n"
+    "  fn = {'${1:int} ${2:name}(${3:int x}) {', '    ${0:return x;}', '}'},\n"
+    "  tmpl = {'template <typename ${1:T}>', '${2:T} ${3:twice}(${4:const T& x}) {', '    ${0:return x + x;}', '}'},\n"
+    "  concept = {'template <typename T>', 'concept ${1:Addable} = requires(T a, T b) {', '    { a + b } -> std::convertible_to<T>;', '};'},\n"
+    "  cls = {'class ${1:Name} {', 'public:', '    explicit $1(${2:int value}) : ${3:value_}(${4:value}) {}', '', '    ${5:int} ${6:value}() const { return $3; }', '', 'private:', '    $5 $3;', '};'},\n"
+    "  struct = {'struct ${1:Point} {', '    ${2:double x = 0.0;}', '    ${3:double y = 0.0;}', '};'},\n"
+    "  rule5 = {'class ${1:Resource} {', 'public:', '    $1() = default;', '    ~$1() = default;', '    $1(const $1& other) = default;', '    $1& operator=(const $1& other) = default;', '    $1($1&& other) noexcept = default;', '    $1& operator=($1&& other) noexcept = default;', '};'},\n"
+    "  enumc = {'enum class ${1:Color} { ${2:Red, Green, Blue} };'},\n"
+    "  spaceship = {'struct ${1:Version} {', '    ${2:int major = 0;}', '    ${3:int minor = 0;}', '    auto operator<=>(const $1&) const = default;', '};'},\n"
+    "  ostream = {'std::ostream& operator<<(std::ostream& os, const ${1:Point}& ${2:p}) {', '    return os << ${3:\"(\" << p.x << \", \" << p.y << \")\"};', '}'},\n"
+    "  variant = {'template <class... Ts>', 'struct overloaded : Ts... {', '    using Ts::operator()...;', '};', '', 'void ${1:show}(const std::variant<${2:int, std::string}>& v) {', '    std::visit(overloaded{', '        [](int i) { std::cout << \"int \" << i << \\'\\\\n\\'; },', '        [](const std::string& s) { std::cout << \"string \" << s << \\'\\\\n\\'; },', '    }, v);', '}'},\n"
+    "  ['if'] = {'if (${1:condition}) {', '    ${0}', '}'},\n"
+    "  ife = {'if (${1:condition}) {', '    ${2}', '} else {', '    ${0}', '}'},\n"
+    "  ifinit = {'if (auto ${1:it} = ${2:m}.find(${3:key}); $1 != $2.end()) {', '    std::cout << $1->second << \\'\\\\n\\';${0}', '}'},\n"
+    "  ['for'] = {'for (int ${1:i} = 0; $1 < ${2:n}; ++$1) {', '    ${0}', '}'},\n"
+    "  fori = {'for (std::size_t ${1:i} = 0; $1 < ${2:v}.size(); ++$1) {', '    ${0}', '}'},\n"
+    "  forr = {'for (${1:const auto&} ${2:x} : ${3:v}) {', '    ${0}', '}'},\n"
+    "  formap = {'for (const auto& [${1:key}, ${2:value}] : ${3:m}) {', '    ${0}', '}'},\n"
+    "  ['while'] = {'while (${1:condition}) {', '    ${0}', '}'},\n"
+    "  dowhile = {'do {', '    ${0}', '} while (${1:condition});'},\n"
+    "  switch = {'switch (${1:n}) {', '    case ${2:0}:', '        ${3}', '        break;', '    default:', '        ${0}', '        break;', '}'},\n"
+    "  try = {'try {', '    ${1}', '} catch (const ${2:std::exception}& e) {', '    std::cerr << e.what() << \\'\\\\n\\';', '}'},\n"
+    "  throw = {'throw std::${1|runtime_error,invalid_argument,out_of_range,logic_error|}(${2:\"something went wrong\"});'},\n"
+    "  lambda = {'auto ${1:f} = [${2:&}](${3:int x}) { return ${4:x * 2}; };'},\n"
+    "  sbind = {'auto [${1:a}, ${2:b}] = ${3:p};'},\n"
+    "  sassert = {'static_assert(${1:sizeof(int) >= 4}, ${2:\"int is too small\"});'},\n"
+    "  cout = {'std::cout << ${1:x} << \\'\\\\n\\';'},\n"
+    "  cerr = {'std::cerr << ${1:\"error: \"} << ${2:x} << \\'\\\\n\\';'},\n"
+    "  print = {'std::println(${1:\"{} = {}\"}, ${2:\"x\"}, ${3:x});'},\n"
+    "  format = {'const std::string ${1:s} = std::format(${2:\"{:>8.3f}\"}, ${3:3.14159});'},\n"
+    "  tostr = {'const std::string ${1:s} = std::to_string(${2:x});'},\n"
+    "  stoi = {'const int ${1:n} = std::${2|stoi,stol,stoll|}(${3:str});'},\n"
+    "  split = {'std::vector<std::string> ${1:parts};', '{', '    std::istringstream ss(${2:str});', '    for (std::string tok; std::getline(ss, tok, ${3:\\',\\'});) $1.push_back(tok);', '}'},\n"
+    "  trim = {'std::string trim(std::string_view s) {', '    const auto b = s.find_first_not_of(\" \\\\t\\\\n\\\\r\");', '    if (b == std::string_view::npos) return {};', '    const auto e = s.find_last_not_of(\" \\\\t\\\\n\\\\r\");', '    return std::string(s.substr(b, e - b + 1));', '}'},\n"
+    "  vec = {'std::vector<${1:int}> ${2:v}{${3:1, 2, 3}};'},\n"
+    "  arr = {'std::array<${1:int}, ${2:3}> ${3:a}{${4:1, 2, 3}};'},\n"
+    "  map = {'std::${1|map,unordered_map|}<${2:std::string}, ${3:int}> ${4:m}{${5:{\"a\", 1}, {\"b\", 2}}};'},\n"
+    "  set = {'std::${1|set,unordered_set|}<${2:int}> ${3:s}{${4:1, 2, 3}};'},\n"
+    "  pair = {'auto ${1:p} = std::make_pair(${2:1}, ${3:std::string(\"one\")});'},\n"
+    "  tuple = {'auto ${1:t} = std::make_tuple(${2:1, 2.0, \"three\"});'},\n"
+    "  uptr = {'auto ${1:p} = std::make_unique<${2:Widget}>(${3});'},\n"
+    "  sptr = {'auto ${1:p} = std::make_shared<${2:Widget}>(${3});'},\n"
+    "  opt = {'std::optional<${1:int}> ${2:find_first}(const std::vector<$1>& v, $1 target) {', '    for (const auto& x : v) {', '        if (x == target) return x;', '    }', '    return std::nullopt;', '}'},\n"
+    "  expected = {'std::expected<${1:int}, std::string> ${2:parse}(std::string_view s) {', '    if (s.empty()) return std::unexpected(\"empty input\");', '    ${0:return static_cast<int>(s.size());}', '}'},\n"
+    "  sort = {'std::ranges::sort(${1:v});'},\n"
+    "  sortby = {'std::ranges::sort(${1:v}, [](const auto& a, const auto& b) { return ${2:a > b}; });'},\n"
+    "  find = {'if (auto it = std::ranges::find(${1:v}, ${2:x}); it != $1.end()) {', '    ${0}', '}'},\n"
+    "  findif = {'auto ${1:it} = std::ranges::find_if(${2:v}, [](const auto& e) { return ${3:e > 1}; });'},\n"
+    "  count = {'const auto ${1:n} = std::ranges::count_if(${2:v}, [](const auto& e) { return ${3:e > 1}; });'},\n"
+    "  accum = {'const auto ${1:total} = std::accumulate(${2:v}.begin(), $2.end(), ${3:0});'},\n"
+    "  transform = {'std::vector<${1:int}> ${2:out};', 'std::ranges::transform(${3:v}, std::back_inserter($2), [](const auto& e) { return ${4:e * 2}; });'},\n"
+    "  views = {'for (auto ${1:e} : ${2:v} | std::views::filter([](int x) { return ${3:x % 2 == 0}; })', '                 | std::views::transform([](int x) { return ${4:x * x}; })) {', '    ${0}', '}'},\n"
+    "  iota = {'for (int ${1:i} : std::views::iota(${2:0}, ${3:10})) {', '    ${0}', '}'},\n"
+    "  eraseif = {'std::erase_if(${1:v}, [](const auto& e) { return ${2:e < 0}; });'},\n"
+    "  minmax = {'const auto [${1:lo}, ${2:hi}] = std::ranges::minmax(${3:v});'},\n"
+    "  unique = {'std::ranges::sort(${1:v});', '$1.erase(std::unique($1.begin(), $1.end()), $1.end());'},\n"
+    "  readf = {'std::ifstream ${1:in}(${2:\"input.txt\"});', 'std::stringstream ${3:buf};', '$3 << $1.rdbuf();', 'const std::string ${4:text} = $3.str();'},\n"
+    "  readl = {'std::ifstream ${1:in}(${2:\"input.txt\"});', 'for (std::string ${3:line}; std::getline($1, $3);) {', '    ${0}', '}'},\n"
+    "  writef = {'std::ofstream ${1:out}(${2:\"output.txt\"});', '$1 << ${3:\"hello\"} << \\'\\\\n\\';'},\n"
+    "  fsiter = {'for (const auto& ${1:entry} : std::filesystem::${2|directory_iterator,recursive_directory_iterator|}(${3:\".\"})) {', '    std::cout << $1.path() << \\'\\\\n\\';${0}', '}'},\n"
+    "  timer = {'const auto ${1:start} = std::chrono::steady_clock::now();', '${0}', 'const auto ${2:ms} = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - $1);', 'std::cout << $2.count() << \" ms\\\\n\";'},\n"
+    "  sleep = {'std::this_thread::sleep_for(std::chrono::milliseconds(${1:100}));'},\n"
+    "  rand = {'std::mt19937 ${1:rng}{${2:std::random_device{}()}};', 'std::${3|uniform_int_distribution<int>,uniform_real_distribution<double>,normal_distribution<double>|} ${4:dist}(${5:0}, ${6:10});', 'const auto ${7:r} = $4($1);'},\n"
+    "  thread = {'std::jthread ${1:worker}([${2:&}] {', '    ${0}', '});'},\n"
+    "  async = {'auto ${1:fut} = std::async(std::launch::async, [${2:&}] { return ${3:42}; });', 'const auto ${4:result} = $1.get();'},\n"
+    "  lock = {'std::scoped_lock ${1:lock}(${2:mtx});'},\n"
+    "  atomic = {'std::atomic<${1:int}> ${2:counter}{${3:0}};'},\n"
+    "  omp = {'#pragma omp parallel for', 'for (int ${1:i} = 0; $1 < ${2:n}; ++$1) {', '    ${0}', '}'},\n"
+    "  gtest = {'#include <gtest/gtest.h>', '', 'TEST(${1:Suite}, ${2:Works}) {', '    ${0:EXPECT_EQ(1 + 1, 2);}', '}'},\n"
+    "  gtestf = {'#include <gtest/gtest.h>', '#include <vector>', '', 'class ${1:Fixture} : public ::testing::Test {', 'protected:', '    void SetUp() override { ${2:v = {1, 2, 3};} }', '    ${3:std::vector<int> v;}', '};', '', 'TEST_F($1, ${4:HasThree}) {', '    ${0:EXPECT_EQ(v.size(), 3u);}', '}'},\n"
+    "  catch = {'#include <catch2/catch_test_macros.hpp>', '', 'TEST_CASE(${1:\"it works\"}, ${2:\"[tag]\"}) {', '    SECTION(${3:\"addition\"}) {', '        ${0:REQUIRE(1 + 1 == 2);}', '    }', '}'},\n"
+    "  fmtprint = {'#include <fmt/core.h>', '', 'int main() {', '    fmt::print(${1:\"{} = {}\\\\n\"}, ${2:\"x\"}, ${3:42});', '}'},\n"
+    "  spdlog = {'#include <spdlog/spdlog.h>', '', 'int main() {', '    spdlog::set_level(spdlog::level::${1|info,debug,warn|});', '    spdlog::info(${2:\"started {}\"}, ${3:\"app\"});', '}'},\n"
+    "  json = {'#include <iostream>', '#include <nlohmann/json.hpp>', '', 'int main() {', '    const auto ${1:j} = nlohmann::json::parse(${2:R\"({\"name\": \"x\", \"values\": [1, 2, 3]})\"});', '    std::cout << $1[${3:\"name\"}] << \\'\\\\n\\';', '    std::cout << $1.dump(${4:2}) << \\'\\\\n\\';', '}'},\n"
+    "  eigen = {'#include <Eigen/Dense>', '#include <iostream>', '', 'int main() {', '    Eigen::MatrixXd A(${1:2}, $1);', '    A << ${2:4, 1, 1, 3};', '    Eigen::VectorXd b($1);', '    b << ${3:1, 2};', '    const Eigen::VectorXd x = A.${4|colPivHouseholderQr,ldlt,partialPivLu|}().solve(b);', '    std::cout << x << \\'\\\\n\\';', '}'},\n"
+    "  bench = {'#include <benchmark/benchmark.h>', '#include <vector>', '', 'static void BM_${1:Push}(benchmark::State& state) {', '    for (auto _ : state) {', '        ${0:std::vector<int> v(100);}', '        benchmark::DoNotOptimize(v);', '    }', '}', 'BENCHMARK(BM_$1);'},\n"
+    "}\n",
     "mep.snippets = {\n"
     "  c = {\n"
     "    main = {'int main(${1:void}) {', '\\t${0}', '\\treturn 0;', '}'},\n"
@@ -14927,6 +15156,126 @@ const char *kBuiltinSnippets =
     "    pltlabels = {'plt.xlabel(${1:\"x\"})', 'plt.ylabel(${2:\"y\"})', 'plt.title(${3:\"\"})', 'plt.legend()'},\n"
     "    pltsave = {'plt.savefig(${1:\"figure.png\"}, dpi=${2:150}, bbox_inches=\"tight\")'},\n"
     "    pltshow = {'plt.show()'},\n"
+    // Everyday Python, then the common data/science packages. Every
+    // default expansion and choice variant was run against the real
+    // libraries when these were written, so keep the bodies runnable:
+    // 4-space indents, double-quoted strings, and no field reference
+    // inside another field's default (the parser keeps `$2` in a default
+    // as literal text). Package snippets use the
+    // usual aliases: np, pd, plt, sns, torch/nn; prefixes group each
+    // family in the completion popup (pd*, sp* scipy, sk* sklearn,
+    // sns*, torch*).
+    "    shebang = {'#!/usr/bin/env python3'},\n"
+    "    ['if'] = {'if ${1:condition}:', '    ${0:pass}'},\n"
+    "    ife = {'if ${1:condition}:', '    ${2:pass}', 'else:', '    ${0:pass}'},\n"
+    "    elif = {'elif ${1:condition}:', '    ${0:pass}'},\n"
+    "    ['while'] = {'while ${1:condition}:', '    ${0:pass}'},\n"
+    "    forr = {'for ${1:i} in range(${2:10}):', '    ${0:pass}'},\n"
+    "    fore = {'for ${1:i}, ${2:item} in enumerate(${3:items}):', '    ${0:pass}'},\n"
+    "    forz = {'for ${1:a}, ${2:b} in zip(${3:xs}, ${4:ys}):', '    ${0:pass}'},\n"
+    "    ford = {'for ${1:key}, ${2:value} in ${3:d}.items():', '    ${0:pass}'},\n"
+    "    lc = {'[${1:x} for ${2:x} in ${3:items}${4: if x}]'},\n"
+    "    dc = {'{${1:k}: ${2:v} for ${1:k}, ${2:v} in ${3:d}.items()}'},\n"
+    "    sc = {'{${1:x} for ${2:x} in ${3:items}}'},\n"
+    "    gen = {'(${1:x} for ${2:x} in ${3:items})'},\n"
+    "    deft = {'def ${1:name}(${2:x}: ${3:int}) -> ${4:int}:', '    \"\"\"${5:Describe it.}\"\"\"', '    return $2${0}'},\n"
+    "    adef = {'async def ${1:name}(${2}):', '    ${0:pass}'},\n"
+    "    doc = {'\"\"\"${1:Summary.}', '', '${2:Details.}', '\"\"\"'},\n"
+    "    mainf = {'def main() -> None:', '    ${0:pass}', '', '', 'if __name__ == \"__main__\":', '    main()'},\n"
+    "    dcls = {'from dataclasses import dataclass, field', '', '', '@dataclass', 'class ${1:Point}:', '    ${2:x}: ${3:float}', '    ${4:y}: ${5:float} = ${6:0.0}', '    ${7:tags}: list[str] = field(default_factory=list)${0}'},\n"
+    "    enum = {'from enum import Enum', '', '', 'class ${1:Color}(Enum):', '    ${2:RED} = 1', '    ${3:GREEN} = 2', '    ${4:BLUE} = 3${0}'},\n"
+    "    exc = {'class ${1:MyError}(${2:Exception}):', '    \"\"\"${3:Raised when something goes wrong.}\"\"\"'},\n"
+    "    prop = {'@property', 'def ${1:name}(self):', '    return self._$1', '', '', '@$1.setter', 'def $1(self, value):', '    self._$1 = value'},\n"
+    "    clsm = {'@classmethod', 'def ${1:from_dict}(cls, ${2:data}):', '    return cls(**$2)${0}'},\n"
+    "    stm = {'@staticmethod', 'def ${1:name}(${2:x}):', '    return $2${0}'},\n"
+    "    repr = {'def __repr__(self) -> str:', '    return f\"${1:Name}(${2:x}={self.${3:x}!r})\"'},\n"
+    "    tryf = {'try:', '    ${1:pass}', 'except ${2:Exception} as ${3:e}:', '    ${4:raise}', 'finally:', '    ${0:pass}'},\n"
+    "    raise = {'raise ${1:ValueError}(${2:f\"bad value: {x!r}\"})'},\n"
+    "    ctxm = {'from contextlib import contextmanager', '', '', '@contextmanager', 'def ${1:managed}():', '    ${2:resource = None}', '    try:', '        yield ${3:resource}', '    finally:', '        ${0:pass}'},\n"
+    "    deco = {'import functools', '', '', 'def ${1:decorator}(func):', '    @functools.wraps(func)', '    def wrapper(*args, **kwargs):', '        ${2:pass}', '        return func(*args, **kwargs)', '', '    return wrapper'},\n"
+    "    from = {'from ${1:module} import ${2:name}'},\n"
+    "    tyimp = {'from typing import ${1:Any, Callable, Iterable, Optional}'},\n"
+    "    pathimp = {'from pathlib import Path'},\n"
+    "    readf = {'${1:text} = Path(${2:\"input.txt\"}).read_text(encoding=\"utf-8\")'},\n"
+    "    writef = {'Path(${1:\"output.txt\"}).write_text(${2:text}, encoding=\"utf-8\")'},\n"
+    "    readl = {'with open(${1:\"input.txt\"}, encoding=\"utf-8\") as ${2:f}:', '    for ${3:line} in $2:', '        ${4:line} = $3.rstrip(\"\\\\n\")${0}'},\n"
+    "    glob = {'for ${1:path} in Path(${2:\".\"}).${3|glob,rglob|}(${4:\"*.csv\"}):', '    print($1)${0}'},\n"
+    "    mkdir = {'Path(${1:\"out\"}).mkdir(parents=True, exist_ok=True)'},\n"
+    "    jsonload = {'import json', '', 'with open(${1:\"data.json\"}, encoding=\"utf-8\") as f:', '    ${2:data} = json.load(f)'},\n"
+    "    jsondump = {'import json', '', 'with open(${1:\"data.json\"}, \"w\", encoding=\"utf-8\") as f:', '    json.dump(${2:data}, f, indent=${3:2})'},\n"
+    "    csvread = {'import csv', '', 'with open(${1:\"data.csv\"}, newline=\"\", encoding=\"utf-8\") as f:', '    for ${2:row} in csv.DictReader(f):', '        print($2)${0}'},\n"
+    "    csvwrite = {'import csv', '', 'with open(${1:\"out.csv\"}, \"w\", newline=\"\", encoding=\"utf-8\") as f:', '    writer = csv.DictWriter(f, fieldnames=[${2:\"name\", \"value\"}])', '    writer.writeheader()', '    writer.writerows(${3:rows})'},\n"
+    "    pkdump = {'import pickle', '', 'with open(${1:\"data.pkl\"}, \"wb\") as f:', '    pickle.dump(${2:obj}, f)'},\n"
+    "    pkload = {'import pickle', '', 'with open(${1:\"data.pkl\"}, \"rb\") as f:', '    ${2:obj} = pickle.load(f)'},\n"
+    "    argp = {'import argparse', '', '', 'def main() -> None:', '    parser = argparse.ArgumentParser(description=${1:\"What this does.\"})', '    parser.add_argument(${2:\"path\"}, help=${3:\"input file\"})', '    parser.add_argument(\"-n\", \"--${4:count}\", type=int, default=${5:1})', '    parser.add_argument(\"-v\", \"--verbose\", action=\"store_true\")', '    args = parser.parse_args()', '    ${0:print(args)}', '', '', 'if __name__ == \"__main__\":', '    main()'},\n"
+    "    arg = {'parser.add_argument(\"${1:--name}\", ${2:type=str}, default=${3:None}, help=${4:\"\"})'},\n"
+    "    logsetup = {'import logging', '', 'logging.basicConfig(level=logging.${1|INFO,DEBUG,WARNING|}, format=\"%(asctime)s %(levelname)s %(name)s: %(message)s\")', 'log = logging.getLogger(__name__)'},\n"
+    "    timer = {'import time', '', 'start = time.perf_counter()', '${0:pass}', 'print(f\"took {time.perf_counter() - start:.3f}s\")'},\n"
+    "    run = {'import subprocess', '', '${1:result} = subprocess.run([${2:\"ls\", \"-l\"}], check=True, capture_output=True, text=True)', 'print($1.stdout)'},\n"
+    "    now = {'from datetime import datetime', '', '${1:now} = datetime.now()', 'print($1.strftime(${2:\"%Y-%m-%d %H:%M:%S\"}))'},\n"
+    "    ddict = {'from collections import defaultdict', '', '${1:groups} = defaultdict(${2:list})'},\n"
+    "    counter = {'from collections import Counter', '', '${1:counts} = Counter(${2:items})', 'print($1.most_common(${3:10}))'},\n"
+    "    refind = {'import re', '', '${1:pattern} = re.compile(${2:r\"[0-9]+\"})', 'for m in $1.finditer(${3:text}):', '    ${0:print(m.group(0))}'},\n"
+    "    amain = {'import asyncio', '', '', 'async def main() -> None:', '    ${0:await asyncio.sleep(0)}', '', '', 'if __name__ == \"__main__\":', '    asyncio.run(main())'},\n"
+    "    gather = {'${1:results} = await asyncio.gather(*(${2:fetch}(${3:x}) for $3 in ${4:items}))'},\n"
+    "    pool = {'from concurrent.futures import ${1|ThreadPoolExecutor,ProcessPoolExecutor|}', '', 'with $1(max_workers=${2:8}) as pool:', '    ${3:results} = list(pool.map(${4:work}, ${5:items}))'},\n"
+    "    sqlq = {'import sqlite3', '', 'with sqlite3.connect(${1:\"data.db\"}) as conn:', '    rows = conn.execute(${2:\"SELECT * FROM t WHERE id = ?\"}, (${3:1},)).fetchall()'},\n"
+    "    reqget = {'import requests', '', 'resp = requests.get(${1:\"https://example.com/api\"}, params={${2:\"q\": \"x\"}}, timeout=${3:10})', 'resp.raise_for_status()', '${4:data} = resp.json()'},\n"
+    "    reqpost = {'import requests', '', 'resp = requests.post(${1:\"https://example.com/api\"}, json={${2:\"key\": \"value\"}}, timeout=${3:10})', 'resp.raise_for_status()'},\n"
+    "    test = {'def test_${1:name}():', '    ${0:assert True}'},\n"
+    "    fixture = {'import pytest', '', '', '@pytest.fixture', 'def ${1:data}():', '    ${0:return [1, 2, 3]}'},\n"
+    "    param = {'@pytest.mark.parametrize(\"${1:x}, ${2:expected}\", [', '    (${3:1}, ${4:2}),', '])', 'def test_${5:name}($1, $2):', '    assert $1 + 1 == $2${0}'},\n"
+    "    raises = {'with pytest.raises(${1:ValueError}):', '    ${0:int(\"x\")}'},\n"
+    "    utest = {'import unittest', '', '', 'class Test${1:Thing}(unittest.TestCase):', '    def test_${2:it_works}(self):', '        ${0:self.assertEqual(1 + 1, 2)}', '', '', 'if __name__ == \"__main__\":', '    unittest.main()'},\n"
+    "    npgen = {'${1:rng} = np.random.default_rng(${2:0})'},\n"
+    "    npwhere = {'${1:b} = np.where(${2:a > 0}, ${3:a}, ${4:0})'},\n"
+    "    npstack = {'${1:c} = np.${2|vstack,hstack,column_stack,concatenate|}([${3:a, b}])'},\n"
+    "    npreshape = {'${1:b} = ${2:a}.reshape(${3:-1, 1})'},\n"
+    "    npstats = {'print(${1:a}.mean(), $1.std(), $1.min(), $1.max())'},\n"
+    "    npsolve = {'${1:x} = np.linalg.solve(${2:A}, ${3:b})'},\n"
+    "    npnpy = {'np.save(${1:\"array.npy\"}, ${2:a})', '${3:b} = np.load($1)'},\n"
+    "    pdimp = {'import pandas as pd'},\n"
+    "    pdread = {'${1:df} = pd.read_${2|csv,parquet,excel,json|}(${3:\"data.csv\"})'},\n"
+    "    pdwrite = {'${1:df}.to_${2|csv,parquet,excel,json|}(${3:\"out.csv\"}${4:, index=False})'},\n"
+    "    pddf = {'${1:df} = pd.DataFrame({', '    ${2:\"name\": [\"a\", \"b\", \"c\"]},', '    ${3:\"value\": [1, 2, 3]},', '})'},\n"
+    "    pdinfo = {'print(${1:df}.head())', '$1.info()', 'print($1.describe())'},\n"
+    "    pdfilter = {'${1:sub} = ${2:df}[$2[${3:\"value\"}] ${4:> 0}]'},\n"
+    "    pdquery = {'${1:sub} = ${2:df}.query(${3:\"value > 0\"})'},\n"
+    "    pdloc = {'${1:df}.loc[$1[${2:\"value\"}] ${3:> 0}, ${4:[\"name\", \"value\"]}]'},\n"
+    "    pdgroup = {'${1:summary} = (', '    ${2:df}.groupby(${3:\"name\"})', '    .agg(${4:total}=(${5:\"value\"}, ${6|\"sum\",\"mean\",\"count\",\"min\",\"max\"|}))', '    .reset_index()', ')'},\n"
+    "    pdmerge = {'${1:merged} = ${2:left}.merge(${3:right}, on=${4:\"id\"}, how=${5|\"inner\",\"left\",\"right\",\"outer\"|})'},\n"
+    "    pdconcat = {'${1:df} = pd.concat([${2:a, b}], ignore_index=True)'},\n"
+    "    pdpivot = {'${1:wide} = ${2:df}.pivot_table(index=${3:\"name\"}, columns=${4:\"year\"}, values=${5:\"value\"}, aggfunc=${6:\"sum\"})'},\n"
+    "    pdmelt = {'${1:long} = ${2:df}.melt(id_vars=[${3:\"name\"}], var_name=${4:\"variable\"}, value_name=${5:\"value\"})'},\n"
+    "    pdsort = {'${1:df} = $1.sort_values(${2:\"value\"}, ascending=${3|False,True|})'},\n"
+    "    pdna = {'${1:df} = $1.${2|dropna(),fillna(0)|}'},\n"
+    "    pdassign = {'${1:df} = $1.assign(${2:double}=lambda d: ${3:d[\"value\"] * 2})'},\n"
+    "    pdrename = {'${1:df} = $1.rename(columns={${2:\"old\": \"new\"}})'},\n"
+    "    pddate = {'${1:df}[${2:\"date\"}] = pd.to_datetime($1[$2])', '$1 = $1.set_index($2)'},\n"
+    "    pdresample = {'${1:monthly} = ${2:df}.resample(${3:\"MS\"})[${4:\"value\"}].${5|sum,mean|}()'},\n"
+    "    pdvc = {'print(${1:df}[${2:\"name\"}].value_counts())'},\n"
+    "    pdloop = {'for ${1:row} in ${2:df}.itertuples(index=False):', '    print($1)${0}'},\n"
+    "    pdplot = {'import matplotlib.pyplot as plt', '', '${1:df}.plot(x=${2:\"name\"}, y=${3:\"value\"}, kind=${4|\"line\",\"bar\",\"scatter\",\"hist\"|})', 'plt.show()'},\n"
+    "    spmin = {'from scipy.optimize import minimize', '', '', 'def ${1:f}(p):', '    ${2:return (p[0] - 1) ** 2 + (p[1] + 2) ** 2}', '', '', 'res = minimize($1, x0=[${3:0.0, 0.0}], method=${4|\"BFGS\",\"Nelder-Mead\",\"L-BFGS-B\"|})', 'print(res.x, res.fun)'},\n"
+    "    spfit = {'import numpy as np', 'from scipy.optimize import curve_fit', '', '', 'def model(x, ${1:a, b}):', '    return ${2:a * np.exp(-b * x)}', '', '', 'x = np.linspace(0, 4, 50)', 'y = model(x, ${3:2.5, 1.3}) + np.random.default_rng(0).normal(0, 0.05, x.size)', 'popt, pcov = curve_fit(model, x, y, p0=[${4:1.0, 1.0}])', 'print(popt, np.sqrt(np.diag(pcov)))'},\n"
+    "    spquad = {'from scipy.integrate import quad', '', 'value, err = quad(lambda x: ${1:x**2}, ${2:0}, ${3:1})', 'print(value, err)'},\n"
+    "    spode = {'import numpy as np', 'from scipy.integrate import solve_ivp', '', '', 'def rhs(t, y):', '    return ${1:[-0.5 * y[0]]}', '', '', 'sol = solve_ivp(rhs, (${2:0.0}, ${3:10.0}), y0=[${4:1.0}], t_eval=np.linspace($2, $3, ${5:100}))', 'print(sol.t[-1], sol.y[:, -1])'},\n"
+    "    sproot = {'from scipy.optimize import brentq', '', 'root = brentq(lambda x: ${1:x**3 - 2}, ${2:0.0}, ${3:2.0})', 'print(root)'},\n"
+    "    spttest = {'from scipy import stats', '', 'res = stats.${1|ttest_ind,ttest_rel,mannwhitneyu|}(${2:a}, ${3:b})', 'print(res.statistic, res.pvalue)'},\n"
+    "    spinterp = {'from scipy.interpolate import ${1|CubicSpline,PchipInterpolator,make_interp_spline|}', '', '${2:f} = $1(${3:x}, ${4:y})', '${5:y_new} = $2(${6:x_new})'},\n"
+    "    sksplit = {'from sklearn.model_selection import train_test_split', '', 'X_train, X_test, y_train, y_test = train_test_split(${1:X}, ${2:y}, test_size=${3:0.2}, random_state=${4:0})'},\n"
+    "    skclf = {'from sklearn.datasets import load_iris', 'from sklearn.ensemble import RandomForestClassifier', 'from sklearn.linear_model import LogisticRegression', 'from sklearn.metrics import classification_report', 'from sklearn.model_selection import train_test_split', 'from sklearn.pipeline import make_pipeline', 'from sklearn.preprocessing import StandardScaler', '', 'X, y = ${1:load_iris(return_X_y=True)}', 'X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)', '', 'model = make_pipeline(StandardScaler(), ${2|LogisticRegression(max_iter=1000),RandomForestClassifier(random_state=0)|})', 'model.fit(X_train, y_train)', 'print(classification_report(y_test, model.predict(X_test)))'},\n"
+    "    skreg = {'from sklearn.datasets import load_diabetes', 'from sklearn.ensemble import RandomForestRegressor', 'from sklearn.linear_model import Ridge', 'from sklearn.metrics import mean_squared_error, r2_score', 'from sklearn.model_selection import train_test_split', '', 'X, y = ${1:load_diabetes(return_X_y=True)}', 'X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)', '', 'model = ${2|Ridge(alpha=1.0),RandomForestRegressor(random_state=0)|}', 'model.fit(X_train, y_train)', 'pred = model.predict(X_test)', 'print(\"rmse\", mean_squared_error(y_test, pred) ** 0.5, \"r2\", r2_score(y_test, pred))'},\n"
+    "    skpipe = {'from sklearn.pipeline import make_pipeline', 'from sklearn.preprocessing import StandardScaler', '', '${1:model} = make_pipeline(StandardScaler(), ${2:estimator})'},\n"
+    "    skcv = {'from sklearn.model_selection import cross_val_score', '', 'scores = cross_val_score(${1:model}, ${2:X}, ${3:y}, cv=${4:5})', 'print(scores.mean(), scores.std())'},\n"
+    "    skgrid = {'from sklearn.model_selection import GridSearchCV', '', 'search = GridSearchCV(${1:model}, {${2:\"C\": [0.1, 1, 10]}}, cv=${3:5})', 'search.fit(${4:X}, ${5:y})', 'print(search.best_params_, search.best_score_)'},\n"
+    "    snsimp = {'import seaborn as sns'},\n"
+    "    snsplot = {'sns.${1|scatterplot,lineplot,histplot,boxplot,violinplot,barplot|}(data=${2:df}, x=${3:\"x\"}, y=${4:\"y\"}${5:, hue=\"group\"})'},\n"
+    "    snsheat = {'sns.heatmap(${1:df}.corr(numeric_only=True), annot=True, cmap=${2:\"vlag\"}, center=0)'},\n"
+    "    snspair = {'sns.pairplot(${1:df}${2:, hue=\"group\"})'},\n"
+    "    torchdev = {'device = torch.device(\"cuda\" if torch.cuda.is_available() else \"cpu\")'},\n"
+    "    torchmod = {'import torch', 'from torch import nn', '', '', 'class ${1:Net}(nn.Module):', '    def __init__(self, ${2:n_in}: int, ${3:n_out}: int):', '        super().__init__()', '        self.layers = nn.Sequential(', '            nn.Linear($2, ${4:64}),', '            nn.ReLU(),', '            nn.Linear($4, $3),', '        )', '', '    def forward(self, x):', '        return self.layers(x)'},\n"
+    "    torchloop = {'for epoch in range(${1:10}):', '    model.train()', '    for xb, yb in ${2:loader}:', '        optimizer.zero_grad()', '        loss = ${3:loss_fn}(model(xb), yb)', '        loss.backward()', '        optimizer.step()', '    print(epoch, loss.item())'},\n"
     "  },\n"
     "  rs = {\n"
     "    fn = {'fn ${1:name}(${2:args}) -> ${3:()} {', '\\t${0}', '}'},\n"
@@ -14938,20 +15287,14 @@ const char *kBuiltinSnippets =
     "    test = {'#[test]', 'fn ${1:it_works}() {', '\\t${0}', '}'},\n"
     "    iferr = {'if let Err(${1:e}) = ${2:result} {', '\\t${0}', '}'},\n"
     "  },\n"
-    // cpp/nix/envrc: also ported from ~/projects/nvim's plugin/luasnip.lua
+    // nix/envrc: also ported from ~/projects/nvim's plugin/luasnip.lua
     // (see the header comment on the lua table's own additions above for
-    // what was deliberately left out and why). None of these three
+    // what was deliberately left out and why). None of these
     // bodies use any insert-node placeholder text in the source LuaSnip
     // config -- they're pure boilerplate, so they expand with zero
     // tabstops here (mep_snippet_jump(1) immediately clears
     // mep_snippet_state right back out, same as any other tabstop-free
     // snippet).
-    "  cpp = {\n"
-    "    ponce = {'#pragma once'},\n"
-    "    iostream = {'#include <iostream>'},\n"
-    "    memory = {'#include <memory>'},\n"
-    "    helloworld = {'#include <iostream>', '', 'int main(void) {', '  std::cout << \"Hello World!\" << std::endl;', '  return 0;', '}'},\n"
-    "  },\n"
     "  nix = {\n"
     "    module = {\n"
     "      '# https://nix.dev/tutorials/module-system/index.html',\n"
@@ -15220,6 +15563,10 @@ const char *kBuiltinSnippets =
     "  js = mep_snippets_js, jsx = mep_snippets_js, mjs = mep_snippets_js, cjs = mep_snippets_js,\n"
     "  ts = mep_snippets_js, tsx = mep_snippets_js,\n"
     "  sh = mep_snippets_sh, bash = mep_snippets_sh, zsh = mep_snippets_sh,\n"
+    "  r = mep_snippets_r, R = mep_snippets_r,\n"
+    "  cpp = mep_snippets_cpp, cc = mep_snippets_cpp, cxx = mep_snippets_cpp, ['c++'] = mep_snippets_cpp,\n"
+    "  hpp = mep_snippets_cpp, hh = mep_snippets_cpp, hxx = mep_snippets_cpp, ['h++'] = mep_snippets_cpp,\n"
+    "  ipp = mep_snippets_cpp, tpp = mep_snippets_cpp, inl = mep_snippets_cpp, ['C++'] = mep_snippets_cpp,\n"
     "}\n"
     // Which mep.snippets/mep.autosnippets set applies at the cursor: the
     // buffer's own filetype, except inside a document's code block (org
@@ -15442,7 +15789,8 @@ const char *kBuiltinSnippets =
     // tab-bar button's :MepYoutube). Lives here only because `y` is its
     // natural prefix and this is the chunk that owns the `y` group's other
     // binding; the player itself is C++ (src/youtube_player.*, editor.cpp).
-    "mep.leader_map('yt', 'Toggle YouTube player (keeps playing when hidden)', mep.youtube_toggle)\n";
+    "mep.leader_map('yt', 'Toggle YouTube player (keeps playing when hidden)', mep.youtube_toggle)\n",
+};
 
 // Symbols outline (Phase 24): textDocument/documentSymbol into a Phase 7
 // sidebar, reusing exactly the LSP request wrapper and mep_lsp_result/
@@ -29956,7 +30304,7 @@ const char *kBuiltinMathSnippets =
 // letter of the trigger is typed, and expand when it is accepted (Ctrl-Y,
 // or Enter on an entry moved onto); <leader>yy and :MepSnippets reach
 // them too. Bodies live in the same mep.snippets registry as every code
-// filetype's snippets (kBuiltinSnippets), so init.lua can extend/override
+// filetype's snippets (kBuiltinSnippetsParts), so init.lua can extend/override
 // entries the usual way. Choice fields (${N|a,b|}) cycle with Ctrl-J/
 // Ctrl-K. The TikZ graph snippets are shared with tex buffers; mermaid
 // versions of the same graphs (m-prefixed) are org-only.
@@ -71325,7 +71673,11 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinMenubarBindings);
     // After kBuiltinLsp: reuses its mep_lsp_uri/mep_lsp_result helpers.
     lua->DoString(kBuiltinCopilot);
-    lua->DoString(kBuiltinSnippets);
+    {
+        std::string snippets;
+        for (const char *part : kBuiltinSnippetsParts) snippets += part;
+        lua->DoString(snippets);
+    }
     lua->DoString(kBuiltinSymbols);
     lua->DoString(kBuiltinSheet);
     lua->DoString(kBuiltinStructure);

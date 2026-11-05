@@ -8577,7 +8577,7 @@ public:
      * @return The resolved directory/base if it looks like a path, with found=false otherwise.
      */
     CompletionPathPrefix CompletionPathPrefixFor(const std::string &prefix, int col, const std::string &line) const;
-    // Snippet expansion + tabstop jumping (kBuiltinSnippets, main.cpp) --
+    // Snippet expansion + tabstop jumping (kBuiltinSnippetsParts, main.cpp) --
     // the template parser, the splice and the tabstop session state machine
     // live here in C++; the snippet *bodies themselves* (mep.snippets,
     // mep.autosnippets) stay Lua data, and mep.snippet_expand / the
@@ -13715,7 +13715,7 @@ public:
     // (only the explicit :MepSnippetNext/:MepSnippetPrev commands), so a
     // snippet mid-expansion couldn't be advanced with the key every other
     // snippet-capable editor uses. Returning true tells HandleInsertInput
-    // the key was consumed (kBuiltinSnippets' hook jumps the tabstop and
+    // the key was consumed (kBuiltinSnippetsParts' hook jumps the tabstop and
     // returns true only while mep_snippet_state is active); returning
     // false leaves Tab a no-op, same as before this hook existed, since
     // Insert mode has no other built-in Tab behavior to fall back to.

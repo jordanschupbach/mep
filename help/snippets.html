@@ -52,7 +52,7 @@ while the cursor is inside a snippet; elsewhere it indents as usual.</p>
 <code>Ctrl-K</code> cycle it. Lines after the first are indented like the line the
 trigger was on.</p>
 <h1>What ships</h1>
-<p>Curated sets for <code>c</code>, <code>cpp</code>, <code>go</code>, <code>lua</code>, <code>py</code>, <code>rs</code>, <code>sql</code>, <code>nix</code> and <code>envrc</code>.</p>
+<p>Curated sets for <code>c</code>, <code>cpp</code>, <code>go</code>, <code>lua</code>, <code>py</code>, <code>r</code>, <code>rs</code>, <code>sql</code>, <code>nix</code> and <code>envrc</code>.</p>
 <p>The <code>py</code> set includes <code>print</code>, which expands to <code>print()</code> with the cursor
 between the parentheses.</p>
 <h1>Python: numpy and matplotlib</h1>
@@ -73,6 +73,13 @@ completion popup. The bodies assume the usual aliases, which <code>npimp</code>,
 <tr><td><code>nprng</code></td><td><code>np.random.seed(seed)</code></td></tr>
 <tr><td><code>npnormal</code> <code>npuniform</code></td><td><code>np.random.normal</code> / <code>np.random.uniform</code> samples</td></tr>
 <tr><td><code>npload</code> <code>npsave</code></td><td><code>np.loadtxt</code> / <code>np.savetxt</code></td></tr>
+<tr><td><code>npgen</code></td><td><code>np.random.default_rng(seed)</code>, the newer generator</td></tr>
+<tr><td><code>npwhere</code></td><td><code>np.where(cond, a, 0)</code></td></tr>
+<tr><td><code>npstack</code></td><td><code>vstack</code> / <code>hstack</code> / <code>column_stack</code> / <code>concatenate</code></td></tr>
+<tr><td><code>npreshape</code></td><td><code>a.reshape(-1, 1)</code></td></tr>
+<tr><td><code>npstats</code></td><td>mean, std, min and max</td></tr>
+<tr><td><code>npsolve</code></td><td><code>np.linalg.solve(A, b)</code></td></tr>
+<tr><td><code>npnpy</code></td><td><code>np.save</code> and <code>np.load</code> of a <code>.npy</code> file</td></tr>
 <tr><td><code>pltline</code></td><td><code>plt.plot</code> with axis labels and <code>plt.show()</code></td></tr>
 <tr><td><code>pltscatter</code></td><td>a scatter plot, likewise</td></tr>
 <tr><td><code>plthist</code></td><td>a histogram, likewise</td></tr>
@@ -89,6 +96,219 @@ completion popup. The bodies assume the usual aliases, which <code>npimp</code>,
 script: the imports, some example data, the plot call, labels and
 <code>plt.show()</code>. Expand one into an empty file and run it as is, or tab
 through the tabstops to swap in your own data and labels.</p>
+<h1>Python: everyday code</h1>
+<p>Bodies use four-space indents. Where a field's default is ordinary code
+(<code>pass</code>, <code>print(row)</code>), it is there so the expansion runs as is.</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>if</code> <code>ife</code> <code>elif</code> <code>while</code></td><td>the statement, with a <code>pass</code> body</td></tr>
+<tr><td><code>forr</code></td><td><code>for i in range(10):</code></td></tr>
+<tr><td><code>fore</code> <code>forz</code> <code>ford</code></td><td><code>enumerate</code>, <code>zip</code> and <code>dict.items()</code> loops</td></tr>
+<tr><td><code>lc</code> <code>dc</code> <code>sc</code> <code>gen</code></td><td>list, dict and set comprehensions, a generator</td></tr>
+<tr><td><code>deft</code></td><td>a <code>def</code> with type hints and a docstring</td></tr>
+<tr><td><code>adef</code></td><td>an <code>async def</code></td></tr>
+<tr><td><code>doc</code></td><td>a summary-and-details docstring</td></tr>
+<tr><td><code>mainf</code></td><td><code>def main()</code> with the <code>__name__</code> guard</td></tr>
+<tr><td><code>shebang</code></td><td><code>#!/usr/bin/env python3</code></td></tr>
+<tr><td><code>dcls</code></td><td>a <code>@dataclass</code> with a <code>field(default_factory=list)</code></td></tr>
+<tr><td><code>enum</code></td><td>an <code>Enum</code> class</td></tr>
+<tr><td><code>exc</code></td><td>a custom exception class</td></tr>
+<tr><td><code>prop</code></td><td>a <code>@property</code> with its setter</td></tr>
+<tr><td><code>clsm</code> <code>stm</code></td><td>a <code>@classmethod</code> / <code>@staticmethod</code></td></tr>
+<tr><td><code>repr</code></td><td>a <code>__repr__</code> using an f-string</td></tr>
+<tr><td><code>tryf</code></td><td><code>try</code> / <code>except</code> / <code>finally</code></td></tr>
+<tr><td><code>raise</code></td><td><code>raise ValueError(f"...")</code></td></tr>
+<tr><td><code>ctxm</code></td><td>a <code>@contextmanager</code> function</td></tr>
+<tr><td><code>deco</code></td><td>a decorator using <code>functools.wraps</code></td></tr>
+<tr><td><code>from</code> <code>tyimp</code></td><td><code>from module import name</code>; the common <code>typing</code> names</td></tr>
+<tr><td><code>pathimp</code></td><td><code>from pathlib import Path</code></td></tr>
+<tr><td><code>readf</code> <code>writef</code></td><td>read or write a whole text file with <code>Path</code></td></tr>
+<tr><td><code>readl</code></td><td>read a file line by line</td></tr>
+<tr><td><code>glob</code></td><td>loop over <code>Path.glob</code> / <code>rglob</code> matches</td></tr>
+<tr><td><code>mkdir</code></td><td><code>mkdir(parents=True, exist_ok=True)</code></td></tr>
+<tr><td><code>jsonload</code> <code>jsondump</code></td><td>read or write JSON</td></tr>
+<tr><td><code>csvread</code> <code>csvwrite</code></td><td><code>csv.DictReader</code> / <code>csv.DictWriter</code></td></tr>
+<tr><td><code>pkdump</code> <code>pkload</code></td><td>write or read a pickle</td></tr>
+<tr><td><code>argp</code></td><td>a full <code>argparse</code> script; <code>arg</code> adds one more argument</td></tr>
+<tr><td><code>logsetup</code></td><td><code>logging.basicConfig</code> and a module logger</td></tr>
+<tr><td><code>timer</code></td><td>time a block with <code>time.perf_counter()</code></td></tr>
+<tr><td><code>run</code></td><td><code>subprocess.run</code> with captured text output</td></tr>
+<tr><td><code>now</code></td><td><code>datetime.now()</code> and <code>strftime</code></td></tr>
+<tr><td><code>ddict</code> <code>counter</code></td><td><code>defaultdict</code> / <code>Counter</code></td></tr>
+<tr><td><code>refind</code></td><td>a compiled regex and a <code>finditer</code> loop</td></tr>
+<tr><td><code>amain</code></td><td>an <code>asyncio.run(main())</code> script; <code>gather</code> runs tasks together</td></tr>
+<tr><td><code>pool</code></td><td>a thread or process pool <code>map</code></td></tr>
+<tr><td><code>sqlq</code></td><td>a parameterised <code>sqlite3</code> query</td></tr>
+<tr><td><code>reqget</code> <code>reqpost</code></td><td><code>requests</code> with a timeout and <code>raise_for_status()</code></td></tr>
+<tr><td><code>test</code> <code>fixture</code> <code>param</code> <code>raises</code></td><td>pytest: a test, a fixture, <code>parametrize</code>, <code>pytest.raises</code></td></tr>
+<tr><td><code>utest</code></td><td>a <code>unittest.TestCase</code> script</td></tr>
+</table>
+<h1>Python: pandas, SciPy, scikit-learn, seaborn, PyTorch</h1>
+<p>Each family shares a prefix, so typing it lists them all: <code>pd</code>, <code>sp</code>
+(SciPy), <code>sk</code> (scikit-learn), <code>sns</code> and <code>torch</code>. The pandas and seaborn
+fragments assume <code>import pandas as pd</code> (<code>pdimp</code>) and =import seaborn as
+sns= (<code>snsimp</code>), and work on a frame called <code>df</code>. The SciPy snippets and
+<code>skclf</code> / <code>skreg</code> are complete scripts that run as is.</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>pdread</code> <code>pdwrite</code></td><td><code>read_*</code> / <code>to_*</code>: CSV, Parquet, Excel or JSON</td></tr>
+<tr><td><code>pddf</code></td><td>a <code>DataFrame</code> from a dict of columns</td></tr>
+<tr><td><code>pdinfo</code></td><td><code>head()</code>, <code>info()</code> and <code>describe()</code></td></tr>
+<tr><td><code>pdfilter</code> <code>pdquery</code> <code>pdloc</code></td><td>rows by a condition, a <code>query</code> string, <code>.loc</code></td></tr>
+<tr><td><code>pdgroup</code></td><td><code>groupby</code> with a named aggregation</td></tr>
+<tr><td><code>pdmerge</code> <code>pdconcat</code></td><td>join two frames; stack several</td></tr>
+<tr><td><code>pdpivot</code> <code>pdmelt</code></td><td>long to wide and back</td></tr>
+<tr><td><code>pdsort</code> <code>pdna</code> <code>pdrename</code></td><td>sort, drop or fill missing values, rename columns</td></tr>
+<tr><td><code>pdassign</code></td><td>a new column via <code>assign</code></td></tr>
+<tr><td><code>pddate</code> <code>pdresample</code></td><td>parse a date column into the index; resample it</td></tr>
+<tr><td><code>pdvc</code></td><td><code>value_counts()</code></td></tr>
+<tr><td><code>pdloop</code></td><td><code>itertuples()</code> loop</td></tr>
+<tr><td><code>pdplot</code></td><td><code>df.plot</code> as a line, bar, scatter or histogram</td></tr>
+<tr><td><code>spmin</code></td><td><code>scipy.optimize.minimize</code> on a function</td></tr>
+<tr><td><code>spfit</code></td><td><code>curve_fit</code> with parameter errors</td></tr>
+<tr><td><code>sproot</code></td><td><code>brentq</code> root finding</td></tr>
+<tr><td><code>spquad</code></td><td><code>quad</code> integration</td></tr>
+<tr><td><code>spode</code></td><td><code>solve_ivp</code> for an ODE</td></tr>
+<tr><td><code>spttest</code></td><td>a t-test or Mann-Whitney test</td></tr>
+<tr><td><code>spinterp</code></td><td>a cubic spline, PCHIP or B-spline interpolator</td></tr>
+<tr><td><code>sksplit</code></td><td><code>train_test_split</code></td></tr>
+<tr><td><code>skclf</code></td><td>a classifier from data to report, logistic or random forest</td></tr>
+<tr><td><code>skreg</code></td><td>a regressor with RMSE and R², ridge or random forest</td></tr>
+<tr><td><code>skpipe</code></td><td><code>make_pipeline(StandardScaler(), ...)</code></td></tr>
+<tr><td><code>skcv</code> <code>skgrid</code></td><td>cross-validation; a grid search</td></tr>
+<tr><td><code>snsplot</code></td><td>scatter, line, hist, box, violin or bar plot</td></tr>
+<tr><td><code>snsheat</code></td><td>a correlation heatmap</td></tr>
+<tr><td><code>snspair</code></td><td>a pair plot</td></tr>
+<tr><td><code>torchmod</code></td><td>an <code>nn.Module</code> with a small <code>Sequential</code> network</td></tr>
+<tr><td><code>torchloop</code></td><td>a training loop</td></tr>
+<tr><td><code>torchdev</code></td><td>pick CUDA when available, else CPU</td></tr>
+</table>
+<p>To get these libraries in a Nix shell, see the <code>pypkgs</code> snippet under
+Nix below.</p>
+<h1>R</h1>
+<p>The R set works in <code>.R</code> and <code>.r</code> files and in R code blocks in Org,
+R Markdown and mepml. Bodies use two-space indents and the native <code>|&gt;</code>
+pipe. Package functions are written <code>pkg::fn()</code>, so a snippet works
+without a <code>library()</code> call, except ggplot2 and testthat code, which reads
+unqualified (<code>tidyimp</code> loads the core tidyverse).</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>fun</code></td><td><code>name &lt;- function(x) { ... }</code></td></tr>
+<tr><td><code>if</code> <code>ife</code> <code>elif</code></td><td><code>if</code>, <code>if</code> / <code>else</code>, <code>if</code> / <code>else if</code> / <code>else</code></td></tr>
+<tr><td><code>ifel</code></td><td><code>ifelse(cond, yes, no)</code></td></tr>
+<tr><td><code>for</code> <code>forsq</code></td><td>a <code>for</code> loop; one over <code>seq_along(x)</code></td></tr>
+<tr><td><code>while</code> <code>repeat</code></td><td>the loops, with a way out</td></tr>
+<tr><td><code>switch</code></td><td><code>switch()</code> with a default that stops</td></tr>
+<tr><td><code>tryc</code></td><td><code>tryCatch</code> with <code>warning</code>, <code>error</code> and <code>finally</code></td></tr>
+<tr><td><code>stop</code> <code>stopif</code></td><td><code>stop(..., call. = FALSE)</code>; <code>stopifnot()</code></td></tr>
+<tr><td><code>lib</code> <code>req</code> <code>src</code></td><td><code>library()</code>; install a package if missing; <code>source()</code></td></tr>
+<tr><td><code>shebang</code> <code>args</code> <code>main</code></td><td>an Rscript header, <code>commandArgs()</code>, a main guard</td></tr>
+<tr><td><code>doc</code></td><td>a roxygen block</td></tr>
+<tr><td><code>sec</code></td><td>a <code># Section ----</code> heading (RStudio-style outline)</td></tr>
+<tr><td><code>timer</code> <code>fmt</code> <code>msg</code> <code>seed</code></td><td><code>system.time</code>, <code>sprintf</code>, <code>message</code>, <code>set.seed</code></td></tr>
+<tr><td><code>env</code> <code>regex</code> <code>date</code></td><td><code>Sys.getenv</code>, <code>regmatches</code>, <code>as.Date</code> with <code>format</code></td></tr>
+<tr><td><code>df</code> <code>lst</code></td><td>a <code>data.frame</code> or named <code>list</code></td></tr>
+<tr><td><code>lapply</code> <code>sapply</code> <code>vapply</code></td><td>the apply family (<code>vapply</code>'s type is a choice)</td></tr>
+<tr><td><code>mapply</code> <code>apply</code></td><td><code>Map()</code> over two vectors; <code>apply()</code> over rows or columns</td></tr>
+<tr><td><code>docall</code> <code>reduce</code> <code>filter</code></td><td><code>do.call(rbind, ...)</code>, <code>Reduce</code>, <code>Filter</code></td></tr>
+<tr><td><code>agg</code> <code>split</code></td><td><code>aggregate()</code> with a formula; <code>split()</code> by a column</td></tr>
+<tr><td><code>readcsv</code> <code>writecsv</code></td><td><code>read.csv</code> / <code>write.csv</code></td></tr>
+<tr><td><code>readrds</code> <code>saverds</code></td><td><code>readRDS</code> / <code>saveRDS</code></td></tr>
+<tr><td><code>readlines</code> <code>writelines</code></td><td>text files line by line</td></tr>
+<tr><td><code>files</code> <code>mkdir</code></td><td>loop over <code>list.files()</code>; <code>dir.create(recursive = TRUE)</code></td></tr>
+<tr><td><code>s3</code> <code>s4</code> <code>r6</code></td><td>an S3 constructor with a <code>print</code> method; <code>setClass</code>; an R6 class</td></tr>
+<tr><td><code>rnorm</code> <code>runif</code></td><td>random samples</td></tr>
+<tr><td><code>lmfit</code> <code>glmfit</code></td><td><code>lm</code> / <code>glm</code> and <code>summary()</code> (<code>glm</code> family a choice)</td></tr>
+<tr><td><code>pred</code></td><td><code>predict()</code> on new data</td></tr>
+<tr><td><code>ttest</code> <code>cortest</code> <code>chisq</code> <code>anova</code></td><td>the tests, <code>anova</code> with <code>TukeyHSD</code></td></tr>
+<tr><td><code>plot</code> <code>hist</code> <code>boxplot</code></td><td>base graphics</td></tr>
+<tr><td><code>png</code></td><td>open a <code>png</code> / <code>pdf</code> / <code>svg</code> device, plot, <code>dev.off()</code></td></tr>
+<tr><td><code>par</code></td><td>a grid of base plots with <code>mfrow</code>, restored after</td></tr>
+</table>
+<p>Tidyverse and other common packages; each family shares a prefix:</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>tidyimp</code></td><td><code>library()</code> for dplyr, tidyr, readr and ggplot2</td></tr>
+<tr><td><code>dpfilter</code> <code>dpmutate</code> <code>dpselect</code> <code>dparrange</code></td><td>the single-verb pipes</td></tr>
+<tr><td><code>dpsumm</code></td><td><code>group_by</code> + <code>summarise</code> with <code>n()</code> and =.groups = "drop"=</td></tr>
+<tr><td><code>dpcount</code> <code>dpdistinct</code> <code>dprename</code> <code>dpslice</code></td><td><code>count</code>, <code>distinct</code>, <code>rename</code>, <code>slice_max</code> / <code>slice_min</code></td></tr>
+<tr><td><code>dpjoin</code></td><td>a left, inner, full or anti join</td></tr>
+<tr><td><code>dpcase</code></td><td><code>case_when()</code> with <code>.default</code></td></tr>
+<tr><td><code>dpacross</code></td><td><code>mutate(across(where(is.numeric), ...))</code></td></tr>
+<tr><td><code>dpchain</code></td><td>filter, group, summarise and arrange in one pipeline</td></tr>
+<tr><td><code>trlonger</code> <code>trwider</code></td><td><code>pivot_longer</code> / <code>pivot_wider</code></td></tr>
+<tr><td><code>trsep</code> <code>trdropna</code></td><td><code>separate_wider_delim</code>; <code>drop_na</code></td></tr>
+<tr><td><code>rdcsv</code> <code>rdwrite</code> <code>rdexcel</code></td><td>readr's <code>read_csv</code> / <code>write_csv</code>; readxl</td></tr>
+<tr><td><code>gg</code></td><td><code>ggplot()</code> with a choice of geom and <code>labs()</code></td></tr>
+<tr><td><code>ggpoint</code> <code>ggline</code> <code>gghist</code> <code>ggbox</code> <code>ggbar</code></td><td>the common plots, <code>theme_minimal()</code></td></tr>
+<tr><td><code>ggsmooth</code> <code>ggfacet</code> <code>gglabs</code> <code>ggtheme</code></td><td>layers to add with <code>+</code></td></tr>
+<tr><td><code>ggsave</code></td><td><code>ggsave()</code> at 300 dpi</td></tr>
+<tr><td><code>prmap</code> <code>prmap2</code> <code>prwalk</code></td><td>purrr's <code>map</code> family (output type a choice), <code>map2</code>, <code>walk</code></td></tr>
+<tr><td><code>strdetect</code> <code>strreplace</code> <code>strextract</code></td><td>stringr</td></tr>
+<tr><td><code>lubparse</code> <code>lubfloor</code></td><td>lubridate's <code>ymd</code> family; <code>floor_date</code></td></tr>
+<tr><td><code>dtread</code> <code>dtq</code></td><td>data.table's <code>fread</code>; a <code>DT[i, j, by]</code> query</td></tr>
+<tr><td><code>broom</code></td><td><code>broom::tidy()</code> with confidence intervals</td></tr>
+<tr><td><code>lmer</code></td><td>a mixed model with <code>lme4::lmer</code></td></tr>
+<tr><td><code>test</code> <code>expect</code> <code>expectt</code> <code>experr</code> <code>expwarn</code></td><td>testthat: a test and its expectations</td></tr>
+<tr><td><code>shiny</code></td><td>a complete Shiny app: slider, plot, server</td></tr>
+</table>
+<p>For R and these packages in a Nix shell, see <code>rpkgs</code> under Nix below.</p>
+<h1>C++</h1>
+<p>The C++ set works in <code>.cpp</code>, <code>.cc</code>, <code>.cxx</code>, <code>.hpp</code>, <code>.hh</code>, <code>.hxx</code>, <code>.ipp</code>,
+<code>.tpp</code> and <code>.inl</code> files and in Org's <code>C++</code> blocks (<code>.h</code> is left alone,
+since it is as often C). It is C++20/23, with four-space indents; every
+snippet compiles with GCC 14 and Clang 21 at <code>-std=c++23</code>. Fragments
+assume their standard headers are already included; <code>inc</code> adds one.</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>main</code> <code>maina</code></td><td><code>int main()</code>; one that copies <code>argv</code> into a <code>vector&lt;string&gt;</code></td></tr>
+<tr><td><code>helloworld</code></td><td>a complete hello-world program</td></tr>
+<tr><td><code>inc</code> <code>incq</code> <code>ponce</code> <code>guard</code></td><td><code>#include &lt;...&gt;</code> / ="..."=, <code>#pragma once</code>, an include guard</td></tr>
+<tr><td><code>iostream</code> <code>memory</code></td><td>the <code>#include</code> lines</td></tr>
+<tr><td><code>ns</code> <code>using</code></td><td>a namespace with its closing comment; a type alias</td></tr>
+<tr><td><code>fn</code> <code>tmpl</code> <code>concept</code></td><td>a function, a function template, a C++20 concept</td></tr>
+<tr><td><code>cls</code> <code>struct</code></td><td>a class with an <code>explicit</code> constructor and accessor; a struct</td></tr>
+<tr><td><code>rule5</code></td><td>all five special members, defaulted</td></tr>
+<tr><td><code>enumc</code> <code>spaceship</code></td><td><code>enum class</code>; a defaulted <code>operator&lt;=&gt;</code></td></tr>
+<tr><td><code>ostream</code></td><td>an <code>operator&lt;&lt;</code> for printing a type</td></tr>
+<tr><td><code>variant</code></td><td><code>std::visit</code> with the <code>overloaded</code> lambda helper</td></tr>
+<tr><td><code>if</code> <code>ife</code> <code>ifinit</code></td><td><code>if</code>, <code>if</code> / <code>else</code>, <code>if (init; cond)</code> on a map lookup</td></tr>
+<tr><td><code>for</code> <code>fori</code> <code>forr</code> <code>formap</code></td><td>counted, index, range-for, structured-binding map loop</td></tr>
+<tr><td><code>while</code> <code>dowhile</code> <code>switch</code></td><td>the other loops and a <code>switch</code></td></tr>
+<tr><td><code>try</code> <code>throw</code></td><td><code>try</code> / <code>catch (const std::exception&amp;)</code>; a <code>throw</code> (exception type a choice)</td></tr>
+<tr><td><code>lambda</code> <code>sbind</code> <code>sassert</code></td><td>a lambda, <code>auto [a, b] = ...</code>, <code>static_assert</code></td></tr>
+<tr><td><code>cout</code> <code>cerr</code></td><td>stream output ending in ='\n'=</td></tr>
+<tr><td><code>print</code> <code>format</code></td><td>C++23 <code>std::println</code>; <code>std::format</code></td></tr>
+<tr><td><code>tostr</code> <code>stoi</code> <code>split</code> <code>trim</code></td><td>number to string and back, split on a delimiter, trim whitespace</td></tr>
+<tr><td><code>vec</code> <code>arr</code> <code>map</code> <code>set</code></td><td>containers with initial values (<code>map</code> / <code>set</code> ordered or unordered)</td></tr>
+<tr><td><code>pair</code> <code>tuple</code></td><td><code>std::make_pair</code> / <code>std::make_tuple</code></td></tr>
+<tr><td><code>uptr</code> <code>sptr</code></td><td><code>std::make_unique</code> / <code>std::make_shared</code></td></tr>
+<tr><td><code>opt</code> <code>expected</code></td><td>a function returning <code>std::optional</code> / C++23 <code>std::expected</code></td></tr>
+<tr><td><code>sort</code> <code>sortby</code> <code>unique</code></td><td><code>std::ranges::sort</code>, with a comparator, then dedupe</td></tr>
+<tr><td><code>find</code> <code>findif</code> <code>count</code></td><td><code>ranges::find</code>, <code>find_if</code>, <code>count_if</code></td></tr>
+<tr><td><code>accum</code> <code>transform</code> <code>minmax</code></td><td><code>std::accumulate</code>, <code>ranges::transform</code>, <code>ranges::minmax</code></td></tr>
+<tr><td><code>views</code> <code>iota</code></td><td>a <code>filter</code> / <code>transform</code> view pipeline; <code>views::iota</code></td></tr>
+<tr><td><code>eraseif</code></td><td>C++20 <code>std::erase_if</code></td></tr>
+<tr><td><code>readf</code> <code>readl</code> <code>writef</code></td><td>read a whole file, read line by line, write</td></tr>
+<tr><td><code>fsiter</code></td><td>a <code>std::filesystem</code> directory loop, recursive or not</td></tr>
+<tr><td><code>timer</code> <code>sleep</code></td><td>time a block with <code>steady_clock</code>; <code>sleep_for</code></td></tr>
+<tr><td><code>rand</code></td><td><code>std::mt19937</code> with a uniform or normal distribution</td></tr>
+<tr><td><code>thread</code> <code>async</code> <code>lock</code> <code>atomic</code></td><td><code>std::jthread</code>, <code>std::async</code>, <code>std::scoped_lock</code>, <code>std::atomic</code></td></tr>
+<tr><td><code>omp</code></td><td>an OpenMP <code>parallel for</code></td></tr>
+</table>
+<p>Whole-program starters for common libraries:</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>gtest</code> <code>gtestf</code></td><td>a GoogleTest <code>TEST</code>; a <code>TEST_F</code> with a fixture</td></tr>
+<tr><td><code>catch</code></td><td>a Catch2 <code>TEST_CASE</code> with a <code>SECTION</code></td></tr>
+<tr><td><code>fmtprint</code></td><td><code>fmt::print</code></td></tr>
+<tr><td><code>spdlog</code></td><td>spdlog with a log level</td></tr>
+<tr><td><code>json</code></td><td>nlohmann/json: parse, index, <code>dump()</code></td></tr>
+<tr><td><code>eigen</code></td><td>solve <code>Ax = b</code> with Eigen (decomposition a choice)</td></tr>
+<tr><td><code>bench</code></td><td>a Google Benchmark function</td></tr>
+</table>
+<p>For the compiler and these libraries in a Nix shell, see <code>cppdev</code> under
+Nix below.</p>
 <h1>SQL</h1>
 <p>The <code>sql</code> set is SQLite's dialect, the same one the <a href="sql-lsp.html">SQL language server</a>
 and Org's <code>sqlite3</code> blocks use. Statement bodies are laid out the way the

@@ -52,7 +52,7 @@ trigger was on.
 
 * What ships
 
-Curated sets for =c=, =cpp=, =go=, =lua=, =py=, =rs=, =sql=, =nix= and =envrc=.
+Curated sets for =c=, =cpp=, =go=, =lua=, =py=, =r=, =rs=, =sql=, =nix= and =envrc=.
 
 The =py= set includes =print=, which expands to =print()= with the cursor
 between the parentheses.
@@ -77,6 +77,13 @@ completion popup. The bodies assume the usual aliases, which =npimp=,
 | =nprng=       | =np.random.seed(seed)=                             |
 | =npnormal= =npuniform= | =np.random.normal= / =np.random.uniform= samples |
 | =npload= =npsave= | =np.loadtxt= / =np.savetxt=                    |
+| =npgen=       | =np.random.default_rng(seed)=, the newer generator |
+| =npwhere=     | =np.where(cond, a, 0)=                             |
+| =npstack=     | =vstack= / =hstack= / =column_stack= / =concatenate= |
+| =npreshape=   | =a.reshape(-1, 1)=                                 |
+| =npstats=     | mean, std, min and max                             |
+| =npsolve=     | =np.linalg.solve(A, b)=                            |
+| =npnpy=       | =np.save= and =np.load= of a =.npy= file           |
 | =pltline=     | =plt.plot= with axis labels and =plt.show()=       |
 | =pltscatter=  | a scatter plot, likewise                           |
 | =plthist=     | a histogram, likewise                              |
@@ -93,6 +100,232 @@ Each plot snippet (=pltline= through =pltgrid=) is a complete, runnable
 script: the imports, some example data, the plot call, labels and
 =plt.show()=. Expand one into an empty file and run it as is, or tab
 through the tabstops to swap in your own data and labels.
+
+* Python: everyday code
+
+Bodies use four-space indents. Where a field's default is ordinary code
+(=pass=, =print(row)=), it is there so the expansion runs as is.
+
+| Trigger   | Inserts                                                     |
+|-----------+-------------------------------------------------------------|
+| =if= =ife= =elif= =while= | the statement, with a =pass= body          |
+| =forr=    | =for i in range(10):=                                       |
+| =fore= =forz= =ford= | =enumerate=, =zip= and =dict.items()= loops      |
+| =lc= =dc= =sc= =gen= | list, dict and set comprehensions, a generator   |
+| =deft=    | a =def= with type hints and a docstring                     |
+| =adef=    | an =async def=                                              |
+| =doc=     | a summary-and-details docstring                             |
+| =mainf=   | =def main()= with the =__name__= guard                      |
+| =shebang= | =#!/usr/bin/env python3=                                    |
+| =dcls=    | a =@dataclass= with a =field(default_factory=list)=         |
+| =enum=    | an =Enum= class                                             |
+| =exc=     | a custom exception class                                    |
+| =prop=    | a =@property= with its setter                               |
+| =clsm= =stm= | a =@classmethod= / =@staticmethod=                       |
+| =repr=    | a =__repr__= using an f-string                              |
+| =tryf=    | =try= / =except= / =finally=                                |
+| =raise=   | =raise ValueError(f"...")=                                  |
+| =ctxm=    | a =@contextmanager= function                                |
+| =deco=    | a decorator using =functools.wraps=                         |
+| =from= =tyimp= | =from module import name=; the common =typing= names   |
+| =pathimp= | =from pathlib import Path=                                  |
+| =readf= =writef= | read or write a whole text file with =Path=          |
+| =readl=   | read a file line by line                                    |
+| =glob=    | loop over =Path.glob= / =rglob= matches                     |
+| =mkdir=   | =mkdir(parents=True, exist_ok=True)=                        |
+| =jsonload= =jsondump= | read or write JSON                              |
+| =csvread= =csvwrite= | =csv.DictReader= / =csv.DictWriter=              |
+| =pkdump= =pkload= | write or read a pickle                              |
+| =argp=    | a full =argparse= script; =arg= adds one more argument      |
+| =logsetup= | =logging.basicConfig= and a module logger                  |
+| =timer=   | time a block with =time.perf_counter()=                     |
+| =run=     | =subprocess.run= with captured text output                  |
+| =now=     | =datetime.now()= and =strftime=                             |
+| =ddict= =counter= | =defaultdict= / =Counter=                           |
+| =refind=  | a compiled regex and a =finditer= loop                      |
+| =amain=   | an =asyncio.run(main())= script; =gather= runs tasks together |
+| =pool=    | a thread or process pool =map=                              |
+| =sqlq=    | a parameterised =sqlite3= query                             |
+| =reqget= =reqpost= | =requests= with a timeout and =raise_for_status()= |
+| =test= =fixture= =param= =raises= | pytest: a test, a fixture, =parametrize=, =pytest.raises= |
+| =utest=   | a =unittest.TestCase= script                                |
+
+* Python: pandas, SciPy, scikit-learn, seaborn, PyTorch
+
+Each family shares a prefix, so typing it lists them all: =pd=, =sp=
+(SciPy), =sk= (scikit-learn), =sns= and =torch=. The pandas and seaborn
+fragments assume =import pandas as pd= (=pdimp=) and =import seaborn as
+sns= (=snsimp=), and work on a frame called =df=. The SciPy snippets and
+=skclf= / =skreg= are complete scripts that run as is.
+
+| Trigger      | Inserts                                                    |
+|--------------+------------------------------------------------------------|
+| =pdread= =pdwrite= | =read_*= / =to_*=: CSV, Parquet, Excel or JSON       |
+| =pddf=       | a =DataFrame= from a dict of columns                       |
+| =pdinfo=     | =head()=, =info()= and =describe()=                        |
+| =pdfilter= =pdquery= =pdloc= | rows by a condition, a =query= string, =.loc= |
+| =pdgroup=    | =groupby= with a named aggregation                         |
+| =pdmerge= =pdconcat= | join two frames; stack several                     |
+| =pdpivot= =pdmelt= | long to wide and back                                |
+| =pdsort= =pdna= =pdrename= | sort, drop or fill missing values, rename columns |
+| =pdassign=   | a new column via =assign=                                  |
+| =pddate= =pdresample= | parse a date column into the index; resample it   |
+| =pdvc=       | =value_counts()=                                           |
+| =pdloop=     | =itertuples()= loop                                        |
+| =pdplot=     | =df.plot= as a line, bar, scatter or histogram             |
+| =spmin=      | =scipy.optimize.minimize= on a function                    |
+| =spfit=      | =curve_fit= with parameter errors                          |
+| =sproot=     | =brentq= root finding                                      |
+| =spquad=     | =quad= integration                                         |
+| =spode=      | =solve_ivp= for an ODE                                     |
+| =spttest=    | a t-test or Mann-Whitney test                              |
+| =spinterp=   | a cubic spline, PCHIP or B-spline interpolator             |
+| =sksplit=    | =train_test_split=                                         |
+| =skclf=      | a classifier from data to report, logistic or random forest |
+| =skreg=      | a regressor with RMSE and R², ridge or random forest       |
+| =skpipe=     | =make_pipeline(StandardScaler(), ...)=                     |
+| =skcv= =skgrid= | cross-validation; a grid search                         |
+| =snsplot=    | scatter, line, hist, box, violin or bar plot               |
+| =snsheat=    | a correlation heatmap                                      |
+| =snspair=    | a pair plot                                                |
+| =torchmod=   | an =nn.Module= with a small =Sequential= network           |
+| =torchloop=  | a training loop                                            |
+| =torchdev=   | pick CUDA when available, else CPU                         |
+
+To get these libraries in a Nix shell, see the =pypkgs= snippet under
+Nix below.
+
+* R
+
+The R set works in =.R= and =.r= files and in R code blocks in Org,
+R Markdown and mepml. Bodies use two-space indents and the native =|>=
+pipe. Package functions are written =pkg::fn()=, so a snippet works
+without a =library()= call, except ggplot2 and testthat code, which reads
+unqualified (=tidyimp= loads the core tidyverse).
+
+| Trigger    | Inserts                                                     |
+|------------+-------------------------------------------------------------|
+| =fun=      | =name <- function(x) { ... }=                               |
+| =if= =ife= =elif= | =if=, =if= / =else=, =if= / =else if= / =else=       |
+| =ifel=     | =ifelse(cond, yes, no)=                                     |
+| =for= =forsq= | a =for= loop; one over =seq_along(x)=                    |
+| =while= =repeat= | the loops, with a way out                            |
+| =switch=   | =switch()= with a default that stops                        |
+| =tryc=     | =tryCatch= with =warning=, =error= and =finally=            |
+| =stop= =stopif= | =stop(..., call. = FALSE)=; =stopifnot()=              |
+| =lib= =req= =src= | =library()=; install a package if missing; =source()= |
+| =shebang= =args= =main= | an Rscript header, =commandArgs()=, a main guard |
+| =doc=      | a roxygen block                                             |
+| =sec=      | a =# Section ----= heading (RStudio-style outline)          |
+| =timer= =fmt= =msg= =seed= | =system.time=, =sprintf=, =message=, =set.seed= |
+| =env= =regex= =date= | =Sys.getenv=, =regmatches=, =as.Date= with =format= |
+| =df= =lst= | a =data.frame= or named =list=                              |
+| =lapply= =sapply= =vapply= | the apply family (=vapply='s type is a choice) |
+| =mapply= =apply= | =Map()= over two vectors; =apply()= over rows or columns |
+| =docall= =reduce= =filter= | =do.call(rbind, ...)=, =Reduce=, =Filter=   |
+| =agg= =split= | =aggregate()= with a formula; =split()= by a column      |
+| =readcsv= =writecsv= | =read.csv= / =write.csv=                         |
+| =readrds= =saverds= | =readRDS= / =saveRDS=                             |
+| =readlines= =writelines= | text files line by line                      |
+| =files= =mkdir= | loop over =list.files()=; =dir.create(recursive = TRUE)= |
+| =s3= =s4= =r6= | an S3 constructor with a =print= method; =setClass=; an R6 class |
+| =rnorm= =runif= | random samples                                         |
+| =lmfit= =glmfit= | =lm= / =glm= and =summary()= (=glm= family a choice)  |
+| =pred=     | =predict()= on new data                                     |
+| =ttest= =cortest= =chisq= =anova= | the tests, =anova= with =TukeyHSD= |
+| =plot= =hist= =boxplot= | base graphics                                  |
+| =png=      | open a =png= / =pdf= / =svg= device, plot, =dev.off()=     |
+| =par=      | a grid of base plots with =mfrow=, restored after           |
+
+Tidyverse and other common packages; each family shares a prefix:
+
+| Trigger      | Inserts                                                   |
+|--------------+-----------------------------------------------------------|
+| =tidyimp=    | =library()= for dplyr, tidyr, readr and ggplot2           |
+| =dpfilter= =dpmutate= =dpselect= =dparrange= | the single-verb pipes |
+| =dpsumm=     | =group_by= + =summarise= with =n()= and =.groups = "drop"= |
+| =dpcount= =dpdistinct= =dprename= =dpslice= | =count=, =distinct=, =rename=, =slice_max= / =slice_min= |
+| =dpjoin=     | a left, inner, full or anti join                          |
+| =dpcase=     | =case_when()= with =.default=                             |
+| =dpacross=   | =mutate(across(where(is.numeric), ...))=                  |
+| =dpchain=    | filter, group, summarise and arrange in one pipeline      |
+| =trlonger= =trwider= | =pivot_longer= / =pivot_wider=                    |
+| =trsep= =trdropna= | =separate_wider_delim=; =drop_na=                   |
+| =rdcsv= =rdwrite= =rdexcel= | readr's =read_csv= / =write_csv=; readxl  |
+| =gg=         | =ggplot()= with a choice of geom and =labs()=             |
+| =ggpoint= =ggline= =gghist= =ggbox= =ggbar= | the common plots, =theme_minimal()= |
+| =ggsmooth= =ggfacet= =gglabs= =ggtheme= | layers to add with =+=        |
+| =ggsave=     | =ggsave()= at 300 dpi                                     |
+| =prmap= =prmap2= =prwalk= | purrr's =map= family (output type a choice), =map2=, =walk= |
+| =strdetect= =strreplace= =strextract= | stringr                         |
+| =lubparse= =lubfloor= | lubridate's =ymd= family; =floor_date=           |
+| =dtread= =dtq= | data.table's =fread=; a =DT[i, j, by]= query            |
+| =broom=      | =broom::tidy()= with confidence intervals                 |
+| =lmer=       | a mixed model with =lme4::lmer=                           |
+| =test= =expect= =expectt= =experr= =expwarn= | testthat: a test and its expectations |
+| =shiny=      | a complete Shiny app: slider, plot, server                |
+
+For R and these packages in a Nix shell, see =rpkgs= under Nix below.
+
+* C++
+
+The C++ set works in =.cpp=, =.cc=, =.cxx=, =.hpp=, =.hh=, =.hxx=, =.ipp=,
+=.tpp= and =.inl= files and in Org's =C++= blocks (=.h= is left alone,
+since it is as often C). It is C++20/23, with four-space indents; every
+snippet compiles with GCC 14 and Clang 21 at =-std=c++23=. Fragments
+assume their standard headers are already included; =inc= adds one.
+
+| Trigger     | Inserts                                                     |
+|-------------+-------------------------------------------------------------|
+| =main= =maina= | =int main()=; one that copies =argv= into a =vector<string>= |
+| =helloworld= | a complete hello-world program                             |
+| =inc= =incq= =ponce= =guard= | =#include <...>= / ="..."=, =#pragma once=, an include guard |
+| =iostream= =memory= | the =#include= lines                                 |
+| =ns= =using= | a namespace with its closing comment; a type alias         |
+| =fn= =tmpl= =concept= | a function, a function template, a C++20 concept  |
+| =cls= =struct= | a class with an =explicit= constructor and accessor; a struct |
+| =rule5=     | all five special members, defaulted                         |
+| =enumc= =spaceship= | =enum class=; a defaulted =operator<=>=             |
+| =ostream=   | an =operator<<= for printing a type                         |
+| =variant=   | =std::visit= with the =overloaded= lambda helper            |
+| =if= =ife= =ifinit= | =if=, =if= / =else=, =if (init; cond)= on a map lookup |
+| =for= =fori= =forr= =formap= | counted, index, range-for, structured-binding map loop |
+| =while= =dowhile= =switch= | the other loops and a =switch=              |
+| =try= =throw= | =try= / =catch (const std::exception&)=; a =throw= (exception type a choice) |
+| =lambda= =sbind= =sassert= | a lambda, =auto [a, b] = ...=, =static_assert= |
+| =cout= =cerr= | stream output ending in ='\n'=                           |
+| =print= =format= | C++23 =std::println=; =std::format=                    |
+| =tostr= =stoi= =split= =trim= | number to string and back, split on a delimiter, trim whitespace |
+| =vec= =arr= =map= =set= | containers with initial values (=map= / =set= ordered or unordered) |
+| =pair= =tuple= | =std::make_pair= / =std::make_tuple=                      |
+| =uptr= =sptr= | =std::make_unique= / =std::make_shared=                   |
+| =opt= =expected= | a function returning =std::optional= / C++23 =std::expected= |
+| =sort= =sortby= =unique= | =std::ranges::sort=, with a comparator, then dedupe |
+| =find= =findif= =count= | =ranges::find=, =find_if=, =count_if=               |
+| =accum= =transform= =minmax= | =std::accumulate=, =ranges::transform=, =ranges::minmax= |
+| =views= =iota= | a =filter= / =transform= view pipeline; =views::iota=    |
+| =eraseif=   | C++20 =std::erase_if=                                       |
+| =readf= =readl= =writef= | read a whole file, read line by line, write    |
+| =fsiter=    | a =std::filesystem= directory loop, recursive or not        |
+| =timer= =sleep= | time a block with =steady_clock=; =sleep_for=           |
+| =rand=      | =std::mt19937= with a uniform or normal distribution        |
+| =thread= =async= =lock= =atomic= | =std::jthread=, =std::async=, =std::scoped_lock=, =std::atomic= |
+| =omp=       | an OpenMP =parallel for=                                    |
+
+Whole-program starters for common libraries:
+
+| Trigger    | Inserts                                                      |
+|------------+--------------------------------------------------------------|
+| =gtest= =gtestf= | a GoogleTest =TEST=; a =TEST_F= with a fixture         |
+| =catch=    | a Catch2 =TEST_CASE= with a =SECTION=                        |
+| =fmtprint= | =fmt::print=                                                 |
+| =spdlog=   | spdlog with a log level                                      |
+| =json=     | nlohmann/json: parse, index, =dump()=                        |
+| =eigen=    | solve =Ax = b= with Eigen (decomposition a choice)           |
+| =bench=    | a Google Benchmark function                                  |
+
+For the compiler and these libraries in a Nix shell, see =cppdev= under
+Nix below.
 
 * SQL
 

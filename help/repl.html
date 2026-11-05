@@ -55,8 +55,8 @@ several source files can drive several terminals at once.</p>
 paragraph), then presses Enter. The code goes as a paste, not as typed keys:
 a console that asks for bracketed paste (Python, R, most shells) takes it
 literally, so its own auto-indent and Tab completion leave the code's
-indentation alone. When a multi-line send ends on an indented line, a second
-Enter closes the block a Python console would otherwise leave open.</p>
+indentation alone. A multi-line send ends with a second Enter, which Python's
+console needs to run the block (elsewhere it is one empty prompt).</p>
 <h1>Choosing the terminal</h1>
 <p><code>&lt;leader&gt;rc</code> (run: configure) asks for the buffer id of the terminal the
 current buffer should send to. The prompt is pre-filled with the target

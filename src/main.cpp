@@ -19354,9 +19354,10 @@ const char *kBuiltinTermSend =
     // Sent as a paste (mep.terminal_paste), not as typed keys, then Enter:
     // a REPL that asked for bracketed paste takes it literally, so Python
     // 3.13+'s console doesn't stack its own auto-indent on the code's
-    // indentation or run completion on a Tab. A pasted block that ends on
-    // an indented line is still open in a Python REPL (the `...` prompt), so
-    // a second Enter closes it; anywhere else that is one empty prompt.
+    // indentation or run completion on a Tab. Python 3.13+'s REPL leaves
+    // any multi-line paste open at the `...` prompt after one Enter (it only
+    // runs the block on an Enter at an empty last line), so a multi-line
+    // send gets a second Enter; in other consoles that is one empty prompt.
     // Trailing newlines (a linewise selection ends with one) are dropped
     // first so that check sees the last line of code.
     // The Enter goes a moment after the paste, never in the same write:
@@ -19367,7 +19368,7 @@ const char *kBuiltinTermSend =
     "    text = text:gsub('\\n+$', '')\n"
     "    mep.terminal_paste(target, text)\n"
     "    local enter = '\\r'\n"
-    "    if text:find('\\n') and text:match('[^\\n]*$'):match('^%s') then enter = '\\r\\r' end\n"
+    "    if text:find('\\n') then enter = '\\r\\r' end\n"
     "    mep.defer(0.05, function() mep.terminal_write(target, enter) end)\n"
     "    if after then after() end\n"
     "  end)\n"

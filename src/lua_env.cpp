@@ -1715,6 +1715,26 @@ int l_terminal_write(lua_State *L) {
     return 1;
 }
 
+// mep.terminal_paste(buffer_id, text) -> ok, bracketed: pastes `text` into
+// a `:terminal` buffer the way a clipboard paste does -- newlines as CR,
+// wrapped in bracketed-paste markers when the child asked for them (DECSET
+// 2004) -- and sends no Enter. ok is false if `buffer_id` isn't a live
+// terminal; bracketed says whether the markers went out.
+/**
+ * @brief Implements mep.terminal_paste(buffer_id, text): pastes text into a live `:terminal` buffer, bracketed when the child enabled it.
+ * @param L Lua state; arg 1 is the terminal buffer id, arg 2 the text to paste.
+ * @return Number of values pushed (2: whether it was written, whether it was bracketed).
+ */
+int l_terminal_paste(lua_State *L) {
+    int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
+    size_t len = 0;
+    const char *s = luaL_checklstring(L, 2, &len);
+    int r = GetEditor(L)->PasteToTerminalBuffer(buffer_id, std::string(s, len));
+    lua_pushboolean(L, r >= 0);
+    lua_pushboolean(L, r == 1);
+    return 2;
+}
+
 // mep.job_start(argv, opts) -> id. `argv` is an array of strings (argv[1]
 // is the executable). `opts` (optional table): `cwd`, `on_stdout(line)`,
 // `on_stderr(line)`, `on_exit(code)` -- code is -1 if the job was killed
@@ -17079,6 +17099,7 @@ const luaL_Reg kMepFuncs[] = {
     {"terminal_here_argv", l_terminal_here_argv},
     {"is_terminal_buffer", l_is_terminal_buffer},
     {"terminal_write", l_terminal_write},
+    {"terminal_paste", l_terminal_paste},
     {"sidebar_default_cols", l_sidebar_default_cols},
     {"quit", l_quit},
     {"job_start", l_job_start},

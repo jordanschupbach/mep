@@ -51,6 +51,12 @@ You send lines, selections or buffers; you do not type into it.</p>
 <p>The first send from a buffer asks which terminal to target, pre-filled with
 the first one in the active tab. Each buffer remembers its own target, so
 several source files can drive several terminals at once.</p>
+<p><code>mod1+Enter</code> sends the current line, or the Visual selection (<code>vip</code> for a
+paragraph), then presses Enter. The code goes as a paste, not as typed keys:
+a console that asks for bracketed paste (Python, R, most shells) takes it
+literally, so its own auto-indent and Tab completion leave the code's
+indentation alone. When a multi-line send ends on an indented line, a second
+Enter closes the block a Python console would otherwise leave open.</p>
 <h1>Choosing the terminal</h1>
 <p><code>&lt;leader&gt;rc</code> (run: configure) asks for the buffer id of the terminal the
 current buffer should send to. The prompt is pre-filled with the target

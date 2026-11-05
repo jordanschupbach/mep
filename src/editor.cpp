@@ -7912,6 +7912,25 @@ bool Editor::WriteToTerminalBuffer(int buffer_id, const std::string &text) {
     return true;
 }
 
+int Editor::PasteToTerminalBuffer(int buffer_id, const std::string &text) {
+    auto it = terminals_.find(buffer_id);
+    if (it == terminals_.end() || it->second.exited) return -1;
+    TerminalSession &sess = it->second;
+    // The same bytes a paste from the clipboard sends (TerminalPaste):
+    // newlines as CR, bracketed when the child asked for it. Typed in raw
+    // instead, a line editor treats the text as keystrokes -- Python 3.13+'s
+    // REPL auto-indents after every `def ...:` on top of the code's own
+    // indentation, and a Tab runs completion.
+    std::string body = text;
+    for (char &c : body) {
+        if (c == '\n') c = '\r';
+    }
+    sess.scroll_offset = 0;
+    bool bracketed = sess.vterm && sess.vterm->BracketedPaste();
+    TerminalWrite(sess, bracketed ? "\x1b[200~" + body + "\x1b[201~" : body);
+    return bracketed ? 1 : 0;
+}
+
 void Editor::ResizeTerminal(int buffer_id, int rows, int cols) {
     auto it = terminals_.find(buffer_id);
     if (it == terminals_.end()) return;

@@ -10642,6 +10642,26 @@ const char *kBuiltinLanguageUiPython =
     "            super().runcode(code_obj)\n"
     "        finally:\n"
     "            _mep_refresh()\n"
+    // A bracketed paste (mep's mod1+Enter, or a terminal paste) reaches the
+    // basic console as ONE input() line with the newlines inside it, which
+    // push() would compile as a single statement and reject. Run it as the
+    // whole block instead -- every statement in 'single' mode, so a bare
+    // expression still echoes and the first exception stops the rest, the
+    // same as typing it -- and without the basic REPL's own rule that a
+    // block must end on a blank line before the next statement.
+    "    def push(self, line, *args, **kwargs):\n"
+    "        src = line.replace('\\r\\n', '\\n').replace('\\r', '\\n')\n"
+    "        if self.buffer or '\\n' not in src.strip('\\n'):\n"
+    "            return super().push(line, *args, **kwargs)\n"
+    "        import ast\n"
+    "        try:\n"
+    "            tree = ast.parse(src, self.filename)\n"
+    "            code_obj = compile(ast.Interactive(tree.body), self.filename, 'single')\n"
+    "        except (SyntaxError, ValueError, OverflowError):\n"
+    "            self.showsyntaxerror(self.filename)\n"
+    "            return False\n"
+    "        self.runcode(code_obj)\n"
+    "        return False\n"
     "\n"
     "_MEP_NS['mep_view'] = mep_view\n"
     "_MEP_NS['mep_show'] = mep_show\n"
@@ -10681,7 +10701,15 @@ const char *kBuiltinLanguageUiPython =
     "    simple_interact.run_multiline_interactive_console(_MepColoredConsole(_MEP_NS, filename='<stdin>'))\n"
     "    return True\n"
     "\n"
+    // Bracketed paste on (readline's default since 8.1, set here for older
+    // ones), so mep's mod1+Enter pastes a block and _MepConsole.push runs
+    // it whole instead of its lines being typed one by one.
     "if not _mep_pyrepl_interact():\n"
+    "    if readline is not None:\n"
+    "        try:\n"
+    "            readline.parse_and_bind('set enable-bracketed-paste on')\n"
+    "        except Exception:\n"
+    "            pass\n"
     "    _MepConsole(locals=_MEP_NS).interact(banner=_MEP_BANNER, exitmsg='')\n"
     "]==]\n"
     // The matplotlib backend module (see the header comment). Only ever
@@ -19323,9 +19351,24 @@ const char *kBuiltinTermSend =
     "    end\n"
     "  end)\n"
     "end\n"
+    // Sent as a paste (mep.terminal_paste), not as typed keys, then Enter:
+    // a REPL that asked for bracketed paste takes it literally, so Python
+    // 3.13+'s console doesn't stack its own auto-indent on the code's
+    // indentation or run completion on a Tab. A pasted block that ends on
+    // an indented line is still open in a Python REPL (the `...` prompt), so
+    // a second Enter closes it; anywhere else that is one empty prompt.
+    // Trailing newlines (a linewise selection ends with one) are dropped
+    // first so that check sees the last line of code.
+    // The Enter goes a moment after the paste, never in the same write:
+    // Python's REPL treats keys that arrive in one burst with a paste as
+    // more pasted text, so an Enter there becomes a newline in the block.
     "local function mep_termsend_send(source, text, after)\n"
     "  mep_termsend_ensure(source, function(target)\n"
-    "    mep.terminal_write(target, text .. '\\n')\n"
+    "    text = text:gsub('\\n+$', '')\n"
+    "    mep.terminal_paste(target, text)\n"
+    "    local enter = '\\r'\n"
+    "    if text:find('\\n') and text:match('[^\\n]*$'):match('^%s') then enter = '\\r\\r' end\n"
+    "    mep.defer(0.05, function() mep.terminal_write(target, enter) end)\n"
     "    if after then after() end\n"
     "  end)\n"
     "end\n"

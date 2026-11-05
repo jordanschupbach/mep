@@ -5492,6 +5492,17 @@ public:
      * @return True if the buffer is a live terminal and the write was sent, false otherwise.
      */
     bool WriteToTerminalBuffer(int buffer_id, const std::string &text);
+    /**
+     * @brief Pastes text into a terminal buffer's PTY the way a clipboard paste would.
+     *
+     * Newlines go as CR, and the text is wrapped in ESC[200~ ... ESC[201~ when
+     * the child enabled bracketed paste, so a line editor (Python's REPL,
+     * readline) takes it literally instead of as typed keys. No Enter is sent.
+     * @param buffer_id The terminal buffer id to paste into.
+     * @param text The text to paste.
+     * @return -1 if the buffer isn't a live terminal, 1 if the paste was bracketed, 0 if sent raw.
+     */
+    int PasteToTerminalBuffer(int buffer_id, const std::string &text);
     // Called once per frame by DrawPane with the terminal pane's current
     // character-cell size; no-ops if unchanged since the last call
     // (cheap to call unconditionally rather than threading a "did this

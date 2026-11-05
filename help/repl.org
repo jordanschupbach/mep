@@ -54,6 +54,13 @@ The first send from a buffer asks which terminal to target, pre-filled with
 the first one in the active tab. Each buffer remembers its own target, so
 several source files can drive several terminals at once.
 
+=mod1+Enter= sends the current line, or the Visual selection (=vip= for a
+paragraph), then presses Enter. The code goes as a paste, not as typed keys:
+a console that asks for bracketed paste (Python, R, most shells) takes it
+literally, so its own auto-indent and Tab completion leave the code's
+indentation alone. When a multi-line send ends on an indented line, a second
+Enter closes the block a Python console would otherwise leave open.
+
 * Choosing the terminal
 
 =<leader>rc= (run: configure) asks for the buffer id of the terminal the

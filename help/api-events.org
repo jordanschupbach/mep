@@ -53,6 +53,7 @@ that it does nothing.
 | =mep.terminal_here= | attaches a shell to the currently active pane rather than splitting |
 | =mep.terminal_here_argv= | attaches a terminal running `argv` directly (no shell) to the active pane |
 | =mep.terminal_info= | live title and exit state of a `:terminal` buffer |
+| =mep.terminal_paste= | pastes text into a live `:terminal` buffer as a clipboard paste would (bracketed when the program asked), no Enter |
 | =mep.terminal_write= | writes text verbatim into a live `:terminal` buffer's PTY |
 
 * See also

@@ -10283,6 +10283,7 @@ const char *kBuiltinLanguageUiCommon =
     // source" call wants editor_pane, not that original id.
     "function mep.language_ui_layout(opts)\n"
     "  local orig_pane = mep.current_pane_id()\n"
+    "  local source_buf = mep.current_buffer()\n"
     "  mep.cmd('vsplit')\n"
     "  local source_pane = mep.current_pane_id()\n"
     "  local info_pane = orig_pane\n"
@@ -10304,6 +10305,10 @@ const char *kBuiltinLanguageUiCommon =
     "  if opts.console then opts.console() end\n"
     "  local console_pane = mep.current_pane_id()\n"
     "  local console_buf = mep.current_buffer()\n"
+    // mod1+Enter in the file the mode was opened from goes to this
+    // console -- with no prompt, and never to a console from an earlier
+    // open of the mode that the file was registered with before.
+    "  if mep.is_terminal_buffer(console_buf) then mep.termsend_register(source_buf, console_buf) end\n"
     "  mep.pane_focus(editor_pane)\n"
     "  return {editor_pane = editor_pane, console_pane = console_pane, console_buf = console_buf,\n"
     "    top_pane = top_pane, bottom_pane = bottom_pane}\n"
@@ -18650,6 +18655,12 @@ const char *kBuiltinFormat =
     // Clojure: mep's own (src/clojure_format.cpp), cljfmt's layout with its
     // default options, checked against cljfmt on a corpus.
     "  clj = {builtin = 'format_clojure', name = \"mep's Clojure formatter\"},\n"
+    // Nix: mep's own (src/nix_format*.cpp), a port of nixfmt -- the official
+    // style nixpkgs is formatted with -- checked byte for byte against
+    // nixfmt on nixpkgs. `indent` (columns) and `strict` (nixfmt --strict)
+    // are nixfmt's options; mep.format_languages.nix = {'nixfmt', '-'} puts
+    // nixfmt itself back.
+    "  nix = {builtin = 'format_nix', name = \"mep's Nix formatter\", width = 100},\n"
     // C: mep's own (src/c_format.cpp), a port of clang-format's pipeline in
     // its LLVM style -- byte-identical to clang-format on the corpus it was
     // checked against, except that #includes are never re-sorted. `indent`

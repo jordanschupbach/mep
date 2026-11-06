@@ -28,6 +28,7 @@
 #include "bash_format.h"
 #include "sql_format.h"
 #include "clojure_format.h"
+#include "nix_format.h"
 #include "crystal_format.h"
 #include "csharp_format.h"
 #include "c_format.h"
@@ -591,6 +592,55 @@ int l_format_clojure(lua_State *L) {
     size_t len = 0;
     const char *src = luaL_checklstring(L, 1, &len);
     const cljfmt::Result r = cljfmt::Format(std::string_view(src, len));
+    if (!r.ok) {
+        lua_pushnil(L);
+        lua_pushlstring(L, r.error.data(), r.error.size());
+        if (r.error_line > 0) {
+            lua_pushinteger(L, r.error_line);
+        } else {
+            lua_pushnil(L);
+        }
+        return 3;
+    }
+    lua_pushlstring(L, r.text.data(), r.text.size());
+    return 1;
+}
+
+// mep.format_nix(text[, width[, spec]]) -> the text formatted as Nix, or nil plus an error message
+//
+// mep's own Nix formatter (nix_format.h), the builtin behind `gf` in a .nix
+// buffer -- a port of nixfmt, so the official Nix style nixpkgs is
+// formatted with, no nixfmt binary. `width` defaults to 100, nixfmt's.
+// `spec` is the mep.format_languages entry: its `indent` (columns, default
+// 2) and `strict` (true: nixfmt --strict, the layout no longer follows the
+// input's line breaks) are nixfmt's options. On a file that does not parse,
+// or a result it cannot prove is the same program with the same comments,
+// it returns nil, the reason and the 1-based line.
+/**
+ * @brief Implements mep.format_nix(text, width?, spec?): formats Nix source the way nixfmt does.
+ * @param L Lua state; arg 1 the text, arg 2 the column width (default 100), arg 3 the format_languages entry.
+ * @return Number of values pushed (1: the text; or 3: nil, a message and the line).
+ */
+int l_format_nix(lua_State *L) {
+    size_t len = 0;
+    const char *src = luaL_checklstring(L, 1, &len);
+    nixfmt::Options opt;
+    if (lua_type(L, 2) == LUA_TNUMBER) {
+        const lua_Integer w = lua_tointeger(L, 2);
+        if (w >= 20 && w <= 1000) opt.width = static_cast<int>(w);
+    }
+    if (lua_istable(L, 3)) {
+        lua_getfield(L, 3, "indent");
+        if (lua_type(L, -1) == LUA_TNUMBER) {
+            const lua_Integer n = lua_tointeger(L, -1);
+            if (n > 0 && n <= 16) opt.indent = static_cast<int>(n);
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 3, "strict");
+        if (lua_isboolean(L, -1)) opt.strict = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+    }
+    const nixfmt::Result r = nixfmt::Format(std::string_view(src, len), opt);
     if (!r.ok) {
         lua_pushnil(L);
         lua_pushlstring(L, r.error.data(), r.error.size());
@@ -17047,6 +17097,7 @@ const luaL_Reg kMepFuncs[] = {
     {"format_bash", l_format_bash},
     {"format_sql", l_format_sql},
     {"format_clojure", l_format_clojure},
+    {"format_nix", l_format_nix},
     {"format_crystal", l_format_crystal},
     {"format_csharp", l_format_csharp},
     {"format_c", l_format_c},

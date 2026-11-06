@@ -24,6 +24,7 @@ stale copy from disk.
 | Crystal (=.cr=)      | *built in* -- mep's own, nothing to install |
 | C# (=.cs=)           | *built in* -- mep's own, nothing to install |
 | SQL (=.sql=)         | *built in* -- mep's own, nothing to install |
+| Nix (=.nix=)         | *built in* -- mep's own, nothing to install |
 | mepml (=.mepml=)     | *built in* -- see /mepml documents/ below |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
@@ -32,12 +33,12 @@ behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.
 
 C, C++, Python, R, Maxima, shell scripts, Clojure, Common Lisp, Crystal,
-C# and SQL need nothing installed at all: all eleven formatters are built into
-mep, so =gf= on a =.c=, =.cpp=, =.h=, =.py=, =.R=, =.mac=, =.sh=, =.clj=,
-=.lisp=, =.cr=, =.cs= or =.sql= buffer works on a machine with no =clang-format=,
-no =black=, no =air=, no =shfmt=, no =cljfmt=, no =sqlfluff=, no Emacs and no Python, R,
-Maxima, JVM, Lisp, Crystal or .NET toolchain, and answers instantly because
-nothing is spawned.
+C#, SQL and Nix need nothing installed at all: all twelve formatters are built
+into mep, so =gf= on a =.c=, =.cpp=, =.h=, =.py=, =.R=, =.mac=, =.sh=, =.clj=,
+=.lisp=, =.cr=, =.cs=, =.sql= or =.nix= buffer works on a machine with no
+=clang-format=, no =black=, no =air=, no =shfmt=, no =cljfmt=, no =sqlfluff=,
+no =nixfmt=, no Emacs and no Python, R, Maxima, JVM, Lisp, Crystal, .NET or
+Haskell toolchain, and answers instantly because nothing is spawned.
 
 * Org code blocks
 
@@ -839,6 +840,90 @@ error, worded the same, with its line.
 mep.format_languages.cr = {'crystal', 'tool', 'format', '-'}
 #+end_src
 
+* The Nix formatter
+
+Nix files get the official Nix style -- =nixfmt='s (RFC 166), the layout
+nixpkgs itself is formatted with -- and mep produces it itself, with no
+=nixfmt= binary and no Haskell: the formatter is a port of nixfmt 1.3.1's
+lexer and parser (down to which token each comment belongs to), its
+pretty-printer and its layout engine.
+
+#+begin_src nix
+{ lib, stdenv, fetchFromGitHub }:
+stdenv.mkDerivation rec { pname = "hello"; version = "2.12";
+  src = fetchFromGitHub { owner = "me"; repo = pname; rev = "v${version}"; hash = ""; };
+  buildInputs = [ ] ++ lib.optionals stdenv.isLinux [ lib.foo ];
+  meta = with lib; { license = licenses.mit; platforms = platforms.all; }; }
+#+end_src
+
+becomes
+
+#+begin_src nix
+{
+  lib,
+  stdenv,
+  fetchFromGitHub,
+}:
+stdenv.mkDerivation rec {
+  pname = "hello";
+  version = "2.12";
+  src = fetchFromGitHub {
+    owner = "me";
+    repo = pname;
+    rev = "v${version}";
+    hash = "";
+  };
+  buildInputs = [ ] ++ lib.optionals stdenv.isLinux [ lib.foo ];
+  meta = with lib; {
+    license = licenses.mit;
+    platforms = platforms.all;
+  };
+}
+#+end_src
+
+Like =nixfmt=, it keeps a list, set or argument list on several lines when
+the input had its brackets on different lines, keeps one blank line where
+the input had any, re-indents =''...''= strings with the code around them and
+turns a one-line =''...''= into a ="..."= string with the same value.
+
+All 125 cases of nixfmt's own test suite give nixfmt's answer, including
+the ones it must refuse. Every file of nixpkgs (44,510 of them) comes out
+byte-identical to =nixfmt='s output, and so does every copy with its
+indentation stripped; so do the 34,311 files of a nixpkgs from before it
+was reformatted, and samples at widths 40, 60 and 140, with =--strict= and
+with four-space indentation. =nix-instantiate --parse= reads the same
+program before and after, and formatting twice changes nothing.
+
+It is quick -- nixpkgs' =all-packages.nix= takes a tenth of a second -- but
+memory-hungry on huge generated files: the 783,000-line
+=hackage-packages.nix= takes 5 seconds and 2.5 GB.
+
+** It will not rewrite a file it cannot prove it preserved
+
+The result is parsed again and its tree compared with the input's, ignoring
+only layout, and every word of every comment must still be there. A file
+that does not parse leaves the buffer as it was, and =gf= says where it
+stopped reading, with the line. So does code nested more than 1,000 levels
+deep (nixpkgs never goes past about 260).
+
+** Options
+
+#+begin_src lua
+mep.format_languages.nix.width = 80     -- nixfmt --width
+mep.format_languages.nix.indent = 4     -- nixfmt --indent
+mep.format_languages.nix.strict = true  -- nixfmt --strict
+#+end_src
+
+=strict= makes the layout depend on the code alone, not on where the input
+broke its lines: a short list written over three lines goes back onto one
+if it fits, =[ 1 ]=.
+
+** Using nixfmt instead
+
+#+begin_src lua
+mep.format_languages.nix = {'nixfmt', '-'}
+#+end_src
+
 * The C# formatter
 
 mep lays C# out the way =dotnet format whitespace= does with no
@@ -1007,8 +1092,8 @@ nearest =air.toml= rather than from =width= above.
 
 * Line width
 
-The built-in formatters wrap at *100 columns* for C++, *88* for Python and
-*80* for C, R and SQL -- =width= in each one's table entry, and the subsections
+The built-in formatters wrap at *100 columns* for C++ and Nix, *88* for Python
+and *80* for C, R and SQL -- =width= in each one's table entry, and the subsections
 above change it. The Bash one does not wrap: like =shfmt=, it keeps a
 script's own line breaks, and so do the Clojure, Common Lisp, Crystal and
 C# ones.

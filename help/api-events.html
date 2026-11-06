@@ -17,7 +17,7 @@
 <p>This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 <code>init.lua</code>, from <code>:lua</code>, or from a <code>mep-lua</code> org block.</p>
-<h1>The bindings (36)</h1>
+<h1>The bindings (37)</h1>
 <p>A dash means that binding has no doc comment in the source yet, not
 that it does nothing.</p>
 <table>
@@ -57,7 +57,7 @@ that it does nothing.</p>
 <tr><td><code>mep.terminal_here</code></td><td>attaches a shell to the currently active pane rather than splitting</td></tr>
 <tr><td><code>mep.terminal_here_argv</code></td><td>attaches a terminal running `argv` directly (no shell) to the active pane</td></tr>
 <tr><td><code>mep.terminal_info</code></td><td>live title and exit state of a `:terminal` buffer</td></tr>
-<tr><td><code>mep.terminal_paste</code></td><td>pastes text into a live `:terminal` buffer as a clipboard paste would (bracketed when the program asked), no Enter</td></tr>
+<tr><td><code>mep.terminal_paste</code></td><td>pastes text into a live `:terminal` buffer, bracketed when the child enabled it</td></tr>
 <tr><td><code>mep.terminal_write</code></td><td>writes text verbatim into a live `:terminal` buffer's PTY</td></tr>
 </table>
 <h1>See also</h1>

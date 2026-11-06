@@ -778,6 +778,10 @@ set(MEP_GIT_SOURCES
 if(NOT DEFINED MEP_CRYSTAL_SYNTAX_SOURCES)
     set(MEP_CRYSTAL_SYNTAX_SOURCES src/crystal_syntax.cpp src/crystal_ast.cpp src/crystal_parser.cpp)
 endif()
+if(NOT DEFINED MEP_NIX_FORMAT_SOURCES)
+    set(MEP_NIX_FORMAT_SOURCES src/nix_format.cpp src/nix_format_parse.cpp src/nix_format_pretty.cpp
+        src/nix_format_layout.cpp)
+endif()
 if(NOT DEFINED MEP_CRYSTAL_FORMAT_SOURCES)
     set(MEP_CRYSTAL_FORMAT_SOURCES src/crystal_format.cpp src/crystal_format_visit.cpp src/crystal_format_call.cpp)
 endif()
@@ -1035,6 +1039,9 @@ add_library(mep_core STATIC
     # mep's own Clojure formatter (mep.format_clojure), over its reader.
     src/clojure_format.cpp
     src/clojure_reader.cpp
+    # mep's own Nix formatter (mep.format_nix): a port of nixfmt's lexer,
+    # parser, printer and layout engine.
+    ${MEP_NIX_FORMAT_SOURCES}
     # mep's own C formatter (mep.format_c): a port of clang-format's
     # pipeline in its LLVM style.
     ${MEP_C_FORMAT_SOURCES}
@@ -2716,6 +2723,14 @@ add_dependencies(tests mep-csharp-format-test)
 
 # The Clojure formatter (cljfmt's layout); `--format FILE...` prints each
 # file formatted, for comparing with cljfmt on a corpus.
+# The Nix formatter (nixfmt's layout); `--format FILE...` prints each file
+# formatted, for comparing with nixfmt on a corpus.
+add_executable(mep-nix-format-test EXCLUDE_FROM_ALL src/nix_format_test.cpp ${MEP_NIX_FORMAT_SOURCES})
+target_include_directories(mep-nix-format-test PRIVATE src)
+target_compile_options(mep-nix-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-nix-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-nix-format-test)
+
 add_executable(mep-clojure-format-test EXCLUDE_FROM_ALL src/clojure_format_test.cpp src/clojure_format.cpp
                src/clojure_reader.cpp)
 target_include_directories(mep-clojure-format-test PRIVATE src)
@@ -3634,7 +3649,7 @@ if(NOT EMSCRIPTEN)
         mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test
         mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-format-test mep-mepml-style-test
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
-        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-vterm-test mep-spell-test
+        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-nix-format-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test
         mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test
         mep-editor-fold-test mep-editor-reload-test mep-editor-text-object-test mep-editor-block-settings-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test

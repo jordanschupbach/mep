@@ -20646,6 +20646,16 @@ void Editor::BufferDeleteById(int target, bool force) {
     }
     buffers_[static_cast<size_t>(target)].deleted = true;
     NotebookCloseSession(target);
+    // A terminal buffer: stop its program and drop the session. Left
+    // alone, the child kept running with no pane able to show it, and it
+    // still counted as a terminal -- so a mod1+Enter source that had sent
+    // to it kept sending there (a closed-and-reopened language UI console).
+    if (auto tit = terminals_.find(target); tit != terminals_.end()) {
+#if !defined(__EMSCRIPTEN__)
+        if (tit->second.job_id > 0) JobManager::Instance().Kill(tit->second.job_id);
+#endif
+        terminals_.erase(tit);
+    }
     // A music pane's buffer owns a live audio Sound (an ALSA playback
     // thread); unload it so :bd stops playback and frees the device rather
     // than leaving it playing after the buffer is gone.
@@ -35673,7 +35683,9 @@ bool Editor::TermsendRegister(int source, int target) {
 int Editor::TermsendTarget(int source) const {
     auto it = termsend_targets_.find(source);
     if (it == termsend_targets_.end()) return 0;
-    return IsTerminalBuffer(it->second) ? it->second : 0;
+    const int t = it->second;
+    const bool gone = t < 0 || t >= static_cast<int>(buffers_.size()) || buffers_[static_cast<size_t>(t)].deleted;
+    return (!gone && IsTerminalBuffer(t)) ? t : 0;
 }
 
 void Editor::TermsendUnregister(int source) { termsend_targets_.erase(source); }

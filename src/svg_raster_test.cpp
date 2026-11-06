@@ -173,6 +173,28 @@ void TestMaxSide() {
     CHECK(!svg_raster::Rasterize(Bytes(std::string("hello")), 5, &rgba, &w, &h, &err) && !err.empty());
 }
 
+void TestHoles() {
+    // Two subpaths of one path fill together: an inner contour wound the
+    // other way (nonzero) or any inner contour (evenodd) cuts a hole, the
+    // way a glyph's counter (the bowl of "p", "o") is drawn -- here reached
+    // through <use>, as a plot's outlined text does.
+    const Picture p = Draw(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\">"
+        "<defs><path id=\"ring\" d=\"M0 0 L40 0 L40 40 L0 40 Z M10 10 L10 30 L30 30 L30 10 Z\"/></defs>"
+        "<g fill=\"#0000ff\"><use href=\"#ring\" transform=\"translate(5 5)\"/></g>"
+        "<path fill-rule=\"evenodd\" fill=\"#ff0000\" d=\"M55 5 L95 5 L95 45 L55 45 Z M65 15 L85 15 L85 35 L65 35 Z\"/>"
+        "<path fill=\"#00ff00\" d=\"M0 0 L4 0 L4 4 L0 4 Z M0 46 L4 46 L4 50 L0 50 Z\"/>"
+        "</svg>");
+    CHECK(p.ok);
+    if (!p.ok) return;
+    CHECK(p.Is(8, 25, 0, 0, 255));    // ring
+    CHECK(p.Is(25, 25, 0, 0, 0, 0));  // its hole is empty
+    CHECK(p.Is(58, 25, 255, 0, 0));
+    CHECK(p.Is(75, 25, 0, 0, 0, 0));
+    CHECK(p.Is(2, 2, 0, 255, 0));     // disjoint subpaths both fill
+    CHECK(p.Is(2, 48, 0, 255, 0));
+}
+
 }  // namespace
 
 int main() {
@@ -183,6 +205,7 @@ int main() {
     TestText();
     TestRotatedText();
     TestMaxSide();
+    TestHoles();
     if (g_failures) {
         std::fprintf(stderr, "svg_raster_test: %d check(s) failed\n", g_failures);
         return EXIT_FAILURE;

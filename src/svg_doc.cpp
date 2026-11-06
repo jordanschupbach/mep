@@ -150,6 +150,7 @@ struct SvgStyle {
     float fill_opacity = 1.0f, stroke_opacity = 1.0f;
     float font_size = 16.0f;
     std::string text_anchor = "start";
+    bool even_odd = false;              // fill-rule (inherited; nonzero by default)
     bool hidden = false;                // display:none / visibility:hidden
     SvgPaint color{true, 0, 0, 0, 255};  // CSS `color`, the target of currentColor
 };
@@ -192,7 +193,7 @@ std::unordered_map<std::string, std::string> PresentationProps(const DomNode &no
                                                                const std::vector<SheetRule> *sheet = nullptr) {
     std::unordered_map<std::string, std::string> props;
     static const char *const kKeys[] = {"fill", "stroke", "stroke-width", "opacity", "fill-opacity", "stroke-opacity",
-                                        "font-size", "text-anchor", "display", "visibility", "color", "transform"};
+                                        "font-size", "text-anchor", "fill-rule", "display", "visibility", "color", "transform"};
     for (const char *key : kKeys) {
         auto it = node.attrs.find(key);
         if (it != node.attrs.end()) props[key] = it->second;
@@ -648,6 +649,7 @@ struct Builder {
         if (props.count("stroke-opacity")) style.stroke_opacity = std::max(0.0f, std::min(1.0f, ParseLength(props["stroke-opacity"], 1.0f)));
         if (props.count("font-size")) style.font_size = ParseLength(props["font-size"], style.font_size);
         if (props.count("text-anchor")) style.text_anchor = Lower(Trim(props["text-anchor"]));
+        if (props.count("fill-rule")) style.even_odd = Lower(Trim(props["fill-rule"])) == "evenodd";
         if (props.count("display") && Lower(Trim(props["display"])) == "none") style.hidden = true;
         if (props.count("visibility") && Lower(Trim(props["visibility"])) == "hidden") style.hidden = true;
         if (props.count("transform")) matrix = matrix.Mul(ParseTransform(props["transform"]));
@@ -785,9 +787,44 @@ struct Builder {
         } else if (tag == "path") {
             auto it = node.attrs.find("d");
             if (it == node.attrs.end()) return;
-            for (const SvgSubpath &sub : ParseSvgPathData(it->second)) {
-                if (sub.closed || style.fill.present) Emit(sub.points, sub.closed, style, m);
-                else EmitStrokeOnly(sub.points, style, m);
+            const std::vector<SvgSubpath> subs = ParseSvgPathData(it->second);
+            size_t fillable = 0;
+            for (const SvgSubpath &sub : subs) fillable += sub.points.size() >= 6 ? 1 : 0;
+            const SvgPaint fill = Modulate(style.fill, style.opacity * style.fill_opacity);
+            if (fillable > 1 && fill.present && fill.a > 0) {
+                // Fill every subpath together so inner ones cut holes, then
+                // stroke each on its own.
+                SvgShape shape;
+                shape.kind = SvgShape::Kind::Polygon;
+                shape.closed = true;
+                shape.fill = fill;
+                shape.even_odd = style.even_odd;
+                for (const SvgSubpath &sub : subs) {
+                    if (sub.points.size() < 6) continue;
+                    const unsigned base = static_cast<unsigned>(shape.points.size() / 2);
+                    std::vector<float> pts;
+                    pts.reserve(sub.points.size());
+                    for (size_t i = 0; i + 1 < sub.points.size(); i += 2) {
+                        float x, y;
+                        m.Apply(sub.points[i], sub.points[i + 1], x, y);
+                        pts.push_back(x);
+                        pts.push_back(y);
+                    }
+                    for (unsigned t : TriangulateSvgPolygon(pts)) shape.triangles.push_back(base + t);
+                    shape.contour_starts.push_back(base);
+                    shape.points.insert(shape.points.end(), pts.begin(), pts.end());
+                }
+                out.shapes.push_back(std::move(shape));
+                for (const SvgSubpath &sub : subs) {
+                    SvgStyle open = style;
+                    open.fill = SvgPaint{};
+                    Emit(sub.points, sub.closed, open, m);
+                }
+            } else {
+                for (const SvgSubpath &sub : subs) {
+                    if (sub.closed || style.fill.present) Emit(sub.points, sub.closed, style, m);
+                    else EmitStrokeOnly(sub.points, style, m);
+                }
             }
         } else if (tag == "text") {
             std::string text;

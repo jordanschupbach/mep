@@ -16,8 +16,10 @@
 // entirely out of the draw pass so it can be unit tested without a window.
 //
 // Deliberately not covered yet (WEBKIT_PARITY_PLAN.md Part VII, SVG):
-// - even-odd/nonzero fill rules with holes -- each subpath is filled on its
-//   own, so a ring drawn as two subpaths fills solid;
+// - holes in the triangulated fill (`triangles`): each subpath is
+//   triangulated on its own, so a consumer drawing triangles fills a ring
+//   solid. svg_raster honors `fill-rule` (nonzero/evenodd) through
+//   `contour_starts` and cuts holes correctly;
 // - real gradients/patterns -- a `url(#id)` paint resolves to the average of
 //   the referenced gradient's stops, a flat approximation;
 // - clip paths, masks, markers, filters, and <style>-sheet selectors that
@@ -40,6 +42,14 @@ struct SvgShape {
     // wound counter-clockwise on screen (negative cross product in y-down
     // coordinates), which is the order raylib's DrawTriangle requires.
     std::vector<unsigned> triangles;
+    // A filled <path> with several subpaths is one Polygon whose `points`
+    // hold every subpath back to back; contour_starts[k] is the index (in
+    // x,y pairs) where subpath k begins. They fill together under the fill
+    // rule, so an inner subpath can cut a hole (a glyph's counter, a ring).
+    // Empty for a single outline. Such a shape never carries a stroke; its
+    // subpaths are stroked as separate Polyline shapes.
+    std::vector<unsigned> contour_starts;
+    bool even_odd = false;  // fill-rule="evenodd" (else nonzero)
     SvgPaint fill, stroke;
     float stroke_width = 1.0f;  // already scaled into target space
     // Text: `points` holds the single anchor position (x, y = baseline).

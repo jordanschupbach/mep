@@ -69,7 +69,8 @@ struct Canvas {
 
     // Fills `edges` (raster space) with `paint`, rasterizing only the
     // window their bounds cover.
-    void Fill(std::vector<raster::Edge> &edges, const SvgPaint &paint) {
+    void Fill(std::vector<raster::Edge> &edges, const SvgPaint &paint,
+              raster::FillRule rule = raster::FillRule::kNonZero) {
         if (edges.empty() || !paint.present || paint.a == 0) return;
         float minx = 1e30f, maxx = -1e30f, miny = 1e30f, maxy = -1e30f;
         for (const raster::Edge &e : edges) {
@@ -84,7 +85,7 @@ struct Canvas {
         const int x1 = std::min(w, static_cast<int>(std::ceil(maxx)) + 1);
         const int y1 = std::min(h, static_cast<int>(std::ceil(maxy)) + 1);
         if (x1 <= x0 || y1 <= y0) return;
-        const std::vector<unsigned char> cov = raster::RasterizeRegion(edges, x0, y0, x1 - x0, y1 - y0);
+        const std::vector<unsigned char> cov = raster::RasterizeRegion(edges, x0, y0, x1 - x0, y1 - y0, rule);
         Paint(cov, x0, y0, x1 - x0, y1 - y0, paint);
     }
 };
@@ -291,14 +292,23 @@ bool Rasterize(const unsigned char *bytes, size_t len, std::vector<unsigned char
             continue;
         }
         if (shape.kind == SvgShape::Kind::Polygon && shape.fill.present) {
+            // Each contour closes on itself; all of them fill together so the
+            // fill rule can cut holes (a glyph's counter, a ring).
             std::vector<raster::Edge> edges;
-            const size_t n = shape.points.size() / 2;
-            for (size_t i = 0; i < n; ++i) {
-                const size_t j = (i + 1) % n;
-                raster::AddLine(edges, shape.points[2 * i], shape.points[2 * i + 1], shape.points[2 * j],
-                                shape.points[2 * j + 1]);
+            const size_t total = shape.points.size() / 2;
+            std::vector<size_t> starts(shape.contour_starts.begin(), shape.contour_starts.end());
+            if (starts.empty()) starts.push_back(0);
+            for (size_t k = 0; k < starts.size(); ++k) {
+                const size_t begin = starts[k], end = k + 1 < starts.size() ? starts[k + 1] : total;
+                const size_t n = end > begin ? end - begin : 0;
+                for (size_t i = 0; i < n; ++i) {
+                    const size_t a = begin + i, b = begin + (i + 1) % n;
+                    raster::AddLine(edges, shape.points[2 * a], shape.points[2 * a + 1], shape.points[2 * b],
+                                    shape.points[2 * b + 1]);
+                }
             }
-            canvas.Fill(edges, shape.fill);
+            canvas.Fill(edges, shape.fill,
+                        shape.even_odd ? raster::FillRule::kEvenOdd : raster::FillRule::kNonZero);
         }
         if (shape.stroke.present) {
             const bool closed = shape.kind == SvgShape::Kind::Polygon || shape.closed;

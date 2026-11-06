@@ -31250,7 +31250,10 @@ const char *kBuiltinMepml =
     "    if lang == 'python' and not lang_def.graphics_wrap and not video then\n"
     "      table.insert(body, 1, \"import matplotlib; matplotlib.use('Agg')\")\n"
     "      body[#body + 1] = 'import matplotlib.pyplot as _mep_plt'\n"
-    "      body[#body + 1] = string.format('_mep_plt.savefig(%q, bbox_inches=\"tight\")', fig_path)\n"
+    // Only when the block drew a matplotlib figure: one that writes its own
+    // picture (and opens no figure) would otherwise get a blank page saved
+    // over it.
+    "      body[#body + 1] = string.format('if _mep_plt.get_fignums(): _mep_plt.savefig(%q, bbox_inches=\"tight\")', fig_path)\n"
     "    end\n"
     "    before = mep.fs_image_stamps(dir)\n"
     "    local parent, base = fig_path:match('^(.*)/([^/]*)$')\n"

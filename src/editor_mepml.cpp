@@ -481,6 +481,24 @@ std::vector<int> Editor::MepmlTabStripLines(const Buffer::MepmlTabRow &row, int 
     return line_of;
 }
 
+std::vector<std::pair<int, int>> Editor::MepmlTabPins(const Buffer &buf, int top_row) {
+    std::vector<std::pair<int, int>> pins;
+    if (buf.mepml_raw) return pins;
+    for (const auto &[srow, tr] : buf.mepml_tab_rows) {
+        if (tr.footer || tr.titles.empty() || srow >= top_row) continue;
+        // Shown as tabs (a set opened out with zo is plain text), its whole
+        // strip above the view.
+        bool strip_folded = false;
+        for (const Fold &f : buf.folds)
+            if (f.closed && f.provider == "mepml-tabs" && f.start_row == srow && f.end_row < top_row) strip_folded = true;
+        if (!strip_folded) continue;
+        for (const auto &[frow, ft] : buf.mepml_tab_rows)
+            if (ft.footer && ft.set == tr.set && frow > top_row) pins.push_back({srow, frow});
+    }
+    std::sort(pins.begin(), pins.end());
+    return pins;
+}
+
 int Editor::RowHeadroomSlots(const Buffer &buf, int row, int text_cols) const {
     if (row < 0 || row >= buf.LineCount()) return 0;
     bool folded = false, tab_fold = false;

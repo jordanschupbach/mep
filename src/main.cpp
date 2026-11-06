@@ -62848,6 +62848,44 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         const float draw_w = static_cast<float>(tex.width) * OrgLatexInlineScale(tex);
         return std::max(1, static_cast<int>(std::ceil(draw_w / g_char_width - 0.05f)));
     };
+    /**
+     * @brief Draws a mepml set of tabs' strip (Buffer::mepml_tab_rows): each title on a chip, the shown one in the accent on a wash of it and underlined; a click on a title shows that tab.
+     * @param tr The strip.
+     * @param strip_top The y of its first line.
+     * @param left The x its titles start at.
+     * @param line_of Each title's line (Editor::MepmlTabStripLines).
+     *
+     * Drawn on the set's opening row, and again pinned to the pane's top
+     * while the view is inside the shown tab (after the row loop).
+     */
+    auto draw_tab_strip = [&](const Buffer::MepmlTabRow &tr, float strip_top, float left, const std::vector<int> &line_of) {
+        float cx = left;
+        for (size_t k = 0; k < tr.titles.size(); ++k) {
+            if (k > 0 && line_of[k] != line_of[k - 1]) cx = left;
+            const float cy = strip_top + static_cast<float>(line_of[k] * line_height);
+            const std::string chip = " " + tr.titles[k] + " ";
+            const float cw = static_cast<float>(ByteOffsetToColumn(chip, static_cast<int>(chip.size()))) * g_char_width;
+            const bool shown = static_cast<int>(k) == tr.active;
+            if (shown) {
+                gfx::Color wash = ResolveHlGroup("Accent");
+                wash.a = 48;  // (faint, so the accent title on it reads in any theme)
+                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cw), line_height, wash);
+                gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(cy) + line_height - 2, static_cast<int>(cw), 2,
+                                   ResolveHlGroup("Accent"));
+            }
+            DrawLineFast(chip, cx, cy, g_font_size, ResolveHlGroup(shown ? "Accent" : "MutedFg"));
+            if (is_active) {
+                const int set = tr.set, tab = static_cast<int>(k);
+                // On top: DrawPane registered its pane-wide focus region
+                // before reaching this row, and the first region under a
+                // click wins -- appended, the title was never reached and
+                // the click only focused the pane.
+                RegisterClickRegionOnTop(gfx::Rectangle{cx, cy, cw, static_cast<float>(line_height)},
+                                         [set, tab] { g_editor.MepmlSelectTab(set, tab); });
+            }
+            cx += cw + g_char_width;
+        }
+    };
     int visual_slot = draw_first_slot;  // a closed fold collapses N buffer rows into 1 of these
     int row = draw_first_row;
     // (A row set centred or flush right moves text_x for its own drawing.)
@@ -63583,10 +63621,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         }
 
         if (tab_row) {
-            // The strip: each title on a chip, the shown one in the accent
-            // on a wash of it and underlined, over a rule the width of the
-            // text; a click on a title shows that tab. Under the shown
-            // tab, the rule alone closes the set.
+            // Under the shown tab, the rule alone closes the set.
             const float rule_y = ly + static_cast<float>(line_height) - 1.0f;
             const float rule_w = std::max(0.0f, x + w - static_cast<float>(kMarginX) - text_x);
             if (!tab_row->footer) {
@@ -63595,34 +63630,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 // above the row, so the last line sits on the rule.
                 const std::vector<int> line_of =
                     Editor::MepmlTabStripLines(*tab_row, g_editor.MepmlRowCols(buf, row, pane.text_cols));
-                const float strip_top = ly - static_cast<float>(line_of.back() * line_height);
-                float cx = text_x;
-                for (size_t k = 0; k < tab_row->titles.size(); ++k) {
-                    if (k > 0 && line_of[k] != line_of[k - 1]) cx = text_x;
-                    const float cy = strip_top + static_cast<float>(line_of[k] * line_height);
-                    const std::string chip = " " + tab_row->titles[k] + " ";
-                    const float cw = static_cast<float>(ByteOffsetToColumn(chip, static_cast<int>(chip.size()))) * g_char_width;
-                    const bool shown = static_cast<int>(k) == tab_row->active;
-                    if (shown) {
-                        gfx::Color wash = ResolveHlGroup("Accent");
-                        wash.a = 48;  // (faint, so the accent title on it reads in any theme)
-                        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(cy), static_cast<int>(cw), line_height, wash);
-                        gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(cy) + line_height - 2, static_cast<int>(cw), 2,
-                                           ResolveHlGroup("Accent"));
-                    }
-                    DrawLineFast(chip, cx, cy, g_font_size, ResolveHlGroup(shown ? "Accent" : "MutedFg"));
-                    if (is_active) {
-                        const int set = tab_row->set, tab = static_cast<int>(k);
-                        // On top: DrawPane registered its pane-wide focus
-                        // region before reaching this row, and the first
-                        // region under a click wins -- appended, the title
-                        // was never reached and the click only focused the
-                        // pane.
-                        RegisterClickRegionOnTop(gfx::Rectangle{cx, cy, cw, static_cast<float>(line_height)},
-                                                 [set, tab] { g_editor.MepmlSelectTab(set, tab); });
-                    }
-                    cx += cw + g_char_width;
-                }
+                draw_tab_strip(*tab_row, ly - static_cast<float>(line_of.back() * line_height), text_x, line_of);
             }
             gfx::DrawRectangle(static_cast<int>(text_x), static_cast<int>(tab_row->footer ? ly + static_cast<float>(line_height) / 2.0f : rule_y),
                                static_cast<int>(rule_w), 1, ResolveHlGroup("Border"));
@@ -65601,6 +65609,7 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
     text_x = text_x_left = pane_text_x_left;
     w = pane_w;
     wrap_cols = pane_wrap_cols;
+    const int loop_end_row = row;  // (one past the last row the loop drew)
 
     // `row` here is the drawing loop's own variable, left at one past
     // whatever it actually covered (fold-collapsed ranges included) --
@@ -66961,6 +66970,39 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             for (size_t i = 0; i < lines.size(); ++i)
                 DrawGridText(lines[i].text, box_x + pad, box_y + pad + static_cast<float>(i) * static_cast<float>(line_height),
                              ResolveHlGroup("Normal"), false);
+        }
+    }
+
+    // A set of tabs whose strip has scrolled off the top while the view is
+    // still inside its shown tab: the strip stays pinned to the pane's top,
+    // over the rows there, until the rule closing the tab comes up and
+    // pushes it off. Nested sets stack, the outer one first.
+    if (!buf.mepml_raw && !presenting && !buf.mepml_tab_rows.empty()) {
+        float pin_y = content_y;
+        for (const auto &[srow, frow] : Editor::MepmlTabPins(buf, pane.scroll_row)) {
+            const Buffer::MepmlTabRow &tr = buf.mepml_tab_rows.at(srow);
+            // In its column, when the set is in one (\columns).
+            float left = pane_text_x_left, right = x + pane_w - static_cast<float>(kMarginX), band_x = x;
+            if (const auto pl = buf.mepml_col_place.find(srow); pl != buf.mepml_col_place.end() && pl->second.x_cols > 0) {
+                left += static_cast<float>(pl->second.x_cols) * g_char_width;
+                right = std::min(right, left + static_cast<float>(pl->second.w_cols) * g_char_width);
+                band_x = left - g_char_width;
+            }
+            const std::vector<int> line_of = Editor::MepmlTabStripLines(tr, g_editor.MepmlRowCols(buf, srow, pane.text_cols));
+            const float band_h = static_cast<float>((line_of.back() + 1) * line_height);
+            float top = pin_y;
+            if (frow < loop_end_row)
+                top = std::min(top, content_y + static_cast<float>(RowSlot(frow) * line_height) - band_h);
+            const gfx::Rectangle band{band_x, top, std::max(0.0f, right + static_cast<float>(kMarginX) - band_x), band_h};
+            gfx::DrawRectangle(static_cast<int>(band.x), static_cast<int>(band.y), static_cast<int>(band.width),
+                               static_cast<int>(band.height), page_bg);
+            // A click on the band but off the titles does nothing, rather
+            // than land on the row hidden under it.
+            if (is_active) RegisterClickRegionOnTop(band, [] {});
+            draw_tab_strip(tr, top, left, line_of);
+            gfx::DrawRectangle(static_cast<int>(left), static_cast<int>(top + band_h) - 1, static_cast<int>(std::max(0.0f, right - left)), 1,
+                               ResolveHlGroup("Border"));
+            pin_y = top + band_h;
         }
     }
 

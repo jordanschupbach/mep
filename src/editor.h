@@ -11329,6 +11329,13 @@ public:
      */
     static std::vector<int> MepmlTabStripLines(const Buffer::MepmlTabRow &row, int cols);
     /**
+     * @brief The sets of tabs whose strip is pinned over the top of a view starting at `top_row`: the strip has scrolled off above it while the view is still inside the shown tab (DrawPane draws them there).
+     * @param buf The buffer.
+     * @param top_row The first row the view draws (Pane::scroll_row).
+     * @return Each pinned set's strip row (Buffer::mepml_tab_rows) and the row of the rule under its shown tab, outer sets first.
+     */
+    static std::vector<std::pair<int, int>> MepmlTabPins(const Buffer &buf, int top_row);
+    /**
      * @brief Lays out the buffer's rows of columns (mepml's \columns) for a pane: which are set side by side, where each of their rows is drawn and by how many slots (Buffer::mepml_col_place, mepml_col_pad).
      * @param pane The pane about to be measured or drawn.
      * @param buf The buffer it shows.

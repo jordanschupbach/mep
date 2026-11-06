@@ -5946,6 +5946,24 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     // the caret's own repeat rate, so it runs at one speed on a 60Hz
     // panel and a 165Hz one, and `:set caretrate` governs it exactly as
     // it governs the caret.
+    // A set of tabs' strip pinned over the top of the view (DrawPane)
+    // hides the rows under it: a cursor there (k, zt) brings the view up a
+    // row at a time until the cursor is clear of the strip.
+    if (!buf.mepml_tab_rows.empty() && !buf.mepml_raw) {
+        for (int guard = 0; guard < visible_lines && target > 0 && pane.cursor.row >= target; ++guard) {
+            int pin = 0;
+            for (const auto &[srow, frow] : MepmlTabPins(buf, target)) {
+                (void)frow;
+                pin += MepmlTabStripLines(buf.mepml_tab_rows.at(srow), MepmlRowCols(buf, srow, pane.text_cols)).back() + 1;
+            }
+            if (pin <= 0 || PaneSlotsBetween(pane, buf, target, pane.cursor.row, wrap_cols) >= pin) break;
+            int up = target - 1;
+            for (const Fold &f : buf.folds)
+                if (f.closed && up > f.start_row && up <= f.end_row) up = std::min(up, f.start_row);
+            if (int start = 0; RenderContaining(pane, buf, up, &start)) up = start;
+            target = up;
+        }
+    }
     int jump = target - pane.scroll_row;
     const double catchup_now = gfx::GetTime();
     const double catchup_dt =

@@ -581,6 +581,31 @@ bool SvgIntrinsicSize(const DomNode &svg, float &width, float &height) {
 
 namespace {
 
+// The matrix that fits an element's viewBox into a width x height viewport
+// with preserveAspectRatio (xMidYMid meet by default); without a viewBox,
+// user units map onto `natural_w` x `natural_h`.
+Matrix ViewBoxMatrix(const DomNode &svg, float width, float height, float natural_w, float natural_h) {
+    auto view_box_it = svg.attrs.find("viewbox");
+    std::vector<float> view_box = view_box_it == svg.attrs.end() ? std::vector<float>{} : ParseNumberList(view_box_it->second);
+    if (view_box.size() != 4 || view_box[2] <= 0.0f || view_box[3] <= 0.0f)
+        return Matrix{width / std::max(1.0f, natural_w), 0, 0, height / std::max(1.0f, natural_h), 0, 0};
+    float sx = width / view_box[2], sy = height / view_box[3];
+    std::string par;
+    if (auto it = svg.attrs.find("preserveaspectratio"); it != svg.attrs.end()) par = Lower(it->second);
+    float tx = 0.0f, ty = 0.0f;
+    if (par != "none") {
+        bool slice = par.find("slice") != std::string::npos;
+        float s = slice ? std::max(sx, sy) : std::min(sx, sy);
+        sx = sy = s;
+        float extra_x = width - view_box[2] * s, extra_y = height - view_box[3] * s;
+        float ax = 0.5f, ay = 0.5f;
+        if (par.find("xmin") != std::string::npos) ax = 0.0f; else if (par.find("xmax") != std::string::npos) ax = 1.0f;
+        if (par.find("ymin") != std::string::npos) ay = 0.0f; else if (par.find("ymax") != std::string::npos) ay = 1.0f;
+        tx = extra_x * ax; ty = extra_y * ay;
+    }
+    return Matrix{sx, 0, 0, sy, tx - view_box[0] * sx, ty - view_box[1] * sy};
+}
+
 struct Builder {
     const DomNode &root;
     SvgDisplayList out;
@@ -718,10 +743,19 @@ struct Builder {
         if (tag == "g" || tag == "a" || tag == "switch") {
             for (const auto &child : node.children) Draw(*child, style, m, depth + 1);
         } else if (tag == "svg") {
-            // A nested <svg> positions its content at x/y; its own viewBox is
-            // not re-fit here (rare in inline icon markup).
-            Matrix inner = m.Mul(Matrix{1, 0, 0, 1, Attr(node, "x", 0.0f), Attr(node, "y", 0.0f)});
+            // A nested <svg> is a new viewport at x/y (width/height default to
+            // 100%) whose viewBox is fit into it, as at the root.
+            const float w = Len(node, "width", vw, 0), h = Len(node, "height", vh, 1);
+            if (w <= 0.0f || h <= 0.0f) return;
+            Matrix inner = m.Mul(Matrix{1, 0, 0, 1, Len(node, "x", 0.0f, 0), Len(node, "y", 0.0f, 1)})
+                               .Mul(ViewBoxMatrix(node, w, h, w, h));
+            const float saved_vw = vw, saved_vh = vh;
+            auto view_box_it = node.attrs.find("viewbox");
+            std::vector<float> view_box = view_box_it == node.attrs.end() ? std::vector<float>{} : ParseNumberList(view_box_it->second);
+            if (view_box.size() == 4 && view_box[2] > 0.0f && view_box[3] > 0.0f) { vw = view_box[2]; vh = view_box[3]; }
+            else { vw = w; vh = h; }
             for (const auto &child : node.children) Draw(*child, style, inner, depth + 1);
+            vw = saved_vw; vh = saved_vh;
         } else if (tag == "use") {
             std::string href;
             for (const char *key : {"href", "xlink:href"}) { auto it = node.attrs.find(key); if (it != node.attrs.end()) { href = it->second; break; } }
@@ -861,29 +895,10 @@ SvgDisplayList BuildSvgDisplayList(const DomNode &svg, float target_width, float
     // The root establishes the user-space -> target-pixel mapping: a
     // viewBox is fit with preserveAspectRatio (xMidYMid meet by default);
     // without one, user units map onto the intrinsic width/height.
-    Matrix root;
+    Matrix root = ViewBoxMatrix(svg, target_width, target_height, Attr(svg, "width", target_width),
+                                Attr(svg, "height", target_height));
     auto view_box_it = svg.attrs.find("viewbox");
     std::vector<float> view_box = view_box_it == svg.attrs.end() ? std::vector<float>{} : ParseNumberList(view_box_it->second);
-    if (view_box.size() == 4 && view_box[2] > 0.0f && view_box[3] > 0.0f) {
-        float sx = target_width / view_box[2], sy = target_height / view_box[3];
-        std::string par;
-        if (auto it = svg.attrs.find("preserveaspectratio"); it != svg.attrs.end()) par = Lower(it->second);
-        float tx = 0.0f, ty = 0.0f;
-        if (par != "none") {
-            bool slice = par.find("slice") != std::string::npos;
-            float s = slice ? std::max(sx, sy) : std::min(sx, sy);
-            sx = sy = s;
-            float extra_x = target_width - view_box[2] * s, extra_y = target_height - view_box[3] * s;
-            float ax = 0.5f, ay = 0.5f;
-            if (par.find("xmin") != std::string::npos) ax = 0.0f; else if (par.find("xmax") != std::string::npos) ax = 1.0f;
-            if (par.find("ymin") != std::string::npos) ay = 0.0f; else if (par.find("ymax") != std::string::npos) ay = 1.0f;
-            tx = extra_x * ax; ty = extra_y * ay;
-        }
-        root = Matrix{sx, 0, 0, sy, tx - view_box[0] * sx, ty - view_box[1] * sy};
-    } else {
-        float w = Attr(svg, "width", target_width), h = Attr(svg, "height", target_height);
-        root = Matrix{target_width / std::max(1.0f, w), 0, 0, target_height / std::max(1.0f, h), 0, 0};
-    }
     if (view_box.size() == 4 && view_box[2] > 0.0f && view_box[3] > 0.0f) {
         builder.vw = view_box[2];
         builder.vh = view_box[3];

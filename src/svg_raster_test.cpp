@@ -195,6 +195,23 @@ void TestHoles() {
     CHECK(p.Is(2, 48, 0, 255, 0));
 }
 
+void TestNestedViewBox() {
+    // A nested <svg> fits its viewBox into its width/height, as a plot
+    // layout's panels do: a 200x200 panel drawn into a 50x50 slot at (50, 0).
+    const Picture p = Draw(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\">"
+        "<svg x=\"50\" y=\"0\" width=\"50\" height=\"50\" viewBox=\"0 0 200 200\">"
+        "<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"#ff0000\"/>"
+        "<circle cx=\"180\" cy=\"180\" r=\"16\" fill=\"#0000ff\"/>"
+        "</svg></svg>");
+    CHECK(p.ok);
+    if (!p.ok) return;
+    CHECK(p.Is(60, 12, 255, 0, 0));    // the rect fills the panel's top-left quarter
+    CHECK(p.Is(85, 12, 0, 0, 0, 0));   // and no more
+    CHECK(p.Is(95, 45, 0, 0, 255));    // a far corner stays inside the slot
+    CHECK(p.Is(25, 25, 0, 0, 0, 0));   // nothing lands left of the slot
+}
+
 }  // namespace
 
 int main() {
@@ -206,6 +223,7 @@ int main() {
     TestRotatedText();
     TestMaxSide();
     TestHoles();
+    TestNestedViewBox();
     if (g_failures) {
         std::fprintf(stderr, "svg_raster_test: %d check(s) failed\n", g_failures);
         return EXIT_FAILURE;

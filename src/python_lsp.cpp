@@ -372,6 +372,17 @@ private:
         return index;
     }
 
+    /**
+     * @brief Where an import alias's bound name sits: the `as` name when there
+     * is one (`import numpy as np` binds `np`, not `numpy`), else the imported
+     * name itself. The `as` name is the alias's last token, so it ends where
+     * the alias does.
+     */
+    static PyPos BoundNamePos(const PyNode *alias) {
+        if (alias->str_value.empty()) return alias->name_pos;
+        return PyPos{alias->end.line, alias->end.col - static_cast<int>(alias->str_value.size())};
+    }
+
     /** @brief Records a binding, honoring a `global`/`nonlocal` declaration by binding in the outer scope instead. */
     int Bind(const std::string &name, BindKind kind, PyPos pos, int end_col, int scope, const PyNode *node) {
         if (name.empty()) return -1;
@@ -571,8 +582,9 @@ private:
                     // binds `p` and nothing else.
                     const bool aliased = !alias->str_value.empty();
                     const std::string bound = aliased ? alias->str_value : alias->name.substr(0, alias->name.find('.'));
-                    const int index = Bind(bound, BindKind::Import, alias->name_pos,
-                                           alias->name_pos.col + static_cast<int>(bound.size()), scope, alias.get());
+                    const PyPos pos = BoundNamePos(alias.get());
+                    const int index = Bind(bound, BindKind::Import, pos, pos.col + static_cast<int>(bound.size()),
+                                           scope, alias.get());
                     if (index >= 0) {
                         bindings_[static_cast<size_t>(index)].import_module = alias->name;
                         bindings_[static_cast<size_t>(index)].detail = "module " + alias->name;
@@ -589,9 +601,9 @@ private:
                         continue;
                     }
                     const std::string bound = alias->str_value.empty() ? alias->name : alias->str_value;
-                    const int index = Bind(bound, BindKind::ImportFrom, alias->name_pos,
-                                           alias->name_pos.col + static_cast<int>(alias->name.size()), scope,
-                                           alias.get());
+                    const PyPos pos = BoundNamePos(alias.get());
+                    const int index = Bind(bound, BindKind::ImportFrom, pos, pos.col + static_cast<int>(bound.size()),
+                                           scope, alias.get());
                     if (index >= 0) {
                         bindings_[static_cast<size_t>(index)].import_module = n->name;
                         bindings_[static_cast<size_t>(index)].import_symbol = alias->name;

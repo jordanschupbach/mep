@@ -1152,6 +1152,22 @@ void TestSemanticTokens() {
     }
     for (const PythonLspSemanticToken &t : tokens) CHECK(t.col_end > t.col_start);
 
+    // An aliased import binds the `as` name, so that is where its token
+    // goes -- not a short token over the front of the module name, which
+    // used to paint `import numpy as np` as Orange "nu" + plain "mpy".
+    const Lines aliased = {
+        "import numpy as np",
+        "from os import path as p",
+        "np.zeros(p.sep)",
+    };
+    const std::vector<PythonLspSemanticToken> alias_tokens = PythonLspSemanticTokens(aliased);
+    CHECK(TokenAt(alias_tokens, Locate(aliased, "numpy")) == nullptr);
+    const PythonLspSemanticToken *np = TokenAt(alias_tokens, Locate(aliased, "np"));
+    CHECK(np != nullptr && np->type == PythonLspTokenType::Namespace && np->col_end == np->col_start + 2);
+    CHECK(TokenAt(alias_tokens, Locate(aliased, "path")) == nullptr);
+    const PythonLspSemanticToken *p = TokenAt(alias_tokens, At{1, 23});  // the `p` of `as p`
+    CHECK(p != nullptr && p->type == PythonLspTokenType::Namespace && p->col_end == 24);
+
     // A name in a string annotation resolves for "is this import used", but
     // its columns are inside a string literal, so it gets no token: half a
     // recoloured string reads as a bug.

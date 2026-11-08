@@ -1,0 +1,83 @@
+==================
+object.d aliases redeclared and used as expressions
+==================
+
+alias string = immutable(char)[];
+size_t f() { return string.sizeof + noreturn; }
+
+---
+
+(source_file (alias_declaration (alias) (alias_initializer (identifier) (type (type_ctor (immutable)) (type (char))))) (function_declaration (type (size_t)) (identifier) (parameters) (function_body (block_statement (return_statement (return) (expression (binary_expression (add_expression (primary_expression (string) (identifier)) (noreturn)))))))))
+
+==================
+body before a function body, and body as an identifier
+==================
+
+void f() in { } body { body = 1; }
+
+---
+
+(source_file (function_declaration (type (void)) (identifier) (parameters) (function_body (in_statement (in) (block_statement)) (do) (block_statement (expression_statement (expression_list (assignment_expression (identifier) (int_literal))))))))
+
+==================
+nested comments
+==================
+
+/+ a /+ b /+++ c +/ +/ +/
+enum s = "/+ not a comment +/";
+
+---
+
+(source_file (comment) (manifest_constant (enum) (manifest_declarator (identifier) (string_literal (quoted_string)))))
+
+==================
+token string suffix, html entity with digits
+==================
+
+auto a = q{int x;}c;
+auto b = '\&sup2;';
+
+---
+
+(source_file (auto_declaration (storage_class (auto)) (identifier) (string_literal (token_string (keyword (int)) (identifier)))) (auto_declaration (storage_class (auto)) (identifier) (char_literal (htmlentity))))
+
+==================
+condition declarations, catch without a parameter
+==================
+
+void f() {
+  switch (auto x = g()) { default: }
+  if (ref y = h()) {}
+  try {} catch {}
+}
+
+---
+
+(source_file (function_declaration (type (void)) (identifier) (parameters) (function_body (block_statement (switch_statement (switch) (auto) (identifier) (expression (call_expression (identifier) (named_arguments))) (scope_statement (block_statement (case_statement (default))))) (if_statement (if) (if_condition (ref) (identifier) (expression (call_expression (identifier) (named_arguments)))) (scope_statement (block_statement))) (try_statement (try) (scope_statement (block_statement)) (catch_statement (catch) (scope_statement (block_statement))))))))
+
+==================
+enums, version specification, UDAs, placement new
+==================
+
+enum Empty {}
+enum uint alignment;
+private version = Foo;
+@"name" @1 @(int) void g();
+auto p = new (buf) int;
+
+---
+
+(source_file (enum_declaration (enum) (identifier)) (manifest_constant (enum) (type (uint)) (manifest_declarator (identifier))) (version_specification (private) (version) (identifier)) (function_declaration (at_attribute (string_literal (quoted_string))) (at_attribute (int_literal)) (at_attribute (expression (int))) (type (void)) (identifier) (parameters) (function_body)) (auto_declaration (storage_class (auto)) (identifier) (new_expression (new) (arguments (expression (identifier))) (type (int)))))
+
+==================
+a block statement is not a function literal
+==================
+
+void f() {
+  if (a) { b(); }
+  *p = 1;
+}
+
+---
+
+(source_file (function_declaration (type (void)) (identifier) (parameters) (function_body (block_statement (if_statement (if) (if_condition (identifier)) (scope_statement (block_statement (expression_statement (expression_list (call_expression (identifier) (named_arguments))))))) (expression_statement (expression_list (assignment_expression (unary_expression (identifier)) (int_literal))))))))

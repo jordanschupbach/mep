@@ -456,6 +456,766 @@ void TestPythonGrammar() {
 }
 
 // ---------------------------------------------------------------------------
+// Maxima: mep's own grammar (grammars/tree-sitter-maxima), compiled in
+// ---------------------------------------------------------------------------
+
+void TestMaxima() {
+    CHECK(TreesitterHasGrammar("mac"));
+    CHECK(TreesitterHasGrammar("max"));
+    CHECK(TreesitterHasFoldQuery("mac"));
+    const std::string src =
+        "/* outer /* nested */ still comment */\n"
+        "f(x, [y]) := block([a : 1], a + ?princ(x), -x^2)$\n"
+        "g : lambda([t], t!)$\n"
+        "for i : 1 thru 10 do if i > 5 then print(i) else return(%pi);\n"
+        "integrate(%e^lambda, lambda, 0, 1);\n"
+        ":lisp (defun h () 1)\n";
+    ExpectCaptures("mac", src, "still comment", "comment");
+    ExpectCaptures("mac", src, "f(x", "variable function.call function");
+    ExpectCaptures("mac", src, ":=", "operator");
+    ExpectCaptures("mac", src, "block", "keyword.function");
+    ExpectCaptures("mac", src, "a :", "variable variable variable.parameter");
+    ExpectCaptures("mac", src, "?princ", "variable function.call function.builtin");
+    ExpectCaptures("mac", src, "^2", "operator");
+    ExpectCaptures("mac", src, "2)", "number");
+    ExpectCaptures("mac", src, "lambda([t", "keyword.function");
+    ExpectCaptures("mac", src, "t]", "variable variable.parameter");
+    ExpectCaptures("mac", src, "for", "repeat");
+    ExpectCaptures("mac", src, "i :", "variable variable.parameter");
+    ExpectCaptures("mac", src, "thru", "repeat");
+    ExpectCaptures("mac", src, "if", "conditional");
+    ExpectCaptures("mac", src, "print", "variable function.call function.builtin");
+    ExpectCaptures("mac", src, "%pi", "variable constant.builtin");
+    // `lambda` with no `(` after it is a name.
+    ExpectCaptures("mac", src, "lambda,", "variable");
+    ExpectCaptures("mac", src, ":lisp", "string.special");
+
+    // Folds: the block, the loop, a multi-line call.
+    const std::string folds = "f(x) := block(\n  [a],\n  a : x,\n  a)$\n";
+    bool block_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("mac", folds)) block_fold = block_fold || (r.start_row == 0 && r.end_row >= 3);
+    CHECK(block_fold);
+
+    // The outline: definitions and top-level assignments.
+    CHECK(TreesitterHasStructureQuery("mac"));
+    ExpectOutline("mac",
+                  "f(x) := x^2$\n"
+                  "m(x) ::= buildq([x], x)$\n"
+                  "fib[n] := fib[n-1] + fib[n-2]$\n"
+                  "limit_n : 100$\n"
+                  "print(f(3));\n",
+                  "0:function:f@0\n0:function:m@1\n0:function:fib@2\n0:variable:limit_n@3\n");
+}
+
+// ---------------------------------------------------------------------------
+// Tcl: mep's own grammar (grammars/tree-sitter-tcl), compiled in
+// ---------------------------------------------------------------------------
+
+void TestTcl() {
+    CHECK(TreesitterHasGrammar("tcl"));
+    CHECK(TreesitterHasGrammar("tk"));
+    CHECK(TreesitterHasFoldQuery("tcl"));
+    const std::string src =
+        "# a comment \\\n"
+        "continued\n"
+        "proc ::ns::greet {name {greeting hello}} {\n"
+        "    #if {$x} {\n"
+        "    #}\n"
+        "    set msg \"$greeting, $name($i)\"\n"
+        "    if {$name eq \"\" || [string length $name] > 10} then {\n"
+        "        return -code error {bad name: \"}\n"
+        "    } else {\n"
+        "        puts stderr $msg\n"
+        "    }\n"
+        "    expr {sin($x) ** 2 + 0x1F}\n"
+        "    lappend out {*}$args\n"
+        "}\n";
+    ExpectCaptures("tcl", src, "# a comment", "comment");
+    ExpectCaptures("tcl", src, "continued", "comment");
+    ExpectCaptures("tcl", src, "proc", "keyword.function");
+    ExpectCaptures("tcl", src, "::ns::greet", "function");
+    ExpectCaptures("tcl", src, "name {", "variable.parameter");
+    ExpectCaptures("tcl", src, "greeting hello", "variable.parameter");
+    ExpectCaptures("tcl", src, "#if", "comment");
+    ExpectCaptures("tcl", src, "msg", "variable");
+    ExpectCaptures("tcl", src, "$greeting", "string variable");
+    ExpectCaptures("tcl", src, "if {$name", "keyword.conditional");
+    ExpectCaptures("tcl", src, "eq", "operator");
+    ExpectCaptures("tcl", src, "string length", "function.call function.builtin");
+    ExpectCaptures("tcl", src, "then", "keyword.conditional");
+    ExpectCaptures("tcl", src, "return", "function.call keyword");
+    ExpectCaptures("tcl", src, "-code", "variable.parameter");
+    ExpectCaptures("tcl", src, "else", "keyword.conditional");
+    ExpectCaptures("tcl", src, "sin", "function.call");
+    ExpectCaptures("tcl", src, "**", "operator");
+    ExpectCaptures("tcl", src, "0x1F", "number");
+    ExpectCaptures("tcl", src, "{*}", "operator");
+
+    // Folds: the proc body, the if's branches.
+    bool proc_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("tcl", src)) proc_fold = proc_fold || (r.start_row == 2 && r.end_row >= 13);
+    CHECK(proc_fold);
+
+    // The outline: procs nest under their namespace.
+    CHECK(TreesitterHasStructureQuery("tcl"));
+    ExpectOutline("tcl",
+                  "namespace eval ::app {\n"
+                  "    variable count 0\n"
+                  "    proc run {args} {\n"
+                  "        incr count\n"
+                  "    }\n"
+                  "}\n"
+                  "set VERSION 1.0\n"
+                  "proc main {} { app::run }\n",
+                  "0:module:::app@0\n1:variable:count@1\n1:function:run@2\n0:variable:VERSION@6\n0:function:main@7\n");
+}
+
+// ---------------------------------------------------------------------------
+// Go: mep's own grammar (grammars/tree-sitter-go), compiled in
+// ---------------------------------------------------------------------------
+
+void TestGo() {
+    CHECK(TreesitterHasGrammar("go"));
+    CHECK(TreesitterHasFoldQuery("go"));
+    const std::string src =
+        "// Package demo is a demo.\n"
+        "package demo\n"
+        "\n"
+        "import (\n"
+        "\t\"fmt\"\n"
+        "\t\"strings\"\n"
+        ")\n"
+        "\n"
+        "const MaxDepth = 3\n"
+        "\n"
+        "type Shape interface {\n"
+        "\tArea() float64\n"
+        "}\n"
+        "\n"
+        "type Point struct {\n"
+        "\tX, Y int\n"
+        "}\n"
+        "\n"
+        "func (p *Point) Scale(k int) Point {\n"
+        "\treturn Point{p.X * k, p.Y * k}\n"
+        "}\n"
+        "\n"
+        "func Join(parts ...string) string {\n"
+        "\tn := len(parts)\n"
+        "\tv := new(int64(300))\n"
+        "\tfmt.Println(n, *v, 'x', 1.5, nil, true)\n"
+        "\treturn strings.Join(parts, \"\\n\")\n"
+        "}\n";
+    ExpectCaptures("go", src, "// Package", "comment");
+    ExpectCaptures("go", src, "package", "keyword");
+    ExpectCaptures("go", src, "demo\n", "module");
+    ExpectCaptures("go", src, "\"fmt\"", "string");
+    ExpectCaptures("go", src, "MaxDepth", "variable constant");
+    ExpectCaptures("go", src, "Shape", "type");
+    ExpectCaptures("go", src, "Area", "property function.method");
+    ExpectCaptures("go", src, "float64", "type type.builtin");
+    ExpectCaptures("go", src, "func (p", "keyword");
+    ExpectCaptures("go", src, "Scale", "property function.method");
+    ExpectCaptures("go", src, "k int", "variable variable.parameter");
+    ExpectCaptures("go", src, "X *", "property");
+    ExpectCaptures("go", src, "Join(parts", "variable function");
+    ExpectCaptures("go", src, "...string", "operator");
+    ExpectCaptures("go", src, ":=", "operator");
+    ExpectCaptures("go", src, "len(", "variable function.call function.builtin");
+    ExpectCaptures("go", src, "new(", "variable function.call function.builtin");
+    ExpectCaptures("go", src, "Println", "property function.method.call");
+    ExpectCaptures("go", src, "'x'", "string");
+    ExpectCaptures("go", src, "1.5", "number");
+    ExpectCaptures("go", src, "nil", "constant.builtin");
+    ExpectCaptures("go", src, "true", "boolean");
+    ExpectCaptures("go", src, "\\n", "string string.escape");
+
+    // Folds: the import list, the struct body, a function body.
+    bool import_fold = false, func_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("go", src)) {
+        import_fold = import_fold || (r.start_row == 3 && r.end_row >= 6);
+        func_fold = func_fold || (r.start_row == 22 && r.end_row >= 27);
+    }
+    CHECK(import_fold);
+    CHECK(func_fold);
+
+    // The outline: interface methods nest under their interface.
+    CHECK(TreesitterHasStructureQuery("go"));
+    ExpectOutline("go", src,
+                  "0:constant:MaxDepth@8\n0:interface:Shape@10\n1:method:Area@11\n0:struct:Point@14\n"
+                  "0:method:Scale@18\n0:function:Join@22\n");
+}
+
+// ---------------------------------------------------------------------------
+// Java: mep's own grammar (grammars/tree-sitter-java), compiled in
+// ---------------------------------------------------------------------------
+
+void TestJava() {
+    CHECK(TreesitterHasGrammar("java"));
+    CHECK(TreesitterHasFoldQuery("java"));
+    const std::string src =
+        "// Demo.\n"
+        "package demo;\n"
+        "\n"
+        "import module java.base;\n"
+        "\n"
+        "public record Point(int x, int y) {\n"
+        "  static final int MAX_DEPTH = 0b1__0;\n"
+        "\n"
+        "  Point {\n"
+        "    if (x < 0) throw new IllegalArgumentException(\"x\\n\");\n"
+        "  }\n"
+        "\n"
+        "  int area(Object o, String @Deprecated ... rest) {\n"
+        "    return switch (o) {\n"
+        "      case Shape.Tri _, Square _ -> 1;\n"
+        "      default -> rest.length;\n"
+        "    };\n"
+        "  }\n"
+        "}\n";
+    ExpectCaptures("java", src, "// Demo", "comment");
+    ExpectCaptures("java", src, "package", "keyword");
+    ExpectCaptures("java", src, "import", "keyword");
+    ExpectCaptures("java", src, "record", "keyword");
+    ExpectCaptures("java", src, "Point(", "variable type");
+    ExpectCaptures("java", src, "MAX_DEPTH", "variable constant");
+    ExpectCaptures("java", src, "0b1__0", "number");
+    ExpectCaptures("java", src, "\"x", "string");
+    ExpectCaptures("java", src, "\\n", "string string.escape");
+    ExpectCaptures("java", src, "area", "variable function.method");
+    ExpectCaptures("java", src, "int area", "type.builtin");
+    ExpectCaptures("java", src, "switch", "keyword");
+
+    // Folds: the record body and the method body.
+    bool body_fold = false, method_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("java", src)) {
+        body_fold = body_fold || (r.start_row == 5 && r.end_row >= 17);
+        method_fold = method_fold || (r.start_row == 12 && r.end_row >= 16);
+    }
+    CHECK(body_fold);
+    CHECK(method_fold);
+
+    // The outline: members nest under their record.
+    CHECK(TreesitterHasStructureQuery("java"));
+    ExpectOutline("java", src,
+                  "0:class:Point@5\n1:field:MAX_DEPTH@6\n1:method:Point@8\n1:method:area@12\n");
+}
+
+// ---------------------------------------------------------------------------
+// D: mep's own grammar (grammars/tree-sitter-d), compiled in
+// ---------------------------------------------------------------------------
+
+void TestD() {
+    CHECK(TreesitterHasGrammar("d"));
+    CHECK(TreesitterHasFoldQuery("d"));
+    const std::string src =
+        "/// Module docs.\n"
+        "module demo.shapes;\n"
+        "\n"
+        "import std.stdio : writeln;\n"
+        "\n"
+        "enum MaxDepth = 3;\n"
+        "\n"
+        "struct Point\n"
+        "{\n"
+        "    int x, y;\n"
+        "    this(int a) { x = a; }\n"
+        "}\n"
+        "\n"
+        "/+ a /+ nested +/ comment +/\n"
+        "string greet(string name) in (name.length) do\n"
+        "{\n"
+        "    auto s = \"hi\\n\" ~ name;\n"
+        "    return s ~ 'x' ~ q{int y;}c;\n"
+        "}\n";
+    ExpectCaptures("d", src, "/// Module", "comment");
+    ExpectCaptures("d", src, "/+ a", "comment");
+    ExpectCaptures("d", src, "module", "keyword");
+    ExpectCaptures("d", src, "MaxDepth", "variable constant");
+    ExpectCaptures("d", src, "Point", "variable type");
+    ExpectCaptures("d", src, "int x", "type.builtin");
+    ExpectCaptures("d", src, "greet", "variable function");
+    ExpectCaptures("d", src, "\"hi", "string");
+    ExpectCaptures("d", src, "\\n", "string string.escape");
+    ExpectCaptures("d", src, "'x'", "number");
+    ExpectCaptures("d", src, "q{", "string");
+    ExpectCaptures("d", src, "do\n", "keyword");
+
+    // Folds: the struct body, the function body.
+    bool struct_fold = false, func_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("d", src)) {
+        struct_fold = struct_fold || (r.start_row == 8 && r.end_row >= 11);
+        func_fold = func_fold || (r.start_row == 15 && r.end_row >= 18);
+    }
+    CHECK(struct_fold);
+    CHECK(func_fold);
+
+    // The outline: fields and the constructor nest under their struct.
+    CHECK(TreesitterHasStructureQuery("d"));
+    ExpectOutline("d", src,
+                  "0:module:demo.shapes@1\n0:constant:MaxDepth@5\n0:struct:Point@7\n1:field:x@9\n1:field:y@9\n"
+                  "1:constructor:this@10\n0:function:greet@14\n");
+}
+
+// ---------------------------------------------------------------------------
+// Nim: mep's own grammar (grammars/tree-sitter-nim), compiled in
+// ---------------------------------------------------------------------------
+
+void TestNim() {
+    CHECK(TreesitterHasGrammar("nim"));
+    CHECK(TreesitterHasFoldQuery("nim"));
+    const std::string src =
+        "## Module docs.\n"
+        "import std/[strutils, tables]\n"
+        "\n"
+        "const MaxDepth* = 3\n"
+        "\n"
+        "type\n"
+        "  Shape* = ref object of RootObj\n"
+        "    name: string\n"
+        "  Color = enum\n"
+        "    red, green\n"
+        "\n"
+        "proc area*(s: Shape; k: int): float {.inline.} =\n"
+        "  # a comment\n"
+        "  result = 1.5 * k.float\n"
+        "  echo \"v\\n\", 'c', nil\n"
+        "\n"
+        "template twice(body: untyped) =\n"
+        "  body\n"
+        "  body\n"
+        "\n"
+        "let v = @[1, 2].map(proc (x: int): int =\n"
+        "  x * 2\n"
+        "  )\n";
+    ExpectCaptures("nim", src, "## Module", "comment.documentation");
+    ExpectCaptures("nim", src, "import", "include");
+    ExpectCaptures("nim", src, "MaxDepth", "variable");
+    ExpectCaptures("nim", src, "area", "function");
+    ExpectCaptures("nim", src, "k: int", "variable parameter");
+    ExpectCaptures("nim", src, "float {", "type");
+    ExpectCaptures("nim", src, "# a comment", "comment");
+    ExpectCaptures("nim", src, "1.5", "float");
+    ExpectCaptures("nim", src, "\"v", "string");
+    ExpectCaptures("nim", src, "\\n", "string string.escape");
+    ExpectCaptures("nim", src, "'c'", "character");
+    ExpectCaptures("nim", src, "nil", "constant.builtin keyword");
+    ExpectCaptures("nim", src, "twice", "function.macro");
+
+    // Folds: the type section, a proc body.
+    bool type_fold = false, proc_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("nim", src)) {
+        type_fold = type_fold || (r.start_row == 5 && r.end_row >= 9);
+        proc_fold = proc_fold || (r.start_row == 11 && r.end_row >= 14);
+    }
+    CHECK(type_fold);
+    CHECK(proc_fold);
+
+    // The outline: object fields and enum members nest under their type.
+    CHECK(TreesitterHasStructureQuery("nim"));
+    ExpectOutline("nim", src,
+                  "0:constant:MaxDepth@3\n0:struct:Shape@6\n1:field:name@7\n0:enum:Color@8\n1:enummember:red@9\n"
+                  "1:enummember:green@9\n0:function:area@11\n0:macro:twice@16\n0:variable:v@20\n");
+}
+
+// ---------------------------------------------------------------------------
+// Rust: mep's own grammar (grammars/tree-sitter-rust), compiled in
+// ---------------------------------------------------------------------------
+
+void TestRust() {
+    CHECK(TreesitterHasGrammar("rs"));
+    CHECK(TreesitterHasFoldQuery("rs"));
+    const std::string src =
+        "//! Crate docs.\n"
+        "use std::collections::HashMap;\n"
+        "\n"
+        "const MAX_DEPTH: usize = 3;\n"
+        "\n"
+        "pub trait Shape {\n"
+        "    fn area(&self) -> f64;\n"
+        "}\n"
+        "\n"
+        "#[derive(Debug)]\n"
+        "struct Point<T> {\n"
+        "    x: T,\n"
+        "}\n"
+        "\n"
+        "impl<T: Copy> Point<T> {\n"
+        "    fn get(&self, k: usize) -> T {\n"
+        "        let m: HashMap<u8, u8> = HashMap::new();\n"
+        "        println!(\"{} {}\\n\", k, 'c');\n"
+        "        'outer: loop { break 'outer; }\n"
+        "        self.x\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "macro_rules! square {\n"
+        "    ($e:expr) => { $e * $e };\n"
+        "}\n";
+    ExpectCaptures("rs", src, "//! Crate", "comment comment.documentation");
+    ExpectCaptures("rs", src, "use std", "keyword");
+    ExpectCaptures("rs", src, "MAX_DEPTH", "constructor constant");
+    ExpectCaptures("rs", src, "usize = 3", "type.builtin");
+    ExpectCaptures("rs", src, "trait", "keyword");
+    ExpectCaptures("rs", src, "Shape", "type");
+    ExpectCaptures("rs", src, "area", "function");
+    ExpectCaptures("rs", src, "self)", "variable.builtin");
+    ExpectCaptures("rs", src, "#[derive", "attribute");
+    ExpectCaptures("rs", src, "x: T", "property");
+    ExpectCaptures("rs", src, "k: usize", "variable.parameter");
+    ExpectCaptures("rs", src, "new()", "function");
+    ExpectCaptures("rs", src, "println", "function.macro");
+    ExpectCaptures("rs", src, "\\n", "string escape");
+    ExpectCaptures("rs", src, "'c'", "string");
+    ExpectCaptures("rs", src, "outer: loop", "label");
+    ExpectCaptures("rs", src, "3;", "constant.builtin");
+    ExpectCaptures("rs", src, "$e:", "variable");
+    ExpectCaptures("rs", src, "expr)", "type.builtin");
+    ExpectCaptures("rs", src, "->", "operator");
+
+    // Folds: the trait body, the impl body, a function body.
+    bool impl_fold = false, fn_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("rs", src)) {
+        impl_fold = impl_fold || (r.start_row == 14 && r.end_row >= 21);
+        fn_fold = fn_fold || (r.start_row == 15 && r.end_row >= 20);
+    }
+    CHECK(impl_fold);
+    CHECK(fn_fold);
+
+    // The outline: trait and impl methods nest under their trait or impl.
+    CHECK(TreesitterHasStructureQuery("rs"));
+    ExpectOutline("rs", src,
+                  "0:constant:MAX_DEPTH@3\n0:interface:Shape@5\n1:function:area@6\n0:struct:Point@10\n"
+                  "0:impl:Point@14\n1:function:get@15\n0:macro:square@23\n");
+}
+
+// ---------------------------------------------------------------------------
+// Zig: mep's own grammar (grammars/tree-sitter-zig), compiled in
+// ---------------------------------------------------------------------------
+
+void TestZig() {
+    CHECK(TreesitterHasGrammar("zig"));
+    CHECK(TreesitterHasFoldQuery("zig"));
+    const std::string src =
+        "//! Module docs.\n"
+        "const std = @import(\"std\");\n"
+        "\n"
+        "pub const max_depth = 3;\n"
+        "\n"
+        "pub const Point = struct {\n"
+        "    x: i32,\n"
+        "    y: i32 = 0,\n"
+        "\n"
+        "    pub fn scale(self: Point, k: i32) Point {\n"
+        "        return .{ .x = self.x * k, .y = self.y * k };\n"
+        "    }\n"
+        "};\n"
+        "\n"
+        "const Color = enum { red, green };\n"
+        "\n"
+        "fn List(comptime T: type) type {\n"
+        "    return struct { items: []T };\n"
+        "}\n"
+        "\n"
+        "test \"scale\" {\n"
+        "    const p = Point{ .x = 1 };\n"
+        "    const io = .{ .async = async };\n"
+        "    asm volatile (\"\" ::: .{ .memory = true });\n"
+        "    try std.testing.expect(p.scale(2).x == 'x' or 1.5 > 0 and true);\n"
+        "    _ = \"a\\n\";\n"
+        "}\n";
+    ExpectCaptures("zig", src, "//! Module", "comment spell comment.documentation");
+    ExpectCaptures("zig", src, "const std", "keyword");
+    ExpectCaptures("zig", src, "std =", "variable module");
+    ExpectCaptures("zig", src, "@import", "function.builtin keyword.import");
+    ExpectCaptures("zig", src, "\"std\"", "string");
+    ExpectCaptures("zig", src, "pub", "keyword.modifier");
+    ExpectCaptures("zig", src, "Point = struct", "variable type type");
+    ExpectCaptures("zig", src, "struct {\n    x", "keyword.type");
+    ExpectCaptures("zig", src, "x: i32", "variable variable.member");
+    ExpectCaptures("zig", src, "i32,", "type.builtin");
+    ExpectCaptures("zig", src, "fn scale", "keyword.function");
+    ExpectCaptures("zig", src, "scale(self", "variable function");
+    ExpectCaptures("zig", src, "k: i32", "variable variable.parameter");
+    ExpectCaptures("zig", src, "return", "keyword.return");
+    ExpectCaptures("zig", src, "async }", "variable");
+    ExpectCaptures("zig", src, "asm", "keyword");
+    ExpectCaptures("zig", src, "try", "keyword.exception");
+    ExpectCaptures("zig", src, "expect(", "variable variable.member function.call");
+    ExpectCaptures("zig", src, "'x'", "character");
+    ExpectCaptures("zig", src, "1.5", "number.float");
+    ExpectCaptures("zig", src, "or 1.5", "keyword.operator");
+    ExpectCaptures("zig", src, "true)", "boolean");
+    ExpectCaptures("zig", src, "\\n", "string string.escape");
+
+    // Folds: the struct, a function body.
+    bool struct_fold = false, func_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("zig", src)) {
+        struct_fold = struct_fold || (r.start_row == 5 && r.end_row >= 12);
+        func_fold = func_fold || (r.start_row == 9 && r.end_row >= 11);
+    }
+    CHECK(struct_fold);
+    CHECK(func_fold);
+
+    // The outline: fields and methods nest under their struct.
+    CHECK(TreesitterHasStructureQuery("zig"));
+    ExpectOutline("zig", src,
+                  "0:variable:std@1\n0:variable:max_depth@3\n0:struct:Point@5\n1:field:x@6\n1:field:y@7\n"
+                  "1:function:scale@9\n0:enum:Color@14\n1:enummember:red@14\n1:enummember:green@14\n"
+                  "0:class:List@16\n1:field:items@17\n0:function:scale@20\n");
+}
+
+// ---------------------------------------------------------------------------
+// GAP: mep's own grammar (grammars/tree-sitter-gap), compiled in
+// ---------------------------------------------------------------------------
+
+void TestGap() {
+    CHECK(TreesitterHasGrammar("g"));
+    CHECK(TreesitterHasGrammar("gi"));
+    CHECK(TreesitterHasFoldQuery("gd"));
+    const std::string src =
+        "local helper;\n"
+        "# a comment\n"
+        "helper := function(G, arg)\n"
+        "    local x;\n"
+        "    if IsBound(G.name) then return \"n\\n\"; fi;\n"
+        "    for x in [1..10] do Info(InfoWarning, 1, x); od;\n"
+        "    return rec(a := 1.5, b := 'c');\n"
+        "end;\n";
+    ExpectCaptures("g", src, "local helper", "keyword.function");
+    ExpectCaptures("g", src, "# a comment", "comment");
+    ExpectCaptures("g", src, "helper :=", "variable function");
+    ExpectCaptures("g", src, "function(", "keyword.function");
+    ExpectCaptures("g", src, "G, arg", "variable variable.parameter");
+    ExpectCaptures("g", src, "if", "keyword.conditional");
+    ExpectCaptures("g", src, "\\n", "string string.escape");
+    ExpectCaptures("g", src, "for", "keyword.repeat");
+    ExpectCaptures("g", src, "1.5", "number.float");
+    ExpectCaptures("g", src, "'c'", "character");
+
+    bool fn_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("g", src)) fn_fold = fn_fold || (r.start_row == 2 && r.end_row >= 7);
+    CHECK(fn_fold);
+
+    CHECK(TreesitterHasStructureQuery("gi"));
+    ExpectOutline("gi",
+                  "DeclareOperation(\"Frob\", [IsGroup]);\n"
+                  "InstallMethod(Frob, \"for groups\", [IsGroup], G -> G);\n"
+                  "LIMIT := 10;\n"
+                  "Helper := function(x)\n"
+                  "    local inner;\n"
+                  "    inner := y -> y;\n"
+                  "    return inner(x);\n"
+                  "end;\n",
+                  "0:type:Frob@0\n0:method:Frob@1\n0:variable:LIMIT@2\n0:function:Helper@3\n1:function:inner@5\n");
+}
+
+// ---------------------------------------------------------------------------
+// fish: mep's own grammar (grammars/tree-sitter-fish), compiled in
+// ---------------------------------------------------------------------------
+
+void TestFish() {
+    CHECK(TreesitterHasGrammar("fish"));
+    CHECK(TreesitterHasFoldQuery("fish"));
+    const std::string src =
+        "function greet -a name --description 'say hi'\n"
+        "    if test -n \"$name\"; and not set -q quiet\n"
+        "        echo \"hi ($name)\" $argv[1..2] ~/x *.fish 2>&1 a&b\n"
+        "    else if command -q fortune\n"
+        "        fortune | string upper \\\n"
+        "            # a comment the continuation carries over\n"
+        "            | cat\n"
+        "    end\n"
+        "    for i in (seq 3); continue; end\n"
+        "    return 0\n"
+        "end\n";
+    ExpectCaptures("fish", src, "function", "keyword");
+    ExpectCaptures("fish", src, "greet", "function");
+    ExpectCaptures("fish", src, "'say hi'", "string");
+    ExpectCaptures("fish", src, "if", "keyword");
+    ExpectCaptures("fish", src, "test", "function function");
+    ExpectCaptures("fish", src, "-n", "operator");
+    ExpectCaptures("fish", src, "and", "keyword");
+    ExpectCaptures("fish", src, "not", "keyword");
+    // Only `$(` substitutes inside double quotes: `(` is text, `$name` a variable.
+    ExpectCaptures("fish", src, "($name)", "string");
+    ExpectCaptures("fish", src, "$name)", "string constant");
+    ExpectCaptures("fish", src, "..", "constant operator");
+    ExpectCaptures("fish", src, "~/", "character.special");
+    ExpectCaptures("fish", src, "*.fish", "character.special");
+    ExpectCaptures("fish", src, "2>", "operator");
+    ExpectCaptures("fish", src, "command", "function keyword");
+    // A comment after a continuation keeps the pipeline going: `cat` is a command.
+    ExpectCaptures("fish", src, "# a comment", "comment");
+    ExpectCaptures("fish", src, "cat", "function");
+    ExpectCaptures("fish", src, "continue", "keyword");
+    ExpectCaptures("fish", src, "return", "keyword");
+    ExpectCaptures("fish", src, "0\n", "number");
+
+    // Folds: the function, the if and its branches, the loop.
+    bool function_fold = false, if_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("fish", src)) {
+        function_fold = function_fold || (r.start_row == 0 && r.end_row == 10);
+        if_fold = if_fold || (r.start_row == 1 && r.end_row == 7);
+    }
+    CHECK(function_fold);
+    CHECK(if_fold);
+
+    // The outline: functions (nested ones nest), exported/global settings,
+    // abbreviations and aliases; a plain `set` stays out.
+    CHECK(TreesitterHasStructureQuery("fish"));
+    ExpectOutline("fish",
+                  "set -gx EDITOR mep\n"
+                  "set -l tmp 1\n"
+                  "abbr -a gs git status\n"
+                  "alias ll 'ls -l'\n"
+                  "function outer\n"
+                  "    function inner; end\n"
+                  "end\n",
+                  "0:variable:EDITOR@0\n0:function:gs@2\n0:function:ll@3\n0:function:outer@4\n1:function:inner@5\n");
+}
+
+// ---------------------------------------------------------------------------
+// Fortran: mep's own grammar (grammars/tree-sitter-fortran), free and fixed
+// form from one grammar (the scanner recognises fixed form from the text)
+// ---------------------------------------------------------------------------
+
+void TestFortran() {
+    CHECK(TreesitterHasGrammar("f90"));
+    CHECK(TreesitterHasGrammar("f"));
+    CHECK(TreesitterHasFoldQuery("f90"));
+    const std::string src =
+        "module m\n"
+        "  implicit none\n"
+        "  integer, parameter :: dp = kind(1.0d0)\n"
+        "contains\n"
+        "  subroutine s(x, n) ! doc\n"
+        "    real(dp), intent(inout) :: x(:)\n"
+        "    integer :: n, i\n"
+        "    do i = 1, n\n"
+        "      if (x(i) > 0.5_dp .and. n /= 0) then\n"
+        "        x(i) = x(i) + &\n"
+        "               2.0_dp\n"
+        "      end if\n"
+        "    end do\n"
+        "    print *, 'done'\n"
+        "  end subroutine s\n"
+        "end module m\n";
+    ExpectCaptures("f90", src, "module", "keyword");
+    ExpectCaptures("f90", src, "implicit", "attribute");
+    ExpectCaptures("f90", src, "integer", "type");
+    ExpectCaptures("f90", src, "! doc", "comment");
+    ExpectCaptures("f90", src, "'done'", "string");
+    ExpectCaptures("f90", src, "0.5_dp", "number");
+    ExpectCaptures("f90", src, "end do", "repeat");
+    int folds = 0;
+    for (const TSFoldRange &r : TreesitterFoldRanges("f90", src)) {
+        (void)r;
+        folds++;
+    }
+    CHECK(folds >= 4);  // module, subroutine, do, if
+    CHECK(TreesitterHasStructureQuery("f90"));
+    ExpectOutline("f90", src, "0:module:m@0\n1:function:s@4\n");
+
+    // Fixed form: `*`/`C` comment lines and column-6 continuations.
+    const std::string fixed =
+        "*> \\brief doc\n"
+        "      SUBROUTINE FOO( A, B,\n"
+        "     $                C )\n"
+        "C     a comment\n"
+        "      INTEGER A, B, C\n"
+        "      A = B +\n"
+        "     $    C\n"
+        "      END\n";
+    ExpectCaptures("f", fixed, "*> \\brief", "comment");
+    ExpectCaptures("f", fixed, "C     a comment", "comment");
+    ExpectCaptures("f", fixed, "INTEGER", "type");
+    ExpectOutline("f", fixed, "0:function:FOO@1\n");
+}
+
+// ---------------------------------------------------------------------------
+// MATLAB/Octave (.m): mep's own grammar (grammars/tree-sitter-matlab)
+// ---------------------------------------------------------------------------
+
+void TestMatlab() {
+    CHECK(TreesitterHasGrammar("m"));
+    CHECK(TreesitterHasFoldQuery("m"));
+    const std::string src =
+        "## -*- texinfo -*-\n"
+        "function r = scale (x, k = 2)\n"
+        "  if (! isempty (x) && k != 0)\n"
+        "    r = (x .* k)(:);  # a column\n"
+        "  endif\n"
+        "  do\n"
+        "    k++;\n"
+        "  until (k > 10)\n"
+        "  unwind_protect\n"
+        "    printf (\"%d\\n\", k);\n"
+        "  unwind_protect_cleanup\n"
+        "    k += 1;\n"
+        "  end_unwind_protect\n"
+        "endfunction\n";
+    ExpectCaptures("m", src, "## -*-", "comment");
+    ExpectCaptures("m", src, "function", "keyword.function");
+    ExpectCaptures("m", src, "scale", "variable function");
+    ExpectCaptures("m", src, "2)", "number");
+    ExpectCaptures("m", src, "if", "conditional");
+    ExpectCaptures("m", src, "!", "operator");
+    ExpectCaptures("m", src, "isempty", "variable function.call");
+    ExpectCaptures("m", src, "!=", "operator");
+    ExpectCaptures("m", src, "# a column", "comment");
+    ExpectCaptures("m", src, "endif", "conditional");
+    ExpectCaptures("m", src, "do", "repeat");
+    ExpectCaptures("m", src, "++", "operator");
+    ExpectCaptures("m", src, "until", "repeat");
+    ExpectCaptures("m", src, "unwind_protect\n", "exception");
+    ExpectCaptures("m", src, "unwind_protect_cleanup", "exception");
+    ExpectCaptures("m", src, "\\n", "string string.escape");
+    ExpectCaptures("m", src, "%d", "string string.special");
+    ExpectCaptures("m", src, "+=", "operator");
+    ExpectCaptures("m", src, "end_unwind_protect", "exception");
+    ExpectCaptures("m", src, "endfunction", "keyword.function");
+
+    // Folds: the function, the if, the do loop, the unwind_protect.
+    bool function_fold = false, if_fold = false, do_fold = false, unwind_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("m", src)) {
+        function_fold = function_fold || (r.start_row == 1 && r.end_row == 13);
+        if_fold = if_fold || (r.start_row == 2 && r.end_row == 4);
+        do_fold = do_fold || (r.start_row == 5 && r.end_row == 7);
+        unwind_fold = unwind_fold || (r.start_row == 8 && r.end_row == 12);
+    }
+    CHECK(function_fold);
+    CHECK(if_fold);
+    CHECK(do_fold);
+    CHECK(unwind_fold);
+
+    // The outline: a classdef, its properties, methods and events; and
+    // functions, nested ones nesting.
+    CHECK(TreesitterHasStructureQuery("m"));
+    ExpectOutline("m",
+                  "classdef Point < handle\n"
+                  "  properties\n"
+                  "    x = 0\n"
+                  "  endproperties\n"
+                  "  methods\n"
+                  "    function d = norm (p)\n"
+                  "      d = abs (p.x);\n"
+                  "    endfunction\n"
+                  "  endmethods\n"
+                  "  events\n"
+                  "    Moved\n"
+                  "  endevents\n"
+                  "endclassdef\n",
+                  "0:class:Point@0\n1:field:x@2\n1:method:norm@5\n1:constant:Moved@10\n");
+    ExpectOutline("m",
+                  "function outer ()\n"
+                  "  function inner ()\n"
+                  "  endfunction\n"
+                  "endfunction\n",
+                  "0:function:outer@0\n1:function:inner@1\n");
+}
+
+// ---------------------------------------------------------------------------
 // Nix: mep's own grammar (grammars/tree-sitter-nix), compiled in
 // ---------------------------------------------------------------------------
 
@@ -996,6 +1756,67 @@ void TestClojure() {
 }
 
 // ---------------------------------------------------------------------------
+// Scheme: mep's own grammar (grammars/tree-sitter-scheme), compiled in
+// ---------------------------------------------------------------------------
+
+void TestScheme() {
+    for (const char *ft : {"scm", "ss", "sld", "sls", "sps"}) {
+        CHECK(TreesitterHasGrammar(ft));
+        CHECK(TreesitterHasFoldQuery(ft));
+        CHECK(TreesitterHasStructureQuery(ft));
+    }
+    const std::string src =
+        "#!/usr/bin/guile -s\n"
+        "!#\n"
+        "(define-module (demo core)\n"
+        "  #:use-module (srfi srfi-1))\n"
+        "(define depth 3)\n"
+        "(define (square x)\n"
+        "  ;; multiply\n"
+        "  (* x x))\n"
+        "(define-syntax swap!\n"
+        "  (syntax-rules () ((_ a b) (let ((t a)) (set! a b) (set! b t)))))\n"
+        "(define-record-type point (make-point x y) point? (x point-x))\n"
+        "#;(ignored form) (display \"hi\\n\" #\\a #t 1.5)\n"
+        "#~(mkdir #$output) '(a b) #u8(1 2) #| block |#\n";
+    ExpectCaptures("scm", src, "#!/usr", "comment");
+    ExpectCaptures("scm", src, "define-module", "variable function keyword");
+    ExpectCaptures("scm", src, "#:use-module", "constant");
+    ExpectCaptures("scm", src, "square", "variable function");
+    ExpectCaptures("scm", src, "* x", "variable function operator function.builtin");
+    ExpectCaptures("scm", src, ";; multiply", "comment");
+    ExpectCaptures("scm", src, "set!", "variable function keyword");
+    ExpectCaptures("scm", src, "#;(ignored", "comment comment");
+    ExpectCaptures("scm", src, "ignored", "comment comment variable function comment");
+    ExpectCaptures("scm", src, "display", "variable function function.builtin");
+    ExpectCaptures("scm", src, "\"hi", "string");
+    ExpectCaptures("scm", src, "\\n", "string escape");
+    ExpectCaptures("scm", src, "#\\a", "constant.builtin");
+    ExpectCaptures("scm", src, "#t", "constant.builtin");
+    ExpectCaptures("scm", src, "1.5", "number");
+    ExpectCaptures("scm", src, "#~", "punctuation.special");
+    ExpectCaptures("scm", src, "#$", "punctuation.special");
+    ExpectCaptures("scm", src, "a b) #u8", "constant variable function constant");
+    ExpectCaptures("scm", src, "#u8(", "punctuation.bracket");
+    ExpectCaptures("scm", src, "#| block", "comment");
+
+    ExpectOutline("scm", src,
+                  "0:module:(demo core)@2\n"
+                  "0:variable:depth@4\n"
+                  "0:function:square@5\n"
+                  "0:macro:swap!@8\n"
+                  "0:struct:point@10\n");
+
+    bool square = false, module = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("scm", src)) {
+        square = square || (f.start_row == 5 && f.end_row == 7);
+        module = module || (f.start_row == 2 && f.end_row == 3);
+    }
+    CHECK(square);
+    CHECK(module);
+}
+
+// ---------------------------------------------------------------------------
 // Crystal: mep's own grammar (grammars/tree-sitter-crystal), compiled in
 // ---------------------------------------------------------------------------
 
@@ -1388,6 +2209,95 @@ void TestJavascript() {
 }
 
 // ---------------------------------------------------------------------------
+// TypeScript and TSX: mep's own grammars (grammars/tree-sitter-typescript,
+// grammars/tree-sitter-tsx), compiled in, highlighted with TypeScript's query
+// layered over JavaScript's
+// ---------------------------------------------------------------------------
+
+void TestTypescript() {
+    for (const char *ft : {"ts", "mts", "cts", "tsx"}) {
+        CHECK(TreesitterHasGrammar(ft));
+        CHECK(TreesitterHasFoldQuery(ft));
+        CHECK(TreesitterHasStructureQuery(ft));
+    }
+    const std::string src =
+        "import type { Opts } from './opts';\n"
+        "export interface Shape<in out T extends object = {}> {\n"
+        "  readonly name: string;\n"
+        "  area?(scale: number): number;\n"
+        "}\n"
+        "type Pair = [symbol: Symbol, count?: number];\n"
+        "enum Color { Red, Green = 2 }\n"
+        "namespace Geo.Util { export const ORIGIN = 0; }\n"
+        "export abstract class Base<T> implements Shape<T> {\n"
+        "  private readonly id: number = 1;\n"
+        "  constructor(public label: string, opt?: Opts) { super(); }\n"
+        "  abstract area(): number;\n"
+        "  handle = (e: Event): void => {};\n"
+        "}\n"
+        "function over(x: string): string;\n"
+        "function over(x: any) { return x as unknown satisfies string; }\n"
+        "const el = document.querySelector<HTMLElement>('#a')!;\n"
+        "const Box = styled.div<{ on?: boolean }>`color: red;`;\n"
+        "pin?.delete();\n";
+    ExpectCaptures("ts", src, "import", "include");
+    ExpectCaptures("ts", src, "type {", "keyword");
+    ExpectCaptures("ts", src, "Opts }", "variable constructor type");
+    ExpectCaptures("ts", src, "'./opts'", "string");
+    ExpectCaptures("ts", src, "interface", "keyword");
+    ExpectCaptures("ts", src, "Shape<in", "type");
+    ExpectCaptures("ts", src, "T extends", "type");
+    ExpectCaptures("ts", src, "readonly", "keyword");
+    ExpectCaptures("ts", src, "string;", "type.builtin");
+    ExpectCaptures("ts", src, "scale", "variable variable.parameter");
+    ExpectCaptures("ts", src, "<HTMLElement>", "operator punctuation.bracket");
+    ExpectCaptures("ts", src, "enum", "keyword");
+    ExpectCaptures("ts", src, "namespace", "keyword");
+    ExpectCaptures("ts", src, "abstract class", "keyword");
+    ExpectCaptures("ts", src, "private", "keyword");
+    ExpectCaptures("ts", src, "label", "variable variable.parameter");
+    ExpectCaptures("ts", src, "satisfies", "keyword");
+    ExpectCaptures("ts", src, "'#a'", "string");
+    ExpectCaptures("ts", src, "`color", "string");
+    ExpectCaptures("ts", src, "delete()", "property method.call");
+
+    ExpectOutline("ts", src,
+                  "0:interface:Shape@1\n"
+                  "1:method:area@3\n"
+                  "0:type:Pair@5\n"
+                  "0:enum:Color@6\n"
+                  "0:namespace:Geo.Util@7\n"
+                  "0:class:Base@8\n"
+                  "1:method:constructor@10\n"
+                  "1:method:area@11\n"
+                  "1:method:handle@12\n"
+                  "0:function:over@14\n"
+                  "0:function:over@15\n");
+
+    bool body = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("ts", src)) body = body || (f.start_row == 8 && f.end_row == 13);
+    CHECK(body);
+
+    // TSX: JavaScript's JSX patterns, TypeScript's on top; `<T>x` is JSX here.
+    const std::string tsx =
+        "export const App = ({ title }: Props): JSX.Element => (\n"
+        "  <Panel<Item> title={title as string} class=\"x\">\n"
+        "    <b>hi</b>\n"
+        "  </Panel>\n"
+        ");\n";
+    ExpectCaptures("tsx", tsx, "Panel<", "variable constructor tag constructor type");
+    ExpectCaptures("tsx", tsx, "Item>", "type");
+    ExpectCaptures("tsx", tsx, "title={", "property attribute");
+    ExpectCaptures("tsx", tsx, "class=", "property attribute");
+    ExpectCaptures("tsx", tsx, "b>hi", "variable tag");
+    ExpectCaptures("tsx", tsx, "string}", "type.builtin");
+    ExpectOutline("tsx", tsx, "0:function:App@0\n");
+    bool element = false;
+    for (const TSFoldRange &f : TreesitterFoldRanges("tsx", tsx)) element = element || (f.start_row == 1 && f.end_row == 3);
+    CHECK(element);
+}
+
+// ---------------------------------------------------------------------------
 // C++: mep's own grammar (grammars/tree-sitter-cpp), compiled in
 // ---------------------------------------------------------------------------
 
@@ -1639,6 +2549,74 @@ void TestR() {
 }
 
 // ---------------------------------------------------------------------------
+// Julia: mep's own grammar (grammars/tree-sitter-julia), compiled in
+// ---------------------------------------------------------------------------
+
+void TestJulia() {
+    CHECK(TreesitterHasGrammar("jl"));
+    CHECK(TreesitterHasFoldQuery("jl"));
+    CHECK(TreesitterHasStructureQuery("jl"));
+    const std::string src =
+        "# A demo.\n"
+        "module Demo\n"
+        "\n"
+        "using LinearAlgebra: norm\n"
+        "\n"
+        "const MAX = 3\n"
+        "\n"
+        "struct Point{T<:Real}\n"
+        "    x::T\n"
+        "    y::T\n"
+        "end\n"
+        "\n"
+        "\"\"\"Scale a point.\"\"\"\n"
+        "function scale(p::Point, k)\n"
+        "    for i in 1:MAX\n"
+        "        k += 0.5\n"
+        "    end\n"
+        "    return Point(p.x * k, p.y * k)\n"
+        "end\n"
+        "\n"
+        "macro twice(ex)\n"
+        "    :($ex; $ex)\n"
+        "end\n"
+        "\n"
+        "f(x) = isa(x, Int) ? \"int\\n\" : nothing\n"
+        "\n"
+        "end\n";
+    ExpectCaptures("jl", src, "# A demo", "comment");
+    ExpectCaptures("jl", src, "module", "keyword.import");
+    ExpectCaptures("jl", src, "using", "keyword.import");
+    ExpectCaptures("jl", src, "const", "keyword.modifier");
+    ExpectCaptures("jl", src, "struct", "keyword.type");
+    ExpectCaptures("jl", src, "Real", "type.definition type variable type type.builtin");
+    ExpectCaptures("jl", src, "function", "keyword.function");
+    ExpectCaptures("jl", src, "scale", "variable function.call");
+    ExpectCaptures("jl", src, "for", "keyword.repeat");
+    ExpectCaptures("jl", src, "0.5", "number.float");
+    ExpectCaptures("jl", src, "return", "keyword.return");
+    ExpectCaptures("jl", src, "\"\"\"Scale", "string string.documentation");
+    ExpectCaptures("jl", src, "\\n", "string string.escape");
+    ExpectCaptures("jl", src, "nothing", "variable constant.builtin");
+    ExpectCaptures("jl", src, "isa(", "variable function.call function.builtin");
+
+    bool struct_fold = false, func_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("jl", src)) {
+        struct_fold = struct_fold || (r.start_row == 7 && r.end_row >= 9);
+        func_fold = func_fold || (r.start_row == 13 && r.end_row >= 17);
+    }
+    CHECK(struct_fold);
+    CHECK(func_fold);
+    ExpectOutline("jl", src,
+                  "0:module:Demo@1\n"
+                  "1:constant:MAX@5\n"
+                  "1:struct:Point@7\n"
+                  "1:function:scale@13\n"
+                  "1:macro:twice@20\n"
+                  "1:function:f@24\n");
+}
+
+// ---------------------------------------------------------------------------
 // R: the structure outline
 // ---------------------------------------------------------------------------
 
@@ -1831,6 +2809,12 @@ void TestIncrementalRowsMatchWholeText() {
     for (int i = 0; i < 50; i++)
         js += "function f" + std::to_string(i) + "(x) {\n  /* note */ const s = `a${x}b" + std::to_string(i) +
               "`\n  return <p a=\"1\">x {s}</p>\n}\n\n";
+    // TypeScript's scanner adds signature ends and optional markers to
+    // JavaScript's; .tsx shares it.
+    std::string ts;
+    for (int i = 0; i < 50; i++)
+        ts += "function f" + std::to_string(i) + "(x?: number): string;\nfunction f" + std::to_string(i) +
+              "(x?: any) {\n  /* note */ const s = styled.div<P>`a${x}b" + std::to_string(i) + "`\n  return s as T\n}\n\n";
     std::string org;
     for (int i = 0; i < 40; i++)
         org += "* H" + std::to_string(i) + " :t:\n- a $x$\n  - b\n:LOGBOOK:\nCLOCK: [2024-01-01 Mon]\n:END:\n#+begin_src c\nint x" +
@@ -1852,6 +2836,24 @@ void TestIncrementalRowsMatchWholeText() {
     for (int i = 0; i < 50; i++)
         sh += "f" + std::to_string(i) + "() {\n  cat <<EOF\nv $x " + std::to_string(i) +
               "\nEOF\n  case $1 in @(a|${b})) echo \"s\" ;; esac\n}\n\n";
+    // fish's scanner remembers that a continuation carried a comment over
+    // (its newline then continues the line too).
+    std::string fish;
+    for (int i = 0; i < 50; i++)
+        fish += "function f" + std::to_string(i) + "\n    echo a \\\n        # why " + std::to_string(i) +
+                "\n        | cat \"($x)\" '{'\nend\n\n";
+    // Tcl's scanner carries the braces commented-out code leaves open, and
+    // decides from the whole braced word whether it holds a script.
+    // The MATLAB/Octave scanner keeps the open string's quote and whether
+    // it is inside a command's arguments; block comments run to `%}`.
+    std::string mat;
+    for (int i = 0; i < 50; i++)
+        mat += "function r = f" + std::to_string(i) + " (x)\n  %{\n  note\n  %}\n  s = \"a\\\"b " +
+               std::to_string(i) + "\";  # c\n  hold on\n  r = [x' 1]';\nendfunction\n\n";
+    std::string tcl;
+    for (int i = 0; i < 50; i++)
+        tcl += "proc f" + std::to_string(i) + " {x} {\n    #if {$x} {\n    #}\n    set re {^[a-z]+$}\n    puts \"v $x(" +
+               std::to_string(i) + ") [list a]\"\n}\n\n";
     // Crystal's scanner keeps the open delimited literals (strings,
     // %-literals) and the heredocs waiting for their bodies; macro bodies
     // are text it reads.
@@ -1871,7 +2873,31 @@ void TestIncrementalRowsMatchWholeText() {
     for (int i = 0; i < 50; i++)
         sql += "CREATE FUNCTION f" + std::to_string(i) + "(a int) RETURNS int AS $fn$\n  SELECT a + " +
                std::to_string(i) + "\n$fn$;\nDO $$ BEGIN PERFORM 'x$y'; END $$;\nSELECT 'it''s', \"q\" FROM t; -- c\n\n";
+    // Fortran's scanner keeps whether the file has shown itself to be fixed
+    // form (comment lines by column 1, continuations by column 6) and
+    // whether a free-form `&` continuation is open.
+    std::string ffixed = "*> fixed form\n";
+    for (int i = 0; i < 50; i++)
+        ffixed += "      SUBROUTINE F" + std::to_string(i) + "( A,\n     $   B )\nC     note " + std::to_string(i) +
+                  "\n      A = B +\n     $    'S" + std::to_string(i) + "'\n      END\n\n";
+    // Nim's scanner keeps the layout (indentation) stack and an open long
+    // string or block comment.
+    std::string nim;
+    for (int i = 0; i < 50; i++)
+        nim += "proc f" + std::to_string(i) + "(x: int): int =\n  #[ note ]#\n  if x > 0:\n    let s = \"\"\"a " +
+               std::to_string(i) + "\"\"\"\n    result = x\n  else:\n    result = 0\n\n";
     const std::vector<Case> cases = {
+        {"nim", nim,
+         {{"#[ note ]#\n  if x > 0:\n    let s = \"\"\"a 3", "#[ note \n  if x > 0:\n    let s = \"\"\"a 3"},  // a block comment runs on
+          {"proc f9(x: int): int =\n  #[ note ]#", "proc f9(x: int): int =\n  ]# #[ note ]#"},
+          {"let s = \"\"\"a 20\"\"\"", "let s = \"\"\"a 20"},  // a long string left open
+          {"  if x > 0:\n    let s = \"\"\"a 30", "  if x > 0:\n  let s = \"\"\"a 30"},  // a block dedents
+          {"    result = x\n  else:\n    result = 0\n\nproc f40", "      result = x\n  else:\n    result = 0\n\nproc f40"}}},
+        {"f", ffixed,
+         {{"*> fixed form\n", "! free form now\n"},                  // the file stops being fixed form
+          {"C     note 9\n", "C     note 9 &\n"},
+          {"     $    'S20'", "     $    'S20"},                    // a string left open
+          {"      A = B +\n     $    'S30'", "      A = B + &\n          'S30'"}}},  // a free-form continuation
         {"sql", sql,
          {{"AS $fn$\n  SELECT a + 3\n$fn$", "AS $fn$\n  SELECT a + 3\n$fx$"},  // a body's close tag no longer matches...
           {"END $$;\nSELECT 'it''s', \"q\" FROM t; -- c\n\nCREATE FUNCTION f9",
@@ -1929,6 +2955,14 @@ void TestIncrementalRowsMatchWholeText() {
           {"`a${x}b20`", "`a${x b20`"},                                       // a substitution left open
           {"`a${x}b25`\n  return", "`a${x}b25\n  return"},                    // a template left open
           {"return <p a=\"1\">x {s}</p>\n}\n\nfunction f30", "return <p a=\"1\">x {s}\n}\n\nfunction f30"}}},  // an unclosed element
+        {"ts", ts,
+         {{"/* note */ const s = styled.div<P>`a${x}b3`", "/* note const s = styled.div<P>`a${x}b3`"},  // a comment runs on
+          {"const s = styled.div<P>`a${x}b9`", "*/ const s = styled.div<P>`a${x}b9`"},             // ...and closes later
+          {"function f20(x?: number): string;", "function f20(x?: number): string"},               // a signature's `;` goes
+          {"`a${x}b25`\n  return", "`a${x}b25\n  return"}}},                                       // a template left open
+        {"tsx", ts,
+         {{"`a${x}b20`", "`a${x b20`"},                                                             // a substitution left open
+          {"return s as T\n}\n\nfunction f30", "return <s>{T}\n}\n\nfunction f30"}}},                // an unclosed element
         {"org", org,
          {{"#+begin_src c\nint x3;", "#+begin_example c\nint x3;"},  // a block's end no longer matches...
           {"#+begin_src c\nint x9;\n#+end_src", "#+begin_src c\nint x9;\n#+end_example"},  // ...until a later one does
@@ -1951,6 +2985,22 @@ void TestIncrementalRowsMatchWholeText() {
           {"cat <<EOF\nv $x 20", "cat <<-'EOF'\nv $x 20"},  // quoted, tab-stripping
           {"echo \"s\" ;; esac\n}\n\nf30", "echo \"s ;; esac\n}\n\nf30"},  // a string left open
           {"@(a|${b})) echo \"s\" ;; esac\n}\n\nf40", "@(a|${b}) echo \"s\" ;; esac\n}\n\nf40"}}},
+        {"fish", fish,
+         {{"echo a \\\n        # why 3", "echo a\n        # why 3"},           // the continuation goes...
+          {"echo a \\\n        # why 9", "echo a \\\n        # why 9 \\"},  // a comment ending in `\\` is still a comment
+          {"| cat \"($x)\" '{'\nend\n\nfunction f20", "| cat \"($x)\" '{\nend\n\nfunction f20"},  // a string left open
+          {"function f30", "{ function f30"}}},                                  // a block opens
+        {"m", mat,
+         {{"%{\n  note\n  %}\n  s = \"a\\\"b 3", "%{\n  note\n  s = \"a\\\"b 3"},  // a block comment runs on...
+          {"s = \"a\\\"b 9\";", "s = \"a\\\"b 9;"},                                   // a string left open
+          {"hold on\n  r = [x' 1]';\nendfunction\n\nfunction r = f20", "hold on\n  r = [x' 1;\nendfunction\n\nfunction r = f20"},  // a bracket
+          {"function r = f30", "%{\nfunction r = f30"}}},                                       // a block comment opens
+        {"tcl", tcl,
+         {{"#if {$x} {\n    #}\n    set re {^[a-z]+$}\n    puts \"v $x(3)", "#if {$x} {\n    set re {^[a-z]+$}\n    puts \"v $x(3)"},  // the comment's brace now closes nothing...
+          {"    #}\n    set re {^[a-z]+$}\n    puts \"v $x(9)", "    #}\n    #}\n    set re {^[a-z]+$}\n    puts \"v $x(9)"},  // ...and one too many
+          {"set re {^[a-z]+$}\n    puts \"v $x(20)", "set re {^[a-z]+$\n    puts \"v $x(20)"},  // a braced word left open
+          {"puts \"v $x(30) [list a]\"", "puts \"v $x(30) [list a]"},              // a quote left open
+          {"proc f40 {x} {", "proc f40 {x} {\n    set y {\"}"}}},                // braced data with a lone quote
         {"just", just,
          {{"r3 a='x':", "r3 a='x"},
           {"echo {{a}} \\\n        -n\n\nr9", "echo {{a}}\n        -n\n\nr9"},
@@ -1997,13 +3047,28 @@ int main() {
     TestPythonLiteralsAndComments();
     TestPythonGrammar();
     TestNix();
+    TestMaxima();
+    TestFish();
+    TestFortran();
+    TestTcl();
+    TestGap();
+    TestGo();
+    TestJava();
+    TestD();
+    TestNim();
+    TestJulia();
+    TestRust();
+    TestZig();
+    TestMatlab();
     TestJust();
     TestC();
     TestLua();
     TestJavascript();
+    TestTypescript();
     TestCommonLisp();
     TestBash();
     TestClojure();
+    TestScheme();
     TestCrystal();
     TestCSharp();
     TestSQL();

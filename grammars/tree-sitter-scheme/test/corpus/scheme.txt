@@ -1,0 +1,230 @@
+================================================================================
+Atoms
+================================================================================
+
+#t #F #true #False
+#\a #\space #\x41 #\( #\nul
+"a\nb\"c\x41;"
+foo set! ... -> 1+ ->x |hello world|
+#:key
+
+--------------------------------------------------------------------------------
+
+(program
+  (boolean)
+  (boolean)
+  (boolean)
+  (boolean)
+  (character)
+  (character)
+  (character)
+  (character)
+  (character)
+  (string
+    (escape_sequence)
+    (escape_sequence)
+    (escape_sequence))
+  (symbol)
+  (symbol)
+  (symbol)
+  (symbol)
+  (symbol)
+  (symbol)
+  (symbol)
+  (keyword))
+
+================================================================================
+Numbers and their neighbours
+================================================================================
+
+42 -7 1/2 .5 1.5e10 #x1F #b101 #e1.5 #i1/3 +inf.0 -nan.0 +i 1+2i 1@2
+- + 1+ -1- a1 #x
+
+--------------------------------------------------------------------------------
+
+(program
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (symbol)
+  (symbol)
+  (symbol)
+  (symbol)
+  (symbol)
+  (number))
+
+================================================================================
+Lists, vectors, bytevectors
+================================================================================
+
+(a (b c) [d e] {f g})
+#(1 2 3)
+#vu8(1 2) #u8(3 4)
+(a . b)
+
+--------------------------------------------------------------------------------
+
+(program
+  (list
+    (symbol)
+    (list
+      (symbol)
+      (symbol))
+    (list
+      (symbol)
+      (symbol))
+    (list
+      (symbol)
+      (symbol)))
+  (vector
+    (number)
+    (number)
+    (number))
+  (byte_vector
+    (number)
+    (number))
+  (byte_vector
+    (number)
+    (number))
+  (list
+    (symbol)
+    (symbol)
+    (symbol)))
+
+================================================================================
+Quote family
+================================================================================
+
+'a `(b ,c ,@d) #'e #`(f #,g #,@h)
+' ; a comment between
+x
+
+--------------------------------------------------------------------------------
+
+(program
+  (quote
+    (symbol))
+  (quasiquote
+    (list
+      (symbol)
+      (unquote
+        (symbol))
+      (unquote_splicing
+        (symbol))))
+  (syntax
+    (symbol))
+  (quasisyntax
+    (list
+      (symbol)
+      (unsyntax
+        (symbol))
+      (unsyntax_splicing
+        (symbol))))
+  (quote
+    (comment)
+    (symbol)))
+
+================================================================================
+Comments
+================================================================================
+
+; a line comment
+#;(ignored datum) kept
+#| block #| nested |# still |#
+#;
+#;a b c
+
+--------------------------------------------------------------------------------
+
+(program
+  (comment)
+  (comment
+    (list
+      (symbol)
+      (symbol)))
+  (symbol)
+  (block_comment
+    (block_comment))
+  (comment
+    (comment
+      (symbol))
+    (symbol))
+  (symbol))
+
+================================================================================
+Directives and the script header
+================================================================================
+
+#!r6rs
+#!fold-case x
+#!/usr/bin/guile -s
+!#
+(display "hi")
+
+--------------------------------------------------------------------------------
+
+(program
+  (directive)
+  (directive)
+  (symbol)
+  (block_comment)
+  (list
+    (symbol)
+    (string)))
+
+================================================================================
+Guix G-expressions
+================================================================================
+
+#~(begin (mkdir #$output) #$@flags #+native #+@more)
+
+--------------------------------------------------------------------------------
+
+(program
+  (gexp
+    (list
+      (symbol)
+      (list
+        (symbol)
+        (ungexp
+          (symbol)))
+      (ungexp_splicing
+        (symbol))
+      (ungexp
+        (symbol))
+      (ungexp_splicing
+        (symbol)))))
+
+================================================================================
+A definition
+================================================================================
+
+(define (square x)
+  ;; multiply
+  (* x x))
+
+--------------------------------------------------------------------------------
+
+(program
+  (list
+    (symbol)
+    (list
+      (symbol)
+      (symbol))
+    (comment)
+    (list
+      (symbol)
+      (symbol)
+      (symbol))))
+

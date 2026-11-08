@@ -1,0 +1,147 @@
+#+TITLE: The Lua language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Lua files get a language server of their own, =mep-lua-lsp=, built and
+shipped with mep. Open a =.lua= file and it attaches by itself -- nothing
+to install, and nothing in the file is ever run. It knows Lua 5.4, the
+version mep embeds, and mep's own =mep.*= API, so your =init.lua= and
+plugins get hover and completion for the editor as well as for the
+standard library.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* The same errors as Lua
+
+Its lexer and parser follow Lua's own =llex.c= and =lparser.c= decision
+for decision, so a syntax error is reported where =luac= reports it, in
+its words:
+
+#+begin_example
+'end' expected (to close 'function' at line 3) near <eof>
+#+end_example
+
+That includes the checks Lua makes while compiling: =goto= without a
+visible label, a label defined twice, assignment to a =<const>= variable,
+an unknown attribute, two =<close>= variables in one =local=, =...= outside
+a vararg function, =break= outside a loop, and the limits on locals (200)
+and upvalues (255). This is checked against =luac -p= over 3,200 real Lua
+files and a damaged copy of each (=just lua-parse-check=): every file gets
+the same verdict, message and line.
+
+Unlike =luac= it does not stop at the first syntax error: it skips to the
+next statement and keeps going, so completion and navigation keep working
+in a half-typed file. Only the first error is reported.
+
+* What it reports
+
+| Code                    | Severity | What it means                                                              |
+|-------------------------+----------+----------------------------------------------------------------------------|
+| =syntax-error=          | error    | what =luac= says, in its words (also =goto=, =label=, =const-assign=, ...) |
+| =unused-local=          | warning  | a local (or local function) nothing reads                                  |
+| =unused-value=          | warning  | a local that is assigned but never read                                    |
+| =undefined-global=      | warning  | an unknown global that looks like a misspelling: /did you mean 'print'?/   |
+| =global-in-module=      | warning  | a module (a file returning its table) setting a global at the top level    |
+| =unbalanced-assignment= | warning  | =local a, b = 1= or =a = 1, 2=: a value dropped or a variable left =nil=   |
+| =duplicate-key=         | warning  | ={a = 1, a = 2}=                                                           |
+| =unreachable-code=      | warning  | statements after =break=, =goto= or =return= in the same block             |
+| =format-arguments=      | warning  | =string.format= given more or fewer values than its =%= specifiers         |
+| =self-assignment=       | warning  | =x = x=                                                                    |
+| =shadowed-local=        | info     | a local hiding another one of the same function                            |
+| =deprecated-global=     | info     | =unpack=, =setfenv=, =loadstring=, ...: names Lua 5.4 no longer has        |
+| =empty-block=           | info     | an =if=/=else=/=do= block with nothing (and no comment) in it              |
+| =unused-argument=       | hint     | an argument of a local or global function that nothing after it needs     |
+| =unused-loop-variable=  | hint     | =for i, v in ipairs(t)= where =i= is never read                            |
+| =redefined-local=       | hint     | =local x= again in the same block                                          |
+| =unused-label=          | hint     | a label no =goto= jumps to                                                 |
+
+Names starting with =_= are never reported as unused. After a syntax error
+only the syntax error and the lints before it are reported.
+
+=luacheck='s inline options are understood: =-- luacheck: globals a b=
+declares globals, =-- luacheck: ignore= at the end of a line silences that
+line, and on a line of its own at the top, the whole file.
+
+** Calibration
+
+Lua is embedded in hosts the server cannot see -- Neovim, LÖVE, awesome,
+OpenResty, a test runner, or simply another file that sets the global --
+so an unknown global is reported only when it is a near miss of a name the
+server does know (a local in scope, a global the file sets, the standard
+library, =mep=). A file that plays with environments (=setfenv=,
+=module=, a local =_ENV=) gets no global checks at all.
+
+An unused argument is a hint, and only for a function with a signature of
+its own: a callback, a method or a function stored in a table implements
+an interface the caller dictates. A name from another Lua version is not
+reported when the file tests for it (=table.unpack or unpack=, =if setfenv
+then=) or looks at =_VERSION=.
+
+Run over the 3,214-file corpus, about one file in ten gets a warning, and
+the samples read were real: unused =require=s, =local ok, err= where =err=
+is never looked at, a format string missing its arguments.
+
+* What else it does
+
+- *Hover* shows the reference manual's entry for a standard library
+  function (=string.format=, =table.sort=, =file:read=, ...) and the
+  documentation of a =mep.*= function; on the file's own names, the
+  declaration -- =local function add(a, b)=, the initial value, the
+  =<const>= / =<close>= attribute -- with the comment above it and how
+  many times it is read and assigned. A method call on a value of unknown
+  type (=s:upper()=) shows the string (or file) method of that name.
+- *Completion* offers the locals in scope at the cursor, innermost first,
+  the file's globals, keywords and the standard library; after =string.=,
+  =mep.= or any library table, its members; after =M.= the members the
+  file assigns to =M= (=function M.run()=, ={size = 1}=); after =x:= the
+  string and file methods. Nothing is offered inside a string or comment.
+- *Signature help* for the standard library, =mep.*= and the file's own
+  functions, with the active argument; for =s:sub(= the receiver is not
+  counted.
+- *Go to definition*, *references*, *highlights* and *rename* follow Lua's
+  scoping: locals and upvalues by the declaration they resolve to, a
+  global to the first place the file sets it, =M.f= to =function M.f=,
+  =goto= to its label. Rename covers locals, parameters and labels, and
+  refuses a new name that would capture or be captured by another
+  variable, or turn a global into this local.
+- The *outline* lists functions (=M.new=, =M:method=, local functions,
+  nested ones under their parent), top-level locals, and the named fields
+  of table constructors.
+- *Folding* covers functions, blocks, multi-line tables and calls, long
+  strings, block comments and runs of line comments.
+- *Formatting* is mep's own Lua formatter, the one =gf= runs: StyLua's
+  layout, byte for byte, with no =stylua= installed. Only the lines that
+  change are edited. See [[file:formatting.html][Formatting]].
+
+* Linting from the command line
+
+#+begin_src sh
+mep-lua-lsp --lint *.lua
+cat init.lua | mep-lua-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+init.lua:12:7: warning: unused variable 'util' [unused-local]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+With no arguments, =mep-lua-lsp= is the language server on stdio.
+
+* Using lua-language-server instead
+
+#+begin_src lua
+mep.lsp_servers.lua.filetypes = {'lua'}
+mep.lsp_servers.lua_ls.filetypes = {}
+#+end_src
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:formatting.html][Formatting]].

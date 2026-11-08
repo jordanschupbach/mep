@@ -1,0 +1,132 @@
+==================
+precedence is Maxima's
+==================
+
+-x^2 + a.b * c;
+a + b : c + d$
+not a = b and c;
+
+---
+
+(source_file
+  (statement
+    (binary_expression
+      (prefix_expression
+        (binary_expression (atom (identifier)) (atom (number))))
+      (binary_expression
+        (binary_expression (atom (identifier)) (atom (identifier)))
+        (atom (identifier)))))
+  (statement
+    (binary_expression
+      (atom (identifier))
+      (binary_expression
+        (atom (identifier))
+        (binary_expression (atom (identifier)) (atom (identifier))))))
+  (statement
+    (binary_expression
+      (prefix_expression
+        (binary_expression (atom (identifier)) (atom (identifier))))
+      (atom (identifier)))))
+
+==================
+definitions, calls, subscripts, quotes
+==================
+
+f(x, [y]) := block([a : 1], a[x] + y[1]!);
+'diff(y, x) = ''z;
+lambda([x], x^2)(3);
+integrate(%e^(lambda^2), lambda, 0, 1);
+
+---
+
+(source_file
+  (statement
+    (binary_expression
+      (function_call (atom (identifier)) (atom (identifier)) (list (atom (identifier))))
+      (block_expression
+        (list (binary_expression (atom (identifier)) (atom (number))))
+        (binary_expression
+          (array_ref (atom (identifier)) (atom (identifier)))
+          (postfix_expression (array_ref (atom (identifier)) (atom (number))))))))
+  (statement
+    (binary_expression
+      (prefix_expression (function_call (atom (identifier)) (atom (identifier)) (atom (identifier))))
+      (prefix_expression (atom (identifier)))))
+  (statement
+    (function_call
+      (lambda_expression (list (atom (identifier))) (binary_expression (atom (identifier)) (atom (number))))
+      (atom (number))))
+  (statement
+    (function_call
+      (atom (identifier))
+      (binary_expression (atom (identifier)) (parenthesized_expression (binary_expression (atom (identifier)) (atom (number)))))
+      (atom (identifier))
+      (atom (number))
+      (atom (number)))))
+
+==================
+if and loops
+==================
+
+if a then if b then c else d elseif e then x : 1 else y : 2;
+for i : 1 step 2 thru n - 1 while ok do s : s + i;
+for x in L do print(x);
+thru 10 do f();
+while i > 0 do i : i - 1;
+
+---
+
+(source_file
+  (statement
+    (if_expression
+      (atom (identifier))
+      (if_expression (atom (identifier)) (atom (identifier)) (atom (identifier)))
+      (elseif_clause (atom (identifier)) (binary_expression (atom (identifier)) (atom (number))))
+      (binary_expression (atom (identifier)) (atom (number)))))
+  (statement
+    (for_expression
+      (identifier)
+      (atom (number))
+      (atom (number))
+      (binary_expression (atom (identifier)) (atom (number)))
+      (atom (identifier))
+      (binary_expression (atom (identifier)) (binary_expression (atom (identifier)) (atom (identifier))))))
+  (statement
+    (for_in_expression (identifier) (atom (identifier)) (function_call (atom (identifier)) (atom (identifier)))))
+  (statement
+    (for_expression (atom (number)) (function_call (atom (identifier)))))
+  (statement
+    (while_expression
+      (binary_expression (atom (identifier)) (atom (number)))
+      (binary_expression (atom (identifier)) (binary_expression (atom (identifier)) (atom (number)))))))
+
+==================
+lexing: comments nest, names, numbers, lisp
+==================
+
+/* outer /* inner */ still a comment */
+?princ("x"), ?:key, %pi, a\-b, 1.5b0, .5e-3, {1, 2}$
+:lisp (defun f () 1)
+tag && x : 1;
+
+---
+
+(source_file
+  (comment)
+  (statement
+    (binary_expression
+      (binary_expression
+        (binary_expression
+          (binary_expression
+            (binary_expression
+              (binary_expression
+                (function_call (atom (identifier)) (atom (string)))
+                (atom (identifier)))
+              (atom (identifier)))
+            (atom (identifier)))
+          (atom (number)))
+        (atom (number)))
+      (set (atom (number)) (atom (number)))))
+  (lisp_escape)
+  (statement
+    (binary_expression (identifier) (binary_expression (atom (identifier)) (atom (number))))))

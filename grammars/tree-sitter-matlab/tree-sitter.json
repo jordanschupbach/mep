@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "matlab",
+      "camelcase": "Matlab",
+      "scope": "source.matlab",
+      "path": ".",
+      "file-types": ["m"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "MATLAB and Octave, mep's own grammar (node API of acristoffers/tree-sitter-matlab)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

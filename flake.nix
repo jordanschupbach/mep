@@ -148,53 +148,26 @@
         # install dir are checked too (lower priority) -- see
         # DynamicSearchPaths' doc comment in treesitter.cpp for that list.
 
-        # GAP and Maxima have no nixpkgs grammar, so they're built here
-        # from their upstream repos. GAP's is gap-system's own (MIT).
-        # Maxima's only grammar ships without a license: it's fetched and
-        # compiled here but nothing from it is vendored into mep (its
-        # highlight query, kHighlightsMaxima, is mep's own).
-        tsGrammarGap = pkgs.tree-sitter.buildGrammar {
-          language = "gap";
-          version = "0-unstable-2026-06-11";
-          src = pkgs.fetchFromGitHub {
-            owner = "gap-system";
-            repo = "tree-sitter-gap";
-            rev = "96fe2e49745ecd62b80cd19dca01fb52b83f93a1";
-            hash = "sha256-bHbWHfwzQVnbqNZ65Ls2h3hsnIpQpylzy2Sviw8aTcs=";
-          };
-        };
-        tsGrammarMaxima = pkgs.tree-sitter.buildGrammar {
-          language = "maxima";
-          version = "0-unstable-2026-07-19";
-          src = pkgs.fetchFromGitHub {
-            owner = "stewsat";
-            repo = "tree-sitter-maxima";
-            rev = "0d9b026dc53d733a0fc881b69aed6ea3c4a6d198";
-            hash = "sha256-BceVU490wMIMfVDt96CihpWJGBwxWDg48PMqSr/94OQ=";
-          };
-        };
-
         tsGrammars = pkgs.tree-sitter.withPlugins (
           p: with p; [
             # (C# is compiled in: grammars/tree-sitter-c_sharp.)
             tree-sitter-css
-            tree-sitter-go
+            # (Go is compiled in: grammars/tree-sitter-go.)
             tree-sitter-haskell
             tree-sitter-html
-            tree-sitter-java
+            # (Java is compiled in: grammars/tree-sitter-java.)
             tree-sitter-json
-            tree-sitter-julia
+            # (Julia is compiled in: grammars/tree-sitter-julia.)
             tree-sitter-ocaml
             tree-sitter-ocaml-interface
             tree-sitter-php
             tree-sitter-ruby
-            tree-sitter-rust
+            # (Rust is compiled in: grammars/tree-sitter-rust.)
             tree-sitter-scala
-            tree-sitter-typescript
-            tree-sitter-tsx
+            # (TypeScript and TSX are compiled in: grammars/tree-sitter-typescript, -tsx.)
             tree-sitter-yaml
             tree-sitter-toml
-            tree-sitter-zig
+            # (Zig is compiled in: grammars/tree-sitter-zig.)
             tree-sitter-elm
             tree-sitter-kotlin
             tree-sitter-scss
@@ -208,7 +181,7 @@
             tree-sitter-dockerfile
             tree-sitter-graphql
             tree-sitter-proto
-            tree-sitter-fish
+            # (fish is compiled in: grammars/tree-sitter-fish.)
             tree-sitter-elixir
             tree-sitter-erlang
             # Added alongside org-babel's multi-language port
@@ -216,21 +189,14 @@
             # every babel-supported language also gets real syntax
             # highlighting inside its `#+begin_src` blocks, not just the
             # ones that already had a grammar for some other reason.
-            # (Crystal, added with them, is compiled in: grammars/tree-sitter-crystal.)
-            tree-sitter-fortran
+            # (Crystal, Fortran, Nim and D, added with them, are compiled in:
+            # grammars/tree-sitter-crystal, -fortran, -nim, -d.)
             tree-sitter-perl
-            tree-sitter-nim
-            tree-sitter-d
-            # Octave/MATLAB (.m, src/treesitter_queries.h's kHighlightsMatlab).
-            tree-sitter-matlab
-            # Scheme/Tcl (kHighlightsScheme/kHighlightsTcl): the scheme and
-            # tcl babel backends' languages, and the Run button's.
-            tree-sitter-scheme
-            tree-sitter-tcl
-            # GAP/Maxima: the remaining babel/Run-button languages. (SQL,
-            # added with them, is compiled in: grammars/tree-sitter-sql.)
-            tsGrammarGap
-            tsGrammarMaxima
+            # (Scheme and Tcl, the scheme and tcl babel backends' languages,
+            # are compiled in: grammars/tree-sitter-scheme, -tcl; so is
+            # Octave/MATLAB's, grammars/tree-sitter-matlab.)
+            # (GAP, SQL and Maxima, babel/Run-button languages, are
+            # compiled in: grammars/tree-sitter-gap, -sql, -maxima.)
             # Filetypes src/treesitter.cpp already had a query for but no
             # grammar was bundled for, so they never highlighted.
             tree-sitter-groovy
@@ -397,13 +363,13 @@
             # nothing installs them either. Copying only `mep` here (this
             # installPhase replaces the one CMake's own install(TARGETS)
             # rules would have run) therefore shipped a build with no
-            # Python, C, C++, R, org, mepml, Maxima, Common Lisp, Bash or SQL language support at
+            # Python, C, C++, R, org, mepml, Maxima, Common Lisp, Bash, SQL or Nix language support at
             # all: no diagnostics, no hover, no LSP completion and no
             # parameter hints, failing silently except for one "failed to
             # start (not on PATH?)" toast. Keep in sync with the
             # install(TARGETS ...) lines in CMakeLists.txt.
             for tool in mep-org-lsp mep-mepml-lsp mep-r-lsp mep-python-lsp \
-                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-lisp-lsp mep-bash-lsp mep-clojure-lsp mep-sql-lsp mep-mepml mep-tex; do
+                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-lisp-lsp mep-bash-lsp mep-clojure-lsp mep-sql-lsp mep-nix-lsp mep-lua-lsp mep-js-lsp mep-scheme-lsp mep-fish-lsp mep-fortran-lsp mep-tcl-lsp mep-octave-lsp mep-julia-lsp mep-go-lsp mep-gap-lsp mep-rust-lsp mep-zig-lsp mep-kotlin-lsp mep-java-lsp mep-nim-lsp mep-mepml mep-tex; do
               install -Dm755 "$tool" "$out/bin/$tool"
             done
             # :Browser's web view on Linux (gui_embed_webview_x11.cpp finds

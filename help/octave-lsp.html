@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Octave language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Octave language server</h1>
+<h1>What it is</h1>
+<p>Octave (and MATLAB) files get a language server of their own,
+<code>mep-octave-lsp</code>, built and shipped with mep. Open a <code>.m</code> file and it
+attaches by itself -- nothing to install, and nothing in the file is ever
+run. It knows Octave 11: its 1,763 built-in and library functions, each with
+the usage lines from Octave's own help.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>The same errors as Octave</h1>
+<p>Its reader follows Octave's own lexer and parser (<code>lex.ll</code> and
+<code>oct-parse.yy</code>) rule for rule, so a syntax error is reported where Octave
+reports it, in Octave's words:</p>
+<pre>parse error: syntax error near line 3, column 10
+'endfunction' command matched by 'endif'
+x: invalid use of symbol as both variable and command
+duplicate subfunction or nested function name</pre>
+<p>That includes the checks Octave makes after parsing: a command-syntax call
+to a name the same function assigns (<code>x -1</code> after <code>x = 2</code>), mismatched
+<code>end</code> keywords, a classdef not named after its file, duplicate functions,
+parameters and outputs.</p>
+<p>This is checked against Octave itself (<code>just octave-parse-check</code>): each of
+the 6,676 files of Octave's own scripts and tests and of 30 Octave Forge
+packages, and five damaged copies of each (a slice deleted or duplicated, a
+keyword, bracket or quote inserted), goes through Octave's <code>__parse_file__</code>
+and through the server. On 113,492 files the two agree on every verdict,
+message, line and column.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>what Octave's parser says, at the same line and column</td></tr>
+<tr><td><code>duplicate-case</code></td><td>warning</td><td>a <code>case</code> label that repeats an earlier one in the same <code>switch</code>: only the first is ever taken</td></tr>
+<tr><td><code>unused-local</code></td><td>hint</td><td>a function assigns a variable and never reads it (shown faded)</td></tr>
+<tr><td><code>unreachable-code</code></td><td>hint</td><td>statements after <code>return</code>, <code>break</code> or <code>continue</code> in the same block (faded)</td></tr>
+</table>
+<h2>Calibration</h2>
+<ul>
+<li><code>unused-local</code> leaves alone parameters, outputs, <code>global</code> and loop variables, <code>varargin=/=varargout</code> and <code>ans</code>, scripts (their variables live on in the workspace), and any function that can reach its variables by other means: one that calls <code>eval</code>, <code>evalin</code>, <code>evalc</code>, <code>assignin</code>, <code>load</code>, <code>clear</code>, <code>inputname</code>, <code>exist</code> or <code>who</code> (and the like), and the parent of a nested function or anonymous function that does.</li>
+<li>A <code>%#ok</code> on the line (MATLAB's code-analyzer pragma) silences the lints there.</li>
+</ul>
+<p>Run over the corpus: no file Octave accepts gets an error or a false
+warning. The 22 syntax errors are the 22 files Octave itself rejects (its
+own deliberate <code>bug-50014</code> test cases, a configure template, a few
+packages using syntax Octave 11 no longer takes). The 13 <code>duplicate-case</code>
+warnings are real repeated labels (in Octave's <code>__unimplemented__.m</code> and the
+<code>io</code> package), and the 8 unreachable statements are code after a <code>return</code>.
+<code>unused-local</code> marks 1,086 variables in 666 files; the samples read were
+all values never used, most of them outputs of a multiple assignment
+(<code>[m, n] = size (x)</code>) that could be <code>~</code>.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> shows an Octave function's usage lines (<code>zeros</code>, <code>cellfun</code>, <code>regexprep</code>) and, on the file's own functions, their signature.</li>
+<li><b>Completion</b> offers the variables of the function at the cursor (a nested function sees its parent's), the file's functions, Octave's keywords and functions, and after a <code>.</code> the field names the file uses.</li>
+<li><b>Signature help</b> for Octave's functions (from their usage lines) and the file's own, with the active argument.</li>
+<li><b>Go to definition</b>, <b>references</b> and <b>rename</b> for variables -- per function, following nested functions into their parent -- and for the file's functions.</li>
+<li>The <b>outline</b> lists functions and nested functions, and a classdef's properties, methods and events.</li>
+<li><b>Folding</b> covers functions, every block (<code>if</code>, loops, <code>switch</code>, <code>try</code>, <code>unwind_protect</code>), classdef sections, block comments and runs of comment lines.</li>
+<li><b>Formatting</b> is mep's own Octave formatter, the one <code>gf</code> runs (MISS_HIT's <code>mh_style</code> layout). Only the lines that change are edited. See <a href="formatting.html">Formatting</a>.</li>
+</ul>
+<p>While a file is broken, completion and navigation keep working on the rest
+of it: the server re-reads it with the offending line set aside.</p>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-octave-lsp</span> <span class="tok-red">--lint</span> *.m
+<span class="tok-blue">cat</span> f.m | <span class="tok-blue">mep-octave-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>f.m:12:5: warning: this case label repeats the one on line 9; only the first is ever taken [duplicate-case]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>, <code>info</code>,
+<code>hint</code>), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, <code>mep-octave-lsp</code> is the language server on stdio.</p>
+<p><code>mep-octave-lsp --octave-check FILE...</code> prints what Octave's
+<code>__parse_file__</code> would say about each file: <code>ok</code>, or the message with
+"near line L, column C".</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="formatting.html">Formatting</a>.</li>
+</ul>
+</body>
+</html>

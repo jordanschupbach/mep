@@ -31,7 +31,7 @@
 namespace fs = std::filesystem;
 
 #define MEP_TS_GRAMMARS(X) \
-    X(bash) X(c) X(c_sharp) X(clojure) X(commonlisp) X(cpp) X(crystal) X(javascript) X(just) X(lua) X(markdown) X(markdown_inline) X(mepml) X(nix) X(org) X(python) X(r) X(sql)
+    X(bash) X(c) X(c_sharp) X(clojure) X(commonlisp) X(cpp) X(crystal) X(d) X(fish) X(fortran) X(gap) X(go) X(java) X(javascript) X(julia) X(just) X(lua) X(markdown) X(markdown_inline) X(matlab) X(maxima) X(mepml) X(nim) X(nix) X(org) X(python) X(r) X(rust) X(scheme) X(sql) X(tcl) X(tsx) X(typescript) X(zig)
 
 #define DECLARE(name) extern "C" const TSLanguage *tree_sitter_##name(void);
 MEP_TS_GRAMMARS(DECLARE)
@@ -91,7 +91,12 @@ std::vector<Case> ParseCorpus(const std::string &text) {
         for (size_t k = body; k < divider; ++k) c.input += lines[k] + "\n";
         // Like the CLI: the input loses the line break before its divider.
         if (!c.input.empty()) c.input.pop_back();
-        for (size_t k = divider + 1; k < end; ++k) c.expected += lines[k] + "\n";
+        // `; ...` lines in an expected tree are comments (`tree-sitter test` drops them too).
+        for (size_t k = divider + 1; k < end; ++k) {
+            const size_t first = lines[k].find_first_not_of(" \t");
+            if (first != std::string::npos && lines[k][first] == ';') continue;
+            c.expected += lines[k] + "\n";
+        }
         cases.push_back(c);
         i = end;
     }

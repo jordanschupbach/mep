@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "julia",
+      "camelcase": "Julia",
+      "scope": "source.julia",
+      "path": ".",
+      "file-types": ["jl"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Julia, mep's own grammar (from tree-sitter-julia 0.25.0, MIT)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

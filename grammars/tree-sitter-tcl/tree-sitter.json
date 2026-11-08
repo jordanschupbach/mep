@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "tcl",
+      "camelcase": "Tcl",
+      "scope": "source.tcl",
+      "path": ".",
+      "file-types": ["tcl", "tk", "tm", "test"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Tcl, mep's own grammar (node API of tree-sitter-grammars/tree-sitter-tcl)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

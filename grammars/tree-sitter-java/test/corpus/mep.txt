@@ -1,0 +1,53 @@
+================================================================================
+Module import declaration (Java 25)
+================================================================================
+
+import module java.base;
+import module.foo.Bar;
+
+--------------------------------------------------------------------------------
+
+(program (import_declaration (scoped_identifier (identifier) (identifier))) (import_declaration (scoped_identifier (scoped_identifier (identifier) (identifier)) (identifier))))
+
+================================================================================
+Annotations on a variable-arity parameter
+================================================================================
+
+class A { void f(@Nullable Object @Nullable ... args) {} }
+
+--------------------------------------------------------------------------------
+
+(program (class_declaration (identifier) (class_body (method_declaration (void_type) (identifier) (formal_parameters (spread_parameter (modifiers (marker_annotation (identifier))) (type_identifier) (marker_annotation (identifier)) (variable_declarator (identifier)))) (block)))))
+
+================================================================================
+Record patterns with a qualified type, and several patterns in one case
+================================================================================
+
+class A { int f(Object o) {
+  if (o instanceof Shape.Tri(double a)) return 1;
+  return switch (o) { case Shape.Tri _, Square _ -> 2; default -> 0; };
+} }
+
+--------------------------------------------------------------------------------
+
+(program (class_declaration (identifier) (class_body (method_declaration (integral_type) (identifier) (formal_parameters (formal_parameter (type_identifier) (identifier))) (block (if_statement (parenthesized_expression (instanceof_expression (identifier) (record_pattern (scoped_type_identifier (type_identifier) (type_identifier)) (record_pattern_body (record_pattern_component (floating_point_type) (identifier)))))) (return_statement (decimal_integer_literal))) (return_statement (switch_expression (parenthesized_expression (identifier)) (switch_block (switch_rule (switch_label (pattern (type_pattern (scoped_type_identifier (type_identifier) (type_identifier)) (identifier))) (pattern (type_pattern (type_identifier) (identifier)))) (expression_statement (decimal_integer_literal))) (switch_rule (switch_label) (expression_statement (decimal_integer_literal)))))))))))
+
+================================================================================
+Statements before super() (flexible constructor bodies, Java 25)
+================================================================================
+
+class A extends B { A(int x) { check(x); super(x); } }
+
+--------------------------------------------------------------------------------
+
+(program (class_declaration (identifier) (superclass (type_identifier)) (class_body (constructor_declaration (identifier) (formal_parameters (formal_parameter (integral_type) (identifier))) (constructor_body (expression_statement (method_invocation (identifier) (argument_list (identifier)))) (explicit_constructor_invocation (super) (argument_list (identifier))))))))
+
+================================================================================
+Numbers: leading zeros before a float suffix, runs of underscores
+================================================================================
+
+class A { double d = 00d + 1__000 + 0x7fff__ffff + 0b1__0 + 0_7 + 1_0e1_0; }
+
+--------------------------------------------------------------------------------
+
+(program (class_declaration (identifier) (class_body (field_declaration (floating_point_type) (variable_declarator (identifier) (binary_expression (binary_expression (binary_expression (binary_expression (binary_expression (decimal_floating_point_literal) (decimal_integer_literal)) (hex_integer_literal)) (binary_integer_literal)) (octal_integer_literal)) (decimal_floating_point_literal)))))))

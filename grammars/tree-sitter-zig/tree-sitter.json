@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "zig",
+      "camelcase": "Zig",
+      "scope": "source.zig",
+      "path": ".",
+      "file-types": ["zig", "zon"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Zig, mep's own grammar (node API of tree-sitter-grammars/tree-sitter-zig)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

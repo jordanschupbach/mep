@@ -37,7 +37,7 @@ failed=()
 
 # Downloads+extracts `repo`@`rev` into $SRC_DIR/<repo-with-slash-as-_>@<rev>
 # once, reused by every row referencing the same (repo, rev) pair (e.g.
-# typescript/tsx, ocaml/ocaml_interface both come from one tarball).
+# ocaml/ocaml_interface both come from one tarball).
 fetch_repo() {
   local repo="$1" rev="$2"
   local key="${repo//\//_}@${rev}"

@@ -1,0 +1,308 @@
+================================================================================
+as, satisfies, non-null and type assertions
+================================================================================
+
+const a = x as unknown as T;
+const b = { k: 1 } satisfies R;
+const c = maybe!.value!;
+const d = <T>e;
+const f = [1, 2] as const;
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (as_expression
+        (as_expression
+          (identifier)
+          (predefined_type))
+        (type_identifier))))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (satisfies_expression
+        (object
+          (pair
+            (property_identifier)
+            (number)))
+        (type_identifier))))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (non_null_expression
+        (member_expression
+          (non_null_expression
+            (identifier))
+          (property_identifier)))))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (type_assertion
+        (type_arguments
+          (type_identifier))
+        (identifier))))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (as_expression
+        (array
+          (number)
+          (number))))))
+
+================================================================================
+Generic calls and instantiation expressions
+================================================================================
+
+f<T>(x);
+new Map<string, number>();
+const g = h<number>;
+a?.b<T>(c);
+
+--------------------------------------------------------------------------------
+
+(program
+  (expression_statement
+    (call_expression
+      (identifier)
+      (type_arguments
+        (type_identifier))
+      (arguments
+        (identifier))))
+  (expression_statement
+    (new_expression
+      (identifier)
+      (type_arguments
+        (predefined_type)
+        (predefined_type))
+      (arguments)))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (instantiation_expression
+        (identifier)
+        (type_arguments
+          (predefined_type)))))
+  (expression_statement
+    (call_expression
+      (member_expression
+        (identifier)
+        (optional_chain)
+        (property_identifier))
+      (type_arguments
+        (type_identifier))
+      (arguments
+        (identifier)))))
+
+================================================================================
+Tagged templates with type arguments
+================================================================================
+
+const D = styled.div<{ active?: boolean }>`color: red;`;
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (call_expression
+        (member_expression
+          (identifier)
+          (property_identifier))
+        (type_arguments
+          (object_type
+            (property_signature
+              (property_identifier)
+              (type_annotation
+                (predefined_type)))))
+        (template_string
+          (string_fragment))))))
+
+================================================================================
+Optional chains with reserved property names
+================================================================================
+
+pin?.delete();
+x = obj?.default;
+
+--------------------------------------------------------------------------------
+
+(program
+  (expression_statement
+    (call_expression
+      (member_expression
+        (identifier)
+        (optional_chain)
+        (property_identifier))
+      (arguments)))
+  (expression_statement
+    (assignment_expression
+      (identifier)
+      (member_expression
+        (identifier)
+        (optional_chain)
+        (property_identifier)))))
+
+================================================================================
+Arrow functions with typed parameters
+================================================================================
+
+const f = (x: number, { a }: { a: string }): number => x;
+const g = async <T,>(v: T) => v;
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (arrow_function
+        (formal_parameters
+          (required_parameter
+            (identifier)
+            (type_annotation
+              (predefined_type)))
+          (required_parameter
+            (object_pattern
+              (shorthand_property_identifier_pattern))
+            (type_annotation
+              (object_type
+                (property_signature
+                  (property_identifier)
+                  (type_annotation
+                    (predefined_type)))))))
+        (type_annotation
+          (predefined_type))
+        (identifier))))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (arrow_function
+        (type_parameters
+          (type_parameter
+            (type_identifier)))
+        (formal_parameters
+          (required_parameter
+            (identifier)
+            (type_annotation
+              (type_identifier))))
+        (identifier)))))
+
+================================================================================
+Optional markers are not conditionals
+================================================================================
+
+function f(a?, b?: number) {}
+const t = cond ? x : y;
+
+--------------------------------------------------------------------------------
+
+(program
+  (function_declaration
+    (identifier)
+    (formal_parameters
+      (optional_parameter
+        (identifier))
+      (optional_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type))))
+    (statement_block))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (ternary_expression
+        (identifier)
+        (identifier)
+        (identifier)))))
+
+================================================================================
+A line break before ( or [ ends a type
+================================================================================
+
+type A = B
+[1, 2].forEach(f)
+let u: U
+(g)()
+
+--------------------------------------------------------------------------------
+
+(program
+  (type_alias_declaration
+    (type_identifier)
+    (type_identifier))
+  (expression_statement
+    (call_expression
+      (member_expression
+        (array
+          (number)
+          (number))
+        (property_identifier))
+      (arguments
+        (identifier))))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (type_annotation
+        (type_identifier))))
+  (expression_statement
+    (call_expression
+      (parenthesized_expression
+        (identifier))
+      (arguments))))
+
+================================================================================
+Decorators
+================================================================================
+
+@Component({ selector: "x" })
+class C {
+  @Input() name: string;
+  @(this.decorator) m() {}
+  @dec<T>() p = 1;
+}
+
+--------------------------------------------------------------------------------
+
+(program
+  (class_declaration
+    (decorator
+      (call_expression
+        (identifier)
+        (arguments
+          (object
+            (pair
+              (property_identifier)
+              (string
+                (string_fragment)))))))
+    (type_identifier)
+    (class_body
+      (public_field_definition
+        (decorator
+          (call_expression
+            (identifier)
+            (arguments)))
+        (property_identifier)
+        (type_annotation
+          (predefined_type)))
+      (decorator
+        (parenthesized_expression
+          (member_expression
+            (this)
+            (property_identifier))))
+      (method_definition
+        (property_identifier)
+        (formal_parameters)
+        (statement_block))
+      (public_field_definition
+        (decorator
+          (call_expression
+            (identifier)
+            (type_arguments
+              (type_identifier))
+            (arguments)))
+        (property_identifier)
+        (number)))))
+

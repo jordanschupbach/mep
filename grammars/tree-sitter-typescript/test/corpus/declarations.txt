@@ -1,0 +1,344 @@
+================================================================================
+Enums
+================================================================================
+
+enum Color { Red, Green = 2, "Blue" }
+const enum E { A = 1 << 0 }
+
+--------------------------------------------------------------------------------
+
+(program
+  (enum_declaration
+    (identifier)
+    (enum_body
+      (property_identifier)
+      (enum_assignment
+        (property_identifier)
+        (number))
+      (string
+        (string_fragment))))
+  (enum_declaration
+    (identifier)
+    (enum_body
+      (enum_assignment
+        (property_identifier)
+        (binary_expression
+          (number)
+          (number))))))
+
+================================================================================
+Namespaces, modules and ambient declarations
+================================================================================
+
+namespace A.B { export const x = 1; }
+declare module "m" {
+  export function f(): void;
+}
+declare global { interface Window { x: number } }
+declare module "shorthand";
+
+--------------------------------------------------------------------------------
+
+(program
+  (expression_statement
+    (internal_module
+      (nested_identifier
+        (identifier)
+        (property_identifier))
+      (statement_block
+        (export_statement
+          (lexical_declaration
+            (variable_declarator
+              (identifier)
+              (number)))))))
+  (ambient_declaration
+    (module
+      (string
+        (string_fragment))
+      (statement_block
+        (export_statement
+          (function_signature
+            (identifier)
+            (formal_parameters)
+            (type_annotation
+              (predefined_type)))))))
+  (ambient_declaration
+    (statement_block
+      (interface_declaration
+        (type_identifier)
+        (interface_body
+          (property_signature
+            (property_identifier)
+            (type_annotation
+              (predefined_type)))))))
+  (ambient_declaration
+    (module
+      (string
+        (string_fragment))))
+  (empty_statement))
+
+================================================================================
+Abstract classes and modifiers
+================================================================================
+
+export abstract class Base<T> extends Other<T> implements I, J {
+  private readonly x: number = 1;
+  protected static y?: string;
+  declare z: T;
+  constructor(public a: string, private b?: number) { super(); }
+  abstract area(): number;
+  override toString(): string { return ""; }
+}
+
+--------------------------------------------------------------------------------
+
+(program
+  (export_statement
+    (abstract_class_declaration
+      (type_identifier)
+      (type_parameters
+        (type_parameter
+          (type_identifier)))
+      (class_heritage
+        (extends_clause
+          (identifier)
+          (type_arguments
+            (type_identifier)))
+        (implements_clause
+          (type_identifier)
+          (type_identifier)))
+      (class_body
+        (public_field_definition
+          (accessibility_modifier)
+          (property_identifier)
+          (type_annotation
+            (predefined_type))
+          (number))
+        (public_field_definition
+          (accessibility_modifier)
+          (property_identifier)
+          (type_annotation
+            (predefined_type)))
+        (public_field_definition
+          (property_identifier)
+          (type_annotation
+            (type_identifier)))
+        (method_definition
+          (property_identifier)
+          (formal_parameters
+            (required_parameter
+              (accessibility_modifier)
+              (identifier)
+              (type_annotation
+                (predefined_type)))
+            (optional_parameter
+              (accessibility_modifier)
+              (identifier)
+              (type_annotation
+                (predefined_type))))
+          (statement_block
+            (expression_statement
+              (call_expression
+                (super)
+                (arguments)))))
+        (abstract_method_signature
+          (property_identifier)
+          (formal_parameters)
+          (type_annotation
+            (predefined_type)))
+        (method_definition
+          (override_modifier)
+          (property_identifier)
+          (formal_parameters)
+          (type_annotation
+            (predefined_type))
+          (statement_block
+            (return_statement
+              (string))))))))
+
+================================================================================
+Overloads end at a line break unless a body follows
+================================================================================
+
+function over(x: string): string;
+function over(x: number): number;
+function over(x: any) {
+  return x;
+}
+class K {
+  m(): void
+  m(x?: number)
+  {
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(program
+  (function_signature
+    (identifier)
+    (formal_parameters
+      (required_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type))))
+    (type_annotation
+      (predefined_type)))
+  (function_signature
+    (identifier)
+    (formal_parameters
+      (required_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type))))
+    (type_annotation
+      (predefined_type)))
+  (function_declaration
+    (identifier)
+    (formal_parameters
+      (required_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type))))
+    (statement_block
+      (return_statement
+        (identifier))))
+  (class_declaration
+    (type_identifier)
+    (class_body
+      (method_signature
+        (property_identifier)
+        (formal_parameters)
+        (type_annotation
+          (predefined_type)))
+      (method_definition
+        (property_identifier)
+        (formal_parameters
+          (optional_parameter
+            (identifier)
+            (type_annotation
+              (predefined_type))))
+        (statement_block)))))
+
+================================================================================
+Imports and exports
+================================================================================
+
+import type { A, B } from "./types";
+import { type C, D as E } from "./mod";
+import fs = require("fs");
+import Alias = NS.Inner;
+export type { A };
+export = Foo;
+export as namespace Lib;
+export { default } from "./x";
+export { x as while };
+
+--------------------------------------------------------------------------------
+
+(program
+  (import_statement
+    (import_clause
+      (named_imports
+        (import_specifier
+          (identifier))
+        (import_specifier
+          (identifier))))
+    (string
+      (string_fragment)))
+  (import_statement
+    (import_clause
+      (named_imports
+        (import_specifier
+          (identifier))
+        (import_specifier
+          (identifier)
+          (identifier))))
+    (string
+      (string_fragment)))
+  (import_statement
+    (import_require_clause
+      (identifier)
+      (string
+        (string_fragment))))
+  (import_alias
+    (identifier)
+    (nested_identifier
+      (identifier)
+      (property_identifier)))
+  (export_statement
+    (export_clause
+      (export_specifier
+        (identifier))))
+  (export_statement
+    (identifier))
+  (export_statement
+    (identifier))
+  (export_statement
+    (export_clause
+      (export_specifier
+        (identifier)))
+    (string
+      (string_fragment)))
+  (export_statement
+    (export_clause
+      (export_specifier
+        (identifier)
+        (identifier)))))
+
+================================================================================
+using declarations
+================================================================================
+
+using a = res();
+for (await using b of list) {}
+for (using c = res();;) {}
+
+--------------------------------------------------------------------------------
+
+(program
+  (using_declaration
+    (variable_declarator
+      (identifier)
+      (call_expression
+        (identifier)
+        (arguments))))
+  (for_in_statement
+    (identifier)
+    (identifier)
+    (statement_block))
+  (for_statement
+    (using_declaration
+      (variable_declarator
+        (identifier)
+        (call_expression
+          (identifier)
+          (arguments))))
+    (empty_statement)
+    (statement_block)))
+
+================================================================================
+Auto-accessors
+================================================================================
+
+class A {
+  accessor x = 1;
+  @dec static accessor #y: number;
+}
+
+--------------------------------------------------------------------------------
+
+(program
+  (class_declaration
+    (type_identifier)
+    (class_body
+      (public_field_definition
+        (property_identifier)
+        (number))
+      (public_field_definition
+        (decorator
+          (identifier))
+        (private_property_identifier)
+        (type_annotation
+          (predefined_type))))))
+

@@ -19,55 +19,10 @@
 // qualified returns, decorators/exports, ...) before being kept here.
 //
 // A definition node deliberately captured by more than one pattern here
-// (Go's plain `type_declaration` pattern also matches a struct/interface
-// type's own declaration) is intentional, not a bug -- TreesitterStructure
+// (a plain `type` pattern that also matches a struct/interface type's own
+// declaration, as in grammars/tree-sitter-go/queries/structure.scm) is intentional, not a bug -- TreesitterStructure
 // dedups by exact byte span and keeps the more specific (non-"type") kind
 // when two patterns land on the identical node.
-
-// Typescript/tsx share this: JSX adds element syntax, not new declaration
-// node shapes, so the same query covers both (see treesitter.cpp's
-// DynamicStructureQueryTable, which keys both filetypes to this string).
-static const char *kStructureTypescript = R"TSQ(
-(interface_declaration name: (type_identifier) @name) @definition.interface
-(type_alias_declaration name: (type_identifier) @name) @definition.type
-(enum_declaration name: (identifier) @name) @definition.enum
-(class_declaration name: (type_identifier) @name) @definition.class
-(abstract_class_declaration name: (type_identifier) @name) @definition.class
-(method_definition name: (property_identifier) @name) @definition.method
-(method_signature name: (property_identifier) @name) @definition.method
-(abstract_method_signature name: (property_identifier) @name) @definition.method
-(function_declaration name: (identifier) @name) @definition.function
-(variable_declarator name: (identifier) @name value: (arrow_function)) @definition.function
-(variable_declarator name: (identifier) @name value: (function_expression)) @definition.function
-(internal_module name: (identifier) @name) @definition.namespace
-)TSQ";
-
-static const char *kStructureGo = R"TSQ(
-(type_declaration (type_spec name: (type_identifier) @name type: (struct_type))) @definition.struct
-(type_declaration (type_spec name: (type_identifier) @name type: (interface_type))) @definition.interface
-(type_declaration (type_spec name: (type_identifier) @name)) @definition.type
-(function_declaration name: (identifier) @name) @definition.function
-(method_declaration name: (field_identifier) @name) @definition.method
-)TSQ";
-
-static const char *kStructureRust = R"TSQ(
-(struct_item name: (type_identifier) @name) @definition.struct
-(enum_item name: (type_identifier) @name) @definition.enum
-(trait_item name: (type_identifier) @name) @definition.interface
-(impl_item type: (type_identifier) @name) @definition.impl
-(function_item name: (identifier) @name) @definition.function
-(mod_item name: (identifier) @name) @definition.namespace
-(type_item name: (type_identifier) @name) @definition.type
-)TSQ";
-
-static const char *kStructureJava = R"TSQ(
-(interface_declaration name: (identifier) @name) @definition.interface
-(class_declaration name: (identifier) @name) @definition.class
-(enum_declaration name: (identifier) @name) @definition.enum
-(record_declaration name: (identifier) @name) @definition.class
-(constructor_declaration name: (identifier) @name) @definition.method
-(method_declaration name: (identifier) @name) @definition.method
-)TSQ";
 
 static const char *kStructureRuby = R"TSQ(
 (module name: (constant) @name) @definition.namespace

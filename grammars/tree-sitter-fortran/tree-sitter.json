@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "fortran",
+      "camelcase": "Fortran",
+      "scope": "source.fortran",
+      "path": ".",
+      "file-types": ["f90", "f95", "f03", "f08", "f", "for", "F90"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Fortran, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

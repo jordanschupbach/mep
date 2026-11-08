@@ -1,0 +1,45 @@
+# Corpus files whose trees differ from nixpkgs' tree-sitter-scheme's
+# (6cdh, the grammar mep loaded before), reviewed, where this grammar is
+# right and the old one wrong. Guile reads every one (with Guix's reader
+# extensions, as scheme_read.scm installs them); the old grammar has a
+# parse error in each where the difference starts. See README.md.
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff (grammar-diff).
+
+*-guix-*/*  # Guix G-expressions: #~ #$ #$@ #+ (the old grammar has none of them)
+*/doc/make-html.scm                     # Guile script header #!/... !# read as a block comment (the old grammar read a directive, then an error at !#)
+*/doc/make-texinfo.scm                  # Guile script header #!/... !# read as a block comment (the old grammar read a directive, then an error at !#)
+*/ext/data/test-trie.scm                # R7RS bytevector #u8(...), which the old grammar could not read
+*/ext/digest/test.scm                   # R7RS bytevector #u8(...), which the old grammar could not read
+*/ext/uvector/test-utf8.scm             # R7RS bytevector #u8(...), which the old grammar could not read
+*/ext/vport/vport.scm                   # R7RS bytevector #u8(...), which the old grammar could not read
+*/ext/zlib/test.scm                     # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/binary-record-test.sld      # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/bytevector-test.sld         # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/crypto/rsa-test.sld         # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/crypto/sha2-test.sld        # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/io-test.sld                 # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/io/io.scm                   # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/mime-test.sld               # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/mime.scm                    # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/regexp-test.sld             # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/tar.scm                     # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/chibi/term/edit-line.scm          # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/math/prime.scm                    # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/scheme/bytevector-test.sld        # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/scheme/extras.scm                 # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/srfi/125/test.sld                 # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/srfi/128/test.sld                 # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/srfi/135/test.sld                 # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/srfi/158/test.sld                 # R7RS bytevector #u8(...), which the old grammar could not read
+*/lib/srfi/252.scm                      # R7RS bytevector #u8(...), which the old grammar could not read
+*/test-suite/tests/srfi-119.test        # Guile script header #!/... !# read as a block comment (the old grammar read a directive, then an error at !#)
+*/test/include/generators-test.scm      # R7RS bytevector #u8(...), which the old grammar could not read
+*/test/include/srfi-125-tests.scm       # R7RS bytevector #u8(...), which the old grammar could not read
+*/test/include/srfi-135-tests.scm       # R7RS bytevector #u8(...), which the old grammar could not read
+*/test/include/srfi-158-tests.scm       # R7RS bytevector #u8(...), which the old grammar could not read
+*/test/include/srfi-181-192-tests.scm   # R7RS bytevector #u8(...), which the old grammar could not read
+*/test/include/srfi-207-test.scm        # R7RS bytevector #u8(...), which the old grammar could not read
+*/test/r7rs-aux.scm                     # R7RS bytevector #u8(...), which the old grammar could not read
+*/test/test-precomp/foo.scm             # R7RS bytevector #u8(...), which the old grammar could not read
+*/test/test-precomp/literals.scm        # R7RS bytevector #u8(...), which the old grammar could not read
+*/unit-tests/container.async-queue.scm  # Guile script header #!/... !# read as a block comment (the old grammar read a directive, then an error at !#)

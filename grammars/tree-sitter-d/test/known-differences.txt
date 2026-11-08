@@ -1,0 +1,169 @@
+# Reviewed differences from gdamore/tree-sitter-d 0.8.2 in files the D compiler
+# (ldc2 1.41 / dmd 2.111 front end) parses: in each, the old grammar is wrong.
+# `<path glob>  # why` (tools/ts_grammar_diff/README.md).
+
+# HTML entity with digits (\&sup2;)
+*/tests/dmd/runnable/entity1.d  # HTML entity with digits (\&sup2;)
+*/tests/dmd/runnable/test4.d  # HTML entity with digits (\&sup2;)
+
+# `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/test/pass_files/body_as_ident.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/test/pass_files/function_aliases.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/PGO/functions.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/codegen/func_contracts_gh1543.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/dmd/compilable/obsolete_body.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/dmd/runnable/testcontracts.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/do_body.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/issue0139.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/issue0156.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/issue0189.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/issue0241.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/issue0361.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+*/tests/issue0521.d  # `body` before a function body (obsolete spelling of `do`) or `body` as an identifier
+
+# a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/dmd/compiler.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/dmd/cparse.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/dmd/dinterpret.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/dmd/dsymbolsem.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/dmd/expressionsem.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/dmd/funcsem.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/dmd/mangle/package.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/dmd/safe.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/dmd/typesem.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/runtime/druntime/src/rt/dwarfeh.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/runtime/phobos/std/base64.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/runtime/phobos/std/experimental/allocator/building_blocks/bitmapped_block.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/tests/dmd/compilable/test18199.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+*/tests/dmd/tools/sanitize_json.d  # a `{ }` block statement followed by `*x`, `.f()` or `(..)`: the old grammar read the block as a function literal
+
+# catch with no parameter
+*/test/pass_files/exceptions.d  # catch with no parameter
+*/tests/dmd/fail_compilation/test12558.d  # catch with no parameter
+
+# declaration in a switch/if condition, or `ref` there
+*/test/ast_checks/switch_condition.d  # declaration in a switch/if condition, or `ref` there
+*/test/pass_files/switch_condition_assignment.d  # declaration in a switch/if condition, or `ref` there
+*/tests/dmd/fail_compilation/diag9679.d  # declaration in a switch/if condition, or `ref` there
+*/tests/dmd/fail_compilation/issue11070.d  # declaration in a switch/if condition, or `ref` there
+*/tests/dmd/runnable/declaration.d  # declaration in a switch/if condition, or `ref` there
+*/tests/dmd/runnable/issue11070.d  # declaration in a switch/if condition, or `ref` there
+
+# enum without an initializer, or with an empty body
+*/runtime/phobos/std/experimental/allocator/building_blocks/segregator.d  # enum without an initializer, or with an empty body
+*/tests/dmd/compilable/dtoh_TemplateDeclaration.d  # enum without an initializer, or with an empty body
+*/tests/dmd/fail_compilation/diag24812.d  # enum without an initializer, or with an empty body
+*/tests/dmd/fail_compilation/enum9921.d  # enum without an initializer, or with an empty body
+*/tests/dmd/fail_compilation/fail19912d.d  # enum without an initializer, or with an empty body
+
+# literal or type UDA (@"name", @1, @(int))
+*/test/pass_files/compiler_2_104_0.d  # literal or type UDA (@"name", @1, @(int))
+*/tests/dmd/compilable/test24479.d  # literal or type UDA (@"name", @1, @(int))
+*/tests/dmd/compilable/user_defined_attributes.d  # literal or type UDA (@"name", @1, @(int))
+
+# nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/runtime/phobos/std/algorithm/setops.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/runtime/phobos/std/net/curl.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/tests/codegen/inputs/inlinables_staticvar.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/tests/dmd/compilable/dtoh_mangling.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/tests/dmd/compilable/dtoh_windows.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/tests/dmd/fail_compilation/covariant_override.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/tests/dmd/fail_compilation/test_switch_error.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/tests/dmd/fail_compilation/write_error.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/tests/dmd/run.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+*/tests/dmd/tools/d_do_test.d  # nested /+ +/ comment the old regex (5 levels, "+" runs) could not read
+
+# object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/dmd/common/outbuffer.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/dmd/expression.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/dmd/func.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/dmd/mangle/cppwin.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/dmd/mtype.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/dmd/parse.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/runtime/druntime/src/core/internal/traits.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/runtime/druntime/src/core/stdc/stdatomic.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/runtime/druntime/src/object.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/runtime/phobos/std/json.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/runtime/phobos/unittest.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/source/dub/commandline.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/source/dub/internal/vibecompat/data/json.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/contracts.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/compilable/cppmangle.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/compilable/imports/test18651/c.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/compilable/json.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/compilable/minimal3.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/compilable/noreturn1.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/compilable/noreturn3.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/compilable/test20923.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/compilable/test23431_minimal.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/compilable/warn12809.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/fail_compilation/extra-files/test23109/object.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/fail_compilation/fail54.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/fail_compilation/fail_scope.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/fail_compilation/noreturn.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/fail_compilation/noreturn2.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/fail_compilation/noreturn_expr2.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/fail_compilation/test17307.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/fail_compilation/test20267.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/fail_compilation/test21093.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/runnable/foreach4.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/runnable/mangle.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/runnable/noreturn1.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/runnable/variadic.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/dmd/runnable/xtest46.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+*/tests/imports/object.d  # object.d's aliases (string, size_t, noreturn ...) redeclared or used as expressions (old: parse error)
+
+# placement new
+*/tests/dmd/compilable/placementnew.d  # placement new
+*/tests/dmd/fail_compilation/placenew.d  # placement new
+*/tests/dmd/runnable/placenew.d  # placement new
+
+# q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dparse/lexer.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/alias_syntax_check.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/allman.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/asm_style.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/assert_without_msg.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/auto_function.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/auto_ref_assignment.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/body_on_disabled_funcs.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/builtin_property_names.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/constructors.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/cyclomatic_complexity.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/del.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/duplicate_attribute.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/explicitly_annotated_unittests.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/final_attribute.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/fish.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/function_attributes.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/if_constraints_indent.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/ifelsesame.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/imports_sortedness.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/incorrect_infinite_range.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/label_var_same_name_check.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/length_subtraction.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/line_length.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/local_imports.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/logic_precedence.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/mismatched_args.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/numbers.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/objectconst.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/opequals_without_tohash.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/pokemon.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/properly_documented_public_functions.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/range.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/redundant_attributes.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/redundant_storage_class.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/static_if_else.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/style.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/trust_too_much.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/unused_label.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/unused_parameter.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/unused_result.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/unused_variable.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/useless_assert.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+*/src/dscanner/analysis/vcall_in_ctor.d  # q{...}c: a token string with a c/w/d suffix (old: suffix outside the literal)
+
+# version specification with an attribute
+*/runtime/phobos/std/digest/sha.d  # version specification with an attribute
+*/runtime/phobos/std/internal/digest/sha_SSSE3.d  # version specification with an attribute

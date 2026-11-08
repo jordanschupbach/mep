@@ -1,0 +1,188 @@
+; Highlights for mep's MATLAB/Octave grammar: acristoffers/tree-sitter-matlab's
+; queries/neovim/highlights.scm (MIT; mep loaded it with nixpkgs' grammar
+; before), minus nvim's @spell, plus Octave's keywords and operators.
+
+; Includes
+
+((command_name) @include
+  (#eq? @include "import"))
+
+; Keywords
+
+[
+  "arguments"
+  "classdef"
+  "end"
+  "enumeration"
+  "events"
+  "global"
+  "methods"
+  "persistent"
+  "properties"
+  "spmd"
+  "endarguments"
+  "endclassdef"
+  "endenumeration"
+  "endevents"
+  "endmethods"
+  "endproperties"
+  "endspmd"
+] @keyword
+
+; Conditionals
+
+(if_statement [ "if" "end" "endif" ] @conditional)
+(elseif_clause "elseif" @conditional)
+(else_clause "else" @conditional)
+(switch_statement [ "switch" "end" "endswitch" ] @conditional)
+(case_clause "case" @conditional)
+(otherwise_clause "otherwise" @conditional)
+(break_statement) @conditional
+
+; Repeats
+
+(for_statement [ "for" "parfor" "end" "endfor" "endparfor" ] @repeat)
+(while_statement [ "while" "end" "endwhile" ] @repeat)
+(do_statement [ "do" "until" ] @repeat)
+(continue_statement) @repeat
+
+; Exceptions
+
+(try_statement [ "try" "end" "end_try_catch" ] @exception)
+(catch_clause "catch" @exception)
+(unwind_protect_statement [ "unwind_protect" "end" "end_unwind_protect" ] @exception)
+(unwind_protect_cleanup_clause "unwind_protect_cleanup" @exception)
+
+; Variables
+
+(identifier) @variable
+
+; Constants
+
+(events (identifier) @constant)
+(attribute (identifier) @constant)
+
+"~" @constant.builtin
+
+; Fields/Properties
+
+(field_expression field: (identifier) @field)
+
+(superclass "." (identifier) @property)
+
+(property_name "." (identifier) @property)
+
+(property name: (identifier) @property)
+
+; Types
+
+(class_definition name: (identifier) @type)
+
+(attributes (identifier) @constant)
+
+(enum . (identifier) @type)
+
+((identifier) @type
+  (#lua-match? @type "^_*[A-Z][a-zA-Z0-9_]+$"))
+
+; Functions
+
+(function_definition
+  "function" @keyword.function
+  name: (identifier) @function
+  [ "end" "endfunction" ]? @keyword.function)
+
+(function_signature name: (identifier) @function)
+
+(function_call
+  name: (identifier) @function.call)
+
+(handle_operator (identifier) @function)
+
+(validation_functions (identifier) @function)
+
+(command (command_name) @function.call)
+(command_argument) @parameter
+
+(return_statement) @keyword.return
+
+; Parameters
+
+(function_arguments (identifier) @parameter)
+
+; Punctuation
+
+[ ";" "," "." ] @punctuation.delimiter
+
+[ "(" ")" "[" "]" "{" "}" ] @punctuation.bracket
+
+; Operators
+
+[
+  "+"
+  ".+"
+  "-"
+  ".*"
+  "*"
+  ".*"
+  "/"
+  "./"
+  "\\"
+  ".\\"
+  "^"
+  ".^"
+  "'"
+  ".'"
+  "|"
+  "&"
+  "?"
+  "@"
+  "<"
+  "<="
+  ">"
+  ">="
+  "=="
+  "~="
+  "!"
+  "!="
+  "="
+  "++"
+  "--"
+  "+="
+  "-="
+  "*="
+  "/="
+  "\\="
+  "^="
+  ".*="
+  "./="
+  ".\\="
+  ".^="
+  "&="
+  "|="
+  "&&"
+  "||"
+  ":"
+] @operator
+
+; Literals
+
+(string) @string
+
+(escape_sequence) @string.escape
+(formatting_sequence) @string.special
+
+(number) @number
+
+((identifier) @boolean
+  (#eq? @boolean "true"))
+((identifier) @boolean
+  (#eq? @boolean "false"))
+
+; Comments
+
+[ (comment) (line_continuation) ] @comment
+
+; Errors
+
+(ERROR) @error

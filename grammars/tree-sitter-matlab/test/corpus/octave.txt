@@ -1,0 +1,167 @@
+================================================================================
+Octave: hash comments and block comments
+================================================================================
+
+## texinfo header
+x = 1; # trailing
+#{
+block
+#}
+%{
+also a block
+#}
+
+--------------------------------------------------------------------------------
+
+(source_file (comment) (assignment (identifier) (number)) (comment) (comment))
+
+================================================================================
+Octave: end keywords
+================================================================================
+
+if x
+  y = 1;
+endif
+while x
+  x--;
+endwhile
+for i = 1:3
+endfor
+switch x
+  case 1
+    y = 2;
+endswitch
+try
+  f ();
+catch err
+end_try_catch
+
+--------------------------------------------------------------------------------
+
+(source_file (if_statement (identifier) (block (assignment (identifier) (number)))) (while_statement (identifier) (block (postfix_operator (identifier)))) (for_statement (iterator (identifier) (range (number) (number)))) (switch_statement (identifier) (case_clause (number) (block (assignment (identifier) (number))))) (try_statement (block (function_call (identifier))) (catch_clause (identifier))))
+
+================================================================================
+Octave: do until
+================================================================================
+
+do
+  x++;
+until (x > 10)
+
+--------------------------------------------------------------------------------
+
+(source_file (do_statement (block (postfix_operator (identifier))) (parenthesis (comparison_operator (identifier) (number)))))
+
+================================================================================
+Octave: unwind_protect
+================================================================================
+
+unwind_protect
+  f ();
+unwind_protect_cleanup
+  g ();
+end_unwind_protect
+
+--------------------------------------------------------------------------------
+
+(source_file (unwind_protect_statement (block (function_call (identifier))) (unwind_protect_cleanup_clause (block (function_call (identifier))))))
+
+================================================================================
+Octave: not and compound operators
+================================================================================
+
+y = !x;
+if (a != b) end
+x += 2;
+x .*= 3;
+++x;
+
+--------------------------------------------------------------------------------
+
+(source_file (assignment (identifier) (not_operator (identifier))) (if_statement (parenthesis (comparison_operator (identifier) (identifier)))) (assignment (identifier) (number)) (assignment (identifier) (number)) (unary_operator (identifier)))
+
+================================================================================
+Octave: function with default parameter
+================================================================================
+
+function r = f (a, b = 2)
+  r = a + b;
+endfunction
+
+--------------------------------------------------------------------------------
+
+(source_file (function_definition (function_output (identifier)) (identifier) (function_arguments (identifier) (identifier) (default_value (number))) (block (assignment (identifier) (binary_operator (identifier) (identifier))))))
+
+================================================================================
+Octave: indexing any value
+================================================================================
+
+y = (x > 0)(:);
+z = [1 2 3](2);
+c = {':'}(ones (1, 2));
+t = x.'(:);
+q = (s).name;
+
+--------------------------------------------------------------------------------
+
+(source_file (assignment (identifier) (function_call (parenthesis (comparison_operator (identifier) (number))) (arguments (spread_operator)))) (assignment (identifier) (function_call (matrix (row (number) (number) (number))) (arguments (number)))) (assignment (identifier) (function_call (cell (row (string (string_content)))) (arguments (function_call (identifier) (arguments (number) (number)))))) (assignment (identifier) (function_call (postfix_operator (identifier)) (arguments (spread_operator)))) (assignment (identifier) (field_expression (parenthesis (identifier)) (identifier))))
+
+================================================================================
+Octave: newline inside parentheses
+================================================================================
+
+error ("msg %s",
+       arg);
+
+--------------------------------------------------------------------------------
+
+(source_file (function_call (identifier) (arguments (string (string_content) (formatting_sequence)) (identifier))))
+
+================================================================================
+Octave: chained and parenthesized assignment
+================================================================================
+
+a = b = [];
+if ((n = numel (x)) > 1) end
+global g = 1
+
+--------------------------------------------------------------------------------
+
+(source_file (assignment (identifier) (assignment (identifier) (matrix))) (if_statement (parenthesis (comparison_operator (parenthesis (assignment (identifier) (function_call (identifier) (arguments (identifier))))) (number)))) (global_operator (assignment (identifier) (number))))
+
+================================================================================
+Octave: digit separators and double-quoted escapes
+================================================================================
+
+n = 10_000 + 0xFF_FF;
+s = "say \"hi\"\n";
+
+--------------------------------------------------------------------------------
+
+(source_file (assignment (identifier) (binary_operator (number) (number))) (assignment (identifier) (string (string_content) (escape_sequence) (string_content) (escape_sequence) (escape_sequence))))
+
+================================================================================
+Octave: statement after case and before end
+================================================================================
+
+switch x
+  case {1}  y = 1;
+end
+if done, break end
+
+--------------------------------------------------------------------------------
+
+(source_file (switch_statement (identifier) (case_clause (cell (row (number))) (block (assignment (identifier) (number))))) (if_statement (identifier) (block (break_statement))))
+
+================================================================================
+Octave: struct field loop
+================================================================================
+
+for [val, key] = s
+  disp (key);
+endfor
+
+--------------------------------------------------------------------------------
+
+(source_file (for_statement (iterator (multioutput_variable (identifier) (identifier)) (identifier)) (block (function_call (identifier) (arguments (identifier))))))
+

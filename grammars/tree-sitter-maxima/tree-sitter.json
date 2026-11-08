@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "maxima",
+      "camelcase": "Maxima",
+      "scope": "source.maxima",
+      "path": ".",
+      "file-types": ["mac", "max", "wxm"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Maxima, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

@@ -1,0 +1,148 @@
+#+TITLE: The Julia language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Julia files get a language server of their own, =mep-julia-lsp=, built
+and shipped with mep. Open a =.jl= file and it attaches by itself --
+nothing to install, no Julia needed, and nothing in the file is ever run.
+It knows the names Julia exports from =Base=, =Core= and the standard
+libraries (=LinearAlgebra=, =Statistics=, =Dates=, =Printf=, =Test=, ...),
+with their signatures and docstrings.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+Julia's own =LanguageServer.jl= is still supported as an alternative: set
+=mep.lsp_servers.julials.filetypes = {'jl'}= (and
+=mep.lsp_servers.julia_ls.filetypes = {}=) in your config, after
+=julia -e 'using Pkg; Pkg.add("LanguageServer")'=.
+
+* The same errors as Julia
+
+Its parser is a port of JuliaSyntax (the parser Julia itself uses since
+1.10) -- the same tokens, the same tree and the same diagnostics -- so a
+syntax error is the one Julia reports, in its words and at its place:
+
+#+begin_example
+Expected `end`
+invalid identifier
+unexpected `)`
+#+end_example
+
+It is checked against =Base.JuliaSyntax= (Julia 1.12) over Julia's own
+base, standard libraries and tests and eleven packages -- 8,216 files --
+and damaged copies of each (=tools/julia_parse_check.py=): see the
+numbers in =plans/LANGUAGE_PARITY_PLAN.md=.
+
+Like JuliaSyntax it keeps going after an error, so completion and
+navigation keep working in a half-typed file.
+
+Some errors Julia only finds when it lowers the code -- it would refuse
+the method or the block when the line runs. Those are reported too, in
+the words lowering uses:
+
+#+begin_example
+function argument name not unique: "x"
+break or continue outside loop
+variable "x" declared both local and global
+duplicate field name: "a" is not unique
+#+end_example
+
+* What it reports
+
+| Code                         | Severity | What it means                                                                     |
+|------------------------------+----------+-----------------------------------------------------------------------------------|
+| =syntax-error=               | error    | what Julia's parser says, in its words                                            |
+| =syntax-warning=             | warning  | JuliaSyntax's warnings (=import Base.(:)=: parentheses not required)              |
+| =duplicate-argument=         | error    | =f(x, x) = ...=                                                                   |
+| =duplicate-keyword-argument= | error    | =f(a = 1, a = 2)=                                                                 |
+| =duplicate-field=            | error    | a =struct= with the same field twice                                              |
+| =break-outside-loop=         | error    | =break= or =continue= with no loop around it                                      |
+| =local-global-conflict=      | error    | =local x= and =global x= in one scope                                             |
+| =local-argument-conflict=    | error    | =local x= where =x= is an argument                                                |
+| =global-argument=            | error    | =global x= where =x= is an argument                                               |
+| =local-const=                | error    | =const= on a local variable                                                       |
+| =unused-type-parameter=      | warning  | Julia's own warning: a =where T= no argument type mentions                        |
+| =soft-scope=                 | warning  | Julia's own warning: a top-level loop assigns a global's name                     |
+| =unused-local=               | warning  | a local variable assigned and never read (greyed)                                 |
+| =undefined-name=             | warning  | a name defined nowhere that is one slip from one in scope, with a "did you mean" |
+| =compare-nothing=            | info     | =x == nothing=: =x === nothing= or =isnothing(x)= is what's meant                 |
+| =unused-argument=            | hint     | an untyped argument the body never reads (greyed)                                 |
+| =unreachable=                | hint     | statements after =return=, =throw=, =break= or =continue= in a block (greyed)     |
+
+** Calibration
+
+Every check was run over the same 8,216-file corpus. The errors fire
+nowhere in it: Julia's base and packages lower cleanly
+(=tools/julia_lower_check.jl= agrees), so any report there would be a
+false one. The two =unused-type-parameter= reports are both ones Julia
+prints itself. The =soft-scope= reports are the warning Julia prints
+when it runs those test scripts.
+
+=undefined-name= is careful on purpose: a file's top level may be
+=include=d from anywhere, and a module with a package =using= or an
+=include= gets names from places a single file can't see, so it only
+reports inside an explicit =module ... end= that has neither, and only a
+name that is a near miss of one in scope. On the corpus it fires 3 times,
+and two of those are real bugs in Julia's standard library (=nargs= for
+=args= in =Base.Cartesian=, =_capturescalars= in =SparseArrays=).
+
+=unused-local= fires 1,017 times in 483 files; a sample read by hand
+was all real: results kept "just in case" in tests, a value overwritten
+before it is read, a =let= binding listed twice. It counts a =$x= inside
+a command literal or a string macro (=`run $x`=, =styled"{$x}"=) as a
+use, and stays quiet about names a macro call binds.
+
+=unused-argument= skips arguments with a type (=::T= arguments are there
+for dispatch), =kw...= catch-alls and anonymous functions; it is a hint,
+shown greyed, not a warning.
+
+* What else it does
+
+- *Hover* on a name shows where it is defined -- a variable's
+  assignment and type, a function's methods with the docstring above
+  them -- or, for a =Base=/stdlib name, its signatures and docstring.
+  =Base.Threads.nthreads= and other qualified names work too.
+- *Completion* offers the variables in scope, the file's functions and
+  types, keywords, the exports of =Base=, =Core= and the =using=ed
+  standard libraries, =@=macros, and the members after =Module.=.
+- *Signature help* shows the signatures of the function being called.
+- *Go to definition*, *references* and *rename* follow Julia's scoping:
+  hard scopes (=function=, =->=, =do=, =macro=, =struct=), soft scopes
+  (=for=, =while=, =try=, comprehensions), =let=, =global= and =local=.
+  Rename refuses imported names, macros, =var"..."= names and keyword
+  arguments.
+- The *outline* lists modules, functions, macros, structs, abstract and
+  primitive types, and constants.
+- *Folding* covers blocks (=function=, =struct=, =module=, =if=, =for=,
+  =let=, =begin=, ...), runs of comments and =#= ... =#= block comments.
+- *Formatting* is mep's own Julia formatter, the one =gf= runs: Runic's
+  layout, with no Julia installed. Only the lines that change are edited.
+  See [[file:formatting.html][Formatting]].
+
+* Linting from the command line
+
+#+begin_src sh
+mep-julia-lsp --lint src/*.jl
+cat script.jl | mep-julia-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+script.jl:3:5: error: break or continue outside loop [break-outside-loop]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+=mep-julia-lsp --julia-check FILE...= prints just Julia's first syntax
+error for each file, as =line:col: message=, or =ok=. With no arguments,
+=mep-julia-lsp= is the language server on stdio.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:formatting.html][Formatting]].

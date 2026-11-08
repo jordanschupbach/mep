@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Lua language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Lua language server</h1>
+<h1>What it is</h1>
+<p>Lua files get a language server of their own, <code>mep-lua-lsp</code>, built and
+shipped with mep. Open a <code>.lua</code> file and it attaches by itself -- nothing
+to install, and nothing in the file is ever run. It knows Lua 5.4, the
+version mep embeds, and mep's own <code>mep.*</code> API, so your <code>init.lua</code> and
+plugins get hover and completion for the editor as well as for the
+standard library.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>The same errors as Lua</h1>
+<p>Its lexer and parser follow Lua's own <code>llex.c</code> and <code>lparser.c</code> decision
+for decision, so a syntax error is reported where <code>luac</code> reports it, in
+its words:</p>
+<pre>'end' expected (to close 'function' at line 3) near &lt;eof&gt;</pre>
+<p>That includes the checks Lua makes while compiling: <code>goto</code> without a
+visible label, a label defined twice, assignment to a <code>&lt;const&gt;</code> variable,
+an unknown attribute, two <code>&lt;close&gt;</code> variables in one <code>local</code>, <code>...</code> outside
+a vararg function, <code>break</code> outside a loop, and the limits on locals (200)
+and upvalues (255). This is checked against <code>luac -p</code> over 3,200 real Lua
+files and a damaged copy of each (<code>just lua-parse-check</code>): every file gets
+the same verdict, message and line.</p>
+<p>Unlike <code>luac</code> it does not stop at the first syntax error: it skips to the
+next statement and keeps going, so completion and navigation keep working
+in a half-typed file. Only the first error is reported.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>what <code>luac</code> says, in its words (also <code>goto</code>, <code>label</code>, <code>const-assign</code>, ...)</td></tr>
+<tr><td><code>unused-local</code></td><td>warning</td><td>a local (or local function) nothing reads</td></tr>
+<tr><td><code>unused-value</code></td><td>warning</td><td>a local that is assigned but never read</td></tr>
+<tr><td><code>undefined-global</code></td><td>warning</td><td>an unknown global that looks like a misspelling: <i>did you mean 'print'?</i></td></tr>
+<tr><td><code>global-in-module</code></td><td>warning</td><td>a module (a file returning its table) setting a global at the top level</td></tr>
+<tr><td><code>unbalanced-assignment</code></td><td>warning</td><td><code>local a, b = 1</code> or <code>a = 1, 2</code>: a value dropped or a variable left <code>nil</code></td></tr>
+<tr><td><code>duplicate-key</code></td><td>warning</td><td><code>{a = 1, a = 2}</code></td></tr>
+<tr><td><code>unreachable-code</code></td><td>warning</td><td>statements after <code>break</code>, <code>goto</code> or <code>return</code> in the same block</td></tr>
+<tr><td><code>format-arguments</code></td><td>warning</td><td><code>string.format</code> given more or fewer values than its <code>%</code> specifiers</td></tr>
+<tr><td><code>self-assignment</code></td><td>warning</td><td><code>x = x</code></td></tr>
+<tr><td><code>shadowed-local</code></td><td>info</td><td>a local hiding another one of the same function</td></tr>
+<tr><td><code>deprecated-global</code></td><td>info</td><td><code>unpack</code>, <code>setfenv</code>, <code>loadstring</code>, ...: names Lua 5.4 no longer has</td></tr>
+<tr><td><code>empty-block</code></td><td>info</td><td>an <code>if=/=else=/=do</code> block with nothing (and no comment) in it</td></tr>
+<tr><td><code>unused-argument</code></td><td>hint</td><td>an argument of a local or global function that nothing after it needs</td></tr>
+<tr><td><code>unused-loop-variable</code></td><td>hint</td><td><code>for i, v in ipairs(t)</code> where <code>i</code> is never read</td></tr>
+<tr><td><code>redefined-local</code></td><td>hint</td><td><code>local x</code> again in the same block</td></tr>
+<tr><td><code>unused-label</code></td><td>hint</td><td>a label no <code>goto</code> jumps to</td></tr>
+</table>
+<p>Names starting with <code>_</code> are never reported as unused. After a syntax error
+only the syntax error and the lints before it are reported.</p>
+<p><code>luacheck</code>'s inline options are understood: <code>-- luacheck: globals a b</code>
+declares globals, <code>-- luacheck: ignore</code> at the end of a line silences that
+line, and on a line of its own at the top, the whole file.</p>
+<h2>Calibration</h2>
+<p>Lua is embedded in hosts the server cannot see -- Neovim, LÖVE, awesome,
+OpenResty, a test runner, or simply another file that sets the global --
+so an unknown global is reported only when it is a near miss of a name the
+server does know (a local in scope, a global the file sets, the standard
+library, <code>mep</code>). A file that plays with environments (<code>setfenv</code>,
+<code>module</code>, a local <code>_ENV</code>) gets no global checks at all.</p>
+<p>An unused argument is a hint, and only for a function with a signature of
+its own: a callback, a method or a function stored in a table implements
+an interface the caller dictates. A name from another Lua version is not
+reported when the file tests for it (<code>table.unpack or unpack</code>, =if setfenv
+then=) or looks at <code>_VERSION</code>.</p>
+<p>Run over the 3,214-file corpus, about one file in ten gets a warning, and
+the samples read were real: unused <code>require=s, =local ok, err</code> where <code>err</code>
+is never looked at, a format string missing its arguments.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> shows the reference manual's entry for a standard library function (<code>string.format</code>, <code>table.sort</code>, <code>file:read</code>, ...) and the documentation of a <code>mep.*</code> function; on the file's own names, the declaration -- <code>local function add(a, b)</code>, the initial value, the <code>&lt;const&gt;</code> / <code>&lt;close&gt;</code> attribute -- with the comment above it and how many times it is read and assigned. A method call on a value of unknown type (<code>s:upper()</code>) shows the string (or file) method of that name.</li>
+<li><b>Completion</b> offers the locals in scope at the cursor, innermost first, the file's globals, keywords and the standard library; after <code>string.</code>, <code>mep.</code> or any library table, its members; after <code>M.</code> the members the file assigns to <code>M</code> (<code>function M.run()</code>, <code>{size = 1}</code>); after <code>x:</code> the string and file methods. Nothing is offered inside a string or comment.</li>
+<li><b>Signature help</b> for the standard library, <code>mep.*</code> and the file's own functions, with the active argument; for <code>s:sub(</code> the receiver is not counted.</li>
+<li><b>Go to definition</b>, <b>references</b>, <b>highlights</b> and <b>rename</b> follow Lua's scoping: locals and upvalues by the declaration they resolve to, a global to the first place the file sets it, <code>M.f</code> to <code>function M.f</code>, <code>goto</code> to its label. Rename covers locals, parameters and labels, and refuses a new name that would capture or be captured by another variable, or turn a global into this local.</li>
+<li>The <b>outline</b> lists functions (<code>M.new</code>, <code>M:method</code>, local functions, nested ones under their parent), top-level locals, and the named fields of table constructors.</li>
+<li><b>Folding</b> covers functions, blocks, multi-line tables and calls, long strings, block comments and runs of line comments.</li>
+<li><b>Formatting</b> is mep's own Lua formatter, the one <code>gf</code> runs: StyLua's layout, byte for byte, with no <code>stylua</code> installed. Only the lines that change are edited. See <a href="formatting.html">Formatting</a>.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-lua-lsp</span> <span class="tok-red">--lint</span> *.lua
+<span class="tok-blue">cat</span> init.lua | <span class="tok-blue">mep-lua-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>init.lua:12:7: warning: unused variable 'util' [unused-local]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+With no arguments, <code>mep-lua-lsp</code> is the language server on stdio.</p>
+<h1>Using lua-language-server instead</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.lua.filetypes = <span class="tok-blue">{</span><span class="tok-green">'lua'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.lua_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="formatting.html">Formatting</a>.</li>
+</ul>
+</body>
+</html>

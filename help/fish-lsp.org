@@ -1,0 +1,106 @@
+#+TITLE: The Fish language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Fish scripts get a language server of their own, =mep-fish-lsp=, built
+and shipped with mep. Open a =.fish= file and it attaches by itself --
+nothing to install, no fish needed, and nothing in the file is ever run.
+It knows fish 4's builtins and the functions fish ships (=string=, =path=,
+=set=, =argparse=, =fish_add_path=, ...): their usage lines and options.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* The same errors as fish
+
+Its reader follows fish's own -- the same tokens, the same tree and the
+same checks fish makes before it runs a script -- so a syntax error is the
+one =fish --no-execute= reports, in its words and on its line:
+
+#+begin_example
+Missing end to balance this if statement
+$? is not the exit status. In fish, please use $status.
+'break' while not inside of loop
+#+end_example
+
+That covers unbalanced blocks and brackets, unterminated quotes, misplaced
+=&&= / =||= / =|= / =&=, =and= / =or= / =exec= / =time= in a pipeline,
+bash-isms (=${x}=, =$?=, =$(...)= in a command name), =break= and
+=continue= outside a loop, =end= with arguments, and an unknown builtin
+after =builtin=. It is checked against =fish --no-execute= (fish 4.8) over
+fish's own scripts and a dozen plugin collections -- 1,956 files and four
+damaged copies of each (=just fish-parse-check --mutants 4=): all 9,780 get
+the same verdict, and every error the same message and line.
+
+Unlike fish it does not stop at the first error: it skips ahead and keeps
+going, so completion and navigation keep working in a half-typed file.
+Only the first error is reported, as fish does.
+
+* What it reports
+
+| Code                     | Severity | What it means                                                         |
+|--------------------------+----------+-----------------------------------------------------------------------|
+| =syntax-error=           | error    | what =fish --no-execute= says, in its words                           |
+| =reserved-function-name= | error    | =function if=, =function end=: a keyword can't name a function         |
+| =read-only-variable=     | error    | =set status 1=, =set PWD x=: fish refuses to change these              |
+| =unknown-subcommand=     | error    | =string uper=, =path dir=, =status is-interative=                     |
+| =unclosed-test=          | error    | =[ -n "$x"= without its closing =]=                                    |
+| =unreachable-code=       | hint     | statements after =return=, =exit=, =break= or =continue= in a block   |
+
+** Calibration
+
+Each check reports only what fish itself would refuse when the line runs.
+Over the 1,956-file corpus they fire 12 times in 8 files, and every one
+is real: code after a =return= left in by mistake, a plugin's shim for
+old fish versions that sets =fish_pid=, and fish's own tests of the errors
+(a function named after a keyword, =set= on a read-only variable).
+
+* What else it does
+
+- *Hover* on a command shows its usage lines, for builtins and fish's
+  functions, or the file's own =function= line with its =-d= description;
+  on =$name=, where it is set and with which scope (=-l=, =-g=, =-U=, a
+  =function -a= argument, a =for= variable, an =argparse= flag).
+- *Completion* offers, in command position, keywords, the file's functions
+  and fish's commands; after a command, its options and subcommands
+  (=string match=, =path basename=, =status current-filename=); after =$=,
+  the variables in scope.
+- *Signature help* shows the usage lines of the command being typed.
+- *Go to definition*, *references* and *rename* follow fish's scoping: a
+  function's local and argument variables belong to it, a global to the
+  file; =$_flag_name= goes to its =argparse= spec. Rename covers functions
+  and variables and refuses a name fish would not accept.
+- The *outline* lists functions, top-level =set= variables, =abbr= and
+  =alias= definitions.
+- *Folding* covers blocks (=function=, =if=, =for=, =while=, =switch=,
+  =begin=, ={ }=), =case= arms and runs of comments.
+- *Formatting* is mep's own Fish formatter, the one =gf= runs:
+  =fish_indent='s layout, byte for byte, with no fish installed. Only the
+  lines that change are edited. See [[file:formatting.html][Formatting]].
+
+* Linting from the command line
+
+#+begin_src sh
+mep-fish-lsp --lint *.fish
+cat config.fish | mep-fish-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+config.fish:12:12: error: string uper: invalid subcommand [unknown-subcommand]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+=mep-fish-lsp --fish-check FILE...= prints just fish's first error for
+each file, or =ok=. With no arguments, =mep-fish-lsp= is the language
+server on stdio.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:formatting.html][Formatting]].

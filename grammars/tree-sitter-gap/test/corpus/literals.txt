@@ -1,0 +1,666 @@
+=====================================
+Integers
+=====================================
+
+-1;
+1;
+-12345678901234567890;
+12345678901234567890;
+
+---
+
+(source_file
+  (unary_expression (integer))
+  (integer)
+  (unary_expression (integer))
+  (integer)
+  )
+
+=====================================
+Floats
+=====================================
+
+1.0;
+.1;
+-.6;
++.1;
+123.4123;
+1.;
+123.;
++1.;
+
+# Ported from GAP test file: tst/testinstall/kernel/read.tst 
+# The following should all produce an error
+12.34\56;
+12.34\a56;
+12.34\56a;
+
+---
+
+(source_file
+  (float)
+  (float)
+  (unary_expression (float))
+  (unary_expression (float))
+  (float)
+  (float)
+  (float)
+  (unary_expression (float))
+  (comment)
+  (comment)
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+)
+
+=====================================
+Scientific Notation Floats
+=====================================
+
+1.e322;
+1.e-3;
+1.e+3;
+1.8e10;
+1.e10;
+-1.e10;
++6.022e23;
+.1e10;
+1.E322;
+1.E-3;
+1.E+3;
+1.8E10;
+1.E10;
+-1.E10;
++6.022E23;
+.1E10;
+1.8d10;
+1.8D10;
+1.8q10;
+1.8Q10;
+
+---
+
+(source_file
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (unary_expression (float))
+  (unary_expression (float))
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (unary_expression (float))
+  (unary_expression (float))
+  (float)
+  (float)
+  (float)
+  (float)
+  (float))
+
+=====================================
+Conversion marker Floats
+=====================================
+
+1.0i;
+.0i;
+1.i;
+1.e322a;
+1.e-3b;
+1.e+3c;
+1.8e10d;
+1.e10e;
+-1.e10f;
++6.022e23g;
+.1e10A;
+1.E322B;
+1.E-3C;
+1.E+3D;
+1.8E10E;
+1.E10F;
+-1.E10G;
++6.022E23H;
+.1E10I;
+1.8d10J;
+1.8D10K;
+1.8q10L;
+1.8Q10M;
+
+# Ported from GAP test file: tst/testinstall/kernel/scanner.tst 
+1.i;
+1.e0i;
+1.0i;
+1.0e0i;
+# The following should all produce an error
+1.ix;
+1.ei;
+1.eix;
+1.e0ix;
+1.0ix;
+1.0ei;
+1.0eix;
+1.0e0ix;
+
+---
+
+(source_file
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (unary_expression (float))
+  (unary_expression (float))
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (unary_expression (float))
+  (unary_expression (float))
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (comment)
+  (float)
+  (float)
+  (float)
+  (float)
+  (comment)
+  (float) (ERROR (identifier))
+  (ERROR (integer)) (identifier)
+  (ERROR (integer)) (identifier)
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+)
+
+=====================================
+Eager Conversion Floats
+=====================================
+
+1.0_l;
+.0_r;
+1._I;
+1.e322_a;
+1.e-3_b;
+1.e+3_c;
+1.8e10_d;
+1.e10_e;
+-1.e10_f;
++6.022e23_A;
+.1e10_B;
+1.E322_C;
+1.E-3_D;
+1.E+3_E;
+1.8E10_F;
+1.E10_G;
+-1.E10_o;
++6.022E23_p;
+.1E10_q;
+1.8d10_d;
+1.8D10_l;
+1.8q10_L;
+1.8Q10_L;
+1.0_;
+.0_;
+1._;
+1.e322_;
+
+# Ported from GAP test file: tst/testinstall/kernel/scanner.tst 
+1._;
+1._y;
+1.i_;
+1.i_y;
+1.e0_;
+1.e0_y;
+1.e0i_;
+1.e0i_y;
+1.0_;
+1.0_y;
+1.0i_;
+1.0i_y;
+1.0e0_;
+1.0e0_y;
+1.0e0i_;
+1.0e0i_y;
+# The following should all produce an error
+1._yx;
+1.i_yx;
+1.e_;
+1.e_y;
+1.e_yx;
+1.ei_;
+1.ei_y;
+1.ei_yx;
+1.e0_yx;
+1.e0i_yx;
+1.0_yx;
+1.0i_yx;
+1.0e_;
+1.0e_y;
+1.0e_yx;
+1.0ei_;
+1.0ei_y;
+1.0ei_yx;
+1.0e0_yx;
+1.0e0i_yx;
+
+---
+
+(source_file
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (unary_expression (float))
+  (unary_expression (float))
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (unary_expression (float))
+  (unary_expression (float))
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (comment)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (comment)
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (ERROR (integer)) (identifier)
+  (ERROR (integer)) (identifier)
+  (ERROR (integer)) (identifier)
+  (ERROR (integer)) (identifier)
+  (ERROR (integer)) (identifier)
+  (ERROR (integer)) (identifier)
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+  (float) (ERROR (identifier))
+)
+
+=====================================
+Strings
+=====================================
+
+"abc";
+"a'c";
+"a\"c";
+"a\142c";
+"a\0x62c";
+"a\142c\142d";
+"a\142\142c";
+"""abc""";
+"""a'c""";
+"""a"c""";
+"""a\c""";
+"""a\'c""";
+"hello#world";
+"""hello#world""";
+ "abc";
+ """abc""";
+
+---
+
+(source_file
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content
+      (escape_sequence))
+    (string_end))
+  (string
+    (string_start)
+    (string_content
+      (escape_sequence))
+    (string_end))
+  (string
+    (string_start)
+    (string_content
+      (escape_sequence))
+    (string_end))
+  (string
+    (string_start)
+    (string_content
+      (escape_sequence)
+      (escape_sequence))
+    (string_end))
+  (string
+    (string_start)
+    (string_content
+      (escape_sequence)
+      (escape_sequence))
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+)
+
+=====================================
+Multi-line strings
+=====================================
+
+"""
+A double quote hello,
+without double or single quotes.
+""";
+
+"""
+A double quote "hello",
+with double quotes.
+""";
+
+"""
+A double quote 'hello',
+with single quotes.
+""";
+
+"""A double quote hello,
+with text on top.
+""";
+
+"""
+A double quote hello,
+with text on bottom.""";
+
+"""A double quote hello,
+with text on top,
+and on bottom.""";
+
+"""ABCD\3
+EFG\""";
+
+---
+
+(source_file
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+)
+
+=====================================
+Character
+=====================================
+
+'b';
+'\'';
+'\n';
+'\\';
+'\142';
+'\0x62';
+'#';
+''';
+
+---
+
+(source_file
+  (char)
+  (char (escape_sequence))
+  (char (escape_sequence))
+  (char (escape_sequence))
+  (char (escape_sequence))
+  (char (escape_sequence))
+  (char)
+  (char)
+)
+
+=====================================
+Other primitives
+=====================================
+
+true;
+false;
+fail;
+
+---
+
+(source_file
+  (bool)
+  (bool)
+  (bool)
+  )
+
+
+=====================================
+Line continuations
+=====================================
+
+123\
+456;
+
+123\
+;
+
+"a split\
+string";
+
+"Hello\
+World\nHow\
+Are you?";
+
+abc := 345\
+678;
+
+abc := "a split\
+string";
+
+100.1\
+000;
+
+101\
+0.00;
+
+101\
+.00;
+
+101.\
+00;
+
+101.\
+e10;
+
+101.\
+a;
+
+101.\
+_l;
+
+101.\
+_;
+
+101\
+._;
+
+101._\
+l;
+
+101.\
+;
+
+101.\
+\
+;
+
+101\
+.\
+;
+
+101\
+.;
+
+10\
+1.;
+
+'\14\
+2';
+
+'a\
+';
+
+'\
+a';
+
+"""Hello\
+World""";
+
+
+---
+
+(source_file
+  (integer)
+  (integer)
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+  (string
+    (string_start)
+    (string_content
+      (escape_sequence))
+    (string_end))
+  (assignment_statement
+    (identifier)
+    (integer))
+  (assignment_statement
+    (identifier)
+    (string
+      (string_start)
+      (string_content)
+      (string_end)))
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (float)
+  (char (escape_sequence))
+  (char)
+  (char)
+  (string
+    (string_start)
+    (string_content)
+    (string_end))
+)

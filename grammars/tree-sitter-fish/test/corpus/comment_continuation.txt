@@ -1,0 +1,38 @@
+================================================================================
+Operator with comment inside - a comment after a continuation keeps the pipe
+================================================================================
+
+set (
+    echo 1 \
+    | string trim )
+set (
+    echo 1 \
+    # This comment breaks the pipe node
+    | string trim )
+
+--------------------------------------------------------------------------------
+
+(program
+  (command
+    (word)
+    (command_substitution
+      (pipe
+        (command
+          (word)
+          (integer)
+          (escape_sequence))
+        (command
+          (word)
+          (word)))))
+  (command
+    (word)
+    (command_substitution
+      (pipe
+        (command
+          (word)
+          (integer)
+          (escape_sequence))
+        (comment)
+        (command
+          (word)
+          (word))))))

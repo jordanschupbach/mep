@@ -1,0 +1,16 @@
+# Reviewed differences from the old grammar (alaviss/tree-sitter-nim 0.6.2)
+# in files Nim's own parser accepts: each is a place the old grammar had a
+# parse error and this one follows compiler/parser.nim. `<path glob>  # why`.
+
+# A closing bracket at a block's own indentation ends the block (Nim's
+# parseStmt): `sort(a, proc (x: int): int =\n  x\n  )`.
+*/compiler/semobjconstr.nim  # `)` closing a proc-expression argument at the body's indentation
+*/compiler/vtables.nim  # the same, `cmp = proc (...) =` ... `)`
+*/tests/closure/tclosure.nim  # the same, `onClick = proc(b: PButton) =` ... `)`
+
+# A line starting with `.name` at or past the statement's indentation
+# continues the expression (primarySuffix: tkDot with indent >= baseIndent).
+*/nim-results/tests/test_results.nim  # `vOk\n.map(...)\n.get() == 42`
+*/tests/after/exprs.nim  # nph's test: `aaaaaaa.bbbbbbbbb\n.sdcsd(...)...`
+*/tests/after/comments.nim  # nph's test: `dotexpr\n# comment\n.dotonnewline` (other errors remain, in both)
+*/tests/before/comments.nim  # the same

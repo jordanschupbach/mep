@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "scheme",
+      "camelcase": "Scheme",
+      "scope": "source.scheme",
+      "path": ".",
+      "file-types": ["scm", "ss", "sld", "sls", "sps"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Scheme, mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

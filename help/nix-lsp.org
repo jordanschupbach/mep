@@ -1,0 +1,137 @@
+#+TITLE: The Nix language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Nix files get a language server of their own, =mep-nix-lsp=, built and
+shipped with mep. Open a =.nix= file and it attaches by itself -- nothing
+to install, and *nothing is ever evaluated*: no =import= is followed, no
+derivation is built, no network is touched.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* The same errors as Nix
+
+Its parser is built from Nix's own: the lexer follows Nix's lexer rule for
+rule, and the grammar runs the same LALR(1) tables bison builds from Nix's
+=parser.y=. So a syntax error is noticed at the same token, at the same
+line and column, and worded the same way:
+
+#+begin_example
+syntax error, unexpected '}', expecting ';'
+#+end_example
+
+The checks Nix makes while parsing are made too, at the same moment:
+=attribute 'a' already defined at ...= (with Nix's merging of =a.b = ...;=
+paths into nested sets), =duplicate formal function argument=, =dynamic
+attributes not allowed in let=, =invalid integer=, =path has a trailing
+slash=. And it resolves every variable the way Nix does -- =let=, =rec=,
+function arguments, =with=, then the builtins in scope at the top level --
+so =undefined variable 'x'=, which Nix only tells you when you evaluate,
+shows up as you type. Under a =with=, a name nothing else binds is
+assumed to come from it, as Nix assumes.
+
+All of this is checked against =nix-instantiate --parse= over the 41,000
+=.nix= files of nixpkgs and a damaged copy of each (=just nix-parse-check=):
+every file gets the same verdict, the same message and the same position.
+
+Unlike Nix it does not stop at the first syntax error: it repairs the
+input (inserting or skipping a token) and keeps going, so completion and
+navigation keep working in a half-typed file.
+
+* What it reports
+
+| Code                   | Severity | What it means                                                       |
+|------------------------+----------+---------------------------------------------------------------------|
+| =syntax-error=         | error    | what Nix says, in its words                                         |
+| =duplicate-attribute=  | error    | an attribute defined twice (=a.b = 1; a.b = 2;=)                    |
+| =duplicate-formal=     | error    | ={ x, x }:=                                                         |
+| =dynamic-let=          | error    | =${...}= as a name in =let=                                         |
+| =dynamic-inherit=      | error    | =${...}= as a name in =inherit=                                     |
+| =invalid-integer=      | error    | an integer literal out of range                                     |
+| =invalid-float=        | error    | a float literal out of range                                        |
+| =trailing-slash=       | error    | a path literal ending in =/=                                        |
+| =experimental-feature= | error    | =\|>= / =<\|= without the =pipe-operators= feature                  |
+| =undefined-variable=   | error    | a name nothing binds (every one, not only the first)                |
+| =cursed-or=            | warning  | =f or= reads =or= as a variable: Nix warns about it too             |
+| =unused-let=           | warning  | a =let= binding nothing uses (not =_name=)                          |
+| =unused-with=          | warning  | a =with= nothing in its body takes a name from                      |
+| =deprecated-let=       | warning  | the old =let { ...; body = ...; }= form                             |
+| =url-literal=          | warning  | an unquoted URL (RFC 45 deprecates them)                            |
+| =unused-argument=      | hint     | a function argument the body never uses (not =_name=)               |
+| =empty-let=            | hint     | =let in ...=                                                        |
+| =redundant-rec=        | hint     | a =rec { }= whose attributes never refer to each other              |
+
+After a syntax error only the syntax error and what comes before it is
+reported: past that point the repaired tree is a guess.
+
+** Calibration
+
+Run over all of nixpkgs, which evaluates, the server reports no errors at
+all. Every =unused-let= it finds there is real -- mostly names a library
+file =inherit=s and then never uses. =unused-argument= is a hint (shown
+faded, never failing =--lint=) because an unused argument is often part
+of an interface: =callPackage= passes what a package asks for, a module
+lists =config= it does not read, =n: v: v= ignores a name on purpose.
+
+* What else it does
+
+- *Hover* on a builtin shows its arguments and the documentation of the
+  installed Nix (asked for once, with =nix __dump-language=; with no Nix
+  on =PATH= there are just the arguments). On the file's own names it
+  shows what the name is bound to -- the value, or the default of a
+  function argument -- and the comment above the binding. On a name that
+  comes from a =with=, it names the =with= (and the value, when the set is
+  written in the file).
+- *Completion* offers the names in scope at the cursor, innermost first,
+  then the builtins and keywords; after =builtins.= every builtin; after
+  =x.= the attributes of =x= when the file says what they are (a set
+  bound by =let=, an attribute of one, ...). A =with= over such a set
+  offers its attributes too.
+- *Signature help* for builtins (=map f list=) and for functions the file
+  defines, including ={ a, b ? ... }= argument sets.
+- *Go to definition*, *references*, *highlights* and *rename* follow
+  Nix's scoping. Rename refuses what would change the meaning: a named
+  argument (callers pass it by name), a name bound by =inherit=, a new name
+  that is already bound there or that a =with= supplies inside.
+- The *outline* lists =let= bindings and attributes, nested sets under
+  their attribute, and looks inside the set given to =mkDerivation=,
+  =callPackage= and friends.
+- *Folding* covers multi-line sets, lists, =let=s, argument sets,
+  indented strings and runs of comments.
+- *Formatting* is mep's nixfmt port, the one =gf= runs (the official
+  Nix style; byte-identical with =nixfmt=). See
+  [[file:formatting.html][Formatting]]. A file with a syntax error is left
+  alone.
+
+* Linting from the command line
+
+#+begin_src sh
+mep-nix-lsp --lint *.nix
+cat default.nix | mep-nix-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+default.nix:12:9: warning: unused let binding 'src' [unused-let]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+With no arguments, =mep-nix-lsp= is the language server on stdio.
+
+* Using nil or nixd instead
+
+#+begin_src lua
+mep.lsp_servers.nixd.filetypes = {'nix'}   -- or nil_ls
+mep.lsp_servers.nix_ls.filetypes = {}
+#+end_src
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:formatting.html][Formatting]].

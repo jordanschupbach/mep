@@ -225,6 +225,7 @@ grammar-generate-check:
 
 mepml-grammar: (grammar-generate "mepml")
 nix-grammar: (grammar-generate "nix")
+maxima-grammar: (grammar-generate "maxima")
 just-grammar: (grammar-generate "just")
 r-grammar: (grammar-generate "r")
 lua-grammar: (grammar-generate "lua")
@@ -238,12 +239,86 @@ org-grammar: (grammar-generate "org")
 markdown-grammar: (grammar-generate "markdown")
 markdown_inline-grammar: (grammar-generate "markdown_inline")
 javascript-grammar: (grammar-generate "javascript")
+# The TypeScript grammars share tree-sitter-typescript/common/ and extend
+# JavaScript's: regenerate both after changing either.
+# Regenerate the TypeScript and TSX grammars.
+typescript-grammar: (grammar-generate "typescript") (grammar-generate "tsx")
+tsx-grammar: (grammar-generate "tsx")
 commonlisp-grammar: (grammar-generate "commonlisp")
 bash-grammar: (grammar-generate "bash")
 clojure-grammar: (grammar-generate "clojure")
 crystal-grammar: (grammar-generate "crystal")
 c_sharp-grammar: (grammar-generate "c_sharp")
 sql-grammar: (grammar-generate "sql")
+scheme-grammar: (grammar-generate "scheme")
+fish-grammar: (grammar-generate "fish")
+tcl-grammar: (grammar-generate "tcl")
+# Regenerate the Fortran grammar (free and fixed form).
+fortran-grammar: (grammar-generate "fortran")
+# Regenerate the MATLAB/Octave grammar (.m files).
+matlab-grammar: (grammar-generate "matlab")
+# Regenerate the GAP grammar (.g/.gi/.gd).
+gap-grammar: (grammar-generate "gap")
+# Regenerate the Go grammar.
+go-grammar: (grammar-generate "go")
+rust-grammar: (grammar-generate "rust")
+# Regenerate the Zig grammar (oracle: Zig's own parser via tools/ts_grammar_diff/zig_check.sh).
+zig-grammar: (grammar-generate "zig")
+# Regenerate the Julia grammar (from tree-sitter-julia 0.25.0; oracle tools/ts_grammar_diff/julia_check.jl).
+julia-grammar: (grammar-generate "julia")
+# Regenerate the D grammar (from gdamore/tree-sitter-d 0.8.2; oracle tools/ts_grammar_diff/d_check.sh).
+d-grammar: (grammar-generate "d")
+# Link the pinned LDC (the D compiler's own parser: the oracle for `just
+# grammar-diff d --oracle`, d_check.sh) into build/grammar-diff/d/ldc.
+d-check:
+    mkdir -p build/grammar-diff/d
+    nix build --inputs-from . --out-link build/grammar-diff/d/ldc nixpkgs#ldc
+# Build go_check, the go/parser oracle for `just grammar-diff go --oracle`.
+go-check:
+    mkdir -p build/grammar-diff/go
+    go build -o build/grammar-diff/go/go-check tools/ts_grammar_diff/go_check.go
+# Regenerate the Kotlin grammar (from fwcd/tree-sitter-kotlin 0.3.8; oracle KotlinCheck.java).
+kotlin-grammar: (grammar-generate "kotlin")
+# Build kotlin-check, the Kotlin compiler's PSI parser as the oracle for
+# `just grammar-diff kotlin --oracle`, `just kotlin-parse-check` and the
+# formatter comparison (javac against nixpkgs' kotlin-compiler.jar).
+kotlin-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    k=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#kotlin)
+    j=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#jdk)
+    d=build/grammar-diff/kotlin
+    mkdir -p "$d/classes"
+    cp="$k/lib/kotlin-compiler.jar:$k/lib/kotlin-stdlib.jar"
+    "$j/bin/javac" -nowarn -cp "$cp" -d "$d/classes" tools/ts_grammar_diff/KotlinCheck.java
+    printf '#!/bin/sh\nexec %s -cp %s:%s KotlinCheck "$@"\n' "$j/bin/java" "$PWD/$d/classes" "$cp" > "$d/kotlin-check"
+    chmod +x "$d/kotlin-check"
+# Regenerate the Java grammar (from tree-sitter-java 0.23.5; oracle JavaCheck.java).
+java-grammar: (grammar-generate "java")
+# Build java-check, javac's own parser (JDK 25's JavacTask.parse()) as the
+# oracle for `just grammar-diff java --oracle` and `just java-parse-check`.
+java-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    j=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#jdk25)
+    d=build/grammar-diff/java
+    mkdir -p "$d/classes"
+    "$j/bin/javac" -nowarn -d "$d/classes" tools/ts_grammar_diff/JavaCheck.java
+    printf '#!/bin/sh\nexec %s -Xshare:auto -XX:+UseSerialGC -cp %s JavaCheck "$@"\n' "$j/bin/java" "$PWD/$d/classes" > "$d/java-check"
+    chmod +x "$d/java-check"
+# Regenerate the Nim grammar (from alaviss/tree-sitter-nim, MPL-2.0; oracle nim_check.nim).
+nim-grammar: (grammar-generate "nim")
+# Build nim_check, Nim's own parser (compiler/parser.nim) as the oracle for
+# `just grammar-diff nim --oracle` and `just nim-parse-check`.
+nim-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p build/grammar-diff/nim
+    src=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#nim-unwrapped.src)
+    dir=build/grammar-diff/nim/nim-src
+    if [ ! -d "$dir/compiler" ]; then mkdir -p "$dir" && tar -xf "$src" -C "$dir" --strip-components=1; fi
+    nim c -d:release --hints:off --warnings:off --path:"$dir" --nimcache:build/grammar-diff/nim/nimcache \
+        -o:build/grammar-diff/nim/nim-check tools/ts_grammar_diff/nim_check.nim
 
 # Replacing a vendored tree-sitter grammar with mep's own: the tools in
 # tools/ts_grammar_diff (README there; plans/TREESITTER_GRAMMAR_PLAN.md).
@@ -263,6 +338,16 @@ grammar-diff name *args:
 # Parse damaged copies of the corpus under ASan + UBSan.
 grammar-fuzz name *args:
     env -u LD_LIBRARY_PATH python3 -I tools/ts_grammar_diff/grammar_diff.py fuzz {{name}} {{args}}
+
+# Compare mep's formatter for a language with the standard one over its
+# corpus: byte-identical share, idempotence, refusals (tools/format_compare.py).
+format-compare lang *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/format_compare.py {{lang}} {{args}}
+
+# Lint a language's corpus with mep's own server and tally the codes, to
+# calibrate false positives (tools/lsp_lint_corpus.py).
+lsp-lint-corpus lang *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/lsp_lint_corpus.py {{lang}} {{args}}
 
 # Bytes left inside ERROR nodes on damaged copies, old grammar vs new.
 grammar-recovery name *args:
@@ -324,6 +409,125 @@ csharp-vocab:
 # and prose from DOCDIR, an unpacked sqlite-doc-<version>.zip from sqlite.org.
 sql-lsp-vocab docdir:
     python3 -I scripts/gen_sql_lsp_vocab.py {{docdir}} "$(command -v sqlite3)" > src/sql_lsp_names.cpp
+
+# Regenerate src/julia_lsp_vocab.cpp (mep-julia-lsp's Base/Core/stdlib names,
+# signatures and docstrings) from the installed Julia.
+julia-vocab:
+    env -u LD_LIBRARY_PATH julia --startup-file=no tools/gen_julia_vocab.jl > src/julia_lsp_vocab.cpp.tmp
+    mv src/julia_lsp_vocab.cpp.tmp src/julia_lsp_vocab.cpp
+
+# mep-go-lsp's standard-library table (src/go_lsp_vocab_data.cpp): names,
+# signatures and docs read with go/doc from Go's own source tree.
+go-lsp-vocab:
+    nix shell nixpkgs#go --command go run tools/gen_go_vocab.go > src/go_lsp_vocab_data.cpp.tmp
+    mv src/go_lsp_vocab_data.cpp.tmp src/go_lsp_vocab_data.cpp
+
+# Regenerate src/rust_lsp_vocab_data.cpp (mep-rust-lsp's std vocabulary)
+# with rustdoc's JSON output over the pinned rustc's library/ sources.
+rust-lsp-vocab:
+    nix develop --command python3 -I tools/gen_rust_vocab.py
+
+# Regenerate src/nix_lsp_builtins.cpp (mep-nix-lsp's builtins: names,
+# arguments, and which are in scope bare or as __name) from the installed
+# Nix, and src/nix_parse_tables.h (Nix's grammar as LALR tables).
+nix-lsp-vocab:
+    env -u LD_LIBRARY_PATH python3 -I tools/gen_nix_vocab.py
+    python3 -I tools/nix_lalr.py
+
+# Every tree mep's Maxima grammar builds over the maxima corpus, against
+# the one mep's Maxima reader (src/maxima_ast.cpp) builds.
+maxima-grammar-check *args:
+    python3 -I tools/ts_grammar_diff/maxima_check.py {{args}}
+
+# mep-nix-lsp's parser against `nix-instantiate --parse` over the nix corpus
+# (and --mutants N damaged copies of each file): messages and line:col.
+nix-parse-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/nix_parse_check.py {{args}}
+
+# Regenerate src/lua_lsp_vocab.cpp (mep-lua-lsp's names: Lua 5.4's standard
+# library with the reference manual's text, and mep's own `mep.*` API) from
+# the `lua` on PATH and a Lua 5.4 source tree's doc/manual.html.
+lua-lsp-vocab manual:
+    python3 -I tools/gen_lua_vocab.py {{manual}}
+
+# Regenerate src/js_lsp_vocab.cpp from TypeScript's lib files (pass the
+# typescript package directory, e.g. $(npm root -g)/typescript).
+js-lsp-vocab typescript:
+    nix shell nixpkgs#nodejs --command node tools/gen_js_vocab.js {{typescript}}
+
+# mep-fish-lsp's reader against `fish --no-execute` over the fish corpus (and
+# --mutants N damaged copies of each file): first error, message and line.
+fish-parse-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/fish_parse_check.py {{args}}
+
+# mep-fortran-lsp's reader against `gfortran -fsyntax-only` (via
+# tools/ts_grammar_diff/fortran_check.py) over the Fortran corpus (and
+# --mutants N damaged copies): first syntax error, message and line.
+fortran-parse-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/fortran_parse_check.py {{args}}
+
+# Regenerate src/fortran_lsp_vocab.cpp (intrinsic procedures, modules and
+# their names/signatures) from gfortran's info manual: `just fortran-vocab
+# $(nix build --no-link --print-out-paths nixpkgs#gfortran.cc.info)/share/info`.
+fortran-vocab info:
+    python3 -I tools/gen_fortran_vocab.py {{info}}
+
+# Check mep-julia-lsp's parser (a JuliaSyntax port) against Julia's own:
+# trees vs JuliaSyntax 0.4.10, diagnostics vs Julia 1.12, over the corpus and damaged copies.
+julia-parse-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/julia_parse_check.py {{args}}
+
+# Regenerate src/fish_lsp_vocab.cpp (mep-fish-lsp's commands: synopsis lines
+# and option spellings) from the `fish` on PATH and a fish source tree.
+fish-vocab *src:
+    env -u LD_LIBRARY_PATH python3 -I tools/fish_vocab.py {{src}}
+
+# mep-tcl-lsp's parser against libtcl's own (Tcl_ParseCommand/Tcl_ParseExpr),
+# span by span, over the tcl corpus (and --mutants N damaged copies).
+tcl-parse-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/tcl_parse_check.py {{args}}
+
+# Regenerate src/tcl_lsp_vocab.cpp from the tclsh on PATH (commands, argument
+# counts, usage lines) and an unpacked Tcl source tree (doc/*.n).
+tcl-lsp-vocab src:
+    env -u LD_LIBRARY_PATH python3 -I tools/gen_tcl_vocab.py {{src}}
+
+# mep-octave-lsp's reader against Octave's own `__parse_file__` (message and
+# "near line L, column C"), over the matlab corpus and --mutants N damaged copies.
+octave-parse-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/octave_parse_check.py {{args}}
+
+# Regenerate src/octave_lsp_vocab.cpp from the octave on PATH (function names
+# and their @deftypefn usage lines).
+octave-lsp-vocab:
+    env -u LD_LIBRARY_PATH python3 -I tools/gen_octave_vocab.py
+
+# mep-scheme-lsp's reader against Guile's own `read` over the scheme corpus
+# (and --mutants N damaged copies): accept/reject and the error position.
+scheme-read-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/scheme_read_check.py {{args}}
+
+# Check mep's Rust parser (src/rust_parse*, build/rust-parse/mep-rust-parse-test)
+# against `rustc -Zparse-crate-root-only` over build/grammar-corpus/rust
+# (and --mutants N damaged copies): accept/reject, first error line:col + message.
+rust-parse-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/rust_parse_check.py {{args}}
+
+# Regenerate src/scheme_lsp_names.cpp (names, kinds, arities, argument
+# lists; no prose) from the guile on PATH.
+scheme-lsp-vocab:
+    env -u LD_LIBRARY_PATH guile --no-auto-compile -s tools/gen_scheme_vocab.scm > src/scheme_lsp_names.cpp
+
+# mep-go-lsp's parser (a go/parser port) against go/parser itself over the
+# go corpus (and --mutants N damaged copies of each file): every error, its
+# message, line and column. Needs `just go-check` for the oracle.
+go-parse-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/go_parse_check.py {{args}}
+
+# mep-lua-lsp's parser against `luac -p` over the lua corpus (and
+# --mutants N damaged copies of each file): message and line.
+lua-parse-check *args:
+    env -u LD_LIBRARY_PATH python3 -I tools/lua_parse_check.py {{args}}
 
 # Regenerate mep's C# syntax tables (src/csharp_syntax_kinds.inc,
 # csharp_errors.inc, csharp_syntax_factory.{h,cpp}, csharp_unicode.inc) from
@@ -611,7 +815,7 @@ test: build-native
     ./{{native_build_dir}}/mep-check-help {{native_build_dir}}/mep --strict
     echo "== deps-audit"
     scripts/deps-audit.sh {{native_build_dir}}/mep
-    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-org-ts-test mep-ts-corpus-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-clojure-lsp-test mep-crystal-lsp-test mep-csharp-lsp-test mep-sql-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-bash-format-test mep-clojure-format-test mep-crystal-format-test mep-csharp-format-test mep-sql-format-test mep-nix-format-test mep-c-format-test mep-lisp-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-org-ts-test mep-ts-corpus-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-clojure-lsp-test mep-crystal-lsp-test mep-csharp-lsp-test mep-sql-lsp-test mep-nix-lsp-test mep-nim-lsp-test mep-nim-format-test mep-java-lsp-test mep-java-format-test mep-kotlin-lsp-test mep-kotlin-format-test mep-zig-lsp-test mep-zig-format-test mep-rust-lsp-test mep-rust-vocab-test mep-rust-format-test mep-rust-parse-test mep-go-lsp-test mep-go-format-test mep-gap-lsp-test mep-gap-format-test mep-julia-parse-test mep-julia-lsp-test mep-julia-format-test mep-tcl-lsp-test mep-tcl-format-test mep-octave-lsp-test mep-octave-format-test mep-fish-lsp-test mep-fish-format-test mep-fortran-lsp-test mep-fortran-format-test mep-scheme-lsp-test mep-scheme-format-test mep-lua-lsp-test mep-lua-format-test mep-js-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-bash-format-test mep-clojure-format-test mep-crystal-format-test mep-csharp-format-test mep-sql-format-test mep-nix-format-test mep-c-format-test mep-lisp-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then

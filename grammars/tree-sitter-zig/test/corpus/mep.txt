@@ -1,0 +1,125 @@
+================================================================================
+Assembly clobbers as an expression (Zig 0.16)
+================================================================================
+
+fn f() void {
+    asm volatile ("" ::: .{ .memory = true });
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (function_declaration name: (identifier) (parameters) type: (builtin_type) body: (block (expression_statement (asm_expression (string) (asm_output (asm_input (asm_clobbers (anonymous_struct_initializer (initializer_list (assignment_expression left: (field_expression member: (identifier)) right: (boolean))))))))))))
+
+================================================================================
+Assembly clobbers as a string list (older Zig)
+================================================================================
+
+fn f() void {
+    asm volatile ("" ::: "memory");
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (function_declaration name: (identifier) (parameters) type: (builtin_type) body: (block (expression_statement (asm_expression (string) (asm_output (asm_input (asm_clobbers (string (string_content))))))))))
+
+================================================================================
+async and await as names
+================================================================================
+
+const Flavor = enum { sync, async };
+const v = .{ .async = async, .await = await };
+const c = io.async(f, .{});
+
+--------------------------------------------------------------------------------
+
+(source_file (variable_declaration (identifier) (enum_declaration (container_field name: (identifier)) (container_field name: (identifier)))) (variable_declaration (identifier) (anonymous_struct_initializer (initializer_list (assignment_expression left: (field_expression member: (identifier)) right: (identifier)) (assignment_expression left: (field_expression member: (identifier)) right: (identifier))))) (variable_declaration (identifier) (call_expression function: (field_expression object: (identifier) member: (identifier)) arguments: (arguments (identifier) (anonymous_struct_initializer (initializer_list))))))
+
+================================================================================
+The old async prefix operator
+================================================================================
+
+const frame = async foo(x);
+
+--------------------------------------------------------------------------------
+
+(source_file (variable_declaration (identifier) (async_expression (call_expression function: (identifier) arguments: (arguments (identifier))))))
+
+================================================================================
+An if type after an error union
+================================================================================
+
+fn f(comptime c: bool) !if (c) void else u8 {
+    const t = 1;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (function_declaration name: (identifier) (parameters (parameter name: (identifier) type: (builtin_type))) type: (error_union_type ok: (if_type_expression condition: (identifier) (builtin_type) (builtin_type))) body: (block (variable_declaration (identifier) (integer)))))
+
+================================================================================
+An if type as a slice element
+================================================================================
+
+const S = struct { a: []if (w) u16 else u8 };
+
+--------------------------------------------------------------------------------
+
+(source_file (variable_declaration (identifier) (struct_declaration (container_field name: (identifier) type: (slice_type (if_type_expression condition: (identifier) (builtin_type) (builtin_type)))))))
+
+================================================================================
+Field types that are not primary types
+================================================================================
+
+const S = struct { e: error{A}, u: (A || B), t: T: {
+    break :T u32;
+} };
+const Tup = struct { error{foo} };
+
+--------------------------------------------------------------------------------
+
+(source_file (variable_declaration (identifier) (struct_declaration (container_field name: (identifier) type: (error_set_declaration (identifier))) (container_field name: (identifier) type: (parenthesized_expression (binary_expression left: (identifier) right: (identifier)))) (container_field name: (identifier) type: (labeled_type_expression (block_label (identifier)) (block (expression_statement (break_expression (break_label (identifier)) (builtin_type)))))))) (variable_declaration (identifier) (struct_declaration (container_field name: (error_set_declaration (identifier))))))
+
+================================================================================
+A comptime tuple field
+================================================================================
+
+const T = struct { comptime comptime_int = 0 };
+
+--------------------------------------------------------------------------------
+
+(source_file (variable_declaration (identifier) (struct_declaration (container_field name: (builtin_type) (integer)))))
+
+================================================================================
+true as a block label
+================================================================================
+
+const x = switch (v) {
+    .true => true: {
+        break :true 1;
+    },
+    else => 0,
+};
+
+--------------------------------------------------------------------------------
+
+(source_file (variable_declaration (identifier) (switch_expression (identifier) (switch_case (field_expression member: (identifier)) (labeled_type_expression (block_label (identifier)) (block (expression_statement (break_expression (break_label (identifier)) (integer)))))) (switch_case (integer)))))
+
+================================================================================
+Declarations
+================================================================================
+
+//! module doc
+const std = @import("std");
+
+pub fn main() !void {
+    var x: u32 = 0;
+    x += 1;
+}
+
+test "add" {
+    try std.testing.expect(1 + 1 == 2);
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (comment) (variable_declaration (identifier) (builtin_function (builtin_identifier) (arguments (string (string_content))))) (function_declaration name: (identifier) (parameters) type: (error_union_type ok: (builtin_type)) body: (block (variable_declaration (identifier) type: (builtin_type) (integer)) (variable_declaration (identifier) (integer)))) (test_declaration (string (string_content)) (block (expression_statement (try_expression (call_expression function: (field_expression object: (field_expression object: (identifier) member: (identifier)) member: (identifier)) arguments: (arguments (binary_expression left: (binary_expression left: (integer) right: (integer)) right: (integer)))))))))

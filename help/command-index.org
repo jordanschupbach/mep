@@ -65,7 +65,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:HtmlViewToggle= | [[file:mepml.html][mepml]] |
 | =:Kanban= | -- |
 | =:Learn= | [[file:learn-games.html][Playing]] |
-| =:lua= | [[file:notifications.html][Notifications]] |
+| =:lua= | [[file:command-line.html][The command line]] |
 | =:Mail= | [[file:mail.html][Email]] |
 | =:MailAttach= | [[file:mail.html][Email]] |
 | =:MailCompose= | [[file:mail.html][Email]] |
@@ -367,7 +367,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:PresMath= | [[file:presentations.html][Presentations]] |
 | =:PresNew= | [[file:presentations.html][Presentations]] |
 | =:PresPresent= | [[file:presentations.html][Presentations]] |
-| =:project= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:project= | [[file:projects.html][Projects]] |
 | =:projectclose= | [[file:projects.html][Projects]] |
 | =:projectclose!= | [[file:projects.html][Projects]] |
 | =:projectn= | [[file:projects.html][Projects]] |
@@ -392,7 +392,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:ServeStop= | [[file:local-server.html][Serving a directory]] |
 | =:set= | [[file:command-line.html][The command line]] |
 | =:SketchNew= | [[file:sketch.html][The 2D sketcher]] |
-| =:source= | [[file:installing.html][Installing and running]] |
+| =:source= | [[file:command-line.html][The command line]] |
 | =:sp= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:split= | [[file:command-line.html][The command line]] |
 | =:SvgViewToggle= | [[file:audio-svg.html][Audio and vector]] |
@@ -415,7 +415,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:ViewerRun= | [[file:viewer.html][The viewer]] |
 | =:vs= | [[file:command-line.html][The command line]] |
 | =:vsplit= | [[file:command-line.html][The command line]] |
-| =:w= | [[file:editing.html][Editing basics]] |
+| =:w= | [[file:command-line.html][The command line]] |
 | =:w!= | [[file:files.html][Files and buffers]] |
 | =:wa= | [[file:command-line.html][The command line]] |
 | =:wall= | [[file:cad-fem.html][CAD and finite elements]] |
@@ -429,7 +429,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:wqall= | -- |
 | =:write= | [[file:agent-api.html][Driving mep from an agent]] |
 | =:write!= | -- |
-| =:ws= | [[file:agent-api.html][Driving mep from an agent]] |
+| =:ws= | [[file:workspaces.html][Workspaces]] |
 | =:wsadopt= | [[file:workspaces.html][Workspaces]] |
 | =:wsclose= | -- |
 | =:wsclose!= | -- |
@@ -438,7 +438,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:wslist= | [[file:workspaces.html][Workspaces]] |
 | =:wsn= | [[file:workspaces.html][Workspaces]] |
 | =:wsnew= | [[file:git-workspaces.html][Branch-per-workspace]] |
-| =:wsnew!= | [[file:git-workspaces.html][Branch-per-workspace]] |
+| =:wsnew!= | [[file:workspaces.html][Workspaces]] |
 | =:wsnext= | [[file:workspaces.html][Workspaces]] |
 | =:wsp= | [[file:workspaces.html][Workspaces]] |
 | =:wsprevious= | [[file:workspaces.html][Workspaces]] |

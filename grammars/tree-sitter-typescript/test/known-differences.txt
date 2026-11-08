@@ -1,0 +1,19 @@
+# Corpus files whose trees differ from nixpkgs' tree-sitter-typescript/-tsx
+# 0.23's, reviewed, where this grammar is right and the old one wrong.
+# TypeScript's parser accepts them all; the old grammar has a parse error in
+# each, except where it read a tagged template's type arguments as
+# comparisons (`styled.kbd < Props > `...``, which TypeScript reads as a
+# tagged template). See README.md.
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff (grammar-diff).
+
+*/src/lib/es2015.symbol.wellknown.d.ts              # keyof readonly T[]
+*/src/compiler/types.ts                             # labelled tuple element named by a keyword: [symbol: Symbol]
+*/src/services/exportInfoMap.ts                     # labelled tuple element named by a keyword: [symbol: Symbol]
+*/app/components/Badge.ts                           # tagged template with type arguments: styled.div<P>`...`
+*/app/components/ClickablePadding.ts                # tagged template with type arguments: styled.div<P>`...`
+*/app/components/Heading.ts                         # tagged template with type arguments: styled.div<P>`...`
+*/app/components/Key.ts                             # tagged template with type arguments: styled.div<P>`...`
+*/app/components/Sidebar/components/ResizeBorder.ts # tagged template with type arguments: styled.div<P>`...`
+*/shared/editor/components/Styles.ts                # tagged template with type arguments: styled.div<P>`...`
+*/shared/styles/globals.ts                          # tagged template with type arguments: styled.div<P>`...`
+*/src/compiler/transformers/utilities.ts            # variance annotations: <in out T>

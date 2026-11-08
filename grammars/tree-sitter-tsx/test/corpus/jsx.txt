@@ -1,0 +1,206 @@
+================================================================================
+JSX elements with types around them
+================================================================================
+
+const App = ({ title }: Props): JSX.Element => (
+  <div className="app">
+    <h1>{title as string}</h1>
+    {items.map((i) => <Item key={i.id} {...i} />)}
+  </div>
+);
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (arrow_function
+        (formal_parameters
+          (required_parameter
+            (object_pattern
+              (shorthand_property_identifier_pattern))
+            (type_annotation
+              (type_identifier))))
+        (type_annotation
+          (nested_type_identifier
+            (identifier)
+            (type_identifier)))
+        (parenthesized_expression
+          (jsx_element
+            (jsx_opening_element
+              (identifier)
+              (jsx_attribute
+                (property_identifier)
+                (string
+                  (string_fragment))))
+            (jsx_element
+              (jsx_opening_element
+                (identifier))
+              (jsx_expression
+                (as_expression
+                  (identifier)
+                  (predefined_type)))
+              (jsx_closing_element
+                (identifier)))
+            (jsx_expression
+              (call_expression
+                (member_expression
+                  (identifier)
+                  (property_identifier))
+                (arguments
+                  (arrow_function
+                    (formal_parameters
+                      (required_parameter
+                        (identifier)))
+                    (jsx_self_closing_element
+                      (identifier)
+                      (jsx_attribute
+                        (property_identifier)
+                        (jsx_expression
+                          (member_expression
+                            (identifier)
+                            (property_identifier))))
+                      (jsx_expression
+                        (spread_element
+                          (identifier))))))))
+            (jsx_closing_element
+              (identifier))))))))
+
+================================================================================
+Type arguments on a tag
+================================================================================
+
+const s = <Select<Option> value={v} onChange={set} />;
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (jsx_self_closing_element
+        (identifier)
+        (type_arguments
+          (type_identifier))
+        (jsx_attribute
+          (property_identifier)
+          (jsx_expression
+            (identifier)))
+        (jsx_attribute
+          (property_identifier)
+          (jsx_expression
+            (identifier)))))))
+
+================================================================================
+Tag names starting with this, attributes named by reserved words
+================================================================================
+
+const a = <this.Component {...this.props} />;
+const b = <label class="x" for="y" in={open}>t</label>;
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (jsx_self_closing_element
+        (member_expression
+          (identifier)
+          (property_identifier))
+        (jsx_expression
+          (spread_element
+            (member_expression
+              (this)
+              (property_identifier)))))))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (jsx_element
+        (jsx_opening_element
+          (identifier)
+          (jsx_attribute
+            (property_identifier)
+            (string
+              (string_fragment)))
+          (jsx_attribute
+            (property_identifier)
+            (string
+              (string_fragment)))
+          (jsx_attribute
+            (property_identifier)
+            (jsx_expression
+              (identifier))))
+        (jsx_text)
+        (jsx_closing_element
+          (identifier))))))
+
+================================================================================
+A generic arrow function needs a comma or a constraint
+================================================================================
+
+const id = <T,>(x: T) => x;
+const first = <T extends unknown[]>(xs: T) => xs[0];
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (arrow_function
+        (type_parameters
+          (type_parameter
+            (type_identifier)))
+        (formal_parameters
+          (required_parameter
+            (identifier)
+            (type_annotation
+              (type_identifier))))
+        (identifier))))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (arrow_function
+        (type_parameters
+          (type_parameter
+            (type_identifier)
+            (constraint
+              (array_type
+                (predefined_type)))))
+        (formal_parameters
+          (required_parameter
+            (identifier)
+            (type_annotation
+              (type_identifier))))
+        (subscript_expression
+          (identifier)
+          (number))))))
+
+================================================================================
+Fragments and namespaced names
+================================================================================
+
+const f = <><svg:rect xlink:href="#a" /></>;
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (jsx_element
+        (jsx_opening_element)
+        (jsx_self_closing_element
+          (jsx_namespace_name
+            (identifier)
+            (identifier))
+          (jsx_attribute
+            (jsx_namespace_name
+              (identifier)
+              (identifier))
+            (string
+              (string_fragment))))
+        (jsx_closing_element)))))
+

@@ -1,0 +1,90 @@
+# Corpus files whose trees differ from nixpkgs' tree-sitter-fish 3.7.0's (the
+# grammar mep loaded before), reviewed, where this grammar is right and the old
+# one wrong. `fish --no-execute` accepts them all, so the oracle cannot tell;
+# see README.md. Format: <path glob>  # why.  Read by tools/ts_grammar_diff.
+
+# `(` inside double quotes is text: only `$(` substitutes there. The old grammar opened a command substitution at every `(`, and an unbalanced one (`"("`) misread the rest of the file.
+*-source/functions/fish_prompt.fish                                      # ( in double quotes
+*-source/share/completions/atool.fish                                    # ( in double quotes
+*-source/share/completions/hg.fish                                       # ( in double quotes
+*-source/share/functions/__fish_complete_wireshark.fish                  # ( in double quotes
+*-source/share/functions/fish_git_prompt.fish                            # ( in double quotes
+*-source/share/functions/fish_hg_prompt.fish                             # ( in double quotes
+*-source/conf.d/autopair.fish                                            # ( in double quotes
+*-source/tests/checks/eval.fish                                          # ( in double quotes
+*-source/tests/checks/string.fish                                        # ( in double quotes
+*-source/functions/_tide_item_python.fish                                # ( in double quotes
+*-source/tools/asciicast_ezgif_durations.fish                            # ( in double quotes
+*-source/conf.d/hydro.fish                                               # ( in double quotes
+*-source/share/functions/fish_command_not_found.fish                     # ( in double quotes
+
+# A line continuation where a command starts (`a | \` then `b`) is a gap, not the command's name (the old grammar made `\`+newline the name and `b` its first argument); and the comment lines a continuation carries over, which fish skips with their newline, keep the command going (the old grammar ended it there).
+*-source/functions/_fifc_open_opt.fish                                   # continuation
+*-source/functions/_fifc_preview_opt.fish                                # continuation
+*-source/functions/__git.current_branch.fish                             # continuation
+*-source/functions/gbda.fish                                             # continuation
+*-source/share/completions/rustup.fish                                   # continuation
+*-source/share/functions/__fish_print_hostnames.fish                     # continuation
+*-source/share/functions/fish_update_completions.fish                    # continuation
+*-source/tests/checks/basic.fish                                         # continuation
+*-source/functions/_fzf_search_git_log.fish                              # continuation
+*-source/functions/_fzf_search_processes.fish                            # continuation
+*-source/tools/crop_screenshots.fish                                     # continuation
+*-source/functions/_pure_prompt.fish                                     # continuation
+
+# `^` is an ordinary word character (fish 3.0 dropped the `^` stderr redirection); the old grammar left an ERROR at every `^`.
+*-source/share/completions/java_home.fish                                # ^ in a word
+*-source/share/functions/__fish_complete_man.fish                        # ^ in a word
+*-source/share/functions/__fish_data_with_file.fish                      # ^ in a word
+*-source/share/functions/__fish_describe_command.fish                    # ^ in a word
+*-source/tests/checks/alias.fish                                         # ^ in a word
+*-source/tests/checks/bg.fish                                            # ^ in a word
+*-source/tests/checks/cd.fish                                            # ^ in a word
+*-source/tests/checks/disown.fish                                        # ^ in a word
+*-source/tests/checks/fg.fish                                            # ^ in a word
+*-source/tests/checks/function.fish                                      # ^ in a word
+*-source/tests/checks/help-completions.fish                              # ^ in a word
+*-source/tests/checks/math.fish                                          # ^ in a word
+*-source/tests/checks/redirect.fish                                      # ^ in a word
+*-source/tests/checks/status.fish                                        # ^ in a word
+*-source/tests/checks/tmux-autosuggestion-multiline-resizing-prompt.fish # ^ in a word
+*-source/tests/checks/tmux-autosuggestion-multiline-resizing-window.fish # ^ in a word
+*-source/tests/checks/tmux-autosuggestion-multiline.fish                 # ^ in a word
+*-source/tests/checks/wait.fish                                          # ^ in a word
+*-source/functions/_tide_item_git.fish                                   # ^ in a word
+
+# Blanks after a brace expansion's comma are not part of the element (fish trims them: `{a, b}` is `a b`), and an element may concatenate a command substitution (`{a(echo ,)b}`).
+*-source/share/functions/__fish_config_interactive.fish                  # brace elements
+*-source/tests/checks/braces.fish                                        # brace elements
+*-source/tests/checks/cmdsub.fish                                        # brace elements
+*-source/tests/checks/expansion.fish                                     # brace elements
+*-source/tests/checks/variable-assignment.fish                           # brace elements
+*-source/tests/search_directory/expands_~_base_dir.fish                  # brace elements
+*-source/functions/_tide_sub_configure.fish                              # brace elements
+*-source/tests/_tide_item_git.test.fish                                  # brace elements
+
+# `{` where a command starts opens a block whatever follows it (`{echo a}`, fish 4.1), and newlines after `&&`, `||` and `|` are skipped, as fish does (`a &&` then `{ b }` on the next line).
+*-source/tests/checks/__fish_macos_set_env.fish                          # { block / newline after &&
+*-source/tests/checks/export.fish                                        # { block / newline after &&
+*-source/tests/checks/fish_config.fish                                   # { block / newline after &&
+*-source/tests/checks/indent.fish                                        # { block / newline after &&
+*-source/tests/checks/read.fish                                          # { block / newline after &&
+*-source/tests/checks/sphinx-markdown-changelog.fish                     # { block / newline after &&
+*-source/share/functions/help.fish                                       # { block / newline after &&
+
+# The last statement of a file needs no newline after it; the old grammar left a MISSING node there.
+*-source/tests/humantime.fish                                            # no final newline
+*-source/tests/strings.fish                                              # no final newline
+*-source/functions/mock.fish                                             # no final newline
+
+# `&` followed by a word character is part of the word (`no&background`), as fish 3.4 reads it.
+*-source/tests/checks/features-ampersand-nobg-in-token1.fish             # & in a word
+
+# `for j in` with an empty list is valid.
+*-source/tests/checks/for.fish                                           # empty for list
+
+# `for a,b in ...`: the loop variable is any word to the parser (fish rejects it when it runs).
+*-source/tests/checks/set.fish                                           # any word as for variable
+
+# Error recovery: `"$abc["` (fish rejects that command when it runs); the old grammar misread the rest of the file.
+*-source/tests/checks/status-value.fish                                  # error recovery

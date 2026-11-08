@@ -1,0 +1,561 @@
+# Corpus files whose trees differ from nixpkgs' tree-sitter-julia's (the
+# grammar mep loaded before), reviewed, where this grammar is right and the old
+# one wrong. Julia (JuliaSyntax, `julia_check.jl`) accepts every corpus file, so
+# the oracle cannot tell and the gate is --old-clean; see README.md.
+# Format: <path glob>  # why.  Read by tools/ts_grammar_diff.
+
+# Old tree is one ERROR from the start of the file (old parse error); the items in it are its recovery.
+*-julia-bin-1.12.4/share/julia/base/JuliaSyntax/test/test_utils.jl         # old root ERROR
+*-julia-bin-1.12.4/share/julia/base/operators.jl                           # old root ERROR
+*-julia-bin-1.12.4/share/julia/base/show.jl                                # old root ERROR
+*-julia-bin-1.12.4/share/julia/base/strings/annotated_io.jl                # old root ERROR
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Distributed/src/managers.jl    # old root ERROR
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/REPL/test/repl.jl              # old root ERROR
+*-julia-bin-1.12.4/share/julia/test/core.jl                                # old root ERROR
+*-julia-bin-1.12.4/share/julia/test/numbers.jl                             # old root ERROR
+*-julia-bin-1.12.4/share/julia/test/offsetarray.jl                         # old root ERROR
+*-julia-bin-1.12.4/share/julia/test/show.jl                                # old root ERROR
+*-julia-bin-1.12.4/share/julia/test/subarray.jl                            # old root ERROR
+*-julia-depot/depot/packages/Combinatorics/nV2DW/src/permutations.jl       # old root ERROR
+*-julia-depot/depot/packages/ExprTools/MDS6z/src/function.jl               # old root ERROR
+*-julia-depot/depot/packages/ExproniconLite/4LrQ4/src/codegen.jl           # old root ERROR
+*-julia-depot/depot/packages/FillArrays/lVl4c/src/fillalgebra.jl           # old root ERROR
+*-julia-depot/depot/packages/StochasticDiffEq/vjhmf/test/noindex_tests.jl  # old root ERROR
+*-julia-depot/depot/packages/Symbolics/79hA1/src/wrapper-types.jl          # old root ERROR
+
+# `isa`/`in` called or used as names (`isa(x, T)`, `!in(x, s)`, `@inline in(x) = ...`, `f === isa`); the old grammar read the infix operator applied to a tuple.
+*-julia-bin-1.12.4/share/julia/Compiler/src/abstractinterpretation.jl                                        # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/inferencestate.jl                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/optimize.jl                                                      # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/ssair/inlining.jl                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/ssair/ir.jl                                                      # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/ssair/irinterp.jl                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/ssair/legacy.jl                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/ssair/passes.jl                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/ssair/show.jl                                                    # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/ssair/slot2ssa.jl                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/ssair/verify.jl                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/stmtinfo.jl                                                      # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/tfuncs.jl                                                        # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/typeinfer.jl                                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/typelattice.jl                                                   # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/typelimits.jl                                                    # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/typeutils.jl                                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/utilities.jl                                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/src/validation.jl                                                    # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/test/EscapeAnalysis.jl                                               # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/test/inference.jl                                                    # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/test/inline.jl                                                       # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/test/irpasses.jl                                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/test/ssair.jl                                                        # isa/in as names
+*-julia-bin-1.12.4/share/julia/Compiler/test/tarjan.jl                                                       # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/Base.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/abstractdict.jl                                                          # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/bitset.jl                                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/c.jl                                                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/client.jl                                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/complex.jl                                                               # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/dict.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/errorshow.jl                                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/essentials.jl                                                            # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/expr.jl                                                                  # isa/in as names, keyword symbol
+*-julia-bin-1.12.4/share/julia/base/file.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/iddict.jl                                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/indices.jl                                                               # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/iobuffer.jl                                                              # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/irrationals.jl                                                           # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/libuv.jl                                                                 # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/loading.jl                                                               # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/meta.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/methodshow.jl                                                            # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/multidimensional.jl                                                      # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/opaque_closure.jl                                                        # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/precompilation.jl                                                        # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/promotion.jl                                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/reflection.jl                                                            # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/runtime_internals.jl                                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/shell.jl                                                                 # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/summarysize.jl                                                           # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/threadingconstructs.jl                                                   # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/util.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/base/weakkeydict.jl                                                           # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Artifacts/src/Artifacts.jl                                       # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Base64/test/runtests.jl                                          # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Dates/test/io.jl                                                 # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Dates/test/ranges.jl                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Distributed/src/cluster.jl                                       # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Distributed/src/macros.jl                                        # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Distributed/src/messages.jl                                      # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Distributed/src/remotecall.jl                                    # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Distributed/test/distributed_exec.jl                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/InteractiveUtils/src/InteractiveUtils.jl                         # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/InteractiveUtils/src/codeview.jl                                 # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/InteractiveUtils/src/macros.jl                                   # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/InteractiveUtils/test/runtests.jl                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LibGit2/src/callbacks.jl                                         # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LibGit2/test/libgit2-tests.jl                                    # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LibGit2/test/online-tests.jl                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/src/dense.jl                                       # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/src/givens.jl                                      # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/src/special.jl                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/bidiag.jl                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/bitarray.jl                                   # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/bunchkaufman.jl                               # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/diagonal.jl                                   # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/pinv.jl                                       # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/symmetric.jl                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/testtriag.jl                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/triangular.jl                                 # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/unitful.jl                                    # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Markdown/src/render/terminal/formatting.jl                       # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Markdown/test/runtests.jl                                        # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Pkg/ext/REPLExt/REPLExt.jl                                       # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Pkg/src/API.jl                                                   # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Pkg/src/Artifacts.jl                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Pkg/src/manifest.jl                                              # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Pkg/test/registry.jl                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Profile/src/Profile.jl                                           # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Profile/test/runtests.jl                                         # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/REPL/src/LineEdit.jl                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/REPL/src/docview.jl                                              # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Random/test/runtests.jl                                          # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Serialization/test/runtests.jl                                   # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/SharedArrays/test/runtests.jl                                    # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Sockets/test/runtests.jl                                         # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/SparseArrays/test/higherorderfns.jl                              # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/SparseArrays/test/issues.jl                                      # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/SparseArrays/test/linalg_solvers.jl                              # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/SparseArrays/test/sparsevector.jl                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Statistics/test/runtests.jl                                      # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/TOML/src/print.jl                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/TOML/test/values.jl                                              # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Test/test/runtests.jl                                            # isa/in as names
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/libblastrampoline_jll/test/runtests.jl                           # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/abstractarray.jl                                                         # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/arrayops.jl                                                              # isa/in as names, spaced-colon range
+*-julia-bin-1.12.4/share/julia/test/binaryplatforms.jl                                                       # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/bitarray.jl                                                              # isa/in as names, spaced-colon range
+*-julia-bin-1.12.4/share/julia/test/bitset.jl                                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/broadcast.jl                                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/ccall.jl                                                                 # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/channels.jl                                                              # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/choosetests.jl                                                           # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/dict.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/docs.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/env.jl                                                                   # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/errorshow.jl                                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/file.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/functional.jl                                                            # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/generic_map_tests.jl                                                     # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/int.jl                                                                   # isa/in as names, ~ call
+*-julia-bin-1.12.4/share/julia/test/intrinsics.jl                                                            # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/keywordargs.jl                                                           # isa/in as names, keyword arrow function
+*-julia-bin-1.12.4/share/julia/test/math.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/meta.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/misc.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/missing.jl                                                               # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/opaque_closure.jl                                                        # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/operators.jl                                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/parse.jl                                                                 # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/path.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/precompile.jl                                                            # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/ranges.jl                                                                # isa/in as names, juxtaposition, chains
+*-julia-bin-1.12.4/share/julia/test/rational.jl                                                              # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/read.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/rebinding.jl                                                             # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/reduce.jl                                                                # isa/in as names, suffixed operator
+*-julia-bin-1.12.4/share/julia/test/reflection.jl                                                            # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/sets.jl                                                                  # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/spawn.jl                                                                 # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/stacktraces.jl                                                           # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/staged.jl                                                                # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/strings/util.jl                                                          # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/subtype.jl                                                               # isa/in as names
+*-julia-bin-1.12.4/share/julia/test/syntax.jl                                                                # isa/in as names, outer as a name
+*-julia-bin-1.12.4/share/julia/test/vecelement.jl                                                            # isa/in as names
+*-julia-depot/depot/packages/Adapt/0LkKU/src/base.jl                                                         # isa/in as names
+*-julia-depot/depot/packages/ArrayInterface/9um5f/test/gpu/cuda.jl                                           # isa/in as names
+*-julia-depot/depot/packages/BandedMatrices/i60tK/test/test_indexing.jl                                      # isa/in as names
+*-julia-depot/depot/packages/BandedMatrices/i60tK/test/test_miscs.jl                                         # isa/in as names
+*-julia-depot/depot/packages/BandedMatrices/i60tK/test/test_subarray.jl                                      # isa/in as names
+*-julia-depot/depot/packages/Baselet/m7G2K/src/implementations.jl                                            # isa/in as names
+*-julia-depot/depot/packages/BenchmarkTools/1i1mY/src/serialization.jl                                       # isa/in as names
+*-julia-depot/depot/packages/BenchmarkTools/1i1mY/test/ExecutionTests.jl                                     # isa/in as names
+*-julia-depot/depot/packages/ChainRules/166sf/src/rulesets/Base/arraymath.jl                                 # isa/in as names
+*-julia-depot/depot/packages/ChainRules/166sf/src/rulesets/Base/nondiff.jl                                   # isa/in as names
+*-julia-depot/depot/packages/ChainRules/166sf/test/unzipped.jl                                               # isa/in as names
+*-julia-depot/depot/packages/Combinatorics/nV2DW/test/combinations.jl                                        # isa/in as names
+*-julia-depot/depot/packages/Combinatorics/nV2DW/test/partitions.jl                                          # isa/in as names
+*-julia-depot/depot/packages/Compat/X2Pvg/test/runtests.jl                                                   # isa/in as names, public list
+*-julia-depot/depot/packages/CpuId/n7zKC/test/runtests.jl                                                    # isa/in as names
+*-julia-depot/depot/packages/DataFrames/kcA9R/src/other/index.jl                                             # isa/in as names
+*-julia-depot/depot/packages/DataFrames/kcA9R/src/other/utils.jl                                             # isa/in as names
+*-julia-depot/depot/packages/DataFrames/kcA9R/test/conversions.jl                                            # isa/in as names
+*-julia-depot/depot/packages/DataFrames/kcA9R/test/dataframe.jl                                              # isa/in as names
+*-julia-depot/depot/packages/DataFrames/kcA9R/test/iteration.jl                                              # isa/in as names
+*-julia-depot/depot/packages/DataFrames/kcA9R/test/join.jl                                                   # isa/in as names
+*-julia-depot/depot/packages/DataFrames/kcA9R/test/reshape.jl                                                # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/src/dict_support.jl                                        # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/src/sorted_set.jl                                          # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/src/sparse_int_set.jl                                      # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_accumulator.jl                                   # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_avl_tree.jl                                      # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_default_dict.jl                                  # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_deque.jl                                         # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_int_set.jl                                       # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_list.jl                                          # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_multi_dict.jl                                    # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_mutable_list.jl                                  # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_ordered_robin_dict.jl                            # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_queue.jl                                         # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_red_black_tree.jl                                # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_robin_dict.jl                                    # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_sparse_int_set.jl                                # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_splay_tree.jl                                    # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_stack.jl                                         # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_swiss_dict.jl                                    # isa/in as names
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_trie.jl                                          # isa/in as names
+*-julia-depot/depot/packages/DiffEqBase/0oXZq/test/downstream/solve_error_handling.jl                        # isa/in as names
+*-julia-depot/depot/packages/Distances/mlz7p/test/test_dists.jl                                              # isa/in as names, juxtaposition, chains
+*-julia-depot/depot/packages/Distributions/YQSrn/ext/DistributionsTestExt.jl                                 # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/fit.jl                                                 # isa/in as names, spaced-colon range
+*-julia-depot/depot/packages/Distributions/YQSrn/test/mixture.jl                                             # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/multivariate/dirichletmultinomial.jl                   # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/multivariate/multinomial.jl                            # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/multivariate/mvlognormal.jl                            # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/multivariate/mvnormal.jl                               # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/multivariate/mvtdist.jl                                # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/multivariate/vonmisesfisher.jl                         # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/testutils.jl                                           # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/truncate.jl                                            # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/univariate/continuous/logitnormal.jl                   # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/univariate/continuous/lognormal.jl                     # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/univariate/continuous/normal.jl                        # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/univariate/discrete/categorical.jl                     # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/univariate/discrete/poissonbinomial.jl                 # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/univariate_bounds.jl                                   # isa/in as names
+*-julia-depot/depot/packages/Distributions/YQSrn/test/univariates.jl                                         # isa/in as names
+*-julia-depot/depot/packages/DocStringExtensions/zNis6/src/utilities.jl                                      # isa/in as names
+*-julia-depot/depot/packages/DocStringExtensions/zNis6/test/tests.jl                                         # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/src/deploydocs.jl                                              # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/src/documents.jl                                               # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/src/html/HTMLWriter.jl                                         # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/src/latex/LaTeXWriter.jl                                       # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/src/utilities/utilities.jl                                     # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/test/dom.jl                                                    # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/test/examples/tests.jl                                         # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/test/examples/tests_latex.jl                                   # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/test/navnode.jl                                                # isa/in as names
+*-julia-depot/depot/packages/Documenter/eoWm2/test/utilities.jl                                              # isa/in as names
+*-julia-depot/depot/packages/DomainSets/uPzJI/src/generic/setoperations.jl                                   # isa/in as names
+*-julia-depot/depot/packages/DomainSets/uPzJI/test/test_domain_ball.jl                                       # isa/in as names
+*-julia-depot/depot/packages/DynamicPolynomials/jTR3O/src/monomial_vector.jl                                 # isa/in as names
+*-julia-depot/depot/packages/DynamicPolynomials/jTR3O/test/runtests.jl                                       # isa/in as names
+*-julia-depot/depot/packages/ExponentialUtilities/fPUA2/src/krylov_phiv.jl                                   # isa/in as names
+*-julia-depot/depot/packages/FastClosures/3LNoZ/src/FastClosures.jl                                          # isa/in as names
+*-julia-depot/depot/packages/FastGaussQuadrature/86KOG/test/test_gausshermite.jl                             # isa/in as names
+*-julia-depot/depot/packages/FastGaussQuadrature/86KOG/test/test_gaussjacobi.jl                              # isa/in as names
+*-julia-depot/depot/packages/FastGaussQuadrature/86KOG/test/test_gausslaguerre.jl                            # isa/in as names
+*-julia-depot/depot/packages/Format/0LfJN/src/cformat.jl                                                     # isa/in as names
+*-julia-depot/depot/packages/GenericSchur/ELTEH/test/complex.jl                                              # isa/in as names
+*-julia-depot/depot/packages/Glob/RCNHV/src/Glob.jl                                                          # isa/in as names
+*-julia-depot/depot/packages/Glob/RCNHV/test/runtests.jl                                                     # isa/in as names
+*-julia-depot/depot/packages/Graphs/awp48/src/cycles/basis.jl                                                # isa/in as names
+*-julia-depot/depot/packages/Graphs/awp48/test/linalg/graphmatrices.jl                                       # isa/in as names
+*-julia-depot/depot/packages/IOCapture/Y5rEA/src/IOCapture.jl                                                # isa/in as names
+*-julia-depot/depot/packages/IntervalSets/CFJJK/test/setoperations.jl                                        # isa/in as names
+*-julia-depot/depot/packages/IrrationalConstants/lWTip/src/macro.jl                                          # isa/in as names
+*-julia-depot/depot/packages/JSON/93Ea8/test/json-samples.jl                                                 # isa/in as names
+*-julia-depot/depot/packages/JSON/93Ea8/test/parser/inttype.jl                                               # isa/in as names
+*-julia-depot/depot/packages/JSON/93Ea8/test/regression/issue021.jl                                          # isa/in as names
+*-julia-depot/depot/packages/JSON3/rT1w2/src/gentypes.jl                                                     # isa/in as names
+*-julia-depot/depot/packages/JSON3/rT1w2/test/json.jl                                                        # isa/in as names
+*-julia-depot/depot/packages/JuMP/Ue9wj/src/macros/@NL.jl                                                    # isa/in as names
+*-julia-depot/depot/packages/JuMP/Ue9wj/test/test_model.jl                                                   # isa/in as names
+*-julia-depot/depot/packages/JuliaFormatter/tKKVP/src/JuliaFormatter.jl                                      # isa/in as names
+*-julia-depot/depot/packages/JuliaFormatter/tKKVP/test/files/ChainRules.jl/src/rulesets/Base/nondiff.jl      # isa/in as names
+*-julia-depot/depot/packages/JuliaFormatter/tKKVP/test/files/parse_nlp.jl                                    # isa/in as names
+*-julia-depot/depot/packages/KernelAbstractions/lGrz7/test/reflection.jl                                     # isa/in as names
+*-julia-depot/depot/packages/Latexify/uRtlR/src/latextabular.jl                                              # isa/in as names
+*-julia-depot/depot/packages/LinearSolve/n9KK1/ext/LinearSolveHYPREExt.jl                                    # isa/in as names
+*-julia-depot/depot/packages/LinearSolve/n9KK1/lib/LinearSolveAutotune/src/benchmarking.jl                   # isa/in as names
+*-julia-depot/depot/packages/LinearSolve/n9KK1/lib/LinearSolveAutotune/test/runtests.jl                      # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/src/FileFormats/MPS/MPS.jl                               # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/src/Test/test_linear.jl                                  # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/src/Test/test_solve.jl                                   # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/src/Utilities/parser.jl                                  # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/src/instantiate.jl                                       # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/test/Bridges/bridge_optimizer.jl                         # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/test/FileFormats/MOF/MOF.jl                              # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/test/FileFormats/NL/NL.jl                                # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/test/Utilities/mockoptimizer.jl                          # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/test/Utilities/model.jl                                  # isa/in as names
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/test/Utilities/parser.jl                                 # isa/in as names
+*-julia-depot/depot/packages/Missings/MBhnW/test/runtests.jl                                                 # isa/in as names
+*-julia-depot/depot/packages/MultivariatePolynomials/XplLO/test/commutative/differentiation.jl               # isa/in as names
+*-julia-depot/depot/packages/OffsetArrays/b7qpm/test/runtests.jl                                             # isa/in as names
+*-julia-depot/depot/packages/Optim/7krni/src/api.jl                                                          # isa/in as names
+*-julia-depot/depot/packages/Optim/7krni/test/multivariate/solvers/constrained/ipnewton/constraints.jl       # isa/in as names
+*-julia-depot/depot/packages/Optim/7krni/test/runtests.jl                                                    # isa/in as names
+*-julia-depot/depot/packages/OrderedCollections/Xihhq/src/little_set.jl                                      # isa/in as names
+*-julia-depot/depot/packages/OrderedCollections/Xihhq/test/test_little_dict.jl                               # isa/in as names
+*-julia-depot/depot/packages/OrderedCollections/Xihhq/test/test_little_set.jl                                # isa/in as names
+*-julia-depot/depot/packages/OrderedCollections/Xihhq/test/test_ordered_dict.jl                              # isa/in as names
+*-julia-depot/depot/packages/OrderedCollections/Xihhq/test/test_ordered_set.jl                               # isa/in as names
+*-julia-depot/depot/packages/OrdinaryDiffEq/Hdbut/lib/OrdinaryDiffEqDifferentiation/src/derivative_utils.jl  # isa/in as names
+*-julia-depot/depot/packages/OrdinaryDiffEqDifferentiation/DE4z5/src/derivative_utils.jl                     # isa/in as names
+*-julia-depot/depot/packages/PDMats/cb4LS/test/pdmtypes.jl                                                   # isa/in as names
+*-julia-depot/depot/packages/PDMats/cb4LS/test/specialarrays.jl                                              # isa/in as names
+*-julia-depot/depot/packages/Parsers/6Nt9C/test/runtests.jl                                                  # isa/in as names
+*-julia-depot/depot/packages/PooledArrays/Vy2X0/test/runtests.jl                                             # isa/in as names
+*-julia-depot/depot/packages/Preferences/x9wI6/src/utils.jl                                                  # isa/in as names
+*-julia-depot/depot/packages/Preferences/x9wI6/test/runtests.jl                                              # isa/in as names
+*-julia-depot/depot/packages/RecursiveArrayTools/MMSrL/src/array_partition.jl                                # isa/in as names
+*-julia-depot/depot/packages/Rmath/OMJR1/src/Rmath.jl                                                        # isa/in as names
+*-julia-depot/depot/packages/Runic/pMfKV/src/runestone.jl                                                    # isa/in as names
+*-julia-depot/depot/packages/SciMLBase/URv1y/src/clock.jl                                                    # isa/in as names
+*-julia-depot/depot/packages/SciMLBase/URv1y/test/downstream/comprehensive_indexing.jl                       # isa/in as names, ~ call
+*-julia-depot/depot/packages/SciMLBase/URv1y/test/downstream/integrator_indexing.jl                          # isa/in as names, ~ call
+*-julia-depot/depot/packages/SciMLBase/URv1y/test/remake_tests.jl                                            # isa/in as names
+*-julia-depot/depot/packages/SciMLOperators/Gd0Qg/src/func.jl                                                # isa/in as names
+*-julia-depot/depot/packages/SciMLOperators/Gd0Qg/test/basic.jl                                              # isa/in as names
+*-julia-depot/depot/packages/SciMLOperators/Gd0Qg/test/matrix.jl                                             # isa/in as names
+*-julia-depot/depot/packages/SciMLOperators/Gd0Qg/test/scalar.jl                                             # isa/in as names
+*-julia-depot/depot/packages/SciMLOperators/Gd0Qg/test/zygote.jl                                             # isa/in as names
+*-julia-depot/depot/packages/SparseConnectivityTracer/ejsx1/test/test_constructors.jl                        # isa/in as names
+*-julia-depot/depot/packages/SpecialFunctions/mf0qH/test/gamma.jl                                            # isa/in as names
+*-julia-depot/depot/packages/Static/SeEGr/test/ranges.jl                                                     # isa/in as names
+*-julia-depot/depot/packages/StaticArrayInterface/lkDPR/src/StaticArrayInterface.jl                          # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/src/SArray.jl                                                # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/src/SMatrix.jl                                               # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/src/SVector.jl                                               # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/src/svd.jl                                                   # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/src/util.jl                                                  # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/MMatrix.jl                                              # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/MVector.jl                                              # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/SizedArray.jl                                           # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/abstractarray.jl                                        # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/core.jl                                                 # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/lu.jl                                                   # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/lyap.jl                                                 # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/matrix_multiply.jl                                      # isa/in as names
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/matrix_multiply_add.jl                                  # isa/in as names, juxtaposition, chains
+*-julia-depot/depot/packages/StaticArrays/MTYJP/test/qr.jl                                                   # isa/in as names
+*-julia-depot/depot/packages/Statistics/gbcbG/test/runtests.jl                                               # isa/in as names
+*-julia-depot/depot/packages/StatsBase/yZS2U/src/scalarstats.jl                                              # isa/in as names, spaced-colon range
+*-julia-depot/depot/packages/StatsBase/yZS2U/test/cov.jl                                                     # isa/in as names
+*-julia-depot/depot/packages/StatsBase/yZS2U/test/moments.jl                                                 # isa/in as names
+*-julia-depot/depot/packages/StatsBase/yZS2U/test/scalarstats.jl                                             # isa/in as names
+*-julia-depot/depot/packages/StatsBase/yZS2U/test/transformations.jl                                         # isa/in as names
+*-julia-depot/depot/packages/StatsBase/yZS2U/test/weights.jl                                                 # isa/in as names
+*-julia-depot/depot/packages/StochasticDiffEq/vjhmf/src/integrators/integrator_utils.jl                      # isa/in as names
+*-julia-depot/depot/packages/StructArrays/n5wxA/test/runtests.jl                                             # isa/in as names
+*-julia-depot/depot/packages/SymbolicIndexingInterface/qqDIL/src/parameter_indexing.jl                       # isa/in as names
+*-julia-depot/depot/packages/SymbolicIndexingInterface/qqDIL/src/remake.jl                                   # isa/in as names
+*-julia-depot/depot/packages/SymbolicIndexingInterface/qqDIL/src/symbol_cache.jl                             # isa/in as names
+*-julia-depot/depot/packages/SymbolicIndexingInterface/qqDIL/test/parameter_indexing_test.jl                 # isa/in as names
+*-julia-depot/depot/packages/Symbolics/79hA1/src/array-lib.jl                                                # isa/in as names
+*-julia-depot/depot/packages/TimerOutputs/L5q5K/src/show.jl                                                  # isa/in as names
+*-julia-depot/depot/packages/TimerOutputs/L5q5K/test/runtests.jl                                             # isa/in as names
+*-julia-depot/depot/packages/Zygote/55SqB/src/forward/lib.jl                                                 # isa/in as names
+
+# A range with a spaced colon (`1 : n`, `a : b - 1`); the old grammar read `: n` as a quoted symbol.
+*-julia-bin-1.12.4/share/julia/base/bitarray.jl                                                    # spaced-colon range
+*-julia-bin-1.12.4/share/julia/base/reduce.jl                                                      # spaced-colon range
+*-julia-bin-1.12.4/share/julia/base/reinterpretarray.jl                                            # spaced-colon range
+*-julia-bin-1.12.4/share/julia/base/strings/io.jl                                                  # spaced-colon range
+*-julia-bin-1.12.4/share/julia/base/strings/substring.jl                                           # spaced-colon range
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/src/bitarray.jl                          # spaced-colon range
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/src/lu.jl                                # spaced-colon range
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/SparseArrays/src/linalg.jl                             # spaced-colon range
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/SparseArrays/src/sparsematrix.jl                       # spaced-colon range
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/SparseArrays/src/sparsevector.jl                       # spaced-colon range
+*-julia-bin-1.12.4/share/julia/test/copy.jl                                                        # spaced-colon range
+*-julia-bin-1.12.4/share/julia/test/testhelpers/OffsetDenseArrays.jl                               # spaced-colon range
+*-julia-depot/depot/packages/BandedMatrices/i60tK/src/banded/BandedLU.jl                           # spaced-colon range
+*-julia-depot/depot/packages/BandedMatrices/i60tK/src/generic/broadcast.jl                         # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/benchmark/bench_heap.jl                          # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/src/balanced_tree.jl                             # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/src/deque.jl                                     # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/src/heaps.jl                                     # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/src/heaps/mutable_binary_heap.jl                 # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/bench_deque.jl                              # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/bench_disjoint_set.jl                       # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/bench_heaps.jl                              # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_binheap.jl                             # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_disjoint_set.jl                        # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_mutable_binheap.jl                     # spaced-colon range
+*-julia-depot/depot/packages/DataStructures/IrAJn/test/test_sorted_containers.jl                   # spaced-colon range
+*-julia-depot/depot/packages/DiffRules/rcnI0/test/runtests.jl                                      # spaced-colon range
+*-julia-depot/depot/packages/Distributions/YQSrn/src/samplers/multinomial.jl                       # spaced-colon range
+*-julia-depot/depot/packages/Distributions/YQSrn/src/univariate/discrete/categorical.jl            # spaced-colon range
+*-julia-depot/depot/packages/Distributions/YQSrn/src/univariates.jl                                # spaced-colon range
+*-julia-depot/depot/packages/Distributions/YQSrn/test/multivariate/dirichlet.jl                    # spaced-colon range
+*-julia-depot/depot/packages/InitialValues/OWP8V/src/InitialValues.jl                              # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/benchmark/cg_bmark.jl                                    # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/src/block_krylov_workspaces.jl                           # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/src/cg_lanczos_shift.jl                                  # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/src/cgls_lanczos_shift.jl                                # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/src/diom.jl                                              # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/src/dqgmres.jl                                           # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/src/krylov_show.jl                                       # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/src/krylov_utils.jl                                      # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/src/krylov_workspaces.jl                                 # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/src/symmlq.jl                                            # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/gen_lsq.jl                                          # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/get_div_grad.jl                                     # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/test_cg_lanczos_shift.jl                            # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/test_cgls.jl                                        # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/test_cgls_lanczos_shift.jl                          # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/test_crls.jl                                        # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/test_interface.jl                                   # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/test_lslq.jl                                        # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/test_lsmr.jl                                        # spaced-colon range
+*-julia-depot/depot/packages/Krylov/b8G6h/test/test_lsqr.jl                                        # spaced-colon range
+*-julia-depot/depot/packages/Latexify/uRtlR/test/latexraw_test.jl                                  # spaced-colon range
+*-julia-depot/depot/packages/MLStyle/SLOsr/test/gallery/simple.jl                                  # spaced-colon range
+*-julia-depot/depot/packages/MatrixFactorizations/GRbpz/src/ul.jl                                  # spaced-colon range
+*-julia-depot/depot/packages/OffsetArrays/b7qpm/benchmark/benchmarks.jl                            # spaced-colon range
+*-julia-depot/depot/packages/OrdinaryDiffEq/Hdbut/lib/OrdinaryDiffEqFIRK/src/firk_perform_step.jl  # spaced-colon range
+*-julia-depot/depot/packages/StaticArrays/MTYJP/src/SHermitianCompact.jl                           # spaced-colon range
+*-julia-depot/depot/packages/StaticArrays/MTYJP/src/linalg.jl                                      # spaced-colon range
+*-julia-depot/depot/packages/StatsBase/yZS2U/src/misc.jl                                           # spaced-colon range
+*-julia-depot/depot/packages/StatsBase/yZS2U/src/moments.jl                                        # spaced-colon range
+*-julia-depot/depot/packages/StatsBase/yZS2U/src/ranking.jl                                        # spaced-colon range
+*-julia-depot/depot/packages/StatsBase/yZS2U/src/signalcorr.jl                                     # spaced-colon range
+
+# A trailing `;` before `)` in call arguments (`f(x;)`, `(; a)`): the old grammar inserted an empty identifier.
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceChainRulesCoreExt/reverse_onearg.jl                                   # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceEnzymeExt/forward_onearg.jl                                           # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceEnzymeExt/forward_twoarg.jl                                           # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceEnzymeExt/reverse_onearg.jl                                           # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceEnzymeExt/reverse_twoarg.jl                                           # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceFastDifferentiationExt/onearg.jl                                      # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceFastDifferentiationExt/twoarg.jl                                      # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceFiniteDiffExt/onearg.jl                                               # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceFiniteDiffExt/twoarg.jl                                               # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceFiniteDifferencesExt/DifferentiationInterfaceFiniteDifferencesExt.jl  # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceForwardDiffExt/onearg.jl                                              # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceForwardDiffExt/twoarg.jl                                              # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceGTPSAExt/onearg.jl                                                    # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceGTPSAExt/twoarg.jl                                                    # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceMooncakeExt/onearg.jl                                                 # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceMooncakeExt/twoarg.jl                                                 # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfacePolyesterForwardDiffExt/onearg.jl                                     # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfacePolyesterForwardDiffExt/twoarg.jl                                     # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceReverseDiffExt/onearg.jl                                              # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceReverseDiffExt/twoarg.jl                                              # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceSparseMatrixColoringsExt/hessian.jl                                   # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceSparseMatrixColoringsExt/jacobian.jl                                  # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceSparseMatrixColoringsExt/jacobian_mixed.jl                            # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceSymbolicsExt/onearg.jl                                                # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceSymbolicsExt/twoarg.jl                                                # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceTrackerExt/DifferentiationInterfaceTrackerExt.jl                      # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/ext/DifferentiationInterfaceZygoteExt/DifferentiationInterfaceZygoteExt.jl                        # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/first_order/derivative.jl                                                                     # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/first_order/gradient.jl                                                                       # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/first_order/jacobian.jl                                                                       # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/first_order/pullback.jl                                                                       # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/first_order/pushforward.jl                                                                    # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/misc/from_primitive.jl                                                                        # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/misc/simple_finite_diff.jl                                                                    # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/misc/zero_backends.jl                                                                         # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/second_order/hessian.jl                                                                       # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/second_order/hvp.jl                                                                           # trailing ; in arguments
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/src/second_order/second_derivative.jl                                                             # trailing ; in arguments
+*-julia-depot/depot/packages/Flux/uRn8o/test/layers/basic.jl                                                                                                  # trailing ; in arguments
+*-julia-depot/depot/packages/Graphs/awp48/src/shortestpaths/bellman-ford.jl                                                                                   # trailing ; in arguments
+*-julia-depot/depot/packages/JuMP/Ue9wj/src/JuMP.jl                                                                                                           # trailing ; in arguments
+*-julia-depot/depot/packages/MLStyle/SLOsr/src/MatchCore.jl                                                                                                   # trailing ; in arguments
+*-julia-depot/depot/packages/MLStyle/SLOsr/src/Record.jl                                                                                                      # trailing ; in arguments
+*-julia-depot/depot/packages/SparseMatrixColorings/FZwji/test/type_stability.jl                                                                               # trailing ; in arguments
+*-julia-depot/depot/packages/Transducers/fnznF/benchmark/bench_missing_argmax.jl                                                                              # trailing ; in arguments
+*-julia-depot/depot/packages/Transducers/fnznF/benchmark/bench_missing_dot.jl                                                                                 # trailing ; in arguments
+
+# `~` is a call at assignment precedence (`a + b ~ c`, `[D(x) ~ P]`); the old grammar read a unary `~`.
+*-julia-bin-1.12.4/share/julia/base/JuliaSyntax/test/tokenize.jl                                      # ~ call
+*-julia-depot/depot/packages/DiffEqBase/0oXZq/test/downstream/null_de.jl                              # ~ call
+*-julia-depot/depot/packages/JuliaSyntax/BHOG8/test/tokenize.jl                                       # ~ call
+*-julia-depot/depot/packages/NonlinearSolve/o12Km/test/mtk_cache_indexing_tests.jl                    # ~ call
+*-julia-depot/depot/packages/OrdinaryDiffEq/Hdbut/test/modelingtoolkit/dae_initialize_integration.jl  # ~ call
+*-julia-depot/depot/packages/RecursiveArrayTools/MMSrL/test/downstream/symbol_indexing.jl             # ~ call
+*-julia-depot/depot/packages/SciMLBase/URv1y/test/downstream/initialization.jl                        # ~ call
+*-julia-depot/depot/packages/SciMLBase/URv1y/test/downstream/modelingtoolkit_remake.jl                # ~ call
+*-julia-depot/depot/packages/SciMLBase/URv1y/test/downstream/problem_interface.jl                     # ~ call
+*-julia-depot/depot/packages/SymbolicIndexingInterface/qqDIL/test/downstream/array_indexing.jl        # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/ext/SymbolicsNemoExt.jl                                  # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/src/equations.jl                                         # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/test/arrays.jl                                           # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/test/downstream/ParameterizedFunctions_MATLAB.jl         # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/test/integral.jl                                         # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/test/latexify.jl                                         # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/test/linear_solver.jl                                    # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/test/overloads.jl                                        # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/test/parsing.jl                                          # ~ call
+*-julia-depot/depot/packages/Symbolics/79hA1/test/taylor.jl                                           # ~ call
+
+# Juxtaposition after `)` or an adjoint (`transpose(b)a`, `A'B'`, `(1.0 + im)x`), and chained comparisons (`a ≈ b ≈ c`) as one left-nested chain.
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/abstractq.jl                 # juxtaposition, chains
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/LinearAlgebra/test/special.jl                   # juxtaposition, chains
+*-julia-bin-1.12.4/share/julia/test/complex.jl                                              # juxtaposition, chains
+*-julia-depot/depot/packages/Accessors/8Y4uq/test/test_functionlenses.jl                    # juxtaposition, chains
+*-julia-depot/depot/packages/ArrayLayouts/TyjMK/test/test_layoutarray.jl                    # juxtaposition, chains
+*-julia-depot/depot/packages/ArrayLayouts/TyjMK/test/test_muladd.jl                         # juxtaposition, chains
+*-julia-depot/depot/packages/BandedMatrices/i60tK/test/test_linalg.jl                       # juxtaposition, chains
+*-julia-depot/depot/packages/JuMP/Ue9wj/test/test_complex.jl                                # juxtaposition, chains
+*-julia-depot/depot/packages/LazyArrays/336z1/test/addtests.jl                              # juxtaposition, chains
+*-julia-depot/depot/packages/LazyArrays/336z1/test/bandedtests.jl                           # juxtaposition, chains
+*-julia-depot/depot/packages/LazyArrays/336z1/test/broadcasttests.jl                        # juxtaposition, chains
+*-julia-depot/depot/packages/LazyArrays/336z1/test/multests.jl                              # juxtaposition, chains
+*-julia-depot/depot/packages/LazyArrays/336z1/test/runtests.jl                              # juxtaposition, chains
+*-julia-depot/depot/packages/MatrixFactorizations/GRbpz/test/test_ql.jl                     # juxtaposition, chains
+*-julia-depot/depot/packages/MatrixFactorizations/GRbpz/test/test_qr.jl                     # juxtaposition, chains
+*-julia-depot/depot/packages/MatrixFactorizations/GRbpz/test/test_rq.jl                     # juxtaposition, chains
+*-julia-depot/depot/packages/MultivariatePolynomials/XplLO/test/commutative/chain_rules.jl  # juxtaposition, chains
+*-julia-depot/depot/packages/MultivariatePolynomials/XplLO/test/commutative/division.jl     # juxtaposition, chains
+*-julia-depot/depot/packages/Symbolics/79hA1/test/extensions/groebner.jl                    # juxtaposition, chains
+
+# Operators with Unicode suffixes (`==ₜ`, `<ₑ`, `∗ₚ`) are one operator.
+*-julia-depot/depot/packages/Accessors/8Y4uq/test/test_optics.jl                     # suffixed operator
+*-julia-depot/depot/packages/BangBang/VnHxZ/test/test_add.jl                         # suffixed operator
+*-julia-depot/depot/packages/BangBang/VnHxZ/test/test_append.jl                      # suffixed operator
+*-julia-depot/depot/packages/BangBang/VnHxZ/test/test_collectors.jl                  # suffixed operator
+*-julia-depot/depot/packages/BangBang/VnHxZ/test/test_merge.jl                       # suffixed operator
+*-julia-depot/depot/packages/BangBang/VnHxZ/test/test_staticarrays.jl                # suffixed operator
+*-julia-depot/depot/packages/BangBang/VnHxZ/test/test_union.jl                       # suffixed operator
+*-julia-depot/depot/packages/SymbolicUtils/kWzFw/test/order.jl                       # suffixed operator
+*-julia-depot/depot/packages/Transducers/fnznF/test/test_append_bb.jl                # suffixed operator
+*-julia-depot/depot/packages/Transducers/fnznF/test/test_processes.jl                # suffixed operator
+*-julia-depot/depot/packages/Transducers/fnznF/test/threads/test_copy.jl             # suffixed operator
+*-julia-depot/depot/packages/Transducers/fnznF/test/threads/test_parallel_reduce.jl  # suffixed operator
+
+# Keyword symbols (`:where`, `:in`, `:return`) are quoted names; the old grammar read the keyword.
+*-julia-bin-1.12.4/share/julia/base/io.jl                                                       # keyword symbol
+*-julia-bin-1.12.4/share/julia/stdlib/v1.12/Serialization/src/Serialization.jl                  # keyword symbol
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/test/Back/FiniteDiff/benchmark.jl   # keyword symbol
+*-julia-depot/depot/packages/DifferentiationInterface/D3LUI/test/Back/ForwardDiff/benchmark.jl  # keyword symbol
+*-julia-depot/depot/packages/ExproniconLite/4LrQ4/src/analysis/compare.jl                       # keyword symbol
+*-julia-depot/depot/packages/ExproniconLite/4LrQ4/src/analysis/split.jl                         # keyword symbol
+*-julia-depot/depot/packages/ExproniconLite/4LrQ4/src/print/inline.jl                           # keyword symbol
+*-julia-depot/depot/packages/JuMP/Ue9wj/src/Containers/macro.jl                                 # keyword symbol
+*-julia-depot/depot/packages/JuMP/Ue9wj/src/print.jl                                            # keyword symbol
+*-julia-depot/depot/packages/JuliaSyntax/BHOG8/src/expr.jl                                      # keyword symbol
+*-julia-depot/depot/packages/Latexify/uRtlR/src/recipes.jl                                      # keyword symbol
+*-julia-depot/depot/packages/MathOptInterface/vK6dk/src/FileFormats/MOF/write.jl                # keyword symbol
+*-julia-depot/depot/packages/MutableArithmetics/tNSBd/src/rewrite.jl                            # keyword symbol
+*-julia-depot/depot/packages/RuntimeGeneratedFunctions/2SjTC/src/RuntimeGeneratedFunctions.jl   # keyword symbol
+*-julia-depot/depot/packages/Symbolics/79hA1/src/arrays.jl                                      # keyword symbol
+
+# Character literals `'''` and `'\x1'`; the old grammar read adjoints.
+*-julia-bin-1.12.4/share/julia/test/char.jl                                    # character literal
+*-julia-depot/depot/packages/CommonMark/lmLkP/src/parsers/inlines/emphasis.jl  # character literal
+
+# `g::::(!IsDirected)`: `::(...)` is a unary type annotation, not a call of `::`.
+*-julia-depot/depot/packages/Graphs/awp48/src/biconnectivity/biconnect.jl      # ::(...) type
+*-julia-depot/depot/packages/Graphs/awp48/src/community/assortativity.jl       # ::(...) type
+*-julia-depot/depot/packages/Graphs/awp48/src/community/clique_percolation.jl  # ::(...) type
+*-julia-depot/depot/packages/Graphs/awp48/src/community/core-periphery.jl      # ::(...) type
+*-julia-depot/depot/packages/Graphs/awp48/src/core.jl                          # ::(...) type
+*-julia-depot/depot/packages/Graphs/awp48/src/traversals/maxadjvisit.jl        # ::(...) type
+*-julia-depot/depot/packages/Graphs/awp48/src/trees/prufer.jl                  # ::(...) type
+*-julia-depot/depot/packages/SimpleTraits/7VJph/test/runtests.jl               # ::(...) type

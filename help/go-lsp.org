@@ -1,0 +1,102 @@
+#+TITLE: The Go language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Go files get a language server of their own, =mep-go-lsp=, built
+and shipped with mep. Open a =.go= file and it attaches by itself --
+nothing to install, no Go toolchain needed.
+
+Its parser is a port of Go's own =go/parser=, so a syntax error carries the
+same message at the same line and column that =gofmt -e= or =go vet= would
+print. It knows the whole standard library (Go 1.26): every package, with
+its functions, types, methods and fields, their signatures and Go's own
+documentation.
+
+It looks at one file at a time. Everything a file can decide about itself
+is exact -- local variables, parameters, labels, imports -- but a name
+declared in another file of the same package, or in a package outside the
+standard library, is simply unknown to it. So it never claims a plain name
+is undefined, and it does not type-check. For whole-package analysis, =gopls=
+is still registered and can be switched on (see [[file:lsp.html][Language servers]]).
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* What it reports
+
+| Code               | Severity | What it means |
+|--------------------+----------+---------------|
+| =syntax-error=     | error    | go/parser's error, word for word |
+| =unused-variable=  | error    | =declared and not used: x= -- a local that is never read (a plain =x = ...= does not count as a read, as in Go) |
+| =unused-import=    | error    | ="fmt" imported and not used= |
+| =unused-label=     | error    | a label nothing jumps to or breaks out of |
+| =undefined-label=  | error    | =goto=, =break= or =continue= naming a label the function does not have |
+| =misplaced-branch= | error    | =break= outside a loop, switch or select; =continue= outside a loop; =fallthrough= out of place |
+| =missing-return=   | error    | a function with results can reach its closing brace |
+| =redeclared=       | error    | a name declared twice in one block |
+| =no-new-variables= | error    | =:== with nothing new on the left |
+| =undefined=        | error    | =pkg.Name= where =pkg= is a standard-library package with no such exported name |
+| =unreachable=      | warning  | code after a =return=, =panic=, infinite loop, ... (greyed out) |
+| =self-assignment=  | warning  | =x = x= |
+| =deprecated=       | hint     | a standard-library name documented as deprecated, with the reason (struck through) |
+
+The error-level checks are the Go compiler's own errors, so on code that
+builds they are silent: over Go's source tree and six large projects (9,931
+files outside test data) the only reports are two real ones (a typo in a
+file excluded from the build, and code after an infinite loop) plus the
+deprecation hints. Checks that depend on uses are skipped while the file has
+a syntax error, since a broken tree would make them guess.
+
+An import's name is known for the standard library. For other packages it
+is guessed from the path (=github.com/x/go-yaml/v3= is =yaml=), and an
+import is only reported unused when no unknown =name.= appears anywhere in
+the file. Standard-library members are only checked in files that build for
+linux/amd64: a =_windows.go= file, a =//go:build ignore= file or an external
+test package using its package's test hooks is left alone.
+
+* What else it does
+
+- *Hover* shows a declaration and its doc comment: for the standard library,
+  the signature, Go's documentation and a link to pkg.go.dev; for a variable
+  declared with =:==, its type where it can be worked out (=x, err :=
+  strconv.Atoi(s)= gives =var x int=).
+- *Completion* offers the names in scope (locals, parameters, this file's
+  declarations, imports), builtins and keywords; after =pkg.=, the package's
+  members; after =x.=, the fields and methods of =x='s type, for types
+  declared in the file and standard-library types (=b.Wr= on a
+  =strings.Builder= offers =WriteString=); inside an import's quotes, the
+  standard-library import paths.
+- *Signature help* for standard-library functions and methods, builtins and
+  functions declared in the file, with the current argument highlighted.
+- *Go to definition* and *references* for anything declared in the file,
+  including struct fields and methods reached through a selector.
+- *Rename* of local names (variables, parameters, labels, local types).
+  Package-level names are visible in the package's other files, so renaming
+  them here is refused rather than done half way.
+- *Outline*: functions, methods as =(*T).Name=, types with their fields and
+  interface methods, constants and variables.
+- *Folding* of blocks, composite literals, struct and interface bodies,
+  parenthesised declarations, long calls, case clauses and comments.
+- *Formatting* with mep's gofmt (see [[file:formatting.html][Formatting]]).
+
+* Linting from the command line
+
+#+begin_src sh
+mep-go-lsp --lint FILE...
+#+end_src
+
+prints every diagnostic as =path:line:col: severity: message [code]= --
+1-based line and column, then the severity (=error=, =warning=, =info=,
+=hint=), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, =mep-go-lsp= is the language server on stdio.
+
+=mep-go-lsp --parse-check FILE...= prints only the parser's errors, one line
+per file, in the form =just go-parse-check= compares against =go/parser=.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:formatting.html][Formatting]] -- the Go formatter.

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Nix language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Nix language server</h1>
+<h1>What it is</h1>
+<p>Nix files get a language server of their own, <code>mep-nix-lsp</code>, built and
+shipped with mep. Open a <code>.nix</code> file and it attaches by itself -- nothing
+to install, and <b>nothing is ever evaluated</b>: no <code>import</code> is followed, no
+derivation is built, no network is touched.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>The same errors as Nix</h1>
+<p>Its parser is built from Nix's own: the lexer follows Nix's lexer rule for
+rule, and the grammar runs the same LALR(1) tables bison builds from Nix's
+<code>parser.y</code>. So a syntax error is noticed at the same token, at the same
+line and column, and worded the same way:</p>
+<pre>syntax error, unexpected '}', expecting ';'</pre>
+<p>The checks Nix makes while parsing are made too, at the same moment:
+<code>attribute 'a' already defined at ...</code> (with Nix's merging of <code>a.b = ...;</code>
+paths into nested sets), <code>duplicate formal function argument</code>, =dynamic
+attributes not allowed in let=, <code>invalid integer</code>, =path has a trailing
+slash=. And it resolves every variable the way Nix does -- <code>let</code>, <code>rec</code>,
+function arguments, <code>with</code>, then the builtins in scope at the top level --
+so =undefined variable 'x'=, which Nix only tells you when you evaluate,
+shows up as you type. Under a <code>with</code>, a name nothing else binds is
+assumed to come from it, as Nix assumes.</p>
+<p>All of this is checked against <code>nix-instantiate --parse</code> over the 41,000
+<code>.nix</code> files of nixpkgs and a damaged copy of each (<code>just nix-parse-check</code>):
+every file gets the same verdict, the same message and the same position.</p>
+<p>Unlike Nix it does not stop at the first syntax error: it repairs the
+input (inserting or skipping a token) and keeps going, so completion and
+navigation keep working in a half-typed file.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>what Nix says, in its words</td></tr>
+<tr><td><code>duplicate-attribute</code></td><td>error</td><td>an attribute defined twice (<code>a.b = 1; a.b = 2;</code>)</td></tr>
+<tr><td><code>duplicate-formal</code></td><td>error</td><td><code>{ x, x }:</code></td></tr>
+<tr><td><code>dynamic-let</code></td><td>error</td><td><code>${...}</code> as a name in <code>let</code></td></tr>
+<tr><td><code>dynamic-inherit</code></td><td>error</td><td><code>${...}</code> as a name in <code>inherit</code></td></tr>
+<tr><td><code>invalid-integer</code></td><td>error</td><td>an integer literal out of range</td></tr>
+<tr><td><code>invalid-float</code></td><td>error</td><td>a float literal out of range</td></tr>
+<tr><td><code>trailing-slash</code></td><td>error</td><td>a path literal ending in <code>/</code></td></tr>
+<tr><td><code>experimental-feature</code></td><td>error</td><td><code>|&gt;</code> / <code>&lt;|</code> without the <code>pipe-operators</code> feature</td></tr>
+<tr><td><code>undefined-variable</code></td><td>error</td><td>a name nothing binds (every one, not only the first)</td></tr>
+<tr><td><code>cursed-or</code></td><td>warning</td><td><code>f or</code> reads <code>or</code> as a variable: Nix warns about it too</td></tr>
+<tr><td><code>unused-let</code></td><td>warning</td><td>a <code>let</code> binding nothing uses (not <code>_name</code>)</td></tr>
+<tr><td><code>unused-with</code></td><td>warning</td><td>a <code>with</code> nothing in its body takes a name from</td></tr>
+<tr><td><code>deprecated-let</code></td><td>warning</td><td>the old <code>let { ...; body = ...; }</code> form</td></tr>
+<tr><td><code>url-literal</code></td><td>warning</td><td>an unquoted URL (RFC 45 deprecates them)</td></tr>
+<tr><td><code>unused-argument</code></td><td>hint</td><td>a function argument the body never uses (not <code>_name</code>)</td></tr>
+<tr><td><code>empty-let</code></td><td>hint</td><td><code>let in ...</code></td></tr>
+<tr><td><code>redundant-rec</code></td><td>hint</td><td>a <code>rec { }</code> whose attributes never refer to each other</td></tr>
+</table>
+<p>After a syntax error only the syntax error and what comes before it is
+reported: past that point the repaired tree is a guess.</p>
+<h2>Calibration</h2>
+<p>Run over all of nixpkgs, which evaluates, the server reports no errors at
+all. Every <code>unused-let</code> it finds there is real -- mostly names a library
+file <code>inherit=s and then never uses. =unused-argument</code> is a hint (shown
+faded, never failing <code>--lint</code>) because an unused argument is often part
+of an interface: <code>callPackage</code> passes what a package asks for, a module
+lists <code>config</code> it does not read, <code>n: v: v</code> ignores a name on purpose.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> on a builtin shows its arguments and the documentation of the installed Nix (asked for once, with <code>nix __dump-language</code>; with no Nix on <code>PATH</code> there are just the arguments). On the file's own names it shows what the name is bound to -- the value, or the default of a function argument -- and the comment above the binding. On a name that comes from a <code>with</code>, it names the <code>with</code> (and the value, when the set is written in the file).</li>
+<li><b>Completion</b> offers the names in scope at the cursor, innermost first, then the builtins and keywords; after <code>builtins.</code> every builtin; after <code>x.</code> the attributes of <code>x</code> when the file says what they are (a set bound by <code>let</code>, an attribute of one, ...). A <code>with</code> over such a set offers its attributes too.</li>
+<li><b>Signature help</b> for builtins (<code>map f list</code>) and for functions the file defines, including <code>{ a, b ? ... }</code> argument sets.</li>
+<li><b>Go to definition</b>, <b>references</b>, <b>highlights</b> and <b>rename</b> follow Nix's scoping. Rename refuses what would change the meaning: a named argument (callers pass it by name), a name bound by <code>inherit</code>, a new name that is already bound there or that a <code>with</code> supplies inside.</li>
+<li>The <b>outline</b> lists <code>let</code> bindings and attributes, nested sets under their attribute, and looks inside the set given to <code>mkDerivation</code>, <code>callPackage</code> and friends.</li>
+<li><b>Folding</b> covers multi-line sets, lists, =let=s, argument sets, indented strings and runs of comments.</li>
+<li><b>Formatting</b> is mep's nixfmt port, the one <code>gf</code> runs (the official Nix style; byte-identical with <code>nixfmt</code>). See <a href="formatting.html">Formatting</a>. A file with a syntax error is left alone.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-nix-lsp</span> <span class="tok-red">--lint</span> *.nix
+<span class="tok-blue">cat</span> default.nix | <span class="tok-blue">mep-nix-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>default.nix:12:9: warning: unused let binding 'src' [unused-let]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+With no arguments, <code>mep-nix-lsp</code> is the language server on stdio.</p>
+<h1>Using nil or nixd instead</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.nixd.filetypes = <span class="tok-blue">{</span><span class="tok-green">'nix'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- or nil_ls</span>
+<span class="tok-cyan">mep</span>.lsp_servers.nix_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="formatting.html">Formatting</a>.</li>
+</ul>
+</body>
+</html>

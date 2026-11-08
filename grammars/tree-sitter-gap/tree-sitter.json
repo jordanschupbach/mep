@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "gap",
+      "camelcase": "Gap",
+      "scope": "source.gap",
+      "path": ".",
+      "file-types": ["g", "gi", "gd", "gap"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "GAP, mep's own grammar (node API of gap-system/tree-sitter-gap)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

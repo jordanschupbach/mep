@@ -78,10 +78,11 @@ template or regex (where `<!--` is text).
 Rules are declared in the old grammar's order, which is load-bearing (see
 `grammar.js`'s header, and the Python grammar's README).
 
-`highlights.scm` serves TypeScript too: `.ts` and `.tsx` files (whose
-grammars are loaded dynamically) get its first part with TypeScript's own
-query on top, so its first part may name only nodes and shapes
-tree-sitter-typescript also has. Two trailing sections are cut off by
+`highlights.scm` serves TypeScript too: `.ts` and `.tsx` files (mep's
+TypeScript grammars, `../tree-sitter-typescript` and `../tree-sitter-tsx`,
+which extend this one) get its first part with TypeScript's own query on
+top, so its first part may name only nodes and shapes the TypeScript
+grammars also have. Two trailing sections are cut off by
 their headers (`treesitter.cpp`'s `LayeredTypescriptHighlights`):
 "JavaScript only" (bare parameters, which TypeScript wraps) for both, and
 "JSX" for `.ts`.

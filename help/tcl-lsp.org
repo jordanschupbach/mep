@@ -1,0 +1,142 @@
+#+TITLE: The Tcl language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Tcl files get a language server of their own, =mep-tcl-lsp=, built
+and shipped with mep. Open a =.tcl=, =.tk= or =.tm= file and it attaches by
+itself -- nothing to install, and nothing in the file is ever run. It knows
+Tcl 8.6: every built-in command and subcommand, how many arguments each
+takes, =expr='s functions and Tcl's own variables, documented from Tcl's
+manual pages.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* The same errors as Tcl
+
+Its parser is a port of Tcl's own -- =tclParse.c= for scripts and words,
+=tclCompExpr.c= for expressions -- so a syntax error is reported where
+=tclsh= reports it, in its words:
+
+#+begin_example
+missing close-brace: possible unbalanced brace in comment
+extra characters after close-quote
+missing operand at _@_ in expression "1 +_@_"
+invalid bareword "x" in expression "x + 1"; should be "$x" or "{x}" or "x(...)" or ...
+#+end_example
+
+Tcl has no syntax beyond words, so the server parses every script Tcl
+would run: proc bodies, the bodies and conditions of =if=, =while=, =for=,
+=foreach=, =switch=, =try=, =catch= and =dict for=, =namespace eval=
+scripts, TclOO, itcl and snit class definitions and their methods, tcltest
+=test= bodies, =[...]= substitutions and braced =expr= arguments. A syntax
+error inside a proc body is found when you type it, not when the proc first
+runs.
+
+This is checked against Tcl itself (=just tcl-parse-check=): every script
+and expression the server parsed in the 1,810 files of Tcl's, Tk's and
+tcllib's sources, and in ten damaged copies of each, is handed to libtcl's
+=Tcl_ParseCommand= / =Tcl_ParseExpr=. On 3.4 million spans (4,386 of them
+errors) the two agree on every verdict, message and position.
+
+* What it reports
+
+| Code                 | Severity | What it means                                                                      |
+|----------------------+----------+------------------------------------------------------------------------------------|
+| =syntax-error=       | error    | what Tcl's parser says about a script or an expression, in its words                |
+| =wrong-args=         | error    | a built-in command or subcommand given a number of arguments =tclsh= refuses: =wrong # args: should be "string length string"= |
+| =unknown-subcommand= | warning  | =string lenx=: no such subcommand of a Tcl ensemble (unique prefixes are fine)      |
+| =unused-variable=    | warning  | a proc =set=s a local variable and never reads it                                    |
+| =unbraced-expr=      | warning  | =expr $a + 1=: an expression with substitutions outside braces is substituted twice and cannot be compiled |
+| =missing-dollar=     | warning  | =llength items= where =items= is a local variable: the name, not its value          |
+
+** Where the numbers come from
+
+The argument counts are Tcl's own. =tools/tcl_vocab_probe.tcl= calls every
+built-in command and subcommand in a child interpreter with 0 to 30 (and
+40) arguments and keeps the counts that do not end in =wrong # args=; the
+usage line in the message is the one from that error. A command with
+options (=lsort ?-option value ...? list=) is only held to its minimum,
+since the probe cannot see how many words options take.
+
+** Calibration
+
+The checks are quiet where Tcl's dynamism makes them guesses:
+
+- A command the file redefines (=proc=, =rename=, =interp alias=) is not
+  checked, and neither is anything inside a class definition or in Tcl's
+  own ensemble namespaces (=proc ::tcl::dict::x= runs where =for= means
+  =dict for=). A file that adds subcommands to an ensemble (=namespace
+  ensemble configure=, or that uses tcllib's =dicttool= or itcl, which
+  extend =dict= and =info=) is not told they are unknown, and neither are
+  Tcl 9's (=file home=, =string insert=).
+- Only a variable given its value by a plain =set= counts as unused:
+  the extra variables of =regexp=, =scan=, =lassign=, =foreach= or
+  =catch= are placeholders by convention. A proc that uses =eval=,
+  =subst=, =info locals=, =dict with=, =uplevel 0= or a computed variable
+  name, an itcl or snit method (whose instance variables need no
+  declaration), and a variable whose name appears anywhere else in the body
+  (passed to a proc that =upvar=s it) are left alone.
+- =if $done=, =if [catch ...]= and =expr $e= are one substitution evaluated on
+  purpose and are not =unbraced-expr=.
+
+Run over the corpus: in the 1,092 library and tool files, 126 get a
+diagnostic -- 190 unused variables (the samples read were dead stores), 85
+unbraced expressions, and 10 real bugs: =foreach= with no list (twice),
+=array exists= with two arguments (twice), =array set= with one, an
+unbalanced parenthesis in an =expr=, and four =missing-dollar= (=llength
+args=, =dict get orignames $key=). The other 13
+are files using tcllib's dicttool's =dict getnull= without saying so. In
+the 718 test files the =wrong-args= and =syntax-error= reports are the
+tests' own deliberate mistakes (=catch {set}=), each with Tcl's message.
+
+* What else it does
+
+- *Hover* shows a built-in command's or subcommand's usage line and the
+  manual's description (=string range=, =dict for=, =lsort=), an =expr=
+  function's (=sqrt=, =hypot=), Tcl's variables (=env=, =argv=); on the
+  file's own procs, the signature with the comment above it; on a
+  variable, whether it is a parameter, a local or linked by =global= /
+  =variable= / =upvar=.
+- *Completion* offers, at the start of a command, the built-in commands and
+  the file's procs; after an ensemble name (=string =, =dict =,
+  =file =), its subcommands; after =$=, the variables of the proc (or
+  namespace) at the cursor; elsewhere =expr= functions and the
+  document's words.
+- *Signature help* for the built-ins (from Tcl's usage lines) and the
+  file's procs, with the active argument.
+- *Go to definition*, *references* and *rename* for variables -- per proc,
+  following =global= and =variable= to the namespace variable -- and for
+  procs, resolved the way Tcl resolves a command name: in the current
+  namespace, then the global one.
+- The *outline* lists procs, namespaces, classes with their methods and
+  variables, and namespace variables.
+- *Folding* covers braced bodies and runs of comment lines.
+- *Formatting* is mep's own Tcl formatter, the one =gf= runs: tclint's
+  =tclfmt=, byte for byte. Only the lines that change are edited. See
+  [[file:formatting.html][Formatting]].
+
+* Linting from the command line
+
+#+begin_src sh
+mep-tcl-lsp --lint *.tcl
+cat app.tcl | mep-tcl-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+app.tcl:12:5: error: wrong # args: should be "string length string" [wrong-args]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=, =info=,
+=hint=), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, =mep-tcl-lsp= is the language server on stdio.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:formatting.html][Formatting]].

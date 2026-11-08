@@ -1,0 +1,368 @@
+================================================================================
+Type annotations on variables, parameters and returns
+================================================================================
+
+let a: number = 1;
+const b: string[] = [];
+function f(x: number, y?: string, ...rest: boolean[]): void {}
+
+--------------------------------------------------------------------------------
+
+(program
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (type_annotation
+        (predefined_type))
+      (number)))
+  (lexical_declaration
+    (variable_declarator
+      (identifier)
+      (type_annotation
+        (array_type
+          (predefined_type)))
+      (array)))
+  (function_declaration
+    (identifier)
+    (formal_parameters
+      (required_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type)))
+      (optional_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type)))
+      (required_parameter
+        (rest_pattern
+          (identifier))
+        (type_annotation
+          (array_type
+            (predefined_type)))))
+    (type_annotation
+      (predefined_type))
+    (statement_block)))
+
+================================================================================
+Interfaces
+================================================================================
+
+interface Shape<T extends object = {}> extends Base, ns.Other<T> {
+  readonly name: string;
+  area?(): number;
+  [key: string]: unknown;
+  new (x: number): Shape<T>;
+  (y: string): void;
+}
+
+--------------------------------------------------------------------------------
+
+(program
+  (interface_declaration
+    (type_identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)
+        (constraint
+          (predefined_type))
+        (default_type
+          (object_type))))
+    (extends_type_clause
+      (type_identifier)
+      (generic_type
+        (nested_type_identifier
+          (identifier)
+          (type_identifier))
+        (type_arguments
+          (type_identifier))))
+    (interface_body
+      (property_signature
+        (property_identifier)
+        (type_annotation
+          (predefined_type)))
+      (method_signature
+        (property_identifier)
+        (formal_parameters)
+        (type_annotation
+          (predefined_type)))
+      (index_signature
+        (identifier)
+        (predefined_type)
+        (type_annotation
+          (predefined_type)))
+      (construct_signature
+        (formal_parameters
+          (required_parameter
+            (identifier)
+            (type_annotation
+              (predefined_type))))
+        (type_annotation
+          (generic_type
+            (type_identifier)
+            (type_arguments
+              (type_identifier)))))
+      (call_signature
+        (formal_parameters
+          (required_parameter
+            (identifier)
+            (type_annotation
+              (predefined_type))))
+        (type_annotation
+          (predefined_type))))))
+
+================================================================================
+Type aliases: unions, intersections, functions, tuples
+================================================================================
+
+type A = | "a" | "b";
+type B = X & Y;
+type F = (x: number) => string;
+type C = new () => Foo;
+type T = [string, number?, ...boolean[]];
+
+--------------------------------------------------------------------------------
+
+(program
+  (type_alias_declaration
+    (type_identifier)
+    (union_type
+      (union_type
+        (literal_type
+          (string
+            (string_fragment))))
+      (literal_type
+        (string
+          (string_fragment)))))
+  (type_alias_declaration
+    (type_identifier)
+    (intersection_type
+      (type_identifier)
+      (type_identifier)))
+  (type_alias_declaration
+    (type_identifier)
+    (function_type
+      (formal_parameters
+        (required_parameter
+          (identifier)
+          (type_annotation
+            (predefined_type))))
+      (predefined_type)))
+  (type_alias_declaration
+    (type_identifier)
+    (constructor_type
+      (formal_parameters)
+      (type_identifier)))
+  (type_alias_declaration
+    (type_identifier)
+    (tuple_type
+      (predefined_type)
+      (optional_type
+        (predefined_type))
+      (rest_type
+        (array_type
+          (predefined_type))))))
+
+================================================================================
+Conditional, mapped, indexed and template literal types
+================================================================================
+
+type IsString<T> = T extends string ? true : false;
+type Ro<T> = { readonly [K in keyof T]?: T[K] };
+type Unwrap<T> = T extends Promise<infer U> ? U : T;
+type Ev = `on${Capitalize<string>}`;
+
+--------------------------------------------------------------------------------
+
+(program
+  (type_alias_declaration
+    (type_identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)))
+    (conditional_type
+      (type_identifier)
+      (predefined_type)
+      (literal_type
+        (true))
+      (literal_type
+        (false))))
+  (type_alias_declaration
+    (type_identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)))
+    (object_type
+      (index_signature
+        (mapped_type_clause
+          (type_identifier)
+          (index_type_query
+            (type_identifier)))
+        (opting_type_annotation
+          (lookup_type
+            (type_identifier)
+            (type_identifier))))))
+  (type_alias_declaration
+    (type_identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier)))
+    (conditional_type
+      (type_identifier)
+      (generic_type
+        (type_identifier)
+        (type_arguments
+          (infer_type
+            (type_identifier))))
+      (type_identifier)
+      (type_identifier)))
+  (type_alias_declaration
+    (type_identifier)
+    (template_literal_type
+      (string_fragment)
+      (template_type
+        (generic_type
+          (type_identifier)
+          (type_arguments
+            (predefined_type)))))))
+
+================================================================================
+Type queries and predicates
+================================================================================
+
+type T1 = typeof x.y;
+type T2 = keyof typeof obj;
+function isS(v: unknown): v is string { return true; }
+function check(v: unknown): asserts v is number {}
+
+--------------------------------------------------------------------------------
+
+(program
+  (type_alias_declaration
+    (type_identifier)
+    (type_query
+      (member_expression
+        (identifier)
+        (property_identifier))))
+  (type_alias_declaration
+    (type_identifier)
+    (index_type_query
+      (type_query
+        (identifier))))
+  (function_declaration
+    (identifier)
+    (formal_parameters
+      (required_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type))))
+    (type_predicate_annotation
+      (type_predicate
+        (identifier)
+        (predefined_type)))
+    (statement_block
+      (return_statement
+        (true))))
+  (function_declaration
+    (identifier)
+    (formal_parameters
+      (required_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type))))
+    (asserts_annotation
+      (asserts
+        (type_predicate
+          (identifier)
+          (predefined_type))))
+    (statement_block)))
+
+================================================================================
+Variance and const type parameters
+================================================================================
+
+interface L<in out T, out, const U> {}
+
+--------------------------------------------------------------------------------
+
+(program
+  (interface_declaration
+    (type_identifier)
+    (type_parameters
+      (type_parameter
+        (type_identifier))
+      (type_parameter
+        (type_identifier))
+      (type_parameter
+        (type_identifier)))
+    (interface_body)))
+
+================================================================================
+keyof readonly
+================================================================================
+
+type K = keyof readonly any[];
+
+--------------------------------------------------------------------------------
+
+(program
+  (type_alias_declaration
+    (type_identifier)
+    (index_type_query
+      (readonly_type
+        (array_type
+          (predefined_type))))))
+
+================================================================================
+Labelled tuple elements named by keywords
+================================================================================
+
+type Tracked = [symbol: Symbol, name: string, number?: number];
+
+--------------------------------------------------------------------------------
+
+(program
+  (type_alias_declaration
+    (type_identifier)
+    (tuple_type
+      (required_parameter
+        (identifier)
+        (type_annotation
+          (type_identifier)))
+      (required_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type)))
+      (optional_parameter
+        (identifier)
+        (type_annotation
+          (predefined_type))))))
+
+================================================================================
+Qualified names with reserved words
+================================================================================
+
+declare const v: Q.default.A;
+type W = typeof C.prototype.delete;
+
+--------------------------------------------------------------------------------
+
+(program
+  (ambient_declaration
+    (lexical_declaration
+      (variable_declarator
+        (identifier)
+        (type_annotation
+          (nested_type_identifier
+            (nested_identifier
+              (identifier)
+              (property_identifier))
+            (type_identifier))))))
+  (type_alias_declaration
+    (type_identifier)
+    (type_query
+      (member_expression
+        (member_expression
+          (identifier)
+          (property_identifier))
+        (property_identifier)))))
+

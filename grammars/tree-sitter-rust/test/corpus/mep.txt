@@ -1,0 +1,157 @@
+================================================================================
+Declarative macros 2.0
+================================================================================
+
+pub macro m($x:expr) { $x + 1 }
+macro n {
+    ($a:ident) => { $a },
+    () => {},
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (macro_definition (visibility_modifier) (identifier) (macro_rule (token_tree_pattern (token_binding_pattern (metavariable) (fragment_specifier))) (token_tree (metavariable) (integer_literal)))) (macro_definition (identifier) (macro_rule (token_tree_pattern (token_binding_pattern (metavariable) (fragment_specifier))) (token_tree (metavariable))) (macro_rule (token_tree_pattern) (token_tree))))
+
+================================================================================
+Metavariable expressions
+================================================================================
+
+macro_rules! m {
+    ($($x:ident),*) => { ${count($x)} + ${ignore($x)} 0 };
+    ($ name : ty) => {};
+    ([$]) => {};
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (macro_definition (identifier) (macro_rule (token_tree_pattern (token_repetition_pattern (token_binding_pattern (metavariable) (fragment_specifier)))) (token_tree (identifier) (token_tree (metavariable)) (identifier) (token_tree (metavariable)) (integer_literal))) (macro_rule (token_tree_pattern (identifier) (identifier)) (token_tree)) (macro_rule (token_tree_pattern (token_tree_pattern)) (token_tree))))
+
+================================================================================
+Macro rules for attributes and derives
+================================================================================
+
+macro_rules! d {
+    derive() (struct $n:ident;) => {};
+    attr() () => {};
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (macro_definition (identifier) (macro_rule (token_tree_pattern) (token_tree_pattern (token_binding_pattern (metavariable) (fragment_specifier))) (token_tree)) (macro_rule (token_tree_pattern) (token_tree_pattern) (token_tree))))
+
+================================================================================
+Const traits and impls
+================================================================================
+
+pub const trait Default: Sized {}
+pub const unsafe trait Alloc {}
+unsafe auto trait Send2 {}
+impl const Default for S {}
+const impl<T: [const] Clone> Cycle<T> {}
+default impl T for Foo {}
+fn f<T: ~const Tr + [const] Destruct>(f: impl [const] FnOnce() -> T + [const] Destruct) {}
+
+--------------------------------------------------------------------------------
+
+(source_file (trait_item (visibility_modifier) (type_identifier) (trait_bounds (type_identifier)) (declaration_list)) (trait_item (visibility_modifier) (type_identifier) (declaration_list)) (trait_item (type_identifier) (declaration_list)) (impl_item (type_identifier) (type_identifier) (declaration_list)) (impl_item (type_parameters (type_parameter (type_identifier) (trait_bounds (type_identifier)))) (generic_type (type_identifier) (type_arguments (type_identifier))) (declaration_list)) (impl_item (type_identifier) (type_identifier) (declaration_list)) (function_item (identifier) (type_parameters (type_parameter (type_identifier) (trait_bounds (type_identifier) (type_identifier)))) (parameters (parameter (identifier) (bounded_type (abstract_type (function_type (type_identifier) (parameters) (type_identifier))) (type_identifier)))) (block)))
+
+================================================================================
+Trait aliases
+================================================================================
+
+pub trait Thin = Pointee<Metadata = ()> + Sized;
+trait Z<U> = where Self: T<U>;
+
+--------------------------------------------------------------------------------
+
+(source_file (trait_item (visibility_modifier) (type_identifier) (trait_bounds (generic_type (type_identifier) (type_arguments (type_binding (type_identifier) (unit_type)))) (type_identifier))) (trait_item (type_identifier) (type_parameters (type_parameter (type_identifier))) (trait_bounds) (where_clause (where_predicate (type_identifier) (trait_bounds (generic_type (type_identifier) (type_arguments (type_identifier))))))))
+
+================================================================================
+Default field values
+================================================================================
+
+struct S {
+    a: bool = false,
+    b: u8,
+}
+fn f() { let s = S { b: 1, .. }; }
+
+--------------------------------------------------------------------------------
+
+(source_file (struct_item (type_identifier) (field_declaration_list (field_declaration (field_identifier) (primitive_type) (boolean_literal)) (field_declaration (field_identifier) (primitive_type)))) (function_item (identifier) (parameters) (block (let_declaration (identifier) (struct_expression (type_identifier) (field_initializer_list (field_initializer (field_identifier) (integer_literal)) (base_field_initializer)))))))
+
+================================================================================
+Extern types, safe functions and associated type defaults
+================================================================================
+
+unsafe extern "C" {
+    pub type Opaque;
+    pub safe fn sqrt(x: f64) -> f64;
+}
+trait T {
+    type A: Clone = ();
+    type B;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (foreign_mod_item (extern_modifier (string_literal (string_content))) (declaration_list (type_item (visibility_modifier) (type_identifier)) (function_signature_item (visibility_modifier) (function_modifiers) (identifier) (parameters (parameter (identifier) (primitive_type))) (primitive_type)))) (trait_item (type_identifier) (declaration_list (associated_type (type_identifier) (trait_bounds (type_identifier)) (unit_type)) (associated_type (type_identifier)))))
+
+================================================================================
+do yeet and become
+================================================================================
+
+fn f() { do yeet (); become g(); }
+
+--------------------------------------------------------------------------------
+
+(source_file (function_item (identifier) (parameters) (block (expression_statement (return_expression (unit_expression))) (expression_statement (return_expression (call_expression (identifier) (arguments)))))))
+
+================================================================================
+Box patterns and attributes on field patterns
+================================================================================
+
+fn f() {
+    match x {
+        E::A(box Inner { a, #[cfg(x)] b, .. }) => {}
+    }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (function_item (identifier) (parameters) (block (expression_statement (match_expression (identifier) (match_block (match_arm (match_pattern (tuple_struct_pattern (scoped_identifier (identifier) (identifier)) (box_pattern (struct_pattern (type_identifier) (field_pattern (shorthand_field_identifier)) (field_pattern (attribute_item (attribute (identifier) (token_tree (identifier)))) (shorthand_field_identifier)) (remaining_field_pattern))))) (block))))))))
+
+================================================================================
+Closures: const, binders, attributes
+================================================================================
+
+fn f() {
+    let a = #[inline] |x| x;
+    v.map(const |x| x * 2);
+    let b = for<'a> |x: &'a u8| x;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (function_item (identifier) (parameters) (block (let_declaration (identifier) (attribute_item (attribute (identifier))) (closure_expression (closure_parameters (identifier)) (identifier))) (expression_statement (call_expression (field_expression (identifier) (field_identifier)) (arguments (closure_expression (closure_parameters (identifier)) (binary_expression (identifier) (integer_literal)))))) (let_declaration (identifier) (closure_expression (type_parameters (lifetime_parameter (lifetime (identifier)))) (closure_parameters (parameter (identifier) (reference_type (lifetime (identifier)) (primitive_type)))) (identifier))))))
+
+================================================================================
+Misc newer syntax
+================================================================================
+
+fn f() {
+    super let x = 1.0f16;
+    g::<-1>();
+    let v = str!["x"];
+    let t = (1, #[cfg(test)] 2);
+    let c @ ('(' | ')') = ch;
+}
+struct W where T: Copy;
+struct E<>;
+fn g<T:>(#[a] #[b] x: u8, y: &(dyn 'a + Send)) {}
+async fn h() { async gen { yield 1; }; }
+
+--------------------------------------------------------------------------------
+
+(source_file (function_item (identifier) (parameters) (block (let_declaration (identifier) (float_literal)) (expression_statement (call_expression (generic_function (identifier) (type_arguments (negative_literal (integer_literal)))) (arguments))) (let_declaration (identifier) (macro_invocation (identifier) (token_tree (string_literal (string_content))))) (let_declaration (identifier) (tuple_expression (integer_literal) (attribute_item (attribute (identifier) (token_tree (identifier)))) (integer_literal))) (let_declaration (captured_pattern (identifier) (tuple_pattern (or_pattern (char_literal) (char_literal)))) (identifier)))) (struct_item (type_identifier) (where_clause (where_predicate (type_identifier) (trait_bounds (type_identifier))))) (struct_item (type_identifier) (type_parameters)) (function_item (identifier) (type_parameters (type_parameter (type_identifier) (trait_bounds))) (parameters (attribute_item (attribute (identifier))) (attribute_item (attribute (identifier))) (parameter (identifier) (primitive_type)) (parameter (identifier) (reference_type (tuple_type (bounded_type (dynamic_type (lifetime (identifier))) (type_identifier)))))) (block)) (function_item (function_modifiers) (identifier) (parameters) (block (expression_statement (gen_block (block (expression_statement (yield_expression (integer_literal)))))) (empty_statement))))
+

@@ -1,0 +1,87 @@
+# Reviewed differences from the old grammar (tree-sitter-grammars/tree-sitter-zig,
+# nixpkgs 1.1.2-unstable-2025-09-10) in files Zig's own parser accepts: each is
+# a place the old grammar had a parse error or a wrong node, and this one
+# follows std.zig.Ast. `<path glob>  # why`.
+
+# Assembly clobbers as one expression (Zig 0.16: `::: .{ .memory = true }`):
+# the old grammar read only a list of strings there.
+*/lib/compiler_rt/aarch64_outline_atomics.zig  # asm clobbers as an expression
+*/lib/compiler_rt/arm.zig  # asm clobbers as an expression
+*/lib/compiler_rt/atomics.zig  # asm clobbers as an expression
+*/lib/compiler_rt/clear_cache.zig  # asm clobbers as an expression
+*/lib/std/Io/fiber.zig  # asm clobbers as an expression
+*/lib/std/Thread.zig  # asm clobbers as an expression
+*/lib/std/c/darwin/dispatch.zig  # asm clobbers as an expression
+*/lib/std/crypto/sha2.zig  # asm clobbers as an expression
+*/lib/std/debug.zig  # asm clobbers as an expression
+*/lib/std/debug/cpu_context.zig  # asm clobbers as an expression
+*/lib/std/mem.zig  # asm clobbers as an expression
+*/lib/std/os/linux/aarch64.zig  # asm clobbers as an expression
+*/lib/std/os/linux/arm.zig  # asm clobbers as an expression
+*/lib/std/os/linux/hexagon.zig  # asm clobbers as an expression
+*/lib/std/os/linux/loongarch32.zig  # asm clobbers as an expression
+*/lib/std/os/linux/loongarch64.zig  # asm clobbers as an expression
+*/lib/std/os/linux/m68k.zig  # asm clobbers as an expression
+*/lib/std/os/linux/mips.zig  # asm clobbers as an expression
+*/lib/std/os/linux/mips64.zig  # asm clobbers as an expression
+*/lib/std/os/linux/mipsn32.zig  # asm clobbers as an expression
+*/lib/std/os/linux/or1k.zig  # asm clobbers as an expression
+*/lib/std/os/linux/powerpc.zig  # asm clobbers as an expression
+*/lib/std/os/linux/powerpc64.zig  # asm clobbers as an expression
+*/lib/std/os/linux/riscv32.zig  # asm clobbers as an expression
+*/lib/std/os/linux/riscv64.zig  # asm clobbers as an expression
+*/lib/std/os/linux/s390x.zig  # asm clobbers as an expression
+*/lib/std/os/linux/sparc64.zig  # asm clobbers as an expression
+*/lib/std/os/linux/thumb.zig  # asm clobbers as an expression
+*/lib/std/os/linux/tls.zig  # asm clobbers as an expression
+*/lib/std/os/linux/x32.zig  # asm clobbers as an expression
+*/lib/std/os/linux/x86.zig  # asm clobbers as an expression
+*/lib/std/os/linux/x86_64.zig  # asm clobbers as an expression
+*/lib/std/os/plan9/x86_64.zig  # asm clobbers as an expression
+*/lib/std/pie.zig  # asm clobbers as an expression
+*/lib/std/valgrind.zig  # asm clobbers as an expression
+*/lib/std/zig/system/x86.zig  # asm clobbers as an expression
+*/test/behavior/asm.zig  # asm clobbers as an expression
+*/test/cases/compile_errors/astgen_assembly_errors.zig  # asm clobbers as an expression
+*/test/cases/compile_errors/undefined_assembly_clobbers.zig  # asm clobbers as an expression
+*/test/cases/f_segment_address_space_reading_and_writing.zig  # asm clobbers as an expression
+
+# `async` and `await` as ordinary names (`.async = async`, `enum { sync, async }`):
+# no longer keywords since Zig 0.15; the old grammar read them as prefix operators.
+*/lib/std/Io.zig  # async/await as names
+*/lib/std/Io/Dispatch.zig  # async/await as names
+*/lib/std/Io/Kqueue.zig  # async/await as names
+*/lib/std/Io/Threaded.zig  # async/await as names
+*/lib/std/Io/Uring.zig  # async/await as names
+*/lib/std/builtin.zig  # async/await as names
+*/lib/std/zig/llvm/Builder.zig  # async/await as names
+*/src/bun.js/node/node_fs.zig  # async/await as names
+*/src/deps/libuv.zig  # async/await as names
+*/src/features/semantic_tokens.zig  # async/await as names
+*/src/fmt.zig  # async/await as names
+*/src/shell/states/Binary.zig  # async/await as names
+*/src/shell/states/Stmt.zig  # async/await as names
+
+# An `if` type after `!`, `[]` or `[N]` (`!if (c) T else U`, `[]if (w) u16 else u8`):
+# the old grammar then read the function body as an initializer list.
+*/src/bun.js/node/node_crypto_binding.zig  # if type after ! or []
+*/src/bundler/linker_context/generateChunksInParallel.zig  # if type after ! or []
+*/src/cli/pack_command.zig  # if type after ! or []
+*/src/install/PackageInstall.zig  # if type after ! or []
+*/src/patch.zig  # if type after ! or []
+*/src/string/immutable/unicode.zig  # if type after ! or []
+
+# A field type that is not a primary type expression: `error{...}`, `(A || B)`,
+# `(fn () u32)`, a labeled block `T: { ... }`.
+*/lib/std/Progress.zig  # non-primary field type
+*/lib/std/zon/Serializer.zig  # non-primary field type
+*/lib/std/zon/parse.zig  # non-primary field type
+*/src/Compilation.zig  # non-primary field type
+*/src/bun.js/api/Archive.zig  # non-primary field type
+*/test/behavior/struct.zig  # non-primary field type
+*/test/behavior/tuple.zig  # non-primary field type
+*/test/cases/compile_errors/@import_zon_bad_type.zig  # non-primary field type
+*/test/cases/compile_errors/struct_field_queries_hasfield_of_itself.zig  # non-primary field type
+
+# `true:` as a block label (true is an identifier to Zig's parser).
+*/src/Surface.zig  # true: as a label

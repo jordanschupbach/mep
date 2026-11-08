@@ -1,0 +1,11 @@
+# Reviewed differences from the old grammar (gap-system/tree-sitter-gap at
+# 96fe2e4) in files GAP's reader accepts: each is a place the old grammar
+# had a parse error or a wrong node, and this one follows GAP.
+# `<path glob>  # why`.
+
+# A file GAP reads may open with `local`, like a function body; the old
+# grammar read the `local` line as an error (or `local` as a name).
+*/pkg/atlasrep/datapkg/2Co1G1-Zr24aB0.g  # local result; at the top of the file
+*/pkg/rcwa/data/3ctsgroups6/*.g  # local ...; at the top of each data file
+*/pkg/rcwa/data/ctproducts/ctprods12.g  # local ...; at the top of the file
+*/pkg/rcwa/examples/examples.g  # local ...; at the top of the file

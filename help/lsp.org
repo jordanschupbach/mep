@@ -159,17 +159,17 @@ automatic refresh, leaving the command.
 * Servers mep knows about
 
 Forty-five. Each is used when its command is on =$PATH=; the org, R,
-Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C# and SQL ones ship with mep itself:
+Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, JavaScript and Go ones ship with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
 | C++             | =mep-cpp-lsp= (ships with mep), or =clangd= |
 | C               | =mep-c-lsp= (ships with mep), or =clangd=   |
 | Python          | =mep-python-lsp= (ships with mep), or =pyright-langserver= |
-| Lua             | =lua-language-server=              |
-| Go              | =gopls=                            |
+| Go              | =mep-go-lsp= (ships with mep), or =gopls= |
 | Rust            | =rust-analyzer=                    |
-| TypeScript, JS  | =typescript-language-server=       |
+| JavaScript      | =mep-js-lsp= (ships with mep), or =typescript-language-server= |
+| TypeScript      | =mep-js-lsp= (ships with mep), or =typescript-language-server= |
 | Java            | =jdtls=                            |
 | Ruby            | =solargraph=                       |
 | PHP             | =intelephense=                     |
@@ -180,14 +180,26 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C# and SQL ones shi
 | Elixir          | =elixir-ls=                        |
 | Bash            | =mep-bash-lsp= (ships with mep), or =bash-language-server= |
 | SQL (SQLite)    | =mep-sql-lsp= (ships with mep), or =sqls=, =sql-language-server= |
+| Nix             | =mep-nix-lsp= (ships with mep), or =nil=, =nixd= |
+| Nim             | =mep-nim-lsp= (ships with mep) |
+| Java            | =mep-java-lsp= (ships with mep) |
+| Kotlin          | =mep-kotlin-lsp= (ships with mep) |
+| Zig             | =mep-zig-lsp= (ships with mep) |
+| Rust            | =mep-rust-lsp= (ships with mep) |
+| GAP             | =mep-gap-lsp= (ships with mep) |
+| Tcl             | =mep-tcl-lsp= (ships with mep) |
+| Octave, MATLAB  | =mep-octave-lsp= (ships with mep) |
+| Fish            | =mep-fish-lsp= (ships with mep) |
+| Scheme          | =mep-scheme-lsp= (ships with mep) |
+| Lua             | =mep-lua-lsp= (ships with mep), or =lua-language-server= |
 | R               | =mep-r-lsp= (ships with mep)       |
 | Perl            | Perl's =PLS=                       |
-| Fortran         | =fortls=                           |
+| Fortran         | =mep-fortran-lsp= (ships with mep), or =fortls= |
 | Scala           | =metals=                           |
 | Nim             | =nimlsp=                           |
 | Crystal         | =mep-crystal-lsp= (ships with mep), or =crystalline= |
 | D               | =serve-d=                          |
-| Julia           | Julia's =LanguageServer=           |
+| Julia           | =mep-julia-lsp= (ships with mep), or Julia's =LanguageServer= |
 | Clojure         | =mep-clojure-lsp= (ships with mep), or =clojure-lsp= |
 | Common Lisp     | =mep-lisp-lsp= (ships with mep)    |
 | Kotlin          | =kotlin-language-server=           |
@@ -207,12 +219,12 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C# and SQL ones shi
 
 If a server is missing, nothing breaks -- the file simply opens without one.
 
-* The thirteen mep brings itself
+* The fifteen mep brings itself
 
 =mep-org-lsp=, =mep-r-lsp=, =mep-python-lsp=, =mep-cpp-lsp=, =mep-c-lsp=,
 =mep-maxima-lsp=, =mep-lisp-lsp=, =mep-bash-lsp=, =mep-clojure-lsp=,
-=mep-crystal-lsp=, =mep-csharp-lsp=, =mep-sql-lsp= and =mep-mepml-lsp= are mep's own servers, built and installed alongside =mep=,
-so org, R, Python, C++, C, Maxima, Common Lisp, shell, Clojure, Crystal, C#, SQL and mepml files get diagnostics and
+=mep-crystal-lsp=, =mep-csharp-lsp=, =mep-sql-lsp=, =mep-nix-lsp=, =mep-js-lsp= and =mep-mepml-lsp= are mep's own servers, built and installed alongside =mep=,
+so org, R, Python, C++, C, Maxima, Common Lisp, shell, Clojure, Crystal, C#, SQL, Nix, JavaScript and mepml files get diagnostics and
 completion with nothing to install. See
 [[file:org-lsp.html][The org language server]], [[file:r-lsp.html][The R language server]],
 [[file:python-lsp.html][The Python language server]], [[file:cpp-lsp.html][The C++ language server]],
@@ -222,13 +234,23 @@ completion with nothing to install. See
 [[file:clojure-lsp.html][The Clojure language server]],
 [[file:crystal-lsp.html][The Crystal language server]],
 [[file:csharp-lsp.html][The C# language server]],
-[[file:sql-lsp.html][The SQL language server]] and
+[[file:sql-lsp.html][The SQL language server]],
+[[file:nix-lsp.html][The Nix language server]],
+[[file:fish-lsp.html][The Fish language server]],
+[[file:fortran-lsp.html][The Fortran language server]],
+[[file:tcl-lsp.html][The Tcl language server]],
+[[file:octave-lsp.html][The Octave language server]],
+[[file:scheme-lsp.html][The Scheme language server]],
+[[file:js-lsp.html][The JavaScript language server]] and
 [[file:mepml-lsp.html][The mepml language server]].
 
-Python, C++, C, Bash, Clojure, Crystal, C# and SQL are the languages where mep's own server is
+Python, C++, C, Bash, Clojure, Crystal, C#, SQL, Nix, JavaScript and TypeScript are the languages where mep's own server is
 preferred over an external one out of the box: =pyright=, =clangd=,
-=bash-language-server=, =clojure-lsp=, =crystalline=, =OmniSharp=, =sqls= and =sql-language-server= stay registered but claim no filetype of their own, and one line in
-=init.lua= swaps any of them back. =.h= goes to the C++ server, which reads C
+=bash-language-server=, =clojure-lsp=, =crystalline=, =OmniSharp=, =sqls=, =sql-language-server=, =nil=, =nixd= and =typescript-language-server= stay registered but claim no filetype of their own, and one line in
+=init.lua= swaps any of them back. So is =typescript-language-server=:
+=mep-js-lsp= takes TypeScript (=.ts=, =.tsx=, =.mts=, =.cts=) as well as
+=.js=, =.jsx=, =.mjs= and =.cjs= -- see [[file:js-lsp.html][The JavaScript language server]]
+for handing TypeScript back to =tsc='s server. =.h= goes to the C++ server, which reads C
 as well; a project whose headers are all C can hand it over with
 =mep.lsp_servers.c_ls.filetypes = {'c', 'h'}=.
 

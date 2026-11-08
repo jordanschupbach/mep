@@ -1,0 +1,1798 @@
+=====================================
+Identifiers
+=====================================
+
+foo;
+Bar;
+bAz1;
+hello_world;
+helloWorld;
+n2;
+2n;
+42n;
+hello\ world;
+\+;
+\[\];
+123\ 456;
+123\a456;
+123\456;
+1\.1;
+1\.1\.2;
+
+foo; bar;
+foo;bar;
+
+# Ported from GAP test file: tst/testinstall/kernel/scanner.tst
+x\ny := function() end;;
+NameFunction(x\ny);
+x\ty := function() end;;
+NameFunction(x\ty);
+x\ry := function() end;;
+NameFunction(x\ry);
+x\by := function() end;;
+NameFunction(x\by);
+x1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111 := 1;
+x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111 := 1;
+1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111x := 1;
+11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111x := 1;
+# This should be an error since GAP identifiers need to be at most 1023
+# characters long according to the spec. We do not implement this for
+# simplicity.
+x111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111 := 1;
+111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111x := 1;
+1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111x := 1;
+
+---
+(source_file
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (identifier)
+    (comment)
+    (assignment_statement
+        (identifier)
+        (function (parameters)))
+    (call
+        (identifier)
+        (argument_list (identifier)))
+    (assignment_statement
+        (identifier)
+        (function (parameters)))
+    (call
+        (identifier)
+        (argument_list (identifier)))
+    (assignment_statement
+        (identifier)
+        (function (parameters)))
+    (call
+        (identifier)
+        (argument_list (identifier)))
+    (assignment_statement
+        (identifier)
+        (function (parameters)))
+    (call
+        (identifier)
+        (argument_list (identifier)))
+    (assignment_statement
+        (identifier)
+        (integer))
+    (assignment_statement
+        (identifier)
+        (integer))
+    (assignment_statement
+        (identifier)
+        (integer))
+    (assignment_statement
+        (identifier)
+        (integer))
+    (comment)
+    (comment)
+    (comment)
+    (assignment_statement
+        (identifier)
+        (integer))
+    (assignment_statement
+        (identifier)
+        (integer))
+    (assignment_statement
+        (identifier)
+        (integer))
+)
+
+=====================================
+Lists
+=====================================
+
+[   ];
+[ 1 ];
+[ 1, 2 ];
+[ 1, 2, ];
+[  ,   ];
+[  , 2 ];
+[ 0, [ 1, 2 ], 3, 4 ];
+[ 0, [  , 2 ],  , 4 ];
+[ 1, 2, 3,
+4, 5, 6];
+
+---
+
+(source_file
+  (list_expression)
+  (list_expression (integer))
+  (list_expression (integer) (integer))
+  (list_expression (integer) (integer))
+  (list_expression)
+  (list_expression (integer))
+  (list_expression (integer) (list_expression (integer) (integer)) (integer) (integer))
+  (list_expression (integer) (list_expression (integer)) (integer))
+  (list_expression (integer) (integer) (integer) (integer) (integer) (integer))
+  )
+
+=====================================
+Ranges
+=====================================
+
+[1..10];
+[1,3..11];
+[1,-1..-11];
+[1.. 10];
+[1 .. 10];
+[1, 3..11];
+[1,3 ..11];
+[1,3.. 11];
+[1, 3 .. 11];
+[1, 2+1 .. 11];
+[1, 2+1 .. 11-4];
+[Increment(1), 2+1 .. 11+4];
+
+# Ported from GAP test file: tst/testinstall/kernel/read.tst
+# The following should produce errors:
+[,2..5];
+[1,2,3..5];
+[1..~];
+
+---
+
+(source_file
+    (range_expression (integer) (integer))
+    (range_expression (integer) (integer) (integer))
+    (range_expression (integer) (unary_expression (integer)) (unary_expression (integer)))
+    (range_expression (integer) (integer))
+    (range_expression (integer) (integer))
+    (range_expression (integer) (integer) (integer))
+    (range_expression (integer) (integer) (integer))
+    (range_expression (integer) (integer) (integer))
+    (range_expression (integer) (integer) (integer))
+    (range_expression (integer) (binary_expression (integer) (integer)) (integer))
+    (range_expression (integer) (binary_expression (integer) (integer)) (binary_expression (integer) (integer)))
+    (range_expression (call (identifier) (argument_list (integer))) (binary_expression (integer) (integer)) (binary_expression (integer) (integer)))
+    (comment)
+    (comment)
+    (list_expression
+        (integer)
+        (ERROR
+            (integer)))
+    (list_expression
+        (integer)
+        (integer)
+        (integer)
+        (ERROR
+            (integer)))
+    (list_expression
+        (integer)
+        (ERROR
+            (tilde)))
+)
+
+=====================================
+Records
+=====================================
+
+rec();
+rec(,);
+rec(a:=1);
+rec( a := 1 );
+rec(a:=1,);
+rec(1:=2);
+rec(a:=1, b:=2);
+rec(a:=1, b:=2, );
+rec(a:=1, b:=2, (1+1):=3);
+rec(a:=1, b:=2, (Concatenation("a", "b")):=1+1);
+
+# Ported from GAP test file: tst/testinstall/kernel/read.tst
+# The following should produce errors:
+rec("a":=1);
+
+---
+
+(source_file
+  (record_expression)
+  (record_expression)
+  (record_expression
+    (record_entry
+        (identifier)
+        (integer)))
+  (record_expression
+    (record_entry
+        (identifier)
+        (integer)))
+  (record_expression
+    (record_entry
+        (identifier)
+        (integer)))
+  (record_expression
+    (record_entry
+        (integer)
+        (integer)))
+  (record_expression
+    (record_entry
+        (identifier)
+        (integer))
+    (record_entry
+        (identifier)
+        (integer)))
+  (record_expression
+    (record_entry
+        (identifier)
+        (integer))
+    (record_entry
+        (identifier)
+        (integer)))
+  (record_expression
+    (record_entry
+        (identifier)
+        (integer))
+    (record_entry
+        (identifier)
+        (integer))
+    (record_entry
+        (parenthesized_expression
+            (binary_expression
+                (integer)
+                (integer)))
+        (integer)))
+  (record_expression
+    (record_entry
+        (identifier)
+        (integer))
+    (record_entry
+        (identifier)
+        (integer))
+    (record_entry
+        (parenthesized_expression
+            (call
+                (identifier)
+                (argument_list
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end))
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end)))))
+        (binary_expression
+            (integer)
+            (integer))))
+  (comment)
+  (comment)
+  (ERROR)
+    (assignment_statement
+      (string
+        (string_start)
+        (string_content)
+        (string_end))
+      (integer))
+  (ERROR)
+)
+
+=====================================
+Permutations
+=====================================
+
+();
+(1,2);
+(1,2,3);
+(1,2)(3,4,5);
+( );
+
+---
+
+(source_file
+  (permutation_expression)
+  (permutation_expression
+    (permutation_cycle_expression
+      (integer)
+      (integer)))
+  (permutation_expression
+    (permutation_cycle_expression
+      (integer)
+      (integer)
+      (integer)))
+  (permutation_expression
+    (permutation_cycle_expression
+      (integer)
+      (integer))
+    (permutation_cycle_expression
+      (integer)
+      (integer)
+      (integer)))
+  (permutation_expression)
+)
+
+=====================================
+List selectors
+=====================================
+
+A[1];
+A[b];
+A[3];
+A[1+1];
+A[1+Sum([1,2,3])];
+A[1][2];
+A[1+1][2];
+A[B[1]][2][3];
+A[1,2];
+A[1,Sum([1,2])];
+A [1];
+A [1] [2];
+A[2]{[1,2,3]};
+A[1](2);
+A[1]();
+A := [1, ~[1]];
+[1,2,3][2];
+([1,2,3])[2];
+Concatenation([1,2,3], [4,5,6])[2];
+[1][1];
+
+---
+
+(source_file
+    (list_selector
+        (identifier)
+        (integer))
+    (list_selector
+        (identifier)
+        (identifier))
+    (list_selector
+        (identifier)
+        (integer))
+    (list_selector
+        (identifier)
+        (binary_expression
+            (integer)
+            (integer)))
+    (list_selector
+        (identifier)
+        (binary_expression
+            (integer)
+            (call
+                (identifier)
+                (argument_list
+                    (list_expression
+                        (integer)
+                        (integer)
+                        (integer))))))
+    (list_selector
+        (list_selector
+            (identifier)
+            (integer))
+        (integer))
+    (list_selector
+        (list_selector
+            (identifier)
+            (binary_expression
+                (integer)
+                (integer)))
+        (integer))
+    (list_selector
+        (list_selector
+            (list_selector
+                (identifier)
+                (list_selector
+                    (identifier)
+                    (integer)))
+            (integer))
+        (integer))
+    (list_selector
+        (identifier)
+        (integer)
+        (integer))
+    (list_selector
+        (identifier)
+        (integer)
+        (call
+            (identifier)
+            (argument_list
+                (list_expression
+                    (integer)
+                    (integer)))))
+    (list_selector
+        (identifier)
+        (integer))
+    (list_selector
+        (list_selector
+            (identifier)
+            (integer))
+        (integer))
+    (sublist_selector
+        (list_selector
+            (identifier)
+            (integer))
+        (list_expression
+            (integer)
+            (integer)
+            (integer)))
+    (call
+        (list_selector
+            (identifier)
+            (integer))
+        (argument_list
+            (integer)))
+    (call
+        (list_selector
+            (identifier)
+            (integer))
+        (argument_list))
+    (assignment_statement
+        (identifier)
+        (list_expression
+            (integer)
+            (list_selector
+                (tilde)
+                (integer))))
+    (list_selector
+        (list_expression
+            (integer)
+            (integer)
+            (integer))
+        (integer))
+    (list_selector
+        (parenthesized_expression
+            (list_expression
+                (integer)
+                (integer)
+                (integer)))
+        (integer))
+    (list_selector
+        (call
+            (identifier)
+            (argument_list
+                (list_expression
+                    (integer)
+                    (integer)
+                    (integer))
+                (list_expression
+                    (integer)
+                    (integer)
+                    (integer))))
+        (integer))
+    (list_selector
+        (list_expression
+            (integer))
+        (integer))
+)
+
+=====================================
+Sublist selectors
+=====================================
+
+A{[1]};
+A{[2,3]};
+A{[1+1,1]};
+A{x};
+A{[1..10]};
+A{List([1..10],x->1)};
+A{[1,2,3]}[1];
+A{[1,2,3]}[1,1];
+A{[1,2,3]}{[4,5,6]};
+A{[1,2,3]}(1,2);
+A{[2,2,3]}();
+A := [1, ~{[1]}];
+[1,2,3]{[2,3]};
+([1,2,3]){[2,3]};
+
+
+---
+
+(source_file
+    (sublist_selector
+        (identifier)
+        (list_expression
+            (integer)))
+    (sublist_selector
+        (identifier)
+        (list_expression
+            (integer)
+            (integer)))
+    (sublist_selector
+        (identifier)
+        (list_expression
+            (binary_expression
+                (integer)
+                (integer))
+            (integer)))
+    (sublist_selector
+        (identifier)
+        (identifier))
+    (sublist_selector
+        (identifier)
+        (range_expression
+            (integer)
+            (integer)))
+    (sublist_selector
+        (identifier)
+        (call
+            (identifier)
+            (argument_list
+                (range_expression
+                    (integer)
+                    (integer))
+                (lambda
+                    (lambda_parameters
+                        (identifier))
+                    (integer)))))
+    (list_selector
+        (sublist_selector
+            (identifier)
+            (list_expression
+                (integer)
+                (integer)
+                (integer)))
+        (integer))
+    (list_selector
+        (sublist_selector
+            (identifier)
+            (list_expression
+                (integer)
+                (integer)
+                (integer)))
+        (integer)
+        (integer))
+    (sublist_selector
+        (sublist_selector
+            (identifier)
+            (list_expression
+                (integer)
+                (integer)
+                (integer)))
+        (list_expression
+            (integer)
+            (integer)
+            (integer)))
+    (call
+        (sublist_selector
+            (identifier)
+            (list_expression
+                (integer)
+                (integer)
+                (integer)))
+        (argument_list
+            (integer)
+            (integer)))
+    (call
+        (sublist_selector
+            (identifier)
+            (list_expression
+                (integer)
+                (integer)
+                (integer)))
+        (argument_list))
+    (assignment_statement
+        (identifier)
+        (list_expression
+            (integer)
+            (sublist_selector
+                (tilde)
+                (list_expression
+                    (integer)))))
+    (sublist_selector
+        (list_expression
+            (integer)
+            (integer)
+            (integer))
+        (list_expression
+            (integer)
+            (integer)))
+    (sublist_selector
+        (parenthesized_expression
+            (list_expression
+                (integer)
+                (integer)
+                (integer)))
+        (list_expression
+            (integer)
+            (integer)))
+)
+
+=====================================
+Positional selectors
+=====================================
+
+A![1];
+A![1+1];
+A![n];
+A![n](1,3);
+A![n]();
+A := [1, ~![1]];
+[1,2,3]![1];
+([1,2,3])![1];
+[1]![1];
+# The following should produce an error:
+[1]!![1];
+
+---
+
+(source_file
+    (positional_selector
+        (identifier)
+        (integer))
+    (positional_selector
+        (identifier)
+        (binary_expression
+            (integer)
+            (integer)))
+    (positional_selector
+        (identifier)
+        (identifier))
+    (call
+        (positional_selector
+            (identifier)
+            (identifier))
+        (argument_list
+            (integer)
+            (integer)))
+    (call
+        (positional_selector
+            (identifier)
+            (identifier))
+        (argument_list))
+    (assignment_statement
+        (identifier)
+        (list_expression
+            (integer)
+            (positional_selector
+                (tilde)
+                (integer))))
+    (positional_selector
+        (list_expression
+            (integer)
+            (integer)
+            (integer))
+        (integer))
+    (positional_selector
+        (parenthesized_expression
+            (list_expression
+                (integer)
+                (integer)
+                (integer)))
+        (integer))
+    (positional_selector
+        (list_expression
+            (integer))
+        (integer))
+    (comment)
+    (positional_selector
+        (list_expression
+            (integer))
+        (ERROR
+          (UNEXPECTED '!'))
+        (integer))
+)
+
+=====================================
+Record selectors
+=====================================
+
+A.1;
+A.1.2;
+A.(1+1);
+A.hello;
+A.hello.1;
+A.1.world;
+A.hello.world;
+A.hello.world.foo;
+A.hello.world[1];
+A.hello.world{[1,2,3]};
+A.(Concatenation("a", "b"));
+A.("ab");
+A.hello();
+A.hello(1);
+A.hello.world();
+A.hello.world(1);
+A.("ab")(1,2);
+A.1(2);
+A := rec(b := 1, c := ~.b);
+A := rec(b := 1, (~.b) := "c");
+rec(a:=1,1:=3).1;
+(rec(a:=1,1:=3)).1;
+foo().1;
+A.10.0_l;
+A.10.0a;
+
+# Ported from GAP test file: tst/testinstall/kernel/scanner.tst
+a:=rec();;
+a.x1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111 := 1;
+a.x11111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111 := 1;
+# Should be an error as the identifier is too long, but we do not implement this for simplicity
+a.x111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111 := 1;
+# Ported from GAP test file: tst/testinstall/kernel/read.tst
+# The following should produce an error:
+r."a";
+
+---
+
+(source_file
+    (record_selector
+        (identifier)
+        (integer))
+    (record_selector
+        (record_selector
+            (identifier)
+            (integer))
+        (integer))
+    (record_selector
+        (identifier)
+        (parenthesized_expression
+            (binary_expression
+                (integer)
+                (integer))))
+    (record_selector
+        (identifier)
+        (identifier))
+    (record_selector
+        (record_selector
+            (identifier)
+            (identifier))
+        (integer))
+    (record_selector
+        (record_selector
+            (identifier)
+            (integer))
+        (identifier))
+    (record_selector
+        (record_selector
+            (identifier)
+            (identifier))
+        (identifier))
+    (record_selector
+        (record_selector
+            (record_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (identifier))
+    (list_selector
+        (record_selector
+            (record_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (integer))
+    (sublist_selector
+        (record_selector
+            (record_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (list_expression
+            (integer)
+            (integer)
+            (integer)))
+    (record_selector
+        (identifier)
+        (parenthesized_expression
+            (call
+                (identifier)
+                (argument_list
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end))
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end))))))
+    (record_selector
+        (identifier)
+        (parenthesized_expression
+            (string
+                (string_start)
+                (string_content)
+                (string_end))))
+    (call
+        (record_selector
+            (identifier)
+            (identifier))
+        (argument_list))
+    (call
+        (record_selector
+            (identifier)
+            (identifier))
+        (argument_list
+            (integer)))
+    (call
+        (record_selector
+            (record_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (argument_list))
+    (call
+        (record_selector
+            (record_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (argument_list
+            (integer)))
+    (call
+        (record_selector
+            (identifier)
+            (parenthesized_expression
+                (string
+                    (string_start)
+                    (string_content)
+                    (string_end))))
+        (argument_list
+            (integer)
+            (integer)))
+    (call
+        (record_selector
+            (identifier)
+            (integer))
+        (argument_list
+            (integer)))
+    (assignment_statement
+        (identifier)
+        (record_expression
+            (record_entry
+                (identifier)
+                (integer))
+            (record_entry
+                (identifier)
+                (record_selector
+                    (tilde)
+                    (identifier)))))
+    (assignment_statement
+        (identifier)
+        (record_expression
+            (record_entry
+                (identifier)
+                (integer))
+            (record_entry
+                (parenthesized_expression
+                    (record_selector
+                        (tilde)
+                        (identifier)))
+                (string
+                    (string_start)
+                    (string_content)
+                    (string_end)))))
+    (record_selector
+        (record_expression
+            (record_entry
+                (identifier)
+                (integer))
+            (record_entry
+                (integer)
+                (integer)))
+        (integer))
+    (record_selector
+        (parenthesized_expression
+            (record_expression
+                (record_entry
+                    (identifier)
+                    (integer))
+                (record_entry
+                    (integer)
+                    (integer))))
+        (integer))
+    (record_selector
+        (call
+            (identifier)
+            (argument_list))
+        (integer))
+    (record_selector
+        (record_selector
+            (identifier)
+            (integer))
+        (identifier))
+    (record_selector
+        (record_selector
+            (identifier)
+            (integer))
+        (identifier))
+    (comment)
+    (assignment_statement
+        (identifier)
+        (record_expression))
+    (assignment_statement
+        (record_selector (identifier) (identifier))
+        (integer))
+    (assignment_statement
+        (record_selector (identifier) (identifier))
+        (integer))
+    (comment)
+    (assignment_statement
+        (record_selector (identifier) (identifier))
+        (integer))
+    (comment)
+    (comment)
+    (ERROR (identifier)) (string
+        (string_start)
+        (string_content)
+        (string_end)
+    )
+)
+
+=====================================
+Component selectors
+=====================================
+
+A!.1;
+A!.1!.2;
+A!.(1+1);
+A!.hello;
+A!.hello.world;
+A!.hello!.world!.foo;
+A.hello!.world[1];
+A!.hello!.world{[1,2,3]};
+A!.(Concatenation("a", "b"));
+A!.("ab");
+A!.hello();
+A!.hello(1);
+A!.hello!.world();
+A!.hello!.world(1);
+A!.("ab")(1,2);
+A!.1();
+A := rec(b := 1, c := ~!.b);
+A := rec(b := 1, (~!.b) := "c");
+rec(a:=1,1:=3)!.1;
+(rec(a:=1,1:=3))!.1;
+foo()!.1;
+# Ported from GAP test file: tst/testinstall/kernel/read.tst
+# The following should produce an error:
+r!."a";
+
+---
+
+(source_file
+    (component_selector
+        (identifier)
+        (integer))
+    (component_selector
+        (component_selector
+            (identifier)
+            (integer))
+        (integer))
+    (component_selector
+        (identifier)
+        (parenthesized_expression
+            (binary_expression
+                (integer)
+                (integer))))
+    (component_selector
+        (identifier)
+        (identifier))
+    (record_selector
+        (component_selector
+            (identifier)
+            (identifier))
+        (identifier))
+    (component_selector
+        (component_selector
+            (component_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (identifier))
+    (list_selector
+        (component_selector
+            (record_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (integer))
+    (sublist_selector
+        (component_selector
+            (component_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (list_expression
+            (integer)
+            (integer)
+            (integer)))
+    (component_selector
+        (identifier)
+        (parenthesized_expression
+            (call
+                (identifier)
+                (argument_list
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end))
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end))))))
+    (component_selector
+        (identifier)
+        (parenthesized_expression
+            (string
+                (string_start)
+                (string_content)
+                (string_end))))
+    (call
+        (component_selector
+            (identifier)
+            (identifier))
+        (argument_list))
+    (call
+        (component_selector
+            (identifier)
+            (identifier))
+        (argument_list
+            (integer)))
+    (call
+        (component_selector
+            (component_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (argument_list))
+    (call
+        (component_selector
+            (component_selector
+                (identifier)
+                (identifier))
+            (identifier))
+        (argument_list
+            (integer)))
+    (call
+        (component_selector
+            (identifier)
+            (parenthesized_expression
+                (string
+                    (string_start)
+                    (string_content)
+                    (string_end))))
+        (argument_list
+            (integer)
+            (integer)))
+    (call
+        (component_selector
+            (identifier)
+            (integer))
+        (argument_list))
+    (assignment_statement
+        (identifier)
+        (record_expression
+            (record_entry
+                (identifier)
+                (integer))
+            (record_entry
+                (identifier)
+                (component_selector
+                    (tilde)
+                (identifier)))))
+    (assignment_statement
+        (identifier)
+        (record_expression
+            (record_entry
+                (identifier)
+                (integer))
+            (record_entry
+                (parenthesized_expression
+                    (component_selector
+                        (tilde)
+                        (identifier)))
+                (string
+                    (string_start)
+                    (string_content)
+                    (string_end)))))
+    (component_selector
+        (record_expression
+            (record_entry
+                (identifier)
+                (integer))
+            (record_entry
+                (integer)
+                (integer)))
+        (integer))
+    (component_selector
+        (parenthesized_expression
+            (record_expression
+                (record_entry
+                    (identifier)
+                    (integer))
+                (record_entry
+                    (integer)
+                    (integer))))
+        (integer))
+    (component_selector
+        (call
+            (identifier)
+            (argument_list))
+        (integer))
+    (comment)
+    (comment)
+    (ERROR (identifier)) (string
+        (string_start)
+        (string_content)
+        (string_end)
+    )
+)
+
+=====================================
+Functions
+=====================================
+
+function() end;
+function(a) end;
+function(a,b) end;
+function(a...) end;
+function(a,b...) end;
+function(a ...) end;
+
+function()
+    local x;
+end;
+
+function()
+    return 1;
+end;
+function(a)
+    return a;
+end;
+function()
+    local x;
+    return 1;
+end;
+
+# Ported from GAP test file: tst/testinstall/kernel/read.tst
+# The following should produce errors:
+function(a,) end;;
+function(a end;;
+
+---
+
+(source_file
+    (function (parameters))
+    (function (parameters (identifier)))
+    (function (parameters (identifier) (identifier)))
+    (function (parameters (identifier) (ellipsis)))
+    (function (parameters (identifier) (identifier) (ellipsis)))
+    (function (parameters (identifier) (ellipsis)))
+    (function (parameters) (locals (identifier)))
+    (function (parameters) (return_statement (integer)))
+    (function (parameters (identifier)) (return_statement (identifier)))
+    (function (parameters) (locals (identifier)) (return_statement (integer)))
+    (comment)
+    (comment)
+    (function
+        (parameters
+            (identifier)
+            (ERROR)))
+    (function
+        (parameters
+            (identifier)
+            (MISSING ")")))
+)
+
+=====================================
+Inline Functions
+=====================================
+
+x -> 1;
+
+x -> y -> 1;
+
+x -> y -> x + y;
+
+{} -> 42;
+
+{x,y} -> x + y;
+
+{x...} -> x;
+
+# Ported from GAP test file: tst/testinstall/kernel/read.tst
+# The following should produce errors:
+{a -> a;
+
+---
+
+(source_file
+    (lambda (lambda_parameters (identifier)) (integer))
+    (lambda (lambda_parameters (identifier)) (lambda (lambda_parameters (identifier)) (integer)))
+    (lambda (lambda_parameters (identifier)) (lambda (lambda_parameters (identifier)) (binary_expression (identifier) (identifier))))
+    (lambda (lambda_parameters) (integer))
+    (lambda (lambda_parameters (identifier) (identifier)) (binary_expression (identifier) (identifier)))
+    (lambda (lambda_parameters (identifier) (ellipsis)) (identifier))
+    (comment)
+    (comment)
+    (lambda
+        (lambda_parameters
+            (identifier)
+            (MISSING "}"))
+        (identifier))
+)
+
+=====================================
+Atomic functions
+=====================================
+
+atomic function() end;
+atomic function(a) end;
+atomic function(readonly a) end;
+atomic function(readwrite a) end;
+atomic function(readwrite a, b) end;
+atomic function(readwrite a, readonly b) end;
+atomic function(readwrite a, readonly b, c) end;
+atomic function(readwrite a, readonly b, c, readwrite d) end;
+atomic function(a...) end;
+atomic function(readonly a...) end;
+atomic function(readwrite a...) end;
+atomic function(a,b...) end;
+atomic function(a, readonly b...) end;
+atomic function(a, readwrite b...) end;
+atomic function(readonly a, readwrite b...) end;
+atomic function(readonly a, b...) end;
+
+atomic function(readwrite y)
+    local x;
+end;
+
+atomic function(readonly x)
+    return 1;
+end;
+
+atomic function(readwrite a)
+    return a;
+end;
+
+atomic function()
+    local x;
+    return 1;
+end;
+
+---
+
+(source_file
+    (atomic_function
+        (qualified_parameters))
+    (atomic_function
+        (qualified_parameters
+            (identifier)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (identifier)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (qualified_identifier
+                (qualifier)
+                (identifier))))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (identifier)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (identifier)
+            (qualified_identifier
+                (qualifier)
+                (identifier))))
+    (atomic_function
+        (qualified_parameters
+            (identifier)
+            (ellipsis)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (ellipsis)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (ellipsis)))
+    (atomic_function
+        (qualified_parameters
+            (identifier)
+            (identifier)
+            (ellipsis)))
+    (atomic_function
+        (qualified_parameters
+            (identifier)
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (ellipsis)))
+    (atomic_function
+        (qualified_parameters
+            (identifier)
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (ellipsis)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (ellipsis)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier))
+            (identifier)
+            (ellipsis)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier)))
+        (locals
+            (identifier)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier)))
+        (return_statement
+            (integer)))
+    (atomic_function
+        (qualified_parameters
+            (qualified_identifier
+                (qualifier)
+                (identifier)))
+        (return_statement
+            (identifier)))
+    (atomic_function
+        (qualified_parameters)
+        (locals
+            (identifier))
+        (return_statement
+            (integer)))
+)
+
+=====================================
+Function calls
+=====================================
+
+foo();
+
+foo(1);
+
+foo(1, 1);
+
+foo(bar());
+
+foo()();
+
+foo(1)();
+
+foo()(1);
+
+foo(1)(1);
+
+(foo)();
+
+foo ();
+
+foo( );
+
+foo ( );
+
+function() return true or 1; end();
+
+function(x) return x+1; end(2);
+
+function(x, y) return x+y; end(2, 3);
+
+---
+
+(source_file
+    (call (identifier) (argument_list))
+    (call (identifier) (argument_list (integer)))
+    (call (identifier) (argument_list (integer) (integer)))
+    (call (identifier) (argument_list (call (identifier) (argument_list))))
+    (call
+        (call (identifier) (argument_list))
+        (argument_list))
+    (call
+        (call (identifier) (argument_list (integer)))
+        (argument_list))
+    (call
+        (call (identifier) (argument_list))
+        (argument_list (integer)))
+    (call
+        (call (identifier) (argument_list (integer)))
+        (argument_list (integer)))
+    (call
+        (parenthesized_expression (identifier))
+        (argument_list))
+    (call (identifier) (argument_list))
+    (call (identifier) (argument_list))
+    (call (identifier) (argument_list))
+    (call
+        (function
+            (parameters)
+            (return_statement
+                (binary_expression
+                    (bool)
+                    (integer))))
+        (argument_list))
+    (call
+        (function
+            (parameters
+                (identifier))
+            (return_statement
+                (binary_expression
+                    (identifier)
+                    (integer))))
+        (argument_list
+            (integer)))
+    (call
+        (function
+            (parameters
+                (identifier)
+                (identifier))
+            (return_statement
+                (binary_expression
+                    (identifier)
+                    (identifier))))
+        (argument_list
+            (integer)
+            (integer)))
+)
+
+
+=====================================
+Function calls with options
+=====================================
+
+Size( fpgrp : hard, tcselection := "external" );
+Size(fpgrp: hard, tcselection:= "external");
+f(a, 1 : c, d:=1, f);
+f(a, 1 : c, d:=1, f, g:=3, h:="aa");
+f(a, 1 : d:=1, g:=3, h:="aa");
+f(: c, d:=1, f);
+f(a, b:);
+f(:);
+f(:a);
+f(:a:=b);
+f(.1:c,d:=1,f);
+f(a,.1:c,d:=1,f);
+f(a, 1. : c, d:=1, f);
+f(a,1.:c,d:=1,f);
+f(1.:c,d:=1,f);
+f(1:(1+1),d:=1,f);
+f(1:c,(1+1):=1,f);
+# Ported from GAP test file: tst/testinstall/kernel/read.tst
+# The following should produce an error:
+IsInt(1 : "a");
+
+---
+
+(source_file
+    (call
+        (identifier)
+        (argument_list
+            (identifier)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end))))))
+    (call
+        (identifier)
+        (argument_list
+            (identifier)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end))))))
+    (call
+        (identifier)
+        (argument_list
+            (identifier)
+            (integer)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (identifier))))
+    (call
+        (identifier)
+        (argument_list
+            (identifier)
+            (integer)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end))))))
+    (call
+        (identifier)
+        (argument_list
+            (identifier)
+            (integer)
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (string
+                        (string_start)
+                        (string_content)
+                        (string_end))))))
+    (call
+        (identifier)
+        (argument_list
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (identifier))))
+    (call
+        (identifier)
+        (argument_list
+            (identifier)
+            (identifier)))
+    (call
+        (identifier)
+        (argument_list))
+    (call
+        (identifier)
+        (argument_list
+            (function_call_option
+                (identifier))))
+    (call
+        (identifier)
+        (argument_list
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (identifier)))))
+    (call
+        (identifier)
+        (argument_list
+            (float)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (identifier))))
+    (call
+        (identifier)
+        (argument_list
+            (identifier)
+            (float)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (identifier))))
+    (call
+        (identifier)
+        (argument_list
+            (identifier)
+            (float)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (identifier))))
+    (call
+        (identifier)
+        (argument_list
+            (identifier)
+            (float)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (identifier))))
+    (call
+        (identifier)
+        (argument_list
+            (float)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (identifier))))
+    (call
+        (identifier)
+        (argument_list
+            (integer)
+            (function_call_option
+                (parenthesized_expression
+                    (binary_expression
+                        (integer)
+                        (integer))))
+            (function_call_option
+                (record_entry
+                    (identifier)
+                    (integer)))
+            (function_call_option
+                (identifier))))
+    (call
+        (identifier)
+        (argument_list
+            (integer)
+            (function_call_option
+                (identifier))
+            (function_call_option
+                (record_entry
+                    (parenthesized_expression
+                        (binary_expression
+                            (integer)
+                            (integer)))
+                    (integer)))
+            (function_call_option
+                (identifier))))
+    (comment)
+    (comment)
+    (call
+        (identifier)
+        (argument_list
+            (ERROR (integer))
+            (string
+                (string_start)
+                (string_content)
+                (string_end))))
+)
+
+=====================================
+Line continuations
+=====================================
+
+abc\
+def;
+1\1\
+2\a;
+abc\
+def := 3;
+
+(\
+);
+(1,\
+2);
+(1, 2\
+,3);
+(1,2)\
+(3,4,5);
+( \
+ );
+
+---
+
+(source_file
+    (identifier)
+    (identifier)
+    (assignment_statement
+        (identifier)
+        (integer))
+    (permutation_expression)
+    (permutation_expression
+        (permutation_cycle_expression
+            (integer)
+            (integer)))
+    (permutation_expression
+        (permutation_cycle_expression
+            (integer)
+            (integer)
+            (integer)))
+    (permutation_expression
+        (permutation_cycle_expression
+            (integer)
+            (integer))
+        (permutation_cycle_expression
+            (integer)
+            (integer)
+            (integer)))
+    (permutation_expression)
+)

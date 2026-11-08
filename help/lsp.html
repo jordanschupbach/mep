@@ -134,16 +134,16 @@ typing, on opening a file and on switching back to one -- and on
 automatic refresh, leaving the command.</p>
 <h1>Servers mep knows about</h1>
 <p>Forty-five. Each is used when its command is on <code>$PATH</code>; the org, R,
-Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C# and SQL ones ship with mep itself:</p>
+Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, JavaScript and Go ones ship with mep itself:</p>
 <table>
 <tr><th>Language</th><th>Command</th></tr>
 <tr><td>C++</td><td><code>mep-cpp-lsp</code> (ships with mep), or <code>clangd</code></td></tr>
 <tr><td>C</td><td><code>mep-c-lsp</code> (ships with mep), or <code>clangd</code></td></tr>
 <tr><td>Python</td><td><code>mep-python-lsp</code> (ships with mep), or <code>pyright-langserver</code></td></tr>
-<tr><td>Lua</td><td><code>lua-language-server</code></td></tr>
-<tr><td>Go</td><td><code>gopls</code></td></tr>
+<tr><td>Go</td><td><code>mep-go-lsp</code> (ships with mep), or <code>gopls</code></td></tr>
 <tr><td>Rust</td><td><code>rust-analyzer</code></td></tr>
-<tr><td>TypeScript, JS</td><td><code>typescript-language-server</code></td></tr>
+<tr><td>JavaScript</td><td><code>mep-js-lsp</code> (ships with mep), or <code>typescript-language-server</code></td></tr>
+<tr><td>TypeScript</td><td><code>mep-js-lsp</code> (ships with mep), or <code>typescript-language-server</code></td></tr>
 <tr><td>Java</td><td><code>jdtls</code></td></tr>
 <tr><td>Ruby</td><td><code>solargraph</code></td></tr>
 <tr><td>PHP</td><td><code>intelephense</code></td></tr>
@@ -154,14 +154,24 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C# and SQL ones shi
 <tr><td>Elixir</td><td><code>elixir-ls</code></td></tr>
 <tr><td>Bash</td><td><code>mep-bash-lsp</code> (ships with mep), or <code>bash-language-server</code></td></tr>
 <tr><td>SQL (SQLite)</td><td><code>mep-sql-lsp</code> (ships with mep), or <code>sqls</code>, <code>sql-language-server</code></td></tr>
+<tr><td>Nix</td><td><code>mep-nix-lsp</code> (ships with mep), or <code>nil</code>, <code>nixd</code></td></tr>
+<tr><td>Kotlin</td><td><code>mep-kotlin-lsp</code> (ships with mep)</td></tr>
+<tr><td>Zig</td><td><code>mep-zig-lsp</code> (ships with mep)</td></tr>
+<tr><td>Rust</td><td><code>mep-rust-lsp</code> (ships with mep)</td></tr>
+<tr><td>GAP</td><td><code>mep-gap-lsp</code> (ships with mep)</td></tr>
+<tr><td>Tcl</td><td><code>mep-tcl-lsp</code> (ships with mep)</td></tr>
+<tr><td>Octave, MATLAB</td><td><code>mep-octave-lsp</code> (ships with mep)</td></tr>
+<tr><td>Fish</td><td><code>mep-fish-lsp</code> (ships with mep)</td></tr>
+<tr><td>Scheme</td><td><code>mep-scheme-lsp</code> (ships with mep)</td></tr>
+<tr><td>Lua</td><td><code>mep-lua-lsp</code> (ships with mep), or <code>lua-language-server</code></td></tr>
 <tr><td>R</td><td><code>mep-r-lsp</code> (ships with mep)</td></tr>
 <tr><td>Perl</td><td>Perl's <code>PLS</code></td></tr>
-<tr><td>Fortran</td><td><code>fortls</code></td></tr>
+<tr><td>Fortran</td><td><code>mep-fortran-lsp</code> (ships with mep), or <code>fortls</code></td></tr>
 <tr><td>Scala</td><td><code>metals</code></td></tr>
 <tr><td>Nim</td><td><code>nimlsp</code></td></tr>
 <tr><td>Crystal</td><td><code>mep-crystal-lsp</code> (ships with mep), or <code>crystalline</code></td></tr>
 <tr><td>D</td><td><code>serve-d</code></td></tr>
-<tr><td>Julia</td><td>Julia's <code>LanguageServer</code></td></tr>
+<tr><td>Julia</td><td><code>mep-julia-lsp</code> (ships with mep), or Julia's <code>LanguageServer</code></td></tr>
 <tr><td>Clojure</td><td><code>mep-clojure-lsp</code> (ships with mep), or <code>clojure-lsp</code></td></tr>
 <tr><td>Common Lisp</td><td><code>mep-lisp-lsp</code> (ships with mep)</td></tr>
 <tr><td>Kotlin</td><td><code>kotlin-language-server</code></td></tr>
@@ -180,11 +190,11 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C# and SQL ones shi
 <tr><td>mepml</td><td><code>mep-mepml-lsp</code> (ships with mep)</td></tr>
 </table>
 <p>If a server is missing, nothing breaks -- the file simply opens without one.</p>
-<h1>The thirteen mep brings itself</h1>
+<h1>The fifteen mep brings itself</h1>
 <p><code>mep-org-lsp</code>, <code>mep-r-lsp</code>, <code>mep-python-lsp</code>, <code>mep-cpp-lsp</code>, <code>mep-c-lsp</code>,
 <code>mep-maxima-lsp</code>, <code>mep-lisp-lsp</code>, <code>mep-bash-lsp</code>, <code>mep-clojure-lsp</code>,
-<code>mep-crystal-lsp</code>, <code>mep-csharp-lsp</code>, <code>mep-sql-lsp</code> and <code>mep-mepml-lsp</code> are mep's own servers, built and installed alongside <code>mep</code>,
-so org, R, Python, C++, C, Maxima, Common Lisp, shell, Clojure, Crystal, C#, SQL and mepml files get diagnostics and
+<code>mep-crystal-lsp</code>, <code>mep-csharp-lsp</code>, <code>mep-sql-lsp</code>, <code>mep-nix-lsp</code>, <code>mep-js-lsp</code> and <code>mep-mepml-lsp</code> are mep's own servers, built and installed alongside <code>mep</code>,
+so org, R, Python, C++, C, Maxima, Common Lisp, shell, Clojure, Crystal, C#, SQL, Nix, JavaScript and mepml files get diagnostics and
 completion with nothing to install. See
 <a href="org-lsp.html">The org language server</a>, <a href="r-lsp.html">The R language server</a>,
 <a href="python-lsp.html">The Python language server</a>, <a href="cpp-lsp.html">The C++ language server</a>,
@@ -194,12 +204,22 @@ completion with nothing to install. See
 <a href="clojure-lsp.html">The Clojure language server</a>,
 <a href="crystal-lsp.html">The Crystal language server</a>,
 <a href="csharp-lsp.html">The C# language server</a>,
-<a href="sql-lsp.html">The SQL language server</a> and
+<a href="sql-lsp.html">The SQL language server</a>,
+<a href="nix-lsp.html">The Nix language server</a>,
+<a href="fish-lsp.html">The Fish language server</a>,
+<a href="fortran-lsp.html">The Fortran language server</a>,
+<a href="tcl-lsp.html">The Tcl language server</a>,
+<a href="octave-lsp.html">The Octave language server</a>,
+<a href="scheme-lsp.html">The Scheme language server</a>,
+<a href="js-lsp.html">The JavaScript language server</a> and
 <a href="mepml-lsp.html">The mepml language server</a>.</p>
-<p>Python, C++, C, Bash, Clojure, Crystal, C# and SQL are the languages where mep's own server is
+<p>Python, C++, C, Bash, Clojure, Crystal, C#, SQL, Nix, JavaScript and TypeScript are the languages where mep's own server is
 preferred over an external one out of the box: <code>pyright</code>, <code>clangd</code>,
-<code>bash-language-server</code>, <code>clojure-lsp</code>, <code>crystalline</code>, <code>OmniSharp</code>, <code>sqls</code> and <code>sql-language-server</code> stay registered but claim no filetype of their own, and one line in
-<code>init.lua</code> swaps any of them back. <code>.h</code> goes to the C++ server, which reads C
+<code>bash-language-server</code>, <code>clojure-lsp</code>, <code>crystalline</code>, <code>OmniSharp</code>, <code>sqls</code>, <code>sql-language-server</code>, <code>nil</code>, <code>nixd</code> and <code>typescript-language-server</code> stay registered but claim no filetype of their own, and one line in
+<code>init.lua</code> swaps any of them back. So is <code>typescript-language-server</code>:
+<code>mep-js-lsp</code> takes TypeScript (<code>.ts</code>, <code>.tsx</code>, <code>.mts</code>, <code>.cts</code>) as well as
+<code>.js</code>, <code>.jsx</code>, <code>.mjs</code> and <code>.cjs</code> -- see <a href="js-lsp.html">The JavaScript language server</a>
+for handing TypeScript back to <code>tsc</code>'s server. <code>.h</code> goes to the C++ server, which reads C
 as well; a project whose headers are all C can hand it over with
 <code>mep.lsp_servers.c_ls.filetypes = {'c', 'h'}</code>.</p>
 <p>The R one never starts R: it parses the language itself, so a <code>.R</code> file

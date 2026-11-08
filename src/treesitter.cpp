@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <regex>
@@ -47,6 +48,22 @@
 #include "crystal_queries.h"
 #include "c_sharp_queries.h"
 #include "sql_queries.h"
+#include "maxima_queries.h"
+#include "typescript_queries.h"
+#include "tsx_queries.h"
+#include "scheme_queries.h"
+#include "fish_queries.h"
+#include "tcl_queries.h"
+#include "fortran_queries.h"
+#include "matlab_queries.h"
+#include "gap_queries.h"
+#include "go_queries.h"
+#include "java_queries.h"
+#include "julia_queries.h"
+#include "nim_queries.h"
+#include "rust_queries.h"
+#include "zig_queries.h"
+#include "d_queries.h"
 #include "frame_activity.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -57,6 +74,7 @@
 // resolvable at link time.
 extern "C" {
 const TSLanguage *tree_sitter_mepml(void);  // mep's own: grammars/tree-sitter-mepml
+const TSLanguage *tree_sitter_maxima(void);  // mep's own: grammars/tree-sitter-maxima
 const TSLanguage *tree_sitter_nix(void);    // mep's own: grammars/tree-sitter-nix
 const TSLanguage *tree_sitter_just(void);   // mep's own: grammars/tree-sitter-just
 const TSLanguage *tree_sitter_r(void);      // mep's own: grammars/tree-sitter-r
@@ -74,6 +92,21 @@ const TSLanguage *tree_sitter_clojure(void);          // mep's own: grammars/tre
 const TSLanguage *tree_sitter_crystal(void);          // mep's own: grammars/tree-sitter-crystal
 const TSLanguage *tree_sitter_c_sharp(void);          // mep's own: grammars/tree-sitter-c_sharp
 const TSLanguage *tree_sitter_sql(void);              // mep's own: grammars/tree-sitter-sql
+const TSLanguage *tree_sitter_typescript(void);       // mep's own: grammars/tree-sitter-typescript
+const TSLanguage *tree_sitter_tsx(void);              // mep's own: grammars/tree-sitter-tsx
+const TSLanguage *tree_sitter_scheme(void);           // mep's own: grammars/tree-sitter-scheme
+const TSLanguage *tree_sitter_fish(void);             // mep's own: grammars/tree-sitter-fish
+const TSLanguage *tree_sitter_tcl(void);              // mep's own: grammars/tree-sitter-tcl
+const TSLanguage *tree_sitter_fortran(void);          // mep's own: grammars/tree-sitter-fortran
+const TSLanguage *tree_sitter_matlab(void);           // mep's own: grammars/tree-sitter-matlab
+const TSLanguage *tree_sitter_gap(void);              // mep's own: grammars/tree-sitter-gap
+const TSLanguage *tree_sitter_go(void);               // mep's own: grammars/tree-sitter-go
+const TSLanguage *tree_sitter_java(void);             // mep's own: grammars/tree-sitter-java
+const TSLanguage *tree_sitter_julia(void);            // mep's own: grammars/tree-sitter-julia
+const TSLanguage *tree_sitter_nim(void);              // mep's own: grammars/tree-sitter-nim
+const TSLanguage *tree_sitter_rust(void);             // mep's own: grammars/tree-sitter-rust
+const TSLanguage *tree_sitter_zig(void);              // mep's own: grammars/tree-sitter-zig
+const TSLanguage *tree_sitter_d(void);                // mep's own: grammars/tree-sitter-d
 }
 
 // The process-wide caches below -- parse trees and row answers per key,
@@ -112,6 +145,64 @@ struct LangEntry {
     const TSLanguage *(*language)(void);
     const char *query_source;
 };
+
+// TypeScript's highlights.scm (grammars/tree-sitter-typescript/queries)
+// only covers what TypeScript adds on top of JavaScript: it is layered over
+// the JavaScript query, as upstream tree-sitter-typescript's tree-sitter.json
+// layers its own. JavaScript's patterns go first so the TypeScript ones,
+// later, win where both match.
+//
+// Not all of mep's JavaScript query: a pattern naming a node or shape
+// TypeScript's grammar lacks fails the whole query there, so
+// grammars/tree-sitter-javascript/queries/highlights.scm keeps those in
+// two trailing sections, found by their headers: "JavaScript only" (bare
+// parameters, which TypeScript wraps in required_parameter) is left out
+// of both, "JSX" is kept for .tsx alone.
+/**
+ * @brief Returns the part of the JavaScript highlight query TypeScript's
+ * grammars share, with the JSX section too when `jsx`, followed by the
+ * TypeScript query.
+ * @param jsx Whether to keep the JSX section (for the tsx grammar).
+ * @return The combined query source.
+ */
+std::string LayeredTypescriptHighlights(bool jsx) {
+    const std::string js = kHighlightsJavascript;
+    const size_t js_only = js.find("; ---- JavaScript only");
+    const size_t jsx_section = js.find("; ---- JSX");
+    std::string query = js.substr(0, js_only);
+    if (jsx && jsx_section != std::string::npos) query += js.substr(jsx_section);
+    return query + kHighlightsTypescript;
+}
+
+/**
+ * @brief Returns the .ts highlight query, built once and kept for the
+ * process lifetime.
+ * @return The combined query source, stable for QueryFor's pointer-keyed cache.
+ */
+const char *TypescriptHighlights() {
+    static const std::string query = LayeredTypescriptHighlights(false);
+    return query.c_str();
+}
+
+/**
+ * @brief Returns the .tsx highlight query (TypeScript's, plus JavaScript's
+ * JSX patterns), built once and kept for the process lifetime.
+ * @return The combined query source, stable for QueryFor's pointer-keyed cache.
+ */
+const char *TsxHighlights() {
+    static const std::string query = LayeredTypescriptHighlights(true);
+    return query.c_str();
+}
+
+/**
+ * @brief Returns the .tsx fold query: TypeScript's, then what TSX adds (its
+ * JSX elements), built once and kept for the process lifetime.
+ * @return The combined query source, stable for QueryFor's pointer-keyed cache.
+ */
+const char *TsxFolds() {
+    static const std::string query = std::string(kFoldsTypescript) + kFoldsTsx;
+    return query.c_str();
+}
 
 // The core set, compiled directly into mep, keyed by the bare file
 // extensions mep_lsp_filetype (main.cpp) hands back. Deliberately a
@@ -159,6 +250,9 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"R", {tree_sitter_r, kHighlightsR}},
         {"mepml", {tree_sitter_mepml, kHighlightsMepml}},
         {"nix", {tree_sitter_nix, kHighlightsNix}},
+        // Maxima: .mac batch files, .max the older spelling.
+        {"mac", {tree_sitter_maxima, kHighlightsMaxima}},
+        {"max", {tree_sitter_maxima, kHighlightsMaxima}},
         // justfiles: LspFiletype maps `justfile`, `Justfile` and `.justfile` here too.
         {"just", {tree_sitter_just, kHighlightsJust}},
         // Common Lisp: .lisp and .cl for source, .lsp the older spelling,
@@ -183,6 +277,48 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"cr", {tree_sitter_crystal, kHighlightsCrystal}},
         {"cs", {tree_sitter_c_sharp, kHighlightsCSharp}},
         {"sql", {tree_sitter_sql, kHighlightsSQL}},
+        // TypeScript (.mts/.cts: its ES-module and CommonJS spellings) and
+        // TSX, layered over JavaScript's query (LayeredTypescriptHighlights).
+        {"ts", {tree_sitter_typescript, TypescriptHighlights()}},
+        {"mts", {tree_sitter_typescript, TypescriptHighlights()}},
+        {"cts", {tree_sitter_typescript, TypescriptHighlights()}},
+        {"tsx", {tree_sitter_tsx, TsxHighlights()}},
+        // Scheme: .scm, .ss (Chez), R7RS .sld libraries, R6RS .sls/.sps.
+        {"scm", {tree_sitter_scheme, kHighlightsScheme}},
+        {"ss", {tree_sitter_scheme, kHighlightsScheme}},
+        {"sld", {tree_sitter_scheme, kHighlightsScheme}},
+        {"sls", {tree_sitter_scheme, kHighlightsScheme}},
+        {"sps", {tree_sitter_scheme, kHighlightsScheme}},
+        {"fish", {tree_sitter_fish, kHighlightsFish}},
+        // Tcl: scripts, Tk scripts, Tcl modules.
+        {"tcl", {tree_sitter_tcl, kHighlightsTcl}},
+        {"tk", {tree_sitter_tcl, kHighlightsTcl}},
+        {"tm", {tree_sitter_tcl, kHighlightsTcl}},
+        {"g", {tree_sitter_gap, kHighlightsGap}},
+        {"gi", {tree_sitter_gap, kHighlightsGap}},
+        {"gd", {tree_sitter_gap, kHighlightsGap}},
+        {"gap", {tree_sitter_gap, kHighlightsGap}},
+        {"go", {tree_sitter_go, kHighlightsGo}},
+        {"java", {tree_sitter_java, kHighlightsJava}},
+        {"nim", {tree_sitter_nim, kHighlightsNim}},
+        {"nims", {tree_sitter_nim, kHighlightsNim}},
+        {"nimble", {tree_sitter_nim, kHighlightsNim}},
+        {"rs", {tree_sitter_rust, kHighlightsRust}},
+        {"zig", {tree_sitter_zig, kHighlightsZig}},
+        {"zon", {tree_sitter_zig, kHighlightsZig}},
+        {"d", {tree_sitter_d, kHighlightsD}},
+        {"di", {tree_sitter_d, kHighlightsD}},
+        {"jl", {tree_sitter_julia, kHighlightsJulia}},
+        {"f90", {tree_sitter_fortran, kHighlightsFortran}},
+        {"f95", {tree_sitter_fortran, kHighlightsFortran}},
+        {"f03", {tree_sitter_fortran, kHighlightsFortran}},
+        {"f08", {tree_sitter_fortran, kHighlightsFortran}},
+        {"f", {tree_sitter_fortran, kHighlightsFortran}},
+        {"for", {tree_sitter_fortran, kHighlightsFortran}},
+        {"fortran", {tree_sitter_fortran, kHighlightsFortran}},
+        // .m is MATLAB/Octave here, not Objective-C (no ObjC grammar is
+        // wired up at all).
+        {"m", {tree_sitter_matlab, kHighlightsMatlab}},
     };
     return table;
 }
@@ -222,6 +358,8 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"org", {tree_sitter_org, kFoldsOrg}},
         {"mepml", {tree_sitter_mepml, kFoldsMepml}},
         {"nix", {tree_sitter_nix, kFoldsNix}},
+        {"mac", {tree_sitter_maxima, kFoldsMaxima}},
+        {"max", {tree_sitter_maxima, kFoldsMaxima}},
         {"just", {tree_sitter_just, kFoldsJust}},
         {"lisp", {tree_sitter_commonlisp, kFoldsCommonlisp}},
         {"lsp", {tree_sitter_commonlisp, kFoldsCommonlisp}},
@@ -239,6 +377,42 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"cr", {tree_sitter_crystal, kFoldsCrystal}},
         {"cs", {tree_sitter_c_sharp, kFoldsCSharp}},
         {"sql", {tree_sitter_sql, kFoldsSQL}},
+        {"ts", {tree_sitter_typescript, kFoldsTypescript}},
+        {"mts", {tree_sitter_typescript, kFoldsTypescript}},
+        {"cts", {tree_sitter_typescript, kFoldsTypescript}},
+        {"tsx", {tree_sitter_tsx, TsxFolds()}},
+        {"scm", {tree_sitter_scheme, kFoldsScheme}},
+        {"ss", {tree_sitter_scheme, kFoldsScheme}},
+        {"sld", {tree_sitter_scheme, kFoldsScheme}},
+        {"sls", {tree_sitter_scheme, kFoldsScheme}},
+        {"sps", {tree_sitter_scheme, kFoldsScheme}},
+        {"fish", {tree_sitter_fish, kFoldsFish}},
+        {"tcl", {tree_sitter_tcl, kFoldsTcl}},
+        {"tk", {tree_sitter_tcl, kFoldsTcl}},
+        {"tm", {tree_sitter_tcl, kFoldsTcl}},
+        {"g", {tree_sitter_gap, kFoldsGap}},
+        {"gi", {tree_sitter_gap, kFoldsGap}},
+        {"gd", {tree_sitter_gap, kFoldsGap}},
+        {"gap", {tree_sitter_gap, kFoldsGap}},
+        {"go", {tree_sitter_go, kFoldsGo}},
+        {"java", {tree_sitter_java, kFoldsJava}},
+        {"nim", {tree_sitter_nim, kFoldsNim}},
+        {"nims", {tree_sitter_nim, kFoldsNim}},
+        {"nimble", {tree_sitter_nim, kFoldsNim}},
+        {"rs", {tree_sitter_rust, kFoldsRust}},
+        {"zig", {tree_sitter_zig, kFoldsZig}},
+        {"zon", {tree_sitter_zig, kFoldsZig}},
+        {"d", {tree_sitter_d, kFoldsD}},
+        {"di", {tree_sitter_d, kFoldsD}},
+        {"jl", {tree_sitter_julia, kFoldsJulia}},
+        {"f90", {tree_sitter_fortran, kFoldsFortran}},
+        {"f95", {tree_sitter_fortran, kFoldsFortran}},
+        {"f03", {tree_sitter_fortran, kFoldsFortran}},
+        {"f08", {tree_sitter_fortran, kFoldsFortran}},
+        {"f", {tree_sitter_fortran, kFoldsFortran}},
+        {"for", {tree_sitter_fortran, kFoldsFortran}},
+        {"fortran", {tree_sitter_fortran, kFoldsFortran}},
+        {"m", {tree_sitter_matlab, kFoldsMatlab}},
     };
     return table;
 }
@@ -279,6 +453,8 @@ const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
         // mep's own grammars keep theirs in grammars/tree-sitter-<name>/
         // queries/structure.scm (embedded via <name>_queries.h).
         {"nix", {tree_sitter_nix, kStructureNix}},
+        {"mac", {tree_sitter_maxima, kStructureMaxima}},
+        {"max", {tree_sitter_maxima, kStructureMaxima}},
         {"just", {tree_sitter_just, kStructureJust}},
         {"lisp", {tree_sitter_commonlisp, kStructureCommonlisp}},
         {"lsp", {tree_sitter_commonlisp, kStructureCommonlisp}},
@@ -296,6 +472,42 @@ const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
         {"cr", {tree_sitter_crystal, kStructureCrystal}},
         {"cs", {tree_sitter_c_sharp, kStructureCSharp}},
         {"sql", {tree_sitter_sql, kStructureSQL}},
+        // One outline query for both dialects: JSX adds no declarations.
+        {"ts", {tree_sitter_typescript, kStructureTypescript}},
+        {"mts", {tree_sitter_typescript, kStructureTypescript}},
+        {"cts", {tree_sitter_typescript, kStructureTypescript}},
+        {"tsx", {tree_sitter_tsx, kStructureTypescript}},
+        {"scm", {tree_sitter_scheme, kStructureScheme}},
+        {"ss", {tree_sitter_scheme, kStructureScheme}},
+        {"sld", {tree_sitter_scheme, kStructureScheme}},
+        {"sls", {tree_sitter_scheme, kStructureScheme}},
+        {"sps", {tree_sitter_scheme, kStructureScheme}},
+        {"fish", {tree_sitter_fish, kStructureFish}},
+        {"tcl", {tree_sitter_tcl, kStructureTcl}},
+        {"tk", {tree_sitter_tcl, kStructureTcl}},
+        {"tm", {tree_sitter_tcl, kStructureTcl}},
+        {"g", {tree_sitter_gap, kStructureGap}},
+        {"gi", {tree_sitter_gap, kStructureGap}},
+        {"gd", {tree_sitter_gap, kStructureGap}},
+        {"gap", {tree_sitter_gap, kStructureGap}},
+        {"go", {tree_sitter_go, kStructureGo}},
+        {"java", {tree_sitter_java, kStructureJava}},
+        {"nim", {tree_sitter_nim, kStructureNim}},
+        {"nims", {tree_sitter_nim, kStructureNim}},
+        {"nimble", {tree_sitter_nim, kStructureNim}},
+        {"rs", {tree_sitter_rust, kStructureRust}},
+        {"zig", {tree_sitter_zig, kStructureZig}},
+        {"d", {tree_sitter_d, kStructureD}},
+        {"di", {tree_sitter_d, kStructureD}},
+        {"jl", {tree_sitter_julia, kStructureJulia}},
+        {"f90", {tree_sitter_fortran, kStructureFortran}},
+        {"f95", {tree_sitter_fortran, kStructureFortran}},
+        {"f03", {tree_sitter_fortran, kStructureFortran}},
+        {"f08", {tree_sitter_fortran, kStructureFortran}},
+        {"f", {tree_sitter_fortran, kStructureFortran}},
+        {"for", {tree_sitter_fortran, kStructureFortran}},
+        {"fortran", {tree_sitter_fortran, kStructureFortran}},
+        {"m", {tree_sitter_matlab, kStructureMatlab}},
     };
     return table;
 }
@@ -333,54 +545,6 @@ const char *OcamlInterfaceHighlights() {
     return query.c_str();
 }
 
-// tree-sitter-typescript's highlights.scm only covers what TypeScript adds
-// on top of JavaScript -- upstream layers it over the JavaScript query
-// (its tree-sitter.json lists both), and on its own a .ts file got no
-// strings, functions or most keywords. JavaScript's patterns go first so
-// the TypeScript ones, later, win where both match.
-//
-// Not all of mep's JavaScript query: a pattern naming a node or shape
-// TypeScript's grammar lacks fails the whole query there, so
-// grammars/tree-sitter-javascript/queries/highlights.scm keeps those in
-// two trailing sections, found by their headers: "JavaScript only" (bare
-// parameters, which TypeScript wraps in required_parameter) is left out
-// of both, "JSX" is kept for .tsx alone.
-/**
- * @brief Returns the part of the JavaScript highlight query TypeScript's
- * grammars share, with the JSX section too when `jsx`, followed by the
- * TypeScript query.
- * @param jsx Whether to keep the JSX section (for the tsx grammar).
- * @return The combined query source.
- */
-std::string LayeredTypescriptHighlights(bool jsx) {
-    const std::string js = kHighlightsJavascript;
-    const size_t js_only = js.find("; ---- JavaScript only");
-    const size_t jsx_section = js.find("; ---- JSX");
-    std::string query = js.substr(0, js_only);
-    if (jsx && jsx_section != std::string::npos) query += js.substr(jsx_section);
-    return query + kHighlightsTypescript;
-}
-
-/**
- * @brief Returns the .ts highlight query, built once and kept for the
- * process lifetime.
- * @return The combined query source, stable for QueryFor's pointer-keyed cache.
- */
-const char *TypescriptHighlights() {
-    static const std::string query = LayeredTypescriptHighlights(false);
-    return query.c_str();
-}
-
-/**
- * @brief Returns the .tsx highlight query (TypeScript's, plus JavaScript's
- * JSX patterns), built once and kept for the process lifetime.
- * @return The combined query source, stable for QueryFor's pointer-keyed cache.
- */
-const char *TsxHighlights() {
-    static const std::string query = LayeredTypescriptHighlights(true);
-    return query.c_str();
-}
-
 /**
  * @brief Returns the process-lifetime table of filetypes with a known
  * highlight query but no compiled-in grammar, keyed by bare file
@@ -392,31 +556,22 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"css", {"css", kHighlightsCss}},
         // mepml style sheets are CSS in syntax (docs/mepml-spec/style.md).
         {"mepss", {"css", kHighlightsCss}},
-        {"go", {"go", kHighlightsGo}},
         {"hs", {"haskell", kHighlightsHaskell}},
         {"html", {"html", kHighlightsHtml}},
         {"htm", {"html", kHighlightsHtml}},
-        {"java", {"java", kHighlightsJava}},
         {"json", {"json", kHighlightsJson}},
-        {"jl", {"julia", kHighlightsJulia}},
         {"ml", {"ocaml", kHighlightsOcaml}},
         {"mli", {"ocaml_interface", OcamlInterfaceHighlights()}},
         {"php", {"php", kHighlightsPhp}},
         {"rb", {"ruby", kHighlightsRuby}},
-        {"rs", {"rust", kHighlightsRust}},
         {"scala", {"scala", kHighlightsScala}},
         {"sbt", {"scala", kHighlightsScala}},
-        {"ts", {"typescript", TypescriptHighlights()}},
-        {"mts", {"typescript", TypescriptHighlights()}},
-        {"cts", {"typescript", TypescriptHighlights()}},
-        {"tsx", {"tsx", TsxHighlights()}},
         {"v", {"verilog", kHighlightsVerilog}},
         {"sv", {"verilog", kHighlightsVerilog}},
         {"vh", {"verilog", kHighlightsVerilog}},
         {"yaml", {"yaml", kHighlightsYaml}},
         {"yml", {"yaml", kHighlightsYaml}},
         {"toml", {"toml", kHighlightsToml}},
-        {"zig", {"zig", kHighlightsZig}},
         {"elm", {"elm", kHighlightsElm}},
         {"kt", {"kotlin", kHighlightsKotlin}},
         {"kts", {"kotlin", kHighlightsKotlin}},
@@ -439,7 +594,6 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"gql", {"graphql", kHighlightsGraphql}},
         {"proto", {"proto", kHighlightsProto}},
         {"ini", {"ini", kHighlightsIni}},
-        {"fish", {"fish", kHighlightsFish}},
         {"groovy", {"groovy", kHighlightsGroovy}},
         {"gradle", {"groovy", kHighlightsGroovy}},
         {"ex", {"elixir", kHighlightsElixir}},
@@ -451,24 +605,6 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         // supports all five, but no grammar query existed for them until now.
         {"pl", {"perl", kHighlightsPerl}},
         {"pm", {"perl", kHighlightsPerl}},
-        {"f90", {"fortran", kHighlightsFortran}},
-        {"f95", {"fortran", kHighlightsFortran}},
-        {"f", {"fortran", kHighlightsFortran}},
-        {"for", {"fortran", kHighlightsFortran}},
-        {"d", {"d", kHighlightsD}},
-        {"nim", {"nim", kHighlightsNim}},
-        // .m is MATLAB/Octave here, not Objective-C (no ObjC grammar is
-        // wired up at all).
-        {"m", {"matlab", kHighlightsMatlab}},
-        {"scm", {"scheme", kHighlightsScheme}},
-        {"ss", {"scheme", kHighlightsScheme}},
-        {"tcl", {"tcl", kHighlightsTcl}},
-        {"g", {"gap", kHighlightsGap}},
-        {"gi", {"gap", kHighlightsGap}},
-        {"gd", {"gap", kHighlightsGap}},
-        {"gap", {"gap", kHighlightsGap}},
-        {"mac", {"maxima", kHighlightsMaxima}},
-        {"max", {"maxima", kHighlightsMaxima}},
         // LaTeX + BibTeX (latex-lsp's grammars; see kHighlightsLatex's
         // own comment for why the query is written from scratch). .sty/
         // .cls are the same language as .tex proper -- package/class
@@ -487,8 +623,7 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
 // the `.so`), but only the subset of DynamicLanguageTable's filetypes
 // that actually have a structure query written (treesitter_structure_
 // queries.h): the broad mainstream languages, not every highlight-only
-// grammar mep can highlight. mts/cts/tsx all reuse kStructureTypescript
-// -- see that query's own comment for why one query covers all three.
+// grammar mep can highlight.
 /**
  * @brief Returns the process-lifetime table of structure queries for
  * dynamically-loaded grammars, keyed by bare file extension.
@@ -496,15 +631,8 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
  */
 const std::unordered_map<std::string, DynLangEntry> &DynamicStructureQueryTable() {
     static const std::unordered_map<std::string, DynLangEntry> table = {
-        {"go", {"go", kStructureGo}},
-        {"rs", {"rust", kStructureRust}},
-        {"java", {"java", kStructureJava}},
         {"rb", {"ruby", kStructureRuby}},
         {"php", {"php", kStructurePhp}},
-        {"ts", {"typescript", kStructureTypescript}},
-        {"mts", {"typescript", kStructureTypescript}},
-        {"cts", {"typescript", kStructureTypescript}},
-        {"tsx", {"tsx", kStructureTypescript}},
     };
     return table;
 }
@@ -671,28 +799,30 @@ const TSLanguage *LoadDynamicLanguage(const std::string &canonical_name) {
 // Compiling a .scm query is real work mep.syntax_highlight() can't repay
 // per call (potentially per keystroke, once mep.syntax_auto is on) -- one
 // TSQuery per (language, query source), built lazily and kept for the
-// process lifetime. Keyed by the query source pointer: every filetype
-// sharing a language+query (e.g. cpp/cc/cxx/hpp/hh/hxx) always passes the
-// exact same static string-literal address, so pointer identity is
-// already a correct, zero-overhead cache key.
+// process lifetime. Keyed by the language and the query source pointer:
+// every filetype sharing a language+query (e.g. cpp/cc/cxx/hpp/hh/hxx)
+// always passes the exact same static string address, and one source may
+// serve two grammars (TypeScript's outline query, for both its dialects),
+// whose node ids differ, so each gets its own compiled query.
 /**
  * @brief Returns the compiled TSQuery for a (language, query source) pair,
- * building and caching it lazily for the process lifetime; the query
- * source's pointer identity is used as the cache key.
+ * building and caching it lazily for the process lifetime; the language
+ * and the query source's pointer identity are the cache key.
  * @param language The tree-sitter language to compile the query against.
  * @param query_source The `.scm` query source text.
  * @return Pointer to the cached compiled query, or nullptr if compilation failed.
  */
 TSQuery *QueryFor(const TSLanguage *language, const char *query_source) {
     MEP_TS_LOCK();
-    static std::unordered_map<const char *, TSQuery *> cache;
-    auto it = cache.find(query_source);
+    static std::map<std::pair<const TSLanguage *, const char *>, TSQuery *> cache;
+    const std::pair<const TSLanguage *, const char *> key{language, query_source};
+    auto it = cache.find(key);
     if (it != cache.end()) return it->second;
     uint32_t error_offset = 0;
     TSQueryError error_type = TSQueryErrorNone;
     TSQuery *q = ts_query_new(language, query_source, static_cast<uint32_t>(strlen(query_source)), &error_offset,
                                &error_type);
-    cache[query_source] = q;
+    cache[key] = q;
     return q;
 }
 

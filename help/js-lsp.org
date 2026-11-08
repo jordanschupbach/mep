@@ -1,0 +1,306 @@
+#+TITLE: The JavaScript language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+JavaScript and TypeScript files get a language server of their own,
+=mep-js-lsp=, built and shipped with mep. Open a =.js=, =.jsx=, =.mjs=,
+=.cjs=, =.ts=, =.tsx=, =.mts= or =.cts= file and it attaches by itself --
+no Node.js, no =npm install=, no =tsc=, and nothing in the file is ever
+run. It knows the language up to ES2025, JSX and TypeScript 5.9's syntax,
+the standard library with TypeScript's own signatures and documentation,
+the DOM's names and signatures, and Node.js's globals. See /TypeScript/
+below for what changes in a =.ts= file.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* The same errors as acorn
+
+Its parser is a port of acorn 8.15 (with acorn-jsx), the parser ESLint's
+own parser is built on, decision for decision: a syntax error is reported
+where acorn reports it, in its words:
+
+#+begin_example
+Unexpected token
+Identifier 'x' has already been declared
+'return' outside of function
+#+end_example
+
+A =.mjs= file is read as a module and a =.cjs= file as a script; a =.js=
+file as a module if it can be one and a script otherwise, with JSX on when
+that is what makes it parse (React code often lives in =.js= files). Like
+acorn it stops at nothing: after an error it drops the broken statement and
+keeps going, so completion and navigation keep working in a half-typed
+file. Only the first error is reported, and the lints after it are not --
+they would be about a repaired tree, not your code.
+
+* What it reports
+
+The codes are ESLint's rule names, and each follows that rule's
+documented behaviour, so a code you see here means what it means in an
+ESLint report.
+
+| Code                    | Severity | What it means                                                                    |
+|-------------------------+----------+----------------------------------------------------------------------------------|
+| =syntax-error=          | error    | what acorn says, in its words                                                    |
+| =no-const-assign=       | error    | assigning to a =const= (a =TypeError= when it runs)                              |
+| =no-import-assign=      | error    | assigning to an imported binding                                                 |
+| =no-unused-vars=        | warning  | a variable, function, class or import nothing reads                              |
+| =no-undef=              | warning  | a name declared nowhere that looks like a misspelling: /did you mean 'document'?/ |
+| =no-unreachable=        | warning  | statements after =return=, =throw=, =break= or =continue=                        |
+| =no-dupe-keys=          | warning  | ={a: 1, a: 2}=                                                                   |
+| =no-dupe-class-members= | warning  | a class with two members of the same name                                        |
+| =no-duplicate-case=     | warning  | a =switch= with the same =case= twice                                            |
+| =no-redeclare=          | warning  | =var x= declared again in the same function                                      |
+| =no-dupe-args=          | warning  | =function f(a, a)=                                                               |
+| =no-func-assign=        | warning  | assigning to a function declaration                                              |
+| =no-class-assign=       | warning  | assigning to a class declaration                                                 |
+| =no-self-assign=        | warning  | =x = x=, =a.b = a.b=                                                             |
+| =no-self-compare=       | warning  | ~x === x~, =a < a=                                                               |
+| =use-isnan=             | warning  | ~x == NaN~ (always false: use =Number.isNaN=)                                    |
+| =valid-typeof=          | warning  | =typeof x= compared with a string no type has (say, =strng=)                     |
+| =no-unsafe-negation=    | warning  | =!key in obj= (negates =key=, not the test)                                      |
+| =no-shadow=             | info     | a name in a block hiding another one of the same function                        |
+| =no-empty=              | info     | an empty block or =switch= (a comment inside counts as content)                  |
+| =no-unused-vars=        | hint     | an unused parameter or =catch= parameter (shown faded)                           |
+
+ESLint's comment directives are honoured: =// eslint-disable-line= and
+=// eslint-disable-next-line= (all rules, or the ones named after them --
+=@typescript-eslint/no-unused-vars= counts as =no-unused-vars=),
+=/* eslint-disable */= ... =/* eslint-enable */= regions, =/* global x, y */=
+to declare globals and =/* exported f */= to mark a script's function as used
+elsewhere. A =/** @jsx h */= pragma marks =h= as used by the file's JSX.
+
+** Calibration
+
+The lints were run over 2,109 real files -- Node.js's own =lib/=, npm and
+its dependencies, three React front ends and mep's own JavaScript -- and
+compared with ESLint 9 (with the same globals, and JSX uses counted the way
+=eslint-plugin-react= counts them). With every narrowing below switched off,
+the analysis finds what ESLint finds, finding for finding: the same 9,932
+undefined names and the same 1,119 unused variables, and nothing else.
+Those 11,181 reports in 527 files are mostly not bugs, though, so the
+server narrows them down to 296 in 151 files, every one of which ESLint
+also reports:
+
+- *Undefined names.* Browsers, Node.js, bundlers and test runners define
+  globals no file declares (=internalBinding=, =__DEV__=, =jest=, a page's
+  =$=), so an unknown name is reported only when it is a near miss of one
+  the server does know -- a variable in scope, a global the file assigns,
+  the standard library, the DOM, Node.js -- and only if it occurs once or
+  twice in the file (a name used again and again is a global the file
+  expects). =typeof x= never counts. Assigning to an undeclared name in
+  strict code (a module, a class, ="use strict"=) is reported whatever the
+  name, because it throws. A file using =with= or a direct =eval= gets no
+  undefined-name checks at all. Typos introduced at random into the
+  corpus's code were all caught where they landed on a use of the name.
+- *Names starting with =_=* are never reported as unused (the convention
+  for "deliberately ignored").
+- *Parameters* are a hint, after ESLint's =after-used= rule (one before a
+  used one keeps its place), and only for a function with a signature of
+  its own: a function declaration or a variable's function that the file
+  only ever calls. A callback, a method, or a function passed or stored
+  anywhere implements someone else's interface.
+- *Rest siblings*: =const {password, ...rest} = user= uses =password= to
+  leave it out of =rest=.
+- *A browser script's top-level names* are globals other scripts and the
+  page use, so they are not reported in a file without =import=/=export=
+  and without Node.js's =require=/=module=/=exports=. (A =.js= file with no
+  import or export is treated as a script, whichever way it parses.)
+- ~x !== x~ is the classic NaN test and is left alone.
+
+* What else it does
+
+- *Hover* on the file's own names shows the declaration -- =function
+  add(a, b = 2)=, =const port = 80=, =import { join } from 'path'=, a
+  parameter's default -- with its JSDoc comment (=@param=, =@returns= set
+  out), the =@param= line for a parameter, the type when the server can
+  tell it (=HTMLElement= for =document.getElementById(...)=), and how many
+  times it is read and written. On the standard library and the DOM it
+  shows TypeScript's signature -- every overload -- and, for the
+  ECMAScript library, its documentation; on =obj.member= the member the
+  file defines (an object literal key, a class member, an =obj.x = ...=
+  assignment) or the library's.
+- *Completion* offers the names in scope at the cursor, innermost first,
+  then keywords, the library's globals and the file's words; after a dot,
+  the members: the file's own (object literal keys, class members,
+  =this.x = ...= in the class), and the library's for whatever the server
+  can tell the value is -- a string, an array, =Math=, =document=,
+  =document.body= (an =HTMLElement=), the result of a call whose signature
+  says what it returns, =new Box()=. It works on the half-typed line
+  completion is usually asked for. Nothing is offered inside a string or
+  comment.
+- *Signature help* for the file's functions and classes (the
+  constructor's parameters for =new=), the standard library and the DOM,
+  with the active argument; a rest parameter absorbs the rest.
+- *Go to definition*, *references*, *highlights* and *rename* follow
+  JavaScript's scoping -- hoisting, block scope, a named function
+  expression's own name, labels. Rename refuses a new name that would be
+  captured by a declaration nearer a use, or that would hide an outer
+  variable used inside, and keeps the outside world's names intact: ={a}=
+  becomes ={a: b}=, =import {a}= becomes =import {a as b}=, =export {a}=
+  becomes =export {b as a}=. Definition on =obj.member= goes to where the
+  file defines that member.
+- The *outline* lists functions (nested ones under their parent), classes
+  with their constructor, methods, accessors and fields, top-level
+  variables, object literals' members, =module.exports.x = function=, and
+  =describe= / =it= blocks of a test file.
+- *Folding* covers blocks, classes, object and array literals, multi-line
+  calls and templates, JSX elements, runs of imports, block comments and
+  runs of line comments.
+
+- *Formatting* (=textDocument/formatting=) is mep's port of Prettier 3.6
+  (=src/js_format*=) with Prettier's defaults, in the file's dialect --
+  JavaScript with JSX, TypeScript for =.ts=, =.mts=, =.cts= and =.d.ts=,
+  TypeScript with JSX for =.tsx=. A client asking for tabs
+  (=insertSpaces: false=) gets tabs; the width stays Prettier's 2. A file
+  that does not parse is refused with the syntax error, not guessed at.
+
+* TypeScript
+
+=.ts=, =.mts= and =.cts= files are read with the parser's TypeScript
+dialect, =.tsx= with TypeScript and JSX, and a declaration file (=.d.ts=,
+=.d.mts=, =.d.cts=) as one. The dialect makes the decisions TypeScript
+5.9's own parser makes -- what it accepts, how =<T>(x) => x= and =a < b >
+(c)= resolve, =<T>x= as an assertion in =.ts= and a tag in =.tsx= -- so a
+syntax error is reported where =tsc= reports one (in acorn's words, as in
+JavaScript). Like =tsc='s parser it leaves duplicate declarations,
+misplaced modifiers and strict-mode words to the type checker, which this
+server is not: it never says a type is wrong.
+
+** Two namespaces
+
+What it does know is TypeScript's scoping. A name can be a value, a type
+or both, the way =typescript-eslint='s scope analysis sees it:
+
+- interfaces, type aliases and type parameters are types; classes, enums
+  and namespaces are both; an =import= is whatever it imports;
+- a type annotation, =implements=, =extends= in an interface, a type
+  argument or =A.B= in a type finds the type; =typeof x= in a type finds the
+  value;
+- declaration merging is one name: =interface A= with =class A=, =const X=
+  with =type X=, a function with its overload signatures, a namespace
+  merged into a function, class or enum;
+- =<T>= scopes over its declaration, =infer U= over the conditional type's
+  true branch, a mapped type's =[K in ...]= over the mapping; an enum's
+  members are in scope in each other's initializers;
+- the parameters of a signature (a function type, an overload, an
+  interface method) are not variables; =constructor(private x)= declares
+  a parameter and a member; =function f(this: T)= has no parameter =this=.
+
+So hover, definition, references, highlights and rename work on types as
+on values: hover on a type reference shows the interface, =Point= in
+=a: Point= goes to it, and renaming an interface renames every annotation.
+
+** What it reports in TypeScript
+
+The lints are the ones =typescript-eslint='s =recommended= configuration
+keeps:
+
+- =no-unused-vars= is the TypeScript-aware one: a type imported only to
+  annotate is used; an interface or type alias referred to only by itself
+  (=interface Node { next: Node }=) is not; a value used only in types is
+  reported as /assigned a value but only used as a type/; an unused type
+  parameter is a hint, like an unused parameter.
+- Nothing declared with =declare=, inside =declare namespace=, =declare
+  module "x"= or =declare global=, or anywhere in a =.d.ts= file is
+  reported unused: those describe names that exist elsewhere. Nor are
+  parameter properties, enum members, a mapped type's key, or the
+  implementation's parameters of an overloaded function (the overloads
+  are its signature).
+- =no-undef= is off, as =typescript-eslint= recommends: =tsc= checks every
+  name against the project's =lib=, =@types= and =paths=, which one file
+  cannot see.
+- =no-dupe-class-members= allows overloads (=m(): void; m(x?: number) {}=)
+  and =declare= fields; =no-redeclare= allows declaration merging and
+  still reports =var x; var x;=.
+- =no-unreachable= lets interfaces, type aliases, =declare= statements,
+  overload signatures and =const enum=s follow a =return= (they emit no
+  code); a plain =enum= there is unreachable code.
+
+The rest work as in JavaScript.
+
+** Calibration
+
+Over 3,063 TypeScript and TSX files (TypeScript's own compiler and lib,
+two React front ends with their servers -- 2,151 =.ts=, 912 =.tsx=, 119 of
+them =.d.ts=), compared with ESLint 9 running =typescript-eslint= 8's
+=recommended= configuration: every file parses, as it does for =tsc=.
+With the narrowings switched off, =no-unused-vars= finds 532 of which 531
+are =typescript-eslint='s own findings; the other 89 it reports are all
+in TypeScript's =lib.*.d.ts= files except one overloaded function's
+implementation parameter, and the one only this server reports is a
+variable that is only ever updated from itself (=x = x || y=). With the
+narrowings on, the same files get one =no-unused-vars= -- 506 of
+=typescript-eslint='s 620 are =_= names, 88 are in =.d.ts= files, the
+rest are rest siblings and callback or method parameters -- and none of
+its 939 =no-redeclare= reports, which are all =interface X= + =const X=
+style merging. What else shows is =no-shadow= (116 /info/s, real shadowing
+in one function), one empty block, one =x === x=.
+
+** Completion and hover
+
+- In a type position (=x: |=, =): |=, =as |=, =satisfies |=, =implements
+  |=, =Foo<|=, =type T = |=) completion offers the types in scope -- the
+  file's interfaces, aliases, classes, enums, type parameters, namespaces
+  and imports -- the primitive types and keywords, and the standard
+  library's and the DOM's types; anywhere else only values.
+- After a dot, a variable's declared type gives the members: the file's
+  own interface, type literal or class (parameter properties included),
+  or the library's (=s: string=, =m: Map<K, V>=, =q: Promise<T>=).
+- Hover shows declarations as written: =const p: Point=, =(parameter) b:
+  Point = a=, =function dist(a: Point, b: Point = a): number=, =(property)
+  private readonly url: string=, the interface's header, a type alias,
+  =(enum member) Color.Red = 1=, =(type parameter) T extends object=, a
+  member signature =y?: number= with its JSDoc; on a library type
+  (=Promise=, =Record=, =HTMLElement=) TypeScript's documentation.
+- The outline lists interfaces and type literals with their members, enums
+  with theirs, namespaces with their contents, a class's parameter
+  properties as fields, and each overloaded function once.
+
+Formatting reads TypeScript too: see /Formatting/ under /What else it does/.
+
+* Linting from the command line
+
+#+begin_src sh
+mep-js-lsp --lint src/*.js
+cat app.js | mep-js-lsp --lint -
+#+end_src
+
+prints every diagnostic as
+
+#+begin_example
+src/app.js:12:7: warning: 'util' is defined but never used. [no-unused-vars]
+#+end_example
+
+-- 1-based line and column, then the severity (=error=, =warning=,
+=info=, =hint=), the message and the code. The file's extension picks
+module or script as above, and TypeScript for =.ts=, =.tsx=, =.mts=,
+=.cts= and the =.d.ts= kinds. It exits 1 if anything printed is an error or
+a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, =mep-js-lsp= is the language server on stdio.
+
+* Using typescript-language-server instead
+
+=typescript-language-server= is still registered, with no filetypes of
+its own. For type checking (it runs =tsc='s language service over the
+whole project), give it the TypeScript files in =init.lua= and keep
+=mep-js-lsp= for JavaScript:
+
+#+begin_src lua
+mep.lsp_servers.typescript_language_server.filetypes = {'ts', 'tsx', 'mts', 'cts'}
+mep.lsp_servers.js_ls.filetypes = {'js', 'jsx', 'mjs', 'cjs'}
+#+end_src
+
+or all of it:
+
+#+begin_src lua
+mep.lsp_servers.typescript_language_server.filetypes = {'ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'}
+mep.lsp_servers.js_ls.filetypes = {}
+#+end_src
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.

@@ -31,6 +31,17 @@ stale copy from disk.</p>
 <tr><td>C# (<code>.cs</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>SQL (<code>.sql</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Nix (<code>.nix</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Fish (<code>.fish</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Fortran (<code>.f90</code>, <code>.f95</code>, <code>.f03</code>, <code>.f08</code>, <code>.F90</code>)</td><td><b>built in</b> -- fprettify's output, nothing to install</td></tr>
+<tr><td>Tcl (<code>.tcl</code>, <code>.tk</code>, <code>.tm</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Octave, MATLAB (<code>.m</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>GAP (<code>.g</code>, <code>.gi</code>, <code>.gd</code>, <code>.gap</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Scheme (<code>.scm</code>, <code>.ss</code>, <code>.sld</code>, <code>.sls</code>, <code>.sps</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Lua (<code>.lua</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Julia (<code>.jl</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Go (<code>.go</code>)</td><td><b>built in</b> -- gofmt's output, nothing to install</td></tr>
+<tr><td>JavaScript (<code>.js</code>, <code>.jsx</code>, <code>.mjs</code>, <code>.cjs</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>TypeScript (<code>.ts</code>, <code>.tsx</code>, <code>.mts</code>, <code>.cts</code>)</td><td><b>built in</b> -- the JavaScript formatter, nothing to install</td></tr>
 <tr><td>mepml (<code>.mepml</code>)</td><td><b>built in</b> -- see <i>mepml documents</i> below</td></tr>
 <tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
 </table>
@@ -38,11 +49,12 @@ stale copy from disk.</p>
 behind their language server, so the table only carries the cases where a
 dedicated tool is clearly better.</p>
 <p>C, C++, Python, R, Maxima, shell scripts, Clojure, Common Lisp, Crystal,
-C#, SQL and Nix need nothing installed at all: all twelve formatters are built
-into mep, so <code>gf</code> on a <code>.c</code>, <code>.cpp</code>, <code>.h</code>, <code>.py</code>, <code>.R</code>, <code>.mac</code>, <code>.sh</code>, <code>.clj</code>,
-<code>.lisp</code>, <code>.cr</code>, <code>.cs</code>, <code>.sql</code> or <code>.nix</code> buffer works on a machine with no
-<code>clang-format</code>, no <code>black</code>, no <code>air</code>, no <code>shfmt</code>, no <code>cljfmt</code>, no <code>sqlfluff</code>,
-no <code>nixfmt</code>, no Emacs and no Python, R, Maxima, JVM, Lisp, Crystal, .NET or
+C#, SQL, Nix, Lua and JavaScript/TypeScript need nothing installed at all: all fourteen
+formatters are built into mep, so <code>gf</code> on a <code>.c</code>, <code>.cpp</code>, <code>.h</code>, <code>.py</code>, <code>.R</code>,
+<code>.mac</code>, <code>.sh</code>, <code>.clj</code>, <code>.lisp</code>, <code>.cr</code>, <code>.cs</code>, <code>.sql</code>, <code>.nix</code>, <code>.lua</code>, <code>.js</code> or <code>.ts</code>
+buffer works on a machine with no <code>clang-format</code>, no <code>black</code>, no <code>air</code>, no
+<code>shfmt</code>, no <code>cljfmt</code>, no <code>sqlfluff</code>, no <code>nixfmt</code>, no <code>stylua</code>, no <code>prettier</code>,
+no Node, no Emacs and no Python, R, Maxima, JVM, Lisp, Crystal, .NET or
 Haskell toolchain, and answers instantly because nothing is spawned.</p>
 <h1>Org code blocks</h1>
 <p>In an <code>.org</code> file <code>gf</code> formats <b>code</b>, never the prose around it.</p>
@@ -533,6 +545,91 @@ the name of an operator to indent like.</p>
   [<span class="tok-green">'my-case'</span>] = <span class="tok-green">'case'</span>,
   [<span class="tok-green">'do-rows'</span>] = <span class="tok-green">'(4 &amp;body)'</span>,
 <span class="tok-blue">}</span></code></pre></div>
+<h1>The Scheme formatter</h1>
+<p>Scheme's shared layout is Emacs's <code>scheme-mode</code> indentation, the one
+Geiser users get too. mep computes it itself, rule for rule, with no Emacs
+and no Scheme. It runs for <code>.scm</code>, <code>.ss</code>, <code>.sld</code>, <code>.sls</code> and <code>.sps</code> files,
+and it is what <a href="scheme-lsp.html">mep's Scheme language server</a>
+formats with.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">scheme</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="scheme">(define (greet name)
+(let ((msg (string-append "hi " name)))
+  ( display msg )
+    )
+)
+(let loop ((i 0))
+(when (&lt; i 3)
+(loop (+ i 1))))</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">scheme</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="scheme">(define (greet name)
+  (let ((msg (string-append "hi " name)))
+    (display msg)))
+(let loop ((i 0))
+  (when (&lt; i 3)
+    (loop (+ i 1))))</code></pre></div>
+<p>What it does:</p>
+<ul>
+<li>Indentation as <code>scheme-indent-function</code> computes it:</li>
+<li>all 84 of scheme.el's specs: <code>lambda</code>, <code>let</code>, <code>when</code>, <code>do</code>, <code>syntax-rules</code>, <code>dynamic-wind</code>, <code>parameterize</code>, <code>match</code>...;</li>
+<li>a named <code>let</code> has one more distinguished form;</li>
+<li>any <code>def...</code> head, in any case, is indented as a definition;</li>
+<li>a call's arguments line up under the first one;</li>
+<li>a list whose car is not a symbol lines up under its first element.</li>
+<li>Square brackets are parens.</li>
+<li>The same whitespace rules as the Common Lisp formatter:</li>
+<li>no space just inside parens;</li>
+<li>a lone close paren joins the line before it;</li>
+<li>no trailing whitespace;</li>
+<li>at most two blank lines in a row;</li>
+<li>a final newline;</li>
+<li>indentation is spaces.</li>
+</ul>
+<p>What it never touches:</p>
+<ul>
+<li>the text of strings and <code>|...|</code> symbols;</li>
+<li><code>;</code> comments, <code>#|...|#</code> comments and <code>#;DATUM</code> comments;</li>
+<li>character literals such as <code>#\(</code>.</li>
+</ul>
+<p>It does not wrap, so it has no <code>width</code>.</p>
+<p>It is checked against Emacs 30's own <code>indent-region</code> on 3,557 files: Guile,
+Guix, haunt, guile-lib, chibi, Chez and Gauche
+(<code>tools/scheme_indent_oracle.el</code>, <code>just format-compare scheme</code>). Of the
+3,549 files mep formats, 3,532 come out byte-identical, and each is a
+fixed point. The other 17 differ on purpose, all in places where Emacs
+reads as code text that is not code, and sometimes changes the program:</p>
+<ul>
+<li>Guile's <code>#!...!#</code> block comments;</li>
+<li>the text after a top-level <code>#!eof</code>;</li>
+<li>a multi-line <code>#{...}#</code> symbol;</li>
+<li>Gauche's <code>#[ ]</code> character sets.</li>
+</ul>
+<p>Also on purpose, as in the Common Lisp formatter, these lines keep their
+indentation:</p>
+<ul>
+<li>a line inside a <code>#|</code> or <code>#;</code> comment;</li>
+<li>a line holding only a single-=;= comment.</li>
+</ul>
+<p>The 8 files it leaves alone use Chez or Gauche reader syntax that mep does
+not read.</p>
+<p>As with Common Lisp, the result is read again and compared token by token
+with the input. A file that does not read is left exactly as it was, with
+the reason and the line.</p>
+<h2>Options</h2>
+<p><code>indent</code> adds or replaces <code>scheme-indent-function</code> specs, keyed by the
+operator's exact name. A spec is one of:</p>
+<ul>
+<li>a number of distinguished arguments before the body;</li>
+<li>='defun'=;</li>
+<li>='let'= (one more distinguished form when a name follows);</li>
+<li>the name of an operator to indent like;</li>
+<li>=''=, which removes a spec.</li>
+</ul>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">for</span> _, e <span class="tok-purple">in</span> <span class="tok-blue">ipairs</span>(<span class="tok-blue">{</span><span class="tok-green">'scm'</span>, <span class="tok-green">'ss'</span>, <span class="tok-green">'sld'</span>, <span class="tok-green">'sls'</span>, <span class="tok-green">'sps'</span><span class="tok-blue">}</span>) <span class="tok-purple">do</span>
+  <span class="tok-cyan">mep</span>.format_languages[e].indent = <span class="tok-blue">{</span>
+    [<span class="tok-green">'with-connection'</span>] = <span class="tok-cyan">1</span>,      <span class="tok-comment">-- (with-connection (c db) body...)</span>
+    [<span class="tok-green">'my-lambda'</span>] = <span class="tok-green">'lambda'</span>,
+    [<span class="tok-green">'my-let'</span>] = <span class="tok-green">'let'</span>,
+  <span class="tok-blue">}</span>
+<span class="tok-purple">end</span></code></pre></div>
 <h1>The Crystal formatter</h1>
 <p>Crystal has one layout -- <code>crystal tool format</code>'s, which takes no options
 -- and mep produces it itself, with no <code>crystal</code> binary: the formatter is a
@@ -638,6 +735,424 @@ broke its lines: a short list written over three lines goes back onto one
 if it fits, <code>[ 1 ]</code>.</p>
 <h2>Using nixfmt instead</h2>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.nix = <span class="tok-blue">{</span><span class="tok-green">'nixfmt'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The Fish formatter</h1>
+<p>Fish scripts get <code>fish_indent</code>'s layout -- the one fish ships and its own
+scripts are formatted with -- produced by mep itself, with no fish
+installed: four spaces per block, conditions and <code>case</code> arms indented, a
+continued pipeline or <code>&amp;&amp;</code> / <code>||</code> line indented one more, one blank line
+where the input had several, comments kept where they were.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">fish</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="fish">function greet -a name -d 'Say hello'
+if test -z "$name"; set name 'world'; end
+for i in (seq 3)
+echo   "hello $name" | string upper   &gt;  /dev/null
+end
+end</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">fish</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="fish">function greet -a name -d 'Say hello'
+    if test -z "$name"
+        set name world
+    end
+    for i in (seq 3)
+        echo "hello $name" | string upper &gt;/dev/null
+    end
+end</code></pre></div>
+<p>Like <code>fish_indent</code>, it never breaks a long line, drops quotes a word does
+not need (='world'= becomes <code>world</code>, ='a b'= stays), puts statements on
+lines of their own -- except <code>if x; and y</code>, <code>x; and y</code> on one line and a
+one-line <code>{ a; b; }</code> -- and keeps an escaped newline only where fish
+needs it to continue the command.</p>
+<p>Every file of fish 4.2's own scripts and a dozen plugin collections (1,956
+files) comes out byte-identical to fish 4.8's <code>fish_indent</code>, and so do
+5,805 of 5,868 damaged copies of them. The other 63 are refused: there
+<code>fish_indent</code> would change what the script says -- usually by adding a
+newline inside a string left open at the end of the file -- and mep
+checks that the result reads back as the same words, operators and
+comments before it touches the buffer. A failed check leaves the buffer as
+it was and <code>gf</code> says on which line.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.fish.indent = <span class="tok-cyan">2</span>   <span class="tok-comment">-- columns per level (fish_indent: always 4)</span></code></pre></div>
+<h2>Using fish_indent instead</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.fish = <span class="tok-blue">{</span><span class="tok-green">'fish_indent'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The Fortran formatter</h1>
+<p>Free-form Fortran gets fprettify's layout -- at fprettify 0.3.7's defaults
+-- produced by mep itself, with no Python installed: three spaces per
+scope level (program units, <code>contains</code>, interfaces, derived types and
+every block construct), blanks around operators, after commas and around
+<code>::</code> normalised the way fprettify's whitespace level 2 does, and the
+<code>endif</code> / <code>enddo</code> family spelt <code>end if</code> / <code>end do</code>. Case is never
+changed.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">fortran</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="fortran"><span class="tok-purple">module</span> <span class="tok-orange">stats</span>
+<span class="tok-cyan">implicit</span> <span class="tok-cyan">none</span>
+<span class="tok-purple">contains</span>
+<span class="tok-purple">pure</span> <span class="tok-purple">function</span> <span class="tok-blue">mean</span>(<span class="tok-red">x</span>) result(m)
+<span class="tok-orange">real</span>,<span class="tok-orange">intent</span>(<span class="tok-orange">in</span>)::x(:)
+<span class="tok-orange">real</span>::m
+<span class="tok-purple">if</span>(size(x)==<span class="tok-cyan">0</span>)<span class="tok-purple">then</span>
+m=<span class="tok-cyan">0.0</span>
+<span class="tok-purple">else</span>
+m=sum(x)/size(x)
+<span class="tok-purple">endif</span>
+<span class="tok-purple">end</span> <span class="tok-purple">function</span> <span class="tok-blue">mean</span>
+<span class="tok-purple">end</span> <span class="tok-purple">module</span> <span class="tok-orange">stats</span></code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">fortran</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="fortran"><span class="tok-purple">module</span> <span class="tok-orange">stats</span>
+   <span class="tok-cyan">implicit</span> <span class="tok-cyan">none</span>
+<span class="tok-purple">contains</span>
+   <span class="tok-purple">pure</span> <span class="tok-purple">function</span> <span class="tok-blue">mean</span>(<span class="tok-red">x</span>) result(m)
+      <span class="tok-orange">real</span>, <span class="tok-orange">intent</span>(<span class="tok-orange">in</span>)::x(:)
+      <span class="tok-orange">real</span>::m
+      <span class="tok-purple">if</span> (size(x) == <span class="tok-cyan">0</span>) <span class="tok-purple">then</span>
+         m = <span class="tok-cyan">0.0</span>
+      <span class="tok-purple">else</span>
+         m = sum(x)/size(x)
+      <span class="tok-purple">end</span> <span class="tok-purple">if</span>
+   <span class="tok-purple">end</span> <span class="tok-purple">function</span> <span class="tok-blue">mean</span>
+<span class="tok-purple">end</span> <span class="tok-purple">module</span> <span class="tok-orange">stats</span></code></pre></div>
+<p>Like fprettify it never re-wraps: a line that would end past column 132
+is moved left until it fits, or left exactly as written when even that
+doesn't help. Continuation lines are aligned the way fprettify aligns
+them, and <code>!&amp;</code> / <code>!&amp;&lt;</code> ... <code>!&amp;&gt;</code> comments switch formatting off for a line
+or a region, as in fprettify.</p>
+<p>Over 11,317 free-form files (LAPACK, scipy, ARPACK, Quantum ESPRESSO,
+SIESTA, Octopus, HDF5, netCDF-Fortran and gcc's gfortran testsuite),
+11,267 come out byte-identical to fprettify's output; 23 are files
+fprettify itself fails on, and the other 27 are refused, because there
+fprettify changes what the code says (a <code>/</code> read as an operator inside a
+format, a string continued over lines) and mep checks that the result
+reads back as the same tokens before it touches the buffer. A failed
+check leaves the buffer as it was and <code>gf</code> says on which line.
+Fixed-form files (<code>.f</code>, <code>.for</code>, <code>.F</code>) are refused outright: fprettify
+mangles them, and their columns are the layout.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.f90.indent = <span class="tok-cyan">2</span>   <span class="tok-comment">-- columns per level (fprettify --indent, default 3)</span>
+<span class="tok-cyan">mep</span>.format_languages.f90.width = <span class="tok-cyan">100</span>  <span class="tok-comment">-- fprettify --line-length (default 132)</span></code></pre></div>
+<p>The same entries exist for <code>f95</code>, <code>f03</code>, <code>f08</code> and <code>F90</code>.</p>
+<h2>Using fprettify instead</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.f90 = <span class="tok-blue">{</span><span class="tok-green">'fprettify'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The GAP formatter</h1>
+<p>GAP has no standard formatter, so mep's re-indents and changes nothing
+else: a block body one step in -- the way GAP's own function printer
+(<code>Print( f )</code>) lays a function out -- with <code>elif</code>, <code>else</code>, <code>fi</code>, <code>od</code>,
+<code>until</code> and <code>end</code> back at the level of the line that opened the block, a
+line inside an open bracket or continuing a statement one step deeper
+than the line it continues, and trailing blanks dropped. Every token,
+comment and line break stays where it was; lines inside a multi-line
+="""= string are left alone.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">gap</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="gap">InstallMethod( Weight, "for a list", [ IsList ],
+function( l )
+local s, x;
+s := 0;
+for x in l do
+if IsInt( x ) then
+s := s + x;
+fi;
+od;
+return s;
+end );</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">gap</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="gap">InstallMethod( Weight, "for a list", [ IsList ],
+function( l )
+    local s, x;
+    s := 0;
+    for x in l do
+        if IsInt( x ) then
+            s := s + x;
+        fi;
+    od;
+    return s;
+end );</code></pre></div>
+<p>A file that does not parse is left as it is, and <code>gf</code> says GAP's syntax
+error and its line. Over GAP 4.15 and every package it ships with (8,950
+files) the result always has the same tokens and comments as the input, and
+formatting it again changes nothing.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.g.indent = <span class="tok-cyan">2</span>   <span class="tok-comment">-- columns per level (default 4; also .gi, .gd, .gap)</span></code></pre></div>
+<h1>The Tcl formatter</h1>
+<p>Tcl files get <code>tclfmt</code>'s layout -- the formatter that comes with tclint --
+produced by mep itself, with no Python and no tclint installed: the
+formatter is a port of tclint 0.6.2's lexer, parser, builtin-command table
+and printer, with its default settings.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">tcl</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="tcl">proc  greet {name   {greeting Hello}} {
+if {$name eq ""} {set name world}
+  foreach i [lrange $args 0 end] {puts   "$greeting, $name"}
+	return [expr {[llength $args]*2+1}]
+}</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">tcl</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="tcl">proc greet {name {greeting Hello}} {
+    if {$name eq ""} {set name world}
+    foreach i [lrange $args 0 end] {puts "$greeting, $name"}
+    return [expr {[llength $args] * 2 + 1}]
+}</code></pre></div>
+<p>Like <code>tclfmt</code>, it knows which arguments of Tcl's builtin commands are
+scripts, expressions and lists -- <code>proc</code>, <code>if</code>, <code>while</code>, <code>for</code>, <code>foreach</code>,
+<code>switch</code>, <code>try</code>, <code>catch</code>, <code>namespace eval</code>, <code>dict for</code>, <code>apply</code>, <code>expr</code> and
+the rest -- and reindents those four spaces per level, puts one space
+between words and around expression operators, opens a script or
+expression that spans lines on a line of its own, keeps a continued
+command's <code>\</code> with one extra indent, and keeps at most two blank lines.
+Words it cannot see into -- data in braces, quoted strings, the bodies of
+your own commands -- are copied as they are, and it never breaks or joins
+lines. A body written without braces gets them (<code>if 1 foo</code> becomes =if 1
+{foo}=), as does a <code>proc</code>'s argument list. Code between <code># tclfmt-disable</code>
+and <code># tclfmt-enable</code> is left alone.</p>
+<p>Of the 1,810 files of Tcl 8.6.16 and Tk's libraries and tests and of
+tcllib, <code>tclfmt</code> rejects 7 as syntax errors (mep refuses the same 7) and
+1,801 of the other 1,803 come out byte-identical; so do 541 of 542 damaged
+copies (indentation stripped, lines joined, blank lines added). Formatting
+twice changes nothing.</p>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>The result is parsed again and must give the same tree as the input --
+<code>tclfmt</code>'s own <code>--debug</code> check. The three differences from <code>tclfmt</code> are
+the places where it would change what the script does: an empty array
+index (<code>$a()</code>) keeps its parentheses, a comment that a trailing <code>\</code>
+continues onto a blank line keeps that blank line (otherwise the next
+command would become part of the comment), and <code>expr {$}</code> is left alone
+rather than emptied. A file that does not parse, or is not UTF-8, leaves
+the buffer as it was and <code>gf</code> says on which line it stopped; so does
+nesting more than 200 scripts deep.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.tcl.indent = <span class="tok-cyan">2</span>   <span class="tok-comment">-- tclfmt --indent</span></code></pre></div>
+<p>Reproduce the numbers with <code>just format-compare tcl</code> (needs
+<code>just grammar-corpus tcl</code> first).</p>
+<h1>The Octave formatter</h1>
+<p>Octave and MATLAB files get the layout of MISS_HIT's <code>mh_style --fix</code> --
+the style checker of the MISS_HIT tools -- produced by mep itself, with no
+Python and no MISS_HIT installed. It is not a pretty-printer: every line
+keeps its tokens and the spaces between them except where a rule says
+otherwise.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">octave</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="octave">function r=sign2(x)
+%returns the sign
+if (x&gt;0), r=1;
+elseif x&lt;0
+	r = -1 ;
+else r=0; end
+v = [1, 2,];
+w = f((a+b), c) .^ 2;</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">octave</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="octave">function r = sign2(x)
+    % returns the sign
+    if x &gt; 0
+        r = 1;
+    elseif x &lt; 0
+        r = -1;
+    else
+        r = 0;
+    end
+    v = [1, 2];
+    w = f(a + b, c).^2;</code></pre></div>
+<p>What it does:</p>
+<ul>
+<li><b>Indentation</b>: four columns per level -- a function's body, each branch of <code>if</code>, loops, <code>try=/=catch</code>, <code>switch</code> and once more for each <code>case</code>, classdef sections -- with comments following the code around them. Continuation lines (after <code>...</code>, or inside brackets) line up one column inside the bracket they are in, or keep their offset from the statement's first token.</li>
+<li><b>Spaces</b>: one around binary operators and <code>=</code>, after =,= and <code>;</code> and after keywords; none inside brackets, around <code>:</code> and <code>^</code> <code>.^</code>, or after a unary operator; <code>%comment</code> becomes <code>% comment</code>.</li>
+<li><b>Statements</b>: one per line (<code>if x, y = 1; end</code> is split), extra <code>;</code> and =,= removed, a comma or semicolon a matrix row does not need removed (<code>[1, 2,]</code>), brackets around a whole condition, range or argument removed (<code>if (x)</code>, <code>f((a))</code>).</li>
+<li><b>Blank lines</b>: at most one in a row, one around each function, none at the start; trailing whitespace and tabs gone; one final newline.</li>
+</ul>
+<p>Octave's own syntax -- <code>endif</code> and the other <code>end</code> keywords, <code>do</code> ...
+<code>until</code>, <code>unwind_protect</code>, <code>#</code> comments, <code>!</code> and <code>!=</code>, <code>++</code> -- is laid out
+like its MATLAB counterpart. Block comments (<code>%{</code> ... <code>%}</code>) and command
+syntax (<code>hold on</code>) are left as they are.</p>
+<p>Of the 6,676 files of Octave's own scripts and tests and of 30 Octave Forge
+packages, <code>mh_style</code> fixes only 3,020: it rejects <code>endif</code> and most other
+Octave syntax. On those, run as one <code>mh_style --fix</code> run exactly
+(<code>mep-octave-format-test --mh-style</code>), mep is byte-identical on 2,976 of
+the 3,018 it accepts (98.6%; 99.95% of lines). The 42 that differ are the
+ones listed below, plus <code>do</code> ... <code>until</code>, which <code>mh_style</code> reads as a
+statement named <code>do</code>, and comments with non-ASCII bytes, which <code>mh_style</code>
+reads as Windows-1252 and writes back as <code>�</code>; mep keeps the bytes.</p>
+<h2>Where it differs from <code>mh_style</code>, and why</h2>
+<ul>
+<li><code>mh_style</code> ends every statement with <code>;</code>, which changes what Octave prints -- <code>x = 1</code> shows <code>x</code>, <code>x = 1;</code> does not. mep leaves that out by default, and a =,= that ends a statement is removed rather than turned into <code>;</code>. <code>semicolons = true</code> puts the rule back.</li>
+<li><code>mh_style</code> is not idempotent: it lines continuation lines up with the columns their first line had <i>before</i> its own spacing was fixed, so a second run can move them again. mep runs to a fixed point, so formatting twice changes nothing.</li>
+<li><code>if (x), y = 1; end</code> -- <code>mh_style</code> removes the brackets and with the closing one loses the line break it wanted there, writing <code>if x y = 1;</code>, which no longer parses. mep breaks the line.</li>
+<li>Octave syntax MATLAB lacks gets Octave's reading: a condition in brackets that runs over lines without <code>...</code> keeps its brackets (without them the line break would end the statement), a comment line inside a <code>...</code> statement keeps the <code>...</code> before it, and a postfix <code>++</code> sits against its operand like a transpose.</li>
+<li><code>[min(p) max(p)]([1 3 2 4])</code> -- <code>mh_style</code> drops the second pair of brackets as redundant, which changes the meaning. mep only removes brackets when the tree is the same without them.</li>
+</ul>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>The result is parsed again by mep's Octave reader -- the same one whose
+errors match Octave's (see <a href="octave-lsp.html">The Octave language server</a>)
+-- and must give the same tree as the input, brackets aside. A file Octave
+would reject leaves the buffer as it was and <code>gf</code> says on which line it
+stopped. Over the whole corpus, in the default mode, every one of the 6,654
+files Octave accepts is formatted and passes this check, and formatting the
+result again changes nothing; the 22 it leaves alone are the 22 Octave
+rejects.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.m.indent = <span class="tok-cyan">2</span>         <span class="tok-comment">-- mh_style's tab_width</span>
+<span class="tok-cyan">mep</span>.format_languages.m.semicolons = <span class="tok-cyan">true</span>  <span class="tok-comment">-- end every statement with ;</span></code></pre></div>
+<p>Reproduce the numbers with <code>just format-compare octave</code> (needs
+<code>just grammar-corpus matlab</code> first; it fetches MISS_HIT from nixpkgs).</p>
+<h1>The Lua formatter</h1>
+<p>Lua files get StyLua's layout with its default configuration -- 120
+columns, tabs, double quotes, calls always parenthesised -- produced by mep
+itself: the formatter is a port of StyLua 2.3.1's formatting and line
+breaking rules, on a Lua lexer and parser of its own that keeps every
+comment attached to the token it belongs to.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> t = <span class="tok-blue">{</span>a=<span class="tok-cyan">1</span>,b=<span class="tok-green">'two'</span>,
+  <span class="tok-blue">c</span> = <span class="tok-purple">function</span>(<span class="tok-red">x</span>) <span class="tok-purple">return</span> x*<span class="tok-cyan">2</span> <span class="tok-purple">end</span><span class="tok-blue">}</span>
+<span class="tok-blue">print</span> <span class="tok-green">'hi'</span></code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-purple">local</span> t = <span class="tok-blue">{</span>
+	a = <span class="tok-cyan">1</span>,
+	b = <span class="tok-green">"two"</span>,
+	<span class="tok-blue">c</span> = <span class="tok-purple">function</span>(<span class="tok-red">x</span>)
+		<span class="tok-purple">return</span> x * <span class="tok-cyan">2</span>
+	<span class="tok-purple">end</span>,
+<span class="tok-blue">}</span>
+<span class="tok-blue">print</span>(<span class="tok-green">"hi"</span>)</code></pre></div>
+<p>On 3,214 Lua files (LuaRocks, awesome, lua-language-server, Telescope,
+nvim-treesitter, lazy.nvim) every file StyLua formats comes out
+byte-identical to <code>stylua -</code>:
+3,179 of 3,179, and the same at widths 40, 80 and 100 and with two-space
+indentation. <code>-- stylua: ignore</code> (for a statement) and =-- stylua:
+ignore start= / <code>ignore end</code> are honoured.</p>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>The result is lexed again and every token and every comment compared with
+the input's, then parsed again. A file that does not parse leaves the
+buffer as it was, and <code>gf</code> says where it stopped reading. So does code
+nested more than 400 levels deep. Two files of the corpus are refused on
+purpose: StyLua itself moves code past a comment there and changes what
+the program does.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.lua.width = <span class="tok-cyan">100</span>   <span class="tok-comment">-- stylua --column-width</span>
+<span class="tok-cyan">mep</span>.format_languages.lua.indent = <span class="tok-cyan">2</span>    <span class="tok-comment">-- stylua --indent-width</span>
+<span class="tok-cyan">mep</span>.format_languages.lua.tabs = <span class="tok-cyan">false</span>  <span class="tok-comment">-- stylua --indent-type Spaces</span></code></pre></div>
+<h2>Using StyLua instead</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.lua = <span class="tok-blue">{</span><span class="tok-green">'stylua'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The JavaScript formatter</h1>
+<p>JavaScript and JSX, TypeScript and TSX get Prettier's layout with its
+default options -- 80 columns, two-space indentation, double quotes,
+semicolons, trailing commas -- produced by mep itself, with no Node and no
+<code>prettier</code>: the formatter is a port of Prettier 3.6.2's comment attachment,
+its JavaScript and TypeScript printers and its layout engine, running on
+mep's port of acorn, the parser ESLint uses, and on mep's TypeScript parser
+for <code>.ts</code>, <code>.tsx</code>, <code>.mts</code> and <code>.cts</code> (the trees =prettier --parser
+typescript= sees, from typescript-estree).</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">js</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="js"><span class="tok-purple">const</span> <span class="tok-blue">add</span>=(<span class="tok-red">a</span>,<span class="tok-red">b</span>)=&gt;{<span class="tok-purple">return</span> a+b}
+<span class="tok-purple">export</span> <span class="tok-purple">default</span> <span class="tok-purple">function</span> <span class="tok-blue">App</span>({<span class="tok-red">items</span>}){<span class="tok-purple">return</span> &lt;<span class="tok-blue">ul</span> <span class="tok-cyan">className</span>=<span class="tok-green">'list'</span>&gt;<span class="tok-yellow">{</span>items.<span class="tok-blue">map</span>(<span class="tok-red">i</span>=&gt;&lt;<span class="tok-blue">li</span> <span class="tok-cyan">key</span>=<span class="tok-yellow">{</span>i.id<span class="tok-yellow">}</span>&gt;<span class="tok-yellow">{</span>i.name<span class="tok-yellow">}</span>&lt;/<span class="tok-blue">li</span>&gt;)<span class="tok-yellow">}</span>&lt;/<span class="tok-blue">ul</span>&gt;}</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">js</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="js"><span class="tok-purple">const</span> <span class="tok-blue">add</span> = (<span class="tok-red">a</span>, <span class="tok-red">b</span>) =&gt; {
+  <span class="tok-purple">return</span> a + b;
+};
+<span class="tok-purple">export</span> <span class="tok-purple">default</span> <span class="tok-purple">function</span> <span class="tok-blue">App</span>({ <span class="tok-red">items</span> }) {
+  <span class="tok-purple">return</span> (
+    &lt;<span class="tok-blue">ul</span> <span class="tok-cyan">className</span>=<span class="tok-green">"list"</span>&gt;
+      <span class="tok-yellow">{</span>items.<span class="tok-blue">map</span>((<span class="tok-red">i</span>) =&gt; (
+        &lt;<span class="tok-blue">li</span> <span class="tok-cyan">key</span>=<span class="tok-yellow">{</span>i.id<span class="tok-yellow">}</span>&gt;<span class="tok-yellow">{</span>i.name<span class="tok-yellow">}</span>&lt;/<span class="tok-blue">li</span>&gt;
+      ))<span class="tok-yellow">}</span>
+    &lt;/<span class="tok-blue">ul</span>&gt;
+  );
+}</code></pre></div>
+<p>TypeScript -- interfaces, generics, unions, mapped and conditional types,
+<code>as</code> and <code>satisfies</code>, decorators, parameter properties -- goes the same way:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">typescript</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="typescript"><span class="tok-purple">interface</span> <span class="tok-orange">Point</span>{x:<span class="tok-orange">number</span>;y:<span class="tok-orange">number</span>}
+<span class="tok-purple">export</span> <span class="tok-purple">function</span> <span class="tok-blue">dist</span>&lt;<span class="tok-orange">T</span> <span class="tok-purple">extends</span> <span class="tok-orange">Point</span>&gt;(<span class="tok-red">a</span>:<span class="tok-orange">T</span>,<span class="tok-red">b</span>:<span class="tok-orange">T</span>):<span class="tok-orange">number</span>{<span class="tok-purple">return</span> <span class="tok-orange">Math</span>.<span class="tok-blue">hypot</span>(a.x-b.x,a.y-b.y)}
+<span class="tok-purple">type</span> <span class="tok-orange">Shape</span>={kind:<span class="tok-green">'circle'</span>,radius:<span class="tok-orange">number</span>}|{kind:<span class="tok-green">'square'</span>,side:<span class="tok-orange">number</span>}|{kind:<span class="tok-green">'rect'</span>,w:<span class="tok-orange">number</span>,h:<span class="tok-orange">number</span>}
+<span class="tok-cyan">@</span><span class="tok-orange">Injectable</span>() <span class="tok-purple">export</span> <span class="tok-purple">class</span> <span class="tok-orange">Store</span>{<span class="tok-blue">constructor</span>(<span class="tok-purple">private</span> <span class="tok-purple">readonly</span> <span class="tok-red">http</span>:<span class="tok-orange">HttpClient</span>){}}</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">typescript</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="typescript"><span class="tok-purple">interface</span> <span class="tok-orange">Point</span> {
+  x: <span class="tok-orange">number</span>;
+  y: <span class="tok-orange">number</span>;
+}
+<span class="tok-purple">export</span> <span class="tok-purple">function</span> <span class="tok-blue">dist</span>&lt;<span class="tok-orange">T</span> <span class="tok-purple">extends</span> <span class="tok-orange">Point</span>&gt;(<span class="tok-red">a</span>: <span class="tok-orange">T</span>, <span class="tok-red">b</span>: <span class="tok-orange">T</span>): <span class="tok-orange">number</span> {
+  <span class="tok-purple">return</span> <span class="tok-orange">Math</span>.<span class="tok-blue">hypot</span>(a.x - b.x, a.y - b.y);
+}
+<span class="tok-purple">type</span> <span class="tok-orange">Shape</span> =
+  | { kind: <span class="tok-green">"circle"</span>; radius: <span class="tok-orange">number</span> }
+  | { kind: <span class="tok-green">"square"</span>; side: <span class="tok-orange">number</span> }
+  | { kind: <span class="tok-green">"rect"</span>; w: <span class="tok-orange">number</span>; h: <span class="tok-orange">number</span> };
+<span class="tok-cyan">@</span><span class="tok-orange">Injectable</span>()
+<span class="tok-purple">export</span> <span class="tok-purple">class</span> <span class="tok-orange">Store</span> {
+  <span class="tok-blue">constructor</span>(<span class="tok-purple">private</span> <span class="tok-purple">readonly</span> <span class="tok-red">http</span>: <span class="tok-orange">HttpClient</span>) {}
+}</code></pre></div>
+<p>On 2,108 JavaScript files (Node's own <code>lib/</code>, three React front ends, this
+repository's scripts) every file comes out byte-identical to <code>prettier</code>,
+and so do samples at width 40 and with <code>semi</code>, <code>single_quote</code> and <code>tabs</code>
+changed. A megabyte bundle takes about a quarter of a second. On 2,151
+TypeScript files (the TypeScript compiler's own sources, Mastodon's and
+Outline's front ends and servers) every file is byte-identical to <code>prettier --parser typescript</code>,
+and 910 of 912 TSX files are.</p>
+<p>One thing Prettier does is not ported: CSS, GraphQL, HTML and Markdown
+inside tagged template literals (<code>styled.div`...`</code>, <code>gql`...`</code>, an
+Angular component's <code>template:</code>) are left as written -- the two TSX files
+above that differ are styled-components CSS.</p>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>The result is parsed again and its tree compared with the input's,
+ignoring only what Prettier is meant to change (parentheses, quotes, how a
+number is spelled), and every comment must still be there. A file that
+does not parse leaves the buffer as it was, and <code>gf</code> says where it stopped
+reading; so does code nested more than 500 levels deep.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.js.width = <span class="tok-cyan">100</span>           <span class="tok-comment">-- prettier --print-width</span>
+<span class="tok-cyan">mep</span>.format_languages.js.indent = <span class="tok-cyan">4</span>            <span class="tok-comment">-- prettier --tab-width</span>
+<span class="tok-cyan">mep</span>.format_languages.js.tabs = <span class="tok-cyan">true</span>           <span class="tok-comment">-- prettier --use-tabs</span>
+<span class="tok-cyan">mep</span>.format_languages.js.semi = <span class="tok-cyan">false</span>          <span class="tok-comment">-- prettier --no-semi</span>
+<span class="tok-cyan">mep</span>.format_languages.js.single_quote = <span class="tok-cyan">true</span>   <span class="tok-comment">-- prettier --single-quote</span></code></pre></div>
+<p><code>jsx</code>, <code>mjs</code>, <code>cjs</code>, <code>ts</code>, <code>tsx</code>, <code>mts</code> and <code>cts</code> have entries of their
+own; set the same keys there. The TypeScript entries carry =dialect = 'ts'=
+(or ='tsx'=), which is what makes the formatter read types; an entry
+without it is JavaScript.</p>
+<h2>Using Prettier instead</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.js = <span class="tok-blue">{</span><span class="tok-green">'prettier'</span>, <span class="tok-green">'--stdin-filepath'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The Go formatter</h1>
+<p>Go files get exactly what <code>gofmt</code> prints, byte for byte, with no Go
+toolchain installed: the formatter is a port of <code>go/printer</code> (with
+<code>text/tabwriter</code> for the column alignment, <code>go/doc/comment</code> for doc-comment
+reflow, gofmt's import sorting and its <code>//go:build</code> line fixing), running on
+mep's port of <code>go/parser</code>. Like gofmt it has no options -- the width set for
+other languages does not apply -- and indents with tabs.</p>
+<p>A buffer that does not start with a <code>package</code> clause is formatted the way
+gofmt formats such input on stdin, as a list of declarations or statements,
+so a Go block in an org file works too. A file with a syntax error is left
+alone, and <code>gf</code> reports gofmt's own message for it.</p>
+<p>Checked against gofmt 1.26.5 on Go's own source tree plus six large
+projects (11,486 files): every one of the 11,442 files gofmt accepts comes
+out byte-identical.</p>
+<h1>The Julia formatter</h1>
+<p>Julia files get Runic's style -- the "no options" formatter, Julia's
+answer to gofmt -- and mep produces it itself, with no Julia installed: the
+formatter is a port of Runic.jl 1.5.0, pass for pass, walking the trees of
+mep's port of JuliaSyntax 0.4.10, the parser Runic is built on.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">julia</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="julia"><span class="tok-purple">function</span> <span class="tok-blue">f</span>(x,y)
+  z=x+y
+  <span class="tok-purple">for</span> i=<span class="tok-cyan">1</span>:<span class="tok-cyan">10</span> <span class="tok-blue">println</span>(i) <span class="tok-purple">end</span>
+  <span class="tok-purple">if</span> z&gt;<span class="tok-cyan">1</span> <span class="tok-purple">return</span> z <span class="tok-purple">end</span>
+  z
+<span class="tok-purple">end</span></code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">julia</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="julia"><span class="tok-purple">function</span> <span class="tok-blue">f</span>(x, y)
+    z = x + y
+    <span class="tok-purple">for</span> i <span class="tok-purple">in</span> <span class="tok-cyan">1</span>:<span class="tok-cyan">10</span>
+        <span class="tok-blue">println</span>(i)
+    <span class="tok-purple">end</span>
+    <span class="tok-purple">if</span> z &gt; <span class="tok-cyan">1</span>
+        <span class="tok-purple">return</span> z
+    <span class="tok-purple">end</span>
+    <span class="tok-purple">return</span> z
+<span class="tok-purple">end</span></code></pre></div>
+<p>Like Runic it indents with four spaces, puts single spaces around
+operators, assignments and keywords (but none around <code>:</code>, <code>^</code> and <code>::</code>),
+spaces lists after their commas, writes <code>in</code> in loops, adds an explicit
+<code>return</code> to functions (not after <code>throw</code> or <code>error</code>), puts braces around a
+<code>where</code> clause and parentheses around operator calls in ranges
+(<code>a:(b + 1)</code>), spells numbers <code>0x01</code> and <code>1.0</code>, drops trailing semicolons
+and blank lines beyond two, and leaves alone what lies between
+<code>#! format: off</code> and <code>#! format: on</code>. It does not wrap long lines: Runic
+never moves code between lines except to open a one-line block.</p>
+<p>Over 8,216 files -- Julia's own base and standard library plus eleven
+packages -- every file Runic formats (8,210; it refuses 6) comes out
+byte-identical to Runic's output. Runic is not quite idempotent (8 of those
+files change again when formatted twice, a trailing comma or a space after
+<code>end</code>); mep follows it there too.</p>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>A file that does not parse leaves the buffer as it was, and <code>gf</code> gives the
+parser's message and line. Where Runic would stop with an internal
+assertion, mep stops too. The result is parsed again, and its tokens --
+everything but whitespace -- compared with the input's, allowing only the
+token changes Runic makes on purpose (commas, semicolons, the parentheses
+and braces above, <code>return</code>, <code>in</code>, number spellings); anything else leaves
+the buffer alone.</p>
+<h2>Using Runic instead</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.jl = <span class="tok-blue">{</span><span class="tok-green">'runic'</span><span class="tok-blue">}</span></code></pre></div>
 <h1>The C# formatter</h1>
 <p>mep lays C# out the way <code>dotnet format whitespace</code> does with no
 <code>.editorconfig</code> -- four-space indentation, braces on their own lines, its
@@ -758,8 +1273,8 @@ nearest <code>air.toml</code> rather than from <code>width</code> above.</p>
 <p>The built-in formatters wrap at <b>100 columns</b> for C++ and Nix, <b>88</b> for Python
 and <b>80</b> for C, R and SQL -- <code>width</code> in each one's table entry, and the subsections
 above change it. The Bash one does not wrap: like <code>shfmt</code>, it keeps a
-script's own line breaks, and so do the Clojure, Common Lisp, Crystal and
-C# ones.
+script's own line breaks, and so do the Clojure, Common Lisp, Crystal,
+C# and Tcl ones.
 <code>clang-format</code>, if you put it back for C or C++, takes its margin from the
 project's own <code>.clang-format</code> instead.</p>
 <h1>Adding one</h1>

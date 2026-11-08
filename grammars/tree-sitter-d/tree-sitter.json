@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "d",
+      "camelcase": "D",
+      "scope": "source.d",
+      "path": ".",
+      "file-types": ["d", "di"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "D, mep's own grammar (node API of gdamore/tree-sitter-d)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

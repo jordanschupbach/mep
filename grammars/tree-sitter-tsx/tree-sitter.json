@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "tsx",
+      "camelcase": "TSX",
+      "scope": "source.tsx",
+      "path": ".",
+      "file-types": ["tsx"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "TSX (TypeScript with JSX), mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "kotlin",
+      "camelcase": "Kotlin",
+      "scope": "source.kotlin",
+      "path": ".",
+      "file-types": ["kt", "kts"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Kotlin, mep's own grammar (node API of fwcd/tree-sitter-kotlin)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

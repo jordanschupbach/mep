@@ -1,0 +1,641 @@
+# Reviewed differences from the old grammar (tree-sitter-rust 0.24.2) in files
+# rustc's parser accepts (tools/ts_grammar_diff/rust_check.py): each is a place
+# the old grammar had a parse error or read an f16/f128 type as a name, and
+# this one follows rustc. `<path glob>  # why`. Generated from the diff, then
+# reviewed by category.
+
+# f16/f128 are primitive types
+*/compiler/rustc_abi/src/callconv/reg.rs  # f16/f128 are primitive types
+*/compiler/rustc_ast/src/ast.rs  # f16/f128 are primitive types
+*/compiler/rustc_ast_passes/src/feature_gate.rs  # f16/f128 are primitive types
+*/compiler/rustc_codegen_cranelift/src/compiler_builtins.rs  # f16/f128 are primitive types
+*/compiler/rustc_codegen_cranelift/src/lib.rs  # f16/f128 are primitive types
+*/compiler/rustc_feature/src/unstable.rs  # f16/f128 are primitive types
+*/compiler/rustc_hir_analysis/src/check/intrinsic.rs  # f16/f128 are primitive types
+*/compiler/rustc_resolve/src/ident.rs  # f16/f128 are primitive types
+*/compiler/rustc_span/src/symbol.rs  # f16/f128 are primitive types
+*/compiler/rustc_target/src/asm/csky.rs  # f16/f128 are primitive types
+*/compiler/rustc_target/src/asm/loongarch.rs  # f16/f128 are primitive types
+*/compiler/rustc_target/src/asm/mips.rs  # f16/f128 are primitive types
+*/compiler/rustc_target/src/asm/mod.rs  # f16/f128 are primitive types
+*/compiler/rustc_target/src/asm/powerpc.rs  # f16/f128 are primitive types
+*/compiler/rustc_target/src/asm/riscv.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test-intrinsics/src/main.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/benches/float_add.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/benches/float_cmp.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/benches/float_conv.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/benches/float_div.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/benches/float_extend.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/benches/float_mul.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/benches/float_pow.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/benches/float_sub.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/benches/float_trunc.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/src/bench.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/src/lib.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/tests/addsub.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/tests/cmp.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/tests/conv.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/tests/div_rem.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/tests/float_pow.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/builtins-test/tests/mul.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/float/add.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/float/cmp.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/float/conv.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/float/div.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/float/extend.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/float/mul.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/float/pow.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/float/sub.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/float/trunc.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/lib.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/macros.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/compiler-builtins/src/math/mod.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/crates/libm-macros/src/lib.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/crates/libm-macros/tests/basic.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/crates/util/src/main.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm-test/benches/icount.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm-test/src/builtins_wrapper.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm-test/src/generate/edge_cases.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm-test/src/generate/random.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm-test/src/generate/spaced.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm-test/src/lib.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm-test/src/mpfloat.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm-test/src/precision.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm-test/src/test_traits.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/lib.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/libm_helper.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/arch/aarch64/rounding.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/arch/aarch64/sqrt.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/ceil.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/copysign.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/fabs.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/fdim.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/floor.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/fma.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/fmin_fmax.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/fminimum_fmaximum.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/fminimum_fmaximum_num.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/fmod.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/frexp.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/generic/sqrt.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/ilogb.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/ldexp.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/rint.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/round.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/roundeven.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/scalbn.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/sqrt.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/support/float_traits.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/support/hex_float.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/support/int_traits.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/support/macros.rs  # f16/f128 are primitive types
+*/library/compiler-builtins/libm/src/math/trunc.rs  # f16/f128 are primitive types
+*/library/core/src/convert/num.rs  # f16/f128 are primitive types
+*/library/core/src/fmt/float.rs  # f16/f128 are primitive types
+*/library/core/src/fmt/nofloat.rs  # f16/f128 are primitive types
+*/library/core/src/intrinsics/bounds.rs  # f16/f128 are primitive types
+*/library/core/src/lib.rs  # f16/f128 are primitive types
+*/library/core/src/num/f128.rs  # f16/f128 are primitive types
+*/library/core/src/num/f16.rs  # f16/f128 are primitive types
+*/library/core/src/num/float_parse.rs  # f16/f128 are primitive types
+*/library/core/src/num/imp/dec2flt/mod.rs  # f16/f128 are primitive types
+*/library/core/src/num/imp/flt2dec/decoder.rs  # f16/f128 are primitive types
+*/library/core/src/num/imp/traits.rs  # f16/f128 are primitive types
+*/library/coretests/tests/clone.rs  # f16/f128 are primitive types
+*/library/coretests/tests/lib.rs  # f16/f128 are primitive types
+*/library/coretests/tests/num/dec2flt/decimal.rs  # f16/f128 are primitive types
+*/library/coretests/tests/num/dec2flt/lemire.rs  # f16/f128 are primitive types
+*/library/coretests/tests/num/dec2flt/mod.rs  # f16/f128 are primitive types
+*/library/coretests/tests/num/dec2flt/parse.rs  # f16/f128 are primitive types
+*/library/coretests/tests/num/float_ieee754_flt2dec_dec2flt.rs  # f16/f128 are primitive types
+*/library/coretests/tests/num/floats.rs  # f16/f128 are primitive types
+*/library/coretests/tests/num/flt2dec/mod.rs  # f16/f128 are primitive types
+*/library/coretests/tests/num/mod.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/src/alias.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/src/cast.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/src/lib.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/src/ops.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/src/ops/unary.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/src/simd/cmp/eq.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/src/simd/cmp/ord.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/src/simd/num/float.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/src/vector.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/core_simd/tests/f16_ops.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/std_float/src/lib.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/test_helpers/src/biteq.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/test_helpers/src/lib.rs  # f16/f128 are primitive types
+*/library/portable-simd/crates/test_helpers/src/subnormals.rs  # f16/f128 are primitive types
+*/library/std/src/lib.rs  # f16/f128 are primitive types
+*/library/std/src/num/f128.rs  # f16/f128 are primitive types
+*/library/std/src/num/f16.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/aarch64/neon/generated.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/aarch64/neon/mod.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/arm_shared/neon/generated.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/arm_shared/neon/load_tests.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/arm_shared/neon/mod.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/lib.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/nvptx/packed.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/x86/avx512fp16.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/x86/avxneconvert.rs  # f16/f128 are primitive types
+*/library/stdarch/crates/core_arch/src/x86/mod.rs  # f16/f128 are primitive types
+*/src/tools/clippy/clippy_lints/src/lib.rs  # f16/f128 are primitive types
+*/src/tools/rust-analyzer/crates/hir-ty/src/consteval/tests.rs  # f16/f128 are primitive types
+*/src/tools/rust-analyzer/crates/hir-ty/src/mir/eval.rs  # f16/f128 are primitive types
+*/src/tools/rust-analyzer/crates/ide/src/hover/render.rs  # f16/f128 are primitive types
+*/src/tools/rust-analyzer/crates/intern/src/symbol/symbols.rs  # f16/f128 are primitive types
+*/src/tools/rust-analyzer/crates/syntax/src/ast/token_ext.rs  # f16/f128 are primitive types
+
+# decl macro (`macro m(..) {..}`)
+*/compiler/rustc_arena/src/lib.rs  # decl macro (`macro m(..) {..}`)
+*/compiler/rustc_attr_parsing/src/attributes/diagnostic/mod.rs  # decl macro (`macro m(..) {..}`)
+*/compiler/rustc_attr_parsing/src/attributes/link_attrs.rs  # decl macro (`macro m(..) {..}`)
+*/compiler/rustc_const_eval/src/interpret/machine.rs  # decl macro (`macro m(..) {..}`)
+*/compiler/rustc_driver_impl/src/signal_handler.rs  # decl macro (`macro m(..) {..}`)
+*/compiler/rustc_interface/src/util.rs  # decl macro (`macro m(..) {..}`)
+*/compiler/rustc_middle/src/ty/print/pretty.rs  # decl macro (`macro m(..) {..}`)
+*/library/alloc/src/vec/into_iter.rs  # decl macro (`macro m(..) {..}`)
+*/library/compiler-builtins/builtins-test/tests/lse.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/arch.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/field.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/fmt/mod.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/hash/mod.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/iter/sources/generator.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/macros/mod.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/os/darwin/objc.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/panic.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/slice/specialize.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/sync/atomic.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/task/ready.rs  # decl macro (`macro m(..) {..}`)
+*/library/core/src/unsafe_binder.rs  # decl macro (`macro m(..) {..}`)
+*/library/portable-simd/crates/core_simd/src/swizzle.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/ffi/os_str.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/io/error.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/os/unix/io/mod.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/panic.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/sys/env_consts.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/sys/pal/sgx/waitqueue/spin_mutex.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/sys/pal/unix/weak/dlsym.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/sys/pal/unix/weak/syscall.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/sys/pal/unix/weak/weak_linkage.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/sys/pal/windows/api.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/sys/thread_local/native/mod.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/sys/thread_local/no_threads.rs  # decl macro (`macro m(..) {..}`)
+*/library/std/src/sys/thread_local/os.rs  # decl macro (`macro m(..) {..}`)
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/macro_def.rs  # decl macro (`macro m(..) {..}`)
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/macro_def_curly.rs  # decl macro (`macro m(..) {..}`)
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0012_visibility.rs  # decl macro (`macro m(..) {..}`)
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0062_macro_2.0.rs  # decl macro (`macro m(..) {..}`)
+
+# impl const / const impl
+*/compiler/rustc_data_structures/src/unord.rs  # impl const / const impl
+*/compiler/rustc_middle/src/middle/codegen_fn_attrs.rs  # impl const / const impl
+*/library/alloc/src/alloc.rs  # impl const / const impl
+*/library/alloc/src/collections/mod.rs  # impl const / const impl
+*/library/alloc/src/string.rs  # impl const / const impl
+*/library/core/src/any.rs  # impl const / const impl
+*/library/core/src/array/drain.rs  # impl const / const impl
+*/library/core/src/array/equality.rs  # impl const / const impl
+*/library/core/src/cell/lazy.rs  # impl const / const impl
+*/library/core/src/cell/once.rs  # impl const / const impl
+*/library/core/src/char/convert.rs  # impl const / const impl
+*/library/core/src/ffi/c_str.rs  # impl const / const impl
+*/library/core/src/ffi/va_list.rs  # impl const / const impl
+*/library/core/src/hash/sip.rs  # impl const / const impl
+*/library/core/src/iter/sources/empty.rs  # impl const / const impl
+*/library/core/src/mem/alignment.rs  # impl const / const impl
+*/library/core/src/net/ip_addr.rs  # impl const / const impl
+*/library/core/src/num/error.rs  # impl const / const impl
+*/library/core/src/num/niche_types.rs  # impl const / const impl
+*/library/core/src/pin/unsafe_pinned.rs  # impl const / const impl
+*/library/core/src/ptr/unique.rs  # impl const / const impl
+*/library/core/src/str/traits.rs  # impl const / const impl
+*/library/core/src/sync/sync_view.rs  # impl const / const impl
+*/library/core/src/task/poll.rs  # impl const / const impl
+*/library/core/src/task/wake.rs  # impl const / const impl
+*/library/core/src/time.rs  # impl const / const impl
+*/library/coretests/tests/cmp.rs  # impl const / const impl
+*/library/coretests/tests/hint.rs  # impl const / const impl
+*/library/coretests/tests/manually_drop.rs  # impl const / const impl
+*/library/std/src/collections/hash/map.rs  # impl const / const impl
+*/library/std/src/collections/hash/set.rs  # impl const / const impl
+*/library/std/src/hash/random.rs  # impl const / const impl
+*/library/std/src/sync/lazy_lock.rs  # impl const / const impl
+*/library/std/src/sync/once_lock.rs  # impl const / const impl
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/const_trait_bound.rs  # impl const / const impl
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/impl_item_const.rs  # impl const / const impl
+
+# const or auto trait
+*/compiler/rustc_codegen_gcc/tests/compile/simd-ffi.rs  # const or auto trait
+*/compiler/rustc_data_structures/src/marker.rs  # const or auto trait
+*/library/core/src/alloc/mod.rs  # const or auto trait
+*/library/core/src/clone.rs  # const or auto trait
+*/library/core/src/cmp/bytewise.rs  # const or auto trait
+*/library/core/src/convert/mod.rs  # const or auto trait
+*/library/core/src/default.rs  # const or auto trait
+*/library/core/src/intrinsics/fallback.rs  # const or auto trait
+*/library/core/src/iter/traits/accum.rs  # const or auto trait
+*/library/core/src/num/traits.rs  # const or auto trait
+*/library/core/src/ops/arith.rs  # const or auto trait
+*/library/core/src/ops/bit.rs  # const or auto trait
+*/library/core/src/ops/deref.rs  # const or auto trait
+*/library/core/src/ops/drop.rs  # const or auto trait
+*/library/core/src/ops/index.rs  # const or auto trait
+*/library/core/src/panic/unwind_safe.rs  # const or auto trait
+*/library/core/src/pat.rs  # const or auto trait
+*/library/rtstartup/rsbegin.rs  # const or auto trait
+*/library/rtstartup/rsend.rs  # const or auto trait
+*/library/stdarch/crates/core_arch/src/loongarch64/simd.rs  # const or auto trait
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0068_item_modifiers.rs  # const or auto trait
+*/src/tools/rust-analyzer/crates/test-utils/src/minicore.rs  # const or auto trait
+
+# [const]/~const bound
+*/library/alloc/src/vec/mod.rs  # [const]/~const bound
+*/library/core/src/bstr/mod.rs  # [const]/~const bound
+*/library/core/src/hint.rs  # [const]/~const bound
+*/library/core/src/iter/adapters/cycle.rs  # [const]/~const bound
+*/library/core/src/iter/adapters/flatten.rs  # [const]/~const bound
+*/library/core/src/iter/range.rs  # [const]/~const bound
+*/library/core/src/mem/drop_guard.rs  # [const]/~const bound
+*/library/core/src/mem/manually_drop.rs  # [const]/~const bound
+*/library/core/src/mem/maybe_uninit.rs  # [const]/~const bound
+*/library/core/src/mem/mod.rs  # [const]/~const bound
+*/library/core/src/ptr/const_ptr.rs  # [const]/~const bound
+*/library/core/src/ptr/mod.rs  # [const]/~const bound
+*/library/core/src/ptr/mut_ptr.rs  # [const]/~const bound
+*/library/core/src/ptr/non_null.rs  # [const]/~const bound
+*/library/core/src/range.rs  # [const]/~const bound
+*/library/core/src/str/mod.rs  # [const]/~const bound
+*/library/std/src/path.rs  # [const]/~const bound
+*/src/tools/rust-analyzer/crates/parser/src/grammar/generic_params.rs  # [const]/~const bound
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/for_binder_bound.rs  # [const]/~const bound
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/maybe_const_trait_bound.rs  # [const]/~const bound
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/type_param_bounds.rs  # [const]/~const bound
+*/src/tools/rust-analyzer/crates/syntax/src/ast/generated/nodes.rs  # [const]/~const bound
+
+# safe fn in an extern block
+*/compiler/rustc_codegen_llvm/src/llvm/enzyme_ffi.rs  # safe fn in an extern block
+*/library/core/src/num/imp/libm.rs  # safe fn in an extern block
+*/library/panic_abort/src/lib.rs  # safe fn in an extern block
+*/library/panic_unwind/src/hermit.rs  # safe fn in an extern block
+*/library/std/src/sys/cmath.rs  # safe fn in an extern block
+*/library/std/src/sys/io/error/unix.rs  # safe fn in an extern block
+*/library/std/src/sys/pal/unix/fuchsia.rs  # safe fn in an extern block
+*/library/std/src/sys/thread/teeos.rs  # safe fn in an extern block
+*/library/std/src/sys/thread/unix.rs  # safe fn in an extern block
+*/library/stdarch/crates/core_arch/src/amdgpu/mod.rs  # safe fn in an extern block
+*/library/stdarch/crates/core_arch/src/powerpc/altivec.rs  # safe fn in an extern block
+*/library/stdarch/crates/core_arch/src/powerpc/macros.rs  # safe fn in an extern block
+*/library/stdarch/crates/core_arch/src/s390x/macros.rs  # safe fn in an extern block
+*/library/stdarch/crates/core_arch/src/s390x/vector.rs  # safe fn in an extern block
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/default_unsafe_item.rs  # safe fn in an extern block
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0073_safe_declarations_in_extern_blocks.rs  # safe fn in an extern block
+
+# struct expression with a bare `..`
+*/compiler/rustc_borrowck/src/diagnostics/conflict_errors.rs  # struct expression with a bare `..`
+*/compiler/rustc_expand/src/mbe/diagnostics.rs  # struct expression with a bare `..`
+*/compiler/rustc_trait_selection/src/error_reporting/traits/suggestions.rs  # struct expression with a bare `..`
+*/src/tools/clippy/clippy_lints/src/double_parens.rs  # struct expression with a bare `..`
+*/src/tools/clippy/clippy_lints/src/option_env_unwrap.rs  # struct expression with a bare `..`
+*/src/tools/clippy/clippy_lints/src/redundant_static_lifetimes.rs  # struct expression with a bare `..`
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/destructuring_assignment_struct_rest_pattern.rs  # struct expression with a bare `..`
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/record_lit.rs  # struct expression with a bare `..`
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/record_pat_field_list.rs  # struct expression with a bare `..`
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/struct_initializer_with_defaults.rs  # struct expression with a bare `..`
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0072_destructuring_assignment.rs  # struct expression with a bare `..`
+
+# default field value
+*/compiler/rustc_codegen_gcc/src/declare.rs  # default field value
+*/compiler/rustc_errors/src/markdown/parse.rs  # default field value
+*/compiler/rustc_hir_analysis/src/hir_wf_check.rs  # default field value
+*/compiler/rustc_parse/src/parser/mod.rs  # default field value
+*/compiler/rustc_parse/src/parser/stmt.rs  # default field value
+*/compiler/rustc_resolve/src/imports.rs  # default field value
+*/compiler/rustc_resolve/src/lib.rs  # default field value
+*/compiler/rustc_session/src/config.rs  # default field value
+*/library/std/src/panicking.rs  # default field value
+*/src/tools/rust-analyzer/crates/hir-def/src/lib.rs  # default field value
+*/vendor/salsa-0.26.2/src/zalsa_local.rs  # default field value
+
+# metavariable expression ${..} in a macro body
+*/compiler/rustc_ast/src/visit.rs  # metavariable expression ${..} in a macro body
+*/compiler/rustc_errors/src/codes.rs  # metavariable expression ${..} in a macro body
+*/compiler/rustc_expand/src/expand.rs  # metavariable expression ${..} in a macro body
+*/compiler/rustc_metadata/src/rmeta/table.rs  # metavariable expression ${..} in a macro body
+*/compiler/rustc_session/src/options.rs  # metavariable expression ${..} in a macro body
+*/library/alloctests/tests/sort/tests.rs  # metavariable expression ${..} in a macro body
+*/library/compiler-builtins/compiler-builtins/src/aarch64_outline_atomics.rs  # metavariable expression ${..} in a macro body
+*/library/core/src/fmt/num.rs  # metavariable expression ${..} in a macro body
+*/library/core/src/tuple.rs  # metavariable expression ${..} in a macro body
+*/library/std/tests/sync/lib.rs  # metavariable expression ${..} in a macro body
+
+# trait alias
+*/compiler/rustc_codegen_ssa/src/traits/mod.rs  # trait alias
+*/compiler/rustc_codegen_ssa/src/traits/type_.rs  # trait alias
+*/compiler/rustc_const_eval/src/interpret/intern.rs  # trait alias
+*/compiler/rustc_middle/src/query/keys.rs  # trait alias
+*/compiler/rustc_public_bridge/src/lib.rs  # trait alias
+*/library/core/src/ptr/metadata.rs  # trait alias
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/trait_alias.rs  # trait alias
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/trait_alias_where_clause.rs  # trait alias
+
+# associated type default
+*/compiler/rustc_hir/src/intravisit.rs  # associated type default
+*/compiler/rustc_middle/src/ty/layout.rs  # associated type default
+*/compiler/rustc_mir_dataflow/src/framework/mod.rs  # associated type default
+*/compiler/rustc_privacy/src/lib.rs  # associated type default
+*/compiler/rustc_trait_selection/src/solve/inspect/analyse.rs  # associated type default
+*/compiler/rustc_ty_utils/src/sig_types.rs  # associated type default
+*/compiler/rustc_type_ir/src/visit.rs  # associated type default
+
+# do yeet / become
+*/compiler/rustc_expand/src/module.rs  # do yeet / become
+*/compiler/rustc_trait_selection/src/error_reporting/infer/need_type_info.rs  # do yeet / become
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/err/0061_let_else_right_curly_brace_do_yeet.rs  # do yeet / become
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/err/0062_let_else_right_curly_brace_become.rs  # do yeet / become
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/become_expr.rs  # do yeet / become
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/yeet_expr.rs  # do yeet / become
+
+# a lone `$` in a macro body
+*/compiler/rustc_baked_icu_data/src/data/mod.rs  # a lone `$` in a macro body
+*/src/tools/rust-analyzer/crates/hir-expand/src/builtin/quote.rs  # a lone `$` in a macro body
+*/src/tools/rust-analyzer/crates/parser/src/syntax_kind/generated.rs  # a lone `$` in a macro body
+*/src/tools/rust-analyzer/crates/parser/test_data/lexer/ok/symbols.rs  # a lone `$` in a macro body
+
+# box pattern
+*/src/tools/clippy/clippy_lints/src/non_expressive_names.rs  # box pattern
+*/src/tools/clippy/clippy_lints/src/unused_rounding.rs  # box pattern
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/err/0034_bad_box_pattern.rs  # box pattern
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/box_pat.rs  # box pattern
+
+# old parse error: use crate::marker::Destruct;
+*/library/core/src/iter/traits/double_ended.rs  # old parse error: use crate::marker::Destruct;
+*/library/core/src/ops/control_flow.rs  # old parse error: use crate::marker::Destruct;
+*/library/core/src/ops/try_trait.rs  # old parse error: use crate::marker::Destruct;
+
+# old parse error: let expected = str![[r#"
+*/vendor/winnow-1.0.2/examples/arithmetic/test_parser.rs  # old parse error: let expected = str![[r#"
+*/vendor/winnow-1.0.2/examples/arithmetic/test_parser_ast.rs  # old parse error: let expected = str![[r#"
+*/vendor/winnow-1.0.2/examples/arithmetic/test_parser_lexer.rs  # old parse error: let expected = str![[r#"
+
+# attributes on a closure
+*/compiler/rustc_borrowck/src/region_infer/mod.rs  # attributes on a closure
+*/library/core/src/str/pattern.rs  # attributes on a closure
+
+# old parse error: #![feature(
+*/compiler/rustc_codegen_cranelift/example/mini_core.rs  # old parse error: #![feature(
+*/compiler/rustc_codegen_gcc/example/mini_core.rs  # old parse error: #![feature(
+
+# extern type / `type X;`
+*/compiler/rustc_codegen_llvm/src/llvm/ffi.rs  # extern type / `type X;`
+*/compiler/rustc_llvm/src/lib.rs  # extern type / `type X;`
+
+# macro_rules attr/derive rule
+*/compiler/rustc_codegen_llvm/src/macros.rs  # macro_rules attr/derive rule
+*/compiler/rustc_session/src/macros.rs  # macro_rules attr/derive rule
+
+# box pattern (the old grammar read `box (a, b)` as a call-like tuple struct pattern named box)
+*/src/tools/clippy/clippy_lints/src/assigning_clones.rs  # box pattern (the old grammar read `box (a, b)` as a call-like tuple struct pattern named box)
+*/src/tools/clippy/clippy_lints/src/needless_borrows_for_generic_args.rs  # box pattern (the old grammar read `box (a, b)` as a call-like tuple struct pattern named box)
+
+# old parse error: //! The compiler code necessary to implement the `#[derive]`
+*/compiler/rustc_builtin_macros/src/deriving/mod.rs  # old parse error: //! The compiler code necessary to implement the `#[derive]`
+
+# old parse error: //! This crate contains implementations of built-in macros a
+*/compiler/rustc_builtin_macros/src/lib.rs  # old parse error: //! This crate contains implementations of built-in macros a
+
+# old parse error: use rustc_middle::mir::interpret::{AllocId, ConstAllocation,
+*/compiler/rustc_const_eval/src/const_eval/dummy_machine.rs  # old parse error: use rustc_middle::mir::interpret::{AllocId, ConstAllocation,
+
+# old parse error: //! The Rust compiler.
+*/compiler/rustc_driver_impl/src/lib.rs  # old parse error: //! The Rust compiler.
+
+# old parse error: pub struct FormatArgs {
+*/compiler/rustc_hir/src/attrs/diagnostic.rs  # old parse error: pub struct FormatArgs {
+
+# old parse error: #![unstable(feature = "raw_vec_internals", reason = "unstabl
+*/library/alloc/src/raw_vec/mod.rs  # old parse error: #![unstable(feature = "raw_vec_internals", reason = "unstabl
+
+# old parse error: //! Utilities for the array primitive type.
+*/library/core/src/array/mod.rs  # old parse error: //! Utilities for the array primitive type.
+
+# old parse error: //! impl bool {}
+*/library/core/src/bool.rs  # old parse error: //! impl bool {}
+
+# old parse error: //! Utilities for working with borrowed data.
+*/library/core/src/borrow.rs  # old parse error: //! Utilities for working with borrowed data.
+
+# old parse error: //! Shareable mutable containers.
+*/library/core/src/cell.rs  # old parse error: //! Shareable mutable containers.
+
+# old parse error: //! Utilities for comparing and ordering values.
+*/library/core/src/cmp.rs  # old parse error: //! Utilities for comparing and ordering values.
+
+# old parse error: #![allow(unused_imports, unused_macros)] // items are used b
+*/library/core/src/future/join.rs  # old parse error: #![allow(unused_imports, unused_macros)] // items are used b
+
+# old parse error: //! Rustc internal tooling for hand-writing MIR.
+*/library/core/src/intrinsics/mir.rs  # old parse error: //! Rustc internal tooling for hand-writing MIR.
+
+# old parse error: //! Compiler intrinsics.
+*/library/core/src/intrinsics/mod.rs  # old parse error: //! Compiler intrinsics.
+
+# old parse error: use super::TrustedLen;
+*/library/core/src/iter/traits/collect.rs  # old parse error: use super::TrustedLen;
+
+# old parse error: use super::super::{
+*/library/core/src/iter/traits/iterator.rs  # old parse error: use super::super::{
+
+# old parse error: //! Primitive traits and types representing basic properties
+*/library/core/src/marker.rs  # old parse error: //! Primitive traits and types representing basic properties
+
+# old parse error: use super::display_buffer::DisplayBuffer;
+*/library/core/src/net/socket_addr.rs  # old parse error: use super::display_buffer::DisplayBuffer;
+
+# old parse error: //! Definitions of integer that is known not to equal zero.
+*/library/core/src/num/nonzero.rs  # old parse error: //! Definitions of integer that is known not to equal zero.
+
+# old parse error: use crate::marker::Tuple;
+*/library/core/src/ops/function.rs  # old parse error: use crate::marker::Tuple;
+
+# old parse error: use crate::fmt;
+*/library/core/src/ops/range.rs  # old parse error: use crate::fmt;
+
+# old parse error: //! Optional values.
+*/library/core/src/option.rs  # old parse error: //! Optional values.
+
+# old parse error: //! Types that pin data to a location in memory.
+*/library/core/src/pin.rs  # old parse error: //! Types that pin data to a location in memory.
+
+# old parse error: //! Error handling with the `Result` type.
+*/library/core/src/result.rs  # old parse error: //! Error handling with the `Result` type.
+
+# old parse error: //! Comparison traits for `[T]`.
+*/library/core/src/slice/cmp.rs  # old parse error: //! Comparison traits for `[T]`.
+
+# old parse error: //! Indexing implementations for `[T]`.
+*/library/core/src/slice/index.rs  # old parse error: //! Indexing implementations for `[T]`.
+
+# old parse error: //! Slice management and manipulation.
+*/library/core/src/slice/mod.rs  # old parse error: //! Slice management and manipulation.
+
+# old parse error: { std::array::from_fn(const |i| i + 4).map(const |x| x * 2).
+*/library/coretests/tests/array.rs  # old parse error: { std::array::from_fn(const |i| i + 4).map(const |x| x * 2).
+
+# f16/f128 literal suffix (`0f16`)
+*/library/coretests/tests/num/dec2flt/float.rs  # f16/f128 literal suffix (`0f16`)
+
+# old parse error: //! A support library for macro authors when defining new ma
+*/library/proc_macro/src/lib.rs  # old parse error: //! A support library for macro authors when defining new ma
+
+# old parse error: super let _ = drop(dbg!(bar));
+*/library/std/src/macros/tests.rs  # old parse error: super let _ = drop(dbg!(bar));
+
+# old parse error: //! Thread local storage
+*/library/std/src/thread/local.rs  # old parse error: //! Thread local storage
+
+# old parse error: let mut vals = [0_f16; 5];
+*/library/stdarch/crates/core_arch/src/arm_shared/neon/store_tests.rs  # old parse error: let mut vals = [0_f16; 5];
+
+# old parse error: Copy + const PartialEq + crate::fmt::Debug
+*/library/stdarch/crates/core_arch/src/simd.rs  # old parse error: Copy + const PartialEq + crate::fmt::Debug
+
+# old parse error: let ones = [1f16; 512];
+*/library/stdarch/crates/core_arch/src/x86_64/amx.rs  # old parse error: let ones = [1f16; 512];
+
+# old parse error: //! Provides the `link!` macro used by the generated windows
+*/library/windows_link/src/lib.rs  # old parse error: //! Provides the `link!` macro used by the generated windows
+
+# old parse error: str![[r#"
+*/src/tools/cargo/src/cargo/util/frontmatter.rs  # old parse error: str![[r#"
+
+# box pattern (the old grammar read `box (a, b)` as a call-like tuple struct pattern named box)
+*/src/tools/clippy/clippy_lints/src/redundant_clone.rs  # box pattern (the old grammar read `box (a, b)` as a call-like tuple struct pattern named box)
+
+# old parse error: rustc_lexer::TokenKind::Tilde => T![~],
+*/src/tools/rust-analyzer/crates/parser/src/lexed_str.rs  # old parse error: rustc_lexer::TokenKind::Tilde => T![~],
+
+# old parse error: async fn use struct trait enum impl true false as extern cra
+*/src/tools/rust-analyzer/crates/parser/test_data/lexer/ok/keywords.rs  # old parse error: async fn use struct trait enum impl true false as extern cra
+
+# old parse error: b: u32
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/err/0000_struct_field_missing_comma.rs  # old parse error: b: u32
+
+# old parse error: struct S<90 + 2> {
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/err/0009_broken_struct_type_parameter.rs  # old parse error: struct S<90 + 2> {
+
+# old parse error: impl<T:
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/err/0055_impl_use.rs  # old parse error: impl<T:
+
+# old parse error: S { .., };
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/err/comma_after_default_values_syntax.rs  # old parse error: S { .., };
+
+# old parse error: pub() struct S;
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/err/crate_visibility_empty_recover.rs  # old parse error: pub() struct S;
+
+# old parse error: gen fn gen_fn() {}
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/err/gen_fn.rs  # old parse error: gen fn gen_fn() {}
+
+# old parse error: fn f<T: Clone,, U:, V>() {}
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/err/generic_param_list_recover.rs  # old parse error: fn f<T: Clone,, U:, V>() {}
+
+# old parse error: S { field ..S::default() }
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/err/record_literal_before_ellipsis_recovery.rs  # old parse error: S { field ..S::default() }
+
+# old parse error: where i32: Copy;
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/err/static_where_clause.rs  # old parse error: where i32: Copy;
+
+# old parse error: fn async_foo(_: impl async Fn(&i32)) {}
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/async_trait_bound.rs  # old parse error: fn async_foo(_: impl async Fn(&i32)) {}
+
+# old parse error: fn main() { for<'a> || (); }
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/closure_binder.rs  # old parse error: fn main() { for<'a> || (); }
+
+# old parse error: type T = S<-92>;
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/const_arg_negative_number.rs  # old parse error: type T = S<-92>;
+
+# old parse error: fn main() { let cl = const || _ = 0; }
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/const_closure.rs  # old parse error: fn main() { let cl = const || _ = 0; }
+
+# old parse error: const C<i32>: u32 = 0
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/const_where_clause.rs  # old parse error: const C<i32>: u32 = 0
+
+# old parse error: default impl T for Foo {}
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/default_item.rs  # old parse error: default impl T for Foo {}
+
+# old parse error: type DynLt = dyn 'a + Path;
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/dyn_trait_type_weak.rs  # old parse error: type DynLt = dyn 'a + Path;
+
+# old parse error: async gen { yield ""; };
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/gen_blocks.rs  # old parse error: async gen { yield ""; };
+
+# old parse error: move |x: i32,| x;
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/lambda_expr.rs  # old parse error: move |x: i32,| x;
+
+# old parse error: fn f() { let x: i32 = 92; super let y; super::foo; }
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/let_stmt.rs  # old parse error: fn f() { let x: i32 = 92; super let y; super::foo; }
+
+# old parse error: fn f<T>() where T: for<> ?Sized {}
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/question_for_type_trait_bound.rs  # old parse error: fn f<T>() where T: for<> ?Sized {}
+
+# old parse error: struct S { f: f32 = 0.0 }
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/record_field_default_values.rs  # old parse error: struct S { f: f32 = 0.0 }
+
+# old parse error: struct Foo { unsafe mut(super) i: i32 }
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/record_mut_restrictions_after.rs  # old parse error: struct Foo { unsafe mut(super) i: i32 }
+
+# old parse error: let S { 0: 1 } = ();
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/record_pat_field.rs  # old parse error: let S { 0: 1 } = ();
+
+# old parse error: const A: (i64, i64) = (1, #[cfg(test)] 2);
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/inline/ok/tuple_attrs.rs  # old parse error: const A: (i64, i64) = (1, #[cfg(test)] 2);
+
+# old parse error: struct S4<>;
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0018_struct_type_params.rs  # old parse error: struct S4<>;
+
+# old parse error: struct B<T:>;
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0020_type_param_bounds.rs  # old parse error: struct B<T:>;
+
+# old parse error: let _ = #[doc("Outer attributes are always allowed")] {};
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0045_block_attrs.rs  # old parse error: let _ = #[doc("Outer attributes are always allowed")] {};
+
+# old parse error: fn g1(#[attr1] #[attr2] pat: Type) {}
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0051_parameter_attrs.rs  # old parse error: fn g1(#[attr1] #[attr2] pat: Type) {}
+
+# old parse error: default type T = Bar;
+*/src/tools/rust-analyzer/crates/parser/test_data/parser/ok/0066_default_modifier.rs  # old parse error: default type T = Bar;
+
+# old parse error: Box<dyn 'scope + FnOnce() + Send + UnwindSafe>,
+*/src/tools/rust-analyzer/crates/stdx/src/thread/pool.rs  # old parse error: Box<dyn 'scope + FnOnce() + Send + UnwindSafe>,
+
+# old parse error: char: char @ ('(' | ')' | '{' | '}' | '[' | ']'),
+*/src/tools/rust-analyzer/crates/syntax-bridge/src/lib.rs  # old parse error: char: char @ ('(' | ')' | '{' | '}' | '[' | ']'),
+
+# old parse error: (0 $stack:tt $bail:tt (~$($fuel:tt)*) {($($buf:tt)*) $($pars
+*/vendor/anyhow-1.0.102/src/ensure.rs  # old parse error: (0 $stack:tt $bail:tt (~$($fuel:tt)*) {($($buf:tt)*) $($pars
+
+# old parse error: /* fuel */ (~~~~~~~~~~ ~~~~~~~~~~ ~~~~~~~~~~ ~~~~~~~~~~ ~~~~
+*/vendor/anyhow-1.0.102/src/macros.rs  # old parse error: /* fuel */ (~~~~~~~~~~ ~~~~~~~~~~ ~~~~~~~~~~ ~~~~~~~~~~ ~~~~
+
+# old parse error: TokenTree::Literal(crate::Literal {
+*/vendor/proc-macro2-1.0.106/src/fallback.rs  # old parse error: TokenTree::Literal(crate::Literal {
+
+# old parse error: #[cfg(feature = "accumulator")]
+*/vendor/salsa-0.26.2/src/active_query.rs  # old parse error: #[cfg(feature = "accumulator")]
+
+# old parse error: json!({ "a" : ~ });
+*/vendor/serde_json-1.0.149/tests/ui/parse_expr.rs  # old parse error: json!({ "a" : ~ });
+
+# old parse error: ($mode:ident, $)     => { 1 };
+*/vendor/syn-2.0.117/src/custom_punctuation.rs  # old parse error: ($mode:ident, $)     => { 1 };
+
+# old parse error: where
+*/vendor/syn-2.0.117/src/error.rs  # old parse error: where
+
+# old parse error: [$]           => { $crate::token::Dollar };
+*/vendor/syn-2.0.117/src/token.rs  # old parse error: [$]           => { $crate::token::Dollar };
+
+# old parse error: let expected = str![[r#""abc""#]];
+*/vendor/winnow-1.0.2/src/stream/bstr.rs  # old parse error: let expected = str![[r#""abc""#]];
+
+# old parse error: let expected = str!["000000206674797069736F6D0000020069736F6
+*/vendor/winnow-1.0.2/src/stream/bytes.rs  # old parse error: let expected = str!["000000206674797069736F6D0000020069736F6

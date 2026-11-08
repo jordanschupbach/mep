@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Fish language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Fish language server</h1>
+<h1>What it is</h1>
+<p>Fish scripts get a language server of their own, <code>mep-fish-lsp</code>, built
+and shipped with mep. Open a <code>.fish</code> file and it attaches by itself --
+nothing to install, no fish needed, and nothing in the file is ever run.
+It knows fish 4's builtins and the functions fish ships (<code>string</code>, <code>path</code>,
+<code>set</code>, <code>argparse</code>, <code>fish_add_path</code>, ...): their usage lines and options.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>The same errors as fish</h1>
+<p>Its reader follows fish's own -- the same tokens, the same tree and the
+same checks fish makes before it runs a script -- so a syntax error is the
+one <code>fish --no-execute</code> reports, in its words and on its line:</p>
+<pre>Missing end to balance this if statement
+$? is not the exit status. In fish, please use $status.
+'break' while not inside of loop</pre>
+<p>That covers unbalanced blocks and brackets, unterminated quotes, misplaced
+<code>&amp;&amp;</code> / <code>||</code> / <code>|</code> / <code>&amp;</code>, <code>and</code> / <code>or</code> / <code>exec</code> / <code>time</code> in a pipeline,
+bash-isms (<code>${x}</code>, <code>$?</code>, <code>$(...)</code> in a command name), <code>break</code> and
+<code>continue</code> outside a loop, <code>end</code> with arguments, and an unknown builtin
+after <code>builtin</code>. It is checked against <code>fish --no-execute</code> (fish 4.8) over
+fish's own scripts and a dozen plugin collections -- 1,956 files and four
+damaged copies of each (<code>just fish-parse-check --mutants 4</code>): all 9,780 get
+the same verdict, and every error the same message and line.</p>
+<p>Unlike fish it does not stop at the first error: it skips ahead and keeps
+going, so completion and navigation keep working in a half-typed file.
+Only the first error is reported, as fish does.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>what <code>fish --no-execute</code> says, in its words</td></tr>
+<tr><td><code>reserved-function-name</code></td><td>error</td><td><code>function if</code>, <code>function end</code>: a keyword can't name a function</td></tr>
+<tr><td><code>read-only-variable</code></td><td>error</td><td><code>set status 1</code>, <code>set PWD x</code>: fish refuses to change these</td></tr>
+<tr><td><code>unknown-subcommand</code></td><td>error</td><td><code>string uper</code>, <code>path dir</code>, <code>status is-interative</code></td></tr>
+<tr><td><code>unclosed-test</code></td><td>error</td><td><code>[ -n "$x"= without its closing =]</code></td></tr>
+<tr><td><code>unreachable-code</code></td><td>hint</td><td>statements after <code>return</code>, <code>exit</code>, <code>break</code> or <code>continue</code> in a block</td></tr>
+</table>
+<h2>Calibration</h2>
+<p>Each check reports only what fish itself would refuse when the line runs.
+Over the 1,956-file corpus they fire 12 times in 8 files, and every one
+is real: code after a <code>return</code> left in by mistake, a plugin's shim for
+old fish versions that sets <code>fish_pid</code>, and fish's own tests of the errors
+(a function named after a keyword, <code>set</code> on a read-only variable).</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> on a command shows its usage lines, for builtins and fish's functions, or the file's own <code>function</code> line with its <code>-d</code> description; on <code>$name</code>, where it is set and with which scope (<code>-l</code>, <code>-g</code>, <code>-U</code>, a <code>function -a</code> argument, a <code>for</code> variable, an <code>argparse</code> flag).</li>
+<li><b>Completion</b> offers, in command position, keywords, the file's functions and fish's commands; after a command, its options and subcommands (<code>string match</code>, <code>path basename</code>, <code>status current-filename</code>); after <code>$</code>, the variables in scope.</li>
+<li><b>Signature help</b> shows the usage lines of the command being typed.</li>
+<li><b>Go to definition</b>, <b>references</b> and <b>rename</b> follow fish's scoping: a function's local and argument variables belong to it, a global to the file; <code>$_flag_name</code> goes to its <code>argparse</code> spec. Rename covers functions and variables and refuses a name fish would not accept.</li>
+<li>The <b>outline</b> lists functions, top-level <code>set</code> variables, <code>abbr</code> and <code>alias</code> definitions.</li>
+<li><b>Folding</b> covers blocks (<code>function</code>, <code>if</code>, <code>for</code>, <code>while</code>, <code>switch</code>, <code>begin</code>, <code>{ }</code>), <code>case</code> arms and runs of comments.</li>
+<li><b>Formatting</b> is mep's own Fish formatter, the one <code>gf</code> runs: <code>fish_indent</code>'s layout, byte for byte, with no fish installed. Only the lines that change are edited. See <a href="formatting.html">Formatting</a>.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-fish-lsp</span> <span class="tok-red">--lint</span> *.fish
+<span class="tok-blue">cat</span> config.fish | <span class="tok-blue">mep-fish-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>config.fish:12:12: error: string uper: invalid subcommand [unknown-subcommand]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+<code>mep-fish-lsp --fish-check FILE...</code> prints just fish's first error for
+each file, or <code>ok</code>. With no arguments, <code>mep-fish-lsp</code> is the language
+server on stdio.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="formatting.html">Formatting</a>.</li>
+</ul>
+</body>
+</html>

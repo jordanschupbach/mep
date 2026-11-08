@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The JavaScript language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The JavaScript language server</h1>
+<h1>What it is</h1>
+<p>JavaScript and TypeScript files get a language server of their own,
+<code>mep-js-lsp</code>, built and shipped with mep. Open a <code>.js</code>, <code>.jsx</code>, <code>.mjs</code>,
+<code>.cjs</code>, <code>.ts</code>, <code>.tsx</code>, <code>.mts</code> or <code>.cts</code> file and it attaches by itself --
+no Node.js, no <code>npm install</code>, no <code>tsc</code>, and nothing in the file is ever
+run. It knows the language up to ES2025, JSX and TypeScript 5.9's syntax,
+the standard library with TypeScript's own signatures and documentation,
+the DOM's names and signatures, and Node.js's globals. See <i>TypeScript</i>
+below for what changes in a <code>.ts</code> file.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>The same errors as acorn</h1>
+<p>Its parser is a port of acorn 8.15 (with acorn-jsx), the parser ESLint's
+own parser is built on, decision for decision: a syntax error is reported
+where acorn reports it, in its words:</p>
+<pre>Unexpected token
+Identifier 'x' has already been declared
+'return' outside of function</pre>
+<p>A <code>.mjs</code> file is read as a module and a <code>.cjs</code> file as a script; a <code>.js</code>
+file as a module if it can be one and a script otherwise, with JSX on when
+that is what makes it parse (React code often lives in <code>.js</code> files). Like
+acorn it stops at nothing: after an error it drops the broken statement and
+keeps going, so completion and navigation keep working in a half-typed
+file. Only the first error is reported, and the lints after it are not --
+they would be about a repaired tree, not your code.</p>
+<h1>What it reports</h1>
+<p>The codes are ESLint's rule names, and each follows that rule's
+documented behaviour, so a code you see here means what it means in an
+ESLint report.</p>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>what acorn says, in its words</td></tr>
+<tr><td><code>no-const-assign</code></td><td>error</td><td>assigning to a <code>const</code> (a <code>TypeError</code> when it runs)</td></tr>
+<tr><td><code>no-import-assign</code></td><td>error</td><td>assigning to an imported binding</td></tr>
+<tr><td><code>no-unused-vars</code></td><td>warning</td><td>a variable, function, class or import nothing reads</td></tr>
+<tr><td><code>no-undef</code></td><td>warning</td><td>a name declared nowhere that looks like a misspelling: <i>did you mean 'document'?</i></td></tr>
+<tr><td><code>no-unreachable</code></td><td>warning</td><td>statements after <code>return</code>, <code>throw</code>, <code>break</code> or <code>continue</code></td></tr>
+<tr><td><code>no-dupe-keys</code></td><td>warning</td><td><code>{a: 1, a: 2}</code></td></tr>
+<tr><td><code>no-dupe-class-members</code></td><td>warning</td><td>a class with two members of the same name</td></tr>
+<tr><td><code>no-duplicate-case</code></td><td>warning</td><td>a <code>switch</code> with the same <code>case</code> twice</td></tr>
+<tr><td><code>no-redeclare</code></td><td>warning</td><td><code>var x</code> declared again in the same function</td></tr>
+<tr><td><code>no-dupe-args</code></td><td>warning</td><td><code>function f(a, a)</code></td></tr>
+<tr><td><code>no-func-assign</code></td><td>warning</td><td>assigning to a function declaration</td></tr>
+<tr><td><code>no-class-assign</code></td><td>warning</td><td>assigning to a class declaration</td></tr>
+<tr><td><code>no-self-assign</code></td><td>warning</td><td><code>x = x</code>, <code>a.b = a.b</code></td></tr>
+<tr><td><code>no-self-compare</code></td><td>warning</td><td><code>x === x</code>, <code>a &lt; a</code></td></tr>
+<tr><td><code>use-isnan</code></td><td>warning</td><td><code>x == NaN</code> (always false: use <code>Number.isNaN</code>)</td></tr>
+<tr><td><code>valid-typeof</code></td><td>warning</td><td><code>typeof x</code> compared with a string no type has (say, <code>strng</code>)</td></tr>
+<tr><td><code>no-unsafe-negation</code></td><td>warning</td><td><code>!key in obj</code> (negates <code>key</code>, not the test)</td></tr>
+<tr><td><code>no-shadow</code></td><td>info</td><td>a name in a block hiding another one of the same function</td></tr>
+<tr><td><code>no-empty</code></td><td>info</td><td>an empty block or <code>switch</code> (a comment inside counts as content)</td></tr>
+<tr><td><code>no-unused-vars</code></td><td>hint</td><td>an unused parameter or <code>catch</code> parameter (shown faded)</td></tr>
+</table>
+<p>ESLint's comment directives are honoured: <code>// eslint-disable-line</code> and
+<code>// eslint-disable-next-line</code> (all rules, or the ones named after them --
+<code>@typescript-eslint/no-unused-vars</code> counts as <code>no-unused-vars</code>),
+<code>/* eslint-disable */</code> ... <code>/* eslint-enable */</code> regions, <code>/* global x, y */</code>
+to declare globals and <code>/* exported f */</code> to mark a script's function as used
+elsewhere. A <code>/** @jsx h */</code> pragma marks <code>h</code> as used by the file's JSX.</p>
+<h2>Calibration</h2>
+<p>The lints were run over 2,109 real files -- Node.js's own <code>lib/</code>, npm and
+its dependencies, three React front ends and mep's own JavaScript -- and
+compared with ESLint 9 (with the same globals, and JSX uses counted the way
+<code>eslint-plugin-react</code> counts them). With every narrowing below switched off,
+the analysis finds what ESLint finds, finding for finding: the same 9,932
+undefined names and the same 1,119 unused variables, and nothing else.
+Those 11,181 reports in 527 files are mostly not bugs, though, so the
+server narrows them down to 296 in 151 files, every one of which ESLint
+also reports:</p>
+<ul>
+<li><b>Undefined names.</b> Browsers, Node.js, bundlers and test runners define globals no file declares (<code>internalBinding</code>, <code>__DEV__</code>, <code>jest</code>, a page's <code>$</code>), so an unknown name is reported only when it is a near miss of one the server does know -- a variable in scope, a global the file assigns, the standard library, the DOM, Node.js -- and only if it occurs once or twice in the file (a name used again and again is a global the file expects). <code>typeof x</code> never counts. Assigning to an undeclared name in strict code (a module, a class, ="use strict"=) is reported whatever the name, because it throws. A file using <code>with</code> or a direct <code>eval</code> gets no undefined-name checks at all. Typos introduced at random into the corpus's code were all caught where they landed on a use of the name.</li>
+<li><b>Names starting with =_=</b> are never reported as unused (the convention for "deliberately ignored").</li>
+<li><b>Parameters</b> are a hint, after ESLint's <code>after-used</code> rule (one before a used one keeps its place), and only for a function with a signature of its own: a function declaration or a variable's function that the file only ever calls. A callback, a method, or a function passed or stored anywhere implements someone else's interface.</li>
+<li><b>Rest siblings</b>: <code>const {password, ...rest} = user</code> uses <code>password</code> to leave it out of <code>rest</code>.</li>
+<li><b>A browser script's top-level names</b> are globals other scripts and the page use, so they are not reported in a file without <code>import=/=export</code> and without Node.js's <code>require=/=module=/=exports</code>. (A <code>.js</code> file with no import or export is treated as a script, whichever way it parses.)</li>
+<li><code>x !== x</code> is the classic NaN test and is left alone.</li>
+</ul>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> on the file's own names shows the declaration -- =function add(a, b = 2)=, <code>const port = 80</code>, =import { join } from 'path'=, a parameter's default -- with its JSDoc comment (<code>@param</code>, <code>@returns</code> set out), the <code>@param</code> line for a parameter, the type when the server can tell it (<code>HTMLElement</code> for <code>document.getElementById(...)</code>), and how many times it is read and written. On the standard library and the DOM it shows TypeScript's signature -- every overload -- and, for the ECMAScript library, its documentation; on <code>obj.member</code> the member the file defines (an object literal key, a class member, an <code>obj.x = ...</code> assignment) or the library's.</li>
+<li><b>Completion</b> offers the names in scope at the cursor, innermost first, then keywords, the library's globals and the file's words; after a dot, the members: the file's own (object literal keys, class members, <code>this.x = ...</code> in the class), and the library's for whatever the server can tell the value is -- a string, an array, <code>Math</code>, <code>document</code>, <code>document.body</code> (an <code>HTMLElement</code>), the result of a call whose signature says what it returns, <code>new Box()</code>. It works on the half-typed line completion is usually asked for. Nothing is offered inside a string or comment.</li>
+<li><b>Signature help</b> for the file's functions and classes (the constructor's parameters for <code>new</code>), the standard library and the DOM, with the active argument; a rest parameter absorbs the rest.</li>
+<li><b>Go to definition</b>, <b>references</b>, <b>highlights</b> and <b>rename</b> follow JavaScript's scoping -- hoisting, block scope, a named function expression's own name, labels. Rename refuses a new name that would be captured by a declaration nearer a use, or that would hide an outer variable used inside, and keeps the outside world's names intact: <code>{a}</code> becomes <code>{a: b}</code>, <code>import {a}</code> becomes <code>import {a as b}</code>, <code>export {a}</code> becomes <code>export {b as a}</code>. Definition on <code>obj.member</code> goes to where the file defines that member.</li>
+<li>The <b>outline</b> lists functions (nested ones under their parent), classes with their constructor, methods, accessors and fields, top-level variables, object literals' members, <code>module.exports.x = function</code>, and <code>describe</code> / <code>it</code> blocks of a test file.</li>
+<li><b>Folding</b> covers blocks, classes, object and array literals, multi-line calls and templates, JSX elements, runs of imports, block comments and runs of line comments.</li>
+</ul>
+<ul>
+<li><b>Formatting</b> (<code>textDocument/formatting</code>) is mep's port of Prettier 3.6 (<code>src/js_format*</code>) with Prettier's defaults, in the file's dialect -- JavaScript with JSX, TypeScript for <code>.ts</code>, <code>.mts</code>, <code>.cts</code> and <code>.d.ts</code>, TypeScript with JSX for <code>.tsx</code>. A client asking for tabs (<code>insertSpaces: false</code>) gets tabs; the width stays Prettier's 2. A file that does not parse is refused with the syntax error, not guessed at.</li>
+</ul>
+<h1>TypeScript</h1>
+<p><code>.ts</code>, <code>.mts</code> and <code>.cts</code> files are read with the parser's TypeScript
+dialect, <code>.tsx</code> with TypeScript and JSX, and a declaration file (<code>.d.ts</code>,
+<code>.d.mts</code>, <code>.d.cts</code>) as one. The dialect makes the decisions TypeScript
+5.9's own parser makes -- what it accepts, how <code>&lt;T&gt;(x) =&gt; x</code> and =a &lt; b &gt;
+(c)= resolve, <code>&lt;T&gt;x</code> as an assertion in <code>.ts</code> and a tag in <code>.tsx</code> -- so a
+syntax error is reported where <code>tsc</code> reports one (in acorn's words, as in
+JavaScript). Like <code>tsc</code>'s parser it leaves duplicate declarations,
+misplaced modifiers and strict-mode words to the type checker, which this
+server is not: it never says a type is wrong.</p>
+<h2>Two namespaces</h2>
+<p>What it does know is TypeScript's scoping. A name can be a value, a type
+or both, the way <code>typescript-eslint</code>'s scope analysis sees it:</p>
+<ul>
+<li>interfaces, type aliases and type parameters are types; classes, enums and namespaces are both; an <code>import</code> is whatever it imports;</li>
+<li>a type annotation, <code>implements</code>, <code>extends</code> in an interface, a type argument or <code>A.B</code> in a type finds the type; <code>typeof x</code> in a type finds the value;</li>
+<li>declaration merging is one name: <code>interface A</code> with <code>class A</code>, <code>const X</code> with <code>type X</code>, a function with its overload signatures, a namespace merged into a function, class or enum;</li>
+<li><code>&lt;T&gt;</code> scopes over its declaration, <code>infer U</code> over the conditional type's true branch, a mapped type's <code>[K in ...]</code> over the mapping; an enum's members are in scope in each other's initializers;</li>
+<li>the parameters of a signature (a function type, an overload, an interface method) are not variables; <code>constructor(private x)</code> declares a parameter and a member; <code>function f(this: T)</code> has no parameter <code>this</code>.</li>
+</ul>
+<p>So hover, definition, references, highlights and rename work on types as
+on values: hover on a type reference shows the interface, <code>Point</code> in
+<code>a: Point</code> goes to it, and renaming an interface renames every annotation.</p>
+<h2>What it reports in TypeScript</h2>
+<p>The lints are the ones <code>typescript-eslint</code>'s <code>recommended</code> configuration
+keeps:</p>
+<ul>
+<li><code>no-unused-vars</code> is the TypeScript-aware one: a type imported only to annotate is used; an interface or type alias referred to only by itself (<code>interface Node { next: Node }</code>) is not; a value used only in types is reported as <i>assigned a value but only used as a type</i>; an unused type parameter is a hint, like an unused parameter.</li>
+<li>Nothing declared with <code>declare</code>, inside <code>declare namespace</code>, =declare module "x"= or <code>declare global</code>, or anywhere in a <code>.d.ts</code> file is reported unused: those describe names that exist elsewhere. Nor are parameter properties, enum members, a mapped type's key, or the implementation's parameters of an overloaded function (the overloads are its signature).</li>
+<li><code>no-undef</code> is off, as <code>typescript-eslint</code> recommends: <code>tsc</code> checks every name against the project's <code>lib</code>, <code>@types</code> and <code>paths</code>, which one file cannot see.</li>
+<li><code>no-dupe-class-members</code> allows overloads (<code>m(): void; m(x?: number) {}</code>) and <code>declare</code> fields; <code>no-redeclare</code> allows declaration merging and still reports <code>var x; var x;</code>.</li>
+<li><code>no-unreachable</code> lets interfaces, type aliases, <code>declare</code> statements, overload signatures and <code>const enum=s follow a =return</code> (they emit no code); a plain <code>enum</code> there is unreachable code.</li>
+</ul>
+<p>The rest work as in JavaScript.</p>
+<h2>Calibration</h2>
+<p>Over 3,063 TypeScript and TSX files (TypeScript's own compiler and lib,
+two React front ends with their servers -- 2,151 <code>.ts</code>, 912 <code>.tsx</code>, 119 of
+them <code>.d.ts</code>), compared with ESLint 9 running <code>typescript-eslint</code> 8's
+<code>recommended</code> configuration: every file parses, as it does for <code>tsc</code>.
+With the narrowings switched off, <code>no-unused-vars</code> finds 532 of which 531
+are <code>typescript-eslint</code>'s own findings; the other 89 it reports are all
+in TypeScript's <code>lib.*.d.ts</code> files except one overloaded function's
+implementation parameter, and the one only this server reports is a
+variable that is only ever updated from itself (<code>x = x || y</code>). With the
+narrowings on, the same files get one <code>no-unused-vars</code> -- 506 of
+<code>typescript-eslint</code>'s 620 are <code>_</code> names, 88 are in <code>.d.ts</code> files, the
+rest are rest siblings and callback or method parameters -- and none of
+its 939 <code>no-redeclare</code> reports, which are all <code>interface X</code> + <code>const X</code>
+style merging. What else shows is <code>no-shadow</code> (116 /info/s, real shadowing
+in one function), one empty block, one <code>x ==</code> x=.</p>
+<h2>Completion and hover</h2>
+<ul>
+<li>In a type position (<code>x: |</code>, <code>): |</code>, <code>as |</code>, <code>satisfies |</code>, =implements |=, <code>Foo&lt;|</code>, <code>type T = |</code>) completion offers the types in scope -- the file's interfaces, aliases, classes, enums, type parameters, namespaces and imports -- the primitive types and keywords, and the standard library's and the DOM's types; anywhere else only values.</li>
+<li>After a dot, a variable's declared type gives the members: the file's own interface, type literal or class (parameter properties included), or the library's (<code>s: string</code>, <code>m: Map&lt;K, V&gt;</code>, <code>q: Promise&lt;T&gt;</code>).</li>
+<li>Hover shows declarations as written: <code>const p: Point</code>, =(parameter) b: Point = a=, <code>function dist(a: Point, b: Point = a): number</code>, =(property) private readonly url: string=, the interface's header, a type alias, <code>(enum member) Color.Red = 1</code>, <code>(type parameter) T extends object</code>, a member signature <code>y?: number</code> with its JSDoc; on a library type (<code>Promise</code>, <code>Record</code>, <code>HTMLElement</code>) TypeScript's documentation.</li>
+<li>The outline lists interfaces and type literals with their members, enums with theirs, namespaces with their contents, a class's parameter properties as fields, and each overloaded function once.</li>
+</ul>
+<p>Formatting reads TypeScript too: see <i>Formatting</i> under <i>What else it does</i>.</p>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-js-lsp</span> <span class="tok-red">--lint</span> src/*.js
+<span class="tok-blue">cat</span> app.js | <span class="tok-blue">mep-js-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>src/app.js:12:7: warning: 'util' is defined but never used. [no-unused-vars]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. The file's extension picks
+module or script as above, and TypeScript for <code>.ts</code>, <code>.tsx</code>, <code>.mts</code>,
+<code>.cts</code> and the <code>.d.ts</code> kinds. It exits 1 if anything printed is an error or
+a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, <code>mep-js-lsp</code> is the language server on stdio.</p>
+<h1>Using typescript-language-server instead</h1>
+<p><code>typescript-language-server</code> is still registered, with no filetypes of
+its own. For type checking (it runs <code>tsc</code>'s language service over the
+whole project), give it the TypeScript files in <code>init.lua</code> and keep
+<code>mep-js-lsp</code> for JavaScript:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.typescript_language_server.filetypes = <span class="tok-blue">{</span><span class="tok-green">'ts'</span>, <span class="tok-green">'tsx'</span>, <span class="tok-green">'mts'</span>, <span class="tok-green">'cts'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.js_ls.filetypes = <span class="tok-blue">{</span><span class="tok-green">'js'</span>, <span class="tok-green">'jsx'</span>, <span class="tok-green">'mjs'</span>, <span class="tok-green">'cjs'</span><span class="tok-blue">}</span></code></pre></div>
+<p>or all of it:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.typescript_language_server.filetypes = <span class="tok-blue">{</span><span class="tok-green">'ts'</span>, <span class="tok-green">'tsx'</span>, <span class="tok-green">'mts'</span>, <span class="tok-green">'cts'</span>, <span class="tok-green">'js'</span>, <span class="tok-green">'jsx'</span>, <span class="tok-green">'mjs'</span>, <span class="tok-green">'cjs'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.js_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+</ul>
+</body>
+</html>

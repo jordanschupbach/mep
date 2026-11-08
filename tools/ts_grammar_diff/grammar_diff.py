@@ -16,12 +16,14 @@ The method in plans/TREESITTER_GRAMMAR_PLAN.md, as commands:
   recovery <name>  the same damaged copies with both grammars: how many
                    bytes each leaves inside ERROR nodes
 
-<name> is a grammar: lua, c, cpp, python, javascript, markdown,
-markdown_inline, org, r, nix, just, mepml. The "new" grammar is
+<name> is a grammar: lua, c, cpp, python, javascript, typescript, tsx, fish,
+markdown, markdown_inline, org, r, nix, just, mepml. The "new" grammar is
 grammars/tree-sitter-<name>/src; the "old" is third_party/grammars/<name>/src
 while it is still vendored, and that directory as of the last commit that
-had it once it is gone (so the oracle outlives the vendored copy). Either
-can be overridden with --old/--new <src dir>.
+had it once it is gone (so the oracle outlives the vendored copy), or, for
+a grammar mep loaded from nixpkgs instead (typescript, tsx, fish), the nixpkgs
+source named by its 'old' entry. Either can be overridden with
+--old/--new <src dir>.
 
 Builds and corpora go under build/grammar-diff/ and build/grammar-corpus/.
 """
@@ -57,6 +59,23 @@ GENERIC_TOKENS = ['"', "'", '`', '(', ')', '[', ']', '{', '}', '\n', '\\', '#', 
 # attributes, each with the member paths to keep), the language's own
 # "does this parse?" check ({} is the file), and extra fuzz tokens.
 # Grammars that share a language (markdown, markdown_inline) share an entry.
+# The registry packages in Julia's corpus ('@julia-packages'), with their
+# dependencies: data, statistics, AD, optimisation, ML, ODEs, docs, CAS.
+JULIA_PACKAGES = ['DataFrames', 'StaticArrays', 'ForwardDiff', 'Distributions', 'Documenter', 'JuliaFormatter',
+                  'Runic', 'Symbolics', 'JuMP', 'Flux', 'DifferentialEquations']
+
+# Crates from rustc's vendor/ directory in the Rust corpus (one version each).
+VENDORED_RUST_CRATES = [
+    'tokio-1.52.1', 'serde-1.0.228', 'serde_json-1.0.149', 'syn-2.0.117', 'regex-1.12.3',
+    'regex-automata-0.4.14', 'regex-syntax-0.8.10', 'clap_builder-4.6.0', 'hashbrown-0.17.1', 'rayon-1.12.0',
+    'rayon-core-1.13.0', 'crossbeam-channel-0.5.15', 'crossbeam-epoch-0.9.18', 'futures-util-0.3.32',
+    'itertools-0.14.0', 'indexmap-2.14.0', 'toml_edit-0.25.11+spec-1.1.0', 'winnow-1.0.2', 'gimli-0.33.0',
+    'object-0.39.1', 'memchr-2.8.0', 'aho-corasick-1.1.4', 'anyhow-1.0.102', 'thiserror-2.0.18',
+    'proc-macro2-1.0.106', 'quote-1.0.45', 'rowan-0.15.18', 'ena-0.14.3', 'smallvec-1.15.1', 'bstr-1.12.1',
+    'ignore-0.4.25', 'globset-0.4.18', 'tracing-0.1.44', 'tracing-subscriber-0.3.23', 'salsa-0.26.2',
+    'petgraph-0.8.2', 'nom-7.1.3', 'parking_lot-0.12.5',
+]
+
 LANGUAGES = {
     'r': dict(
         globs=['*.R', '*.r'],
@@ -81,6 +100,265 @@ LANGUAGES = {
         tokens=['{{', '}}', '{{{{', ':=', '\n    ', '\n', '@', '-', '\\\n'],
     ),
     'mepml': dict(globs=['*.mepml'], sources=[], oracle=None, tokens=['*', '_', '```', '$$', '|']),
+    # Maxima's own reader is the oracle for trees as well as validity:
+    # tools/ts_grammar_diff/maxima_check.py compares every tree with the one
+    # mep's Maxima parser (src/maxima_ast.cpp, which agrees with Maxima's
+    # mread-raw on all of share/) builds. The grammar mep loaded before
+    # (stewsat/tree-sitter-maxima) gets Maxima's precedences wrong, so it is
+    # no oracle for shapes.
+    'maxima': dict(
+        globs=['*.mac'],
+        sources=[('maxima.src', ['*.mac'])],
+        oracle=None,
+        tokens=['/*', '*/', ':=', '$', ';', 'then', 'do', '(', ')', '[', ']', '\\'],
+    ),
+    # Guile's own modules and test suite, Guix (Guile, every package
+    # definition), haunt and guile-lib, chibi-scheme (R7RS libraries,
+    # .sld), Chez Scheme (R6RS, .ss/.sls) and Gauche. The old grammar is
+    # nixpkgs' tree-sitter-scheme (6cdh). The oracle is Guile's `read`
+    # (scheme_read.scm): R7RS + R6RS lexical syntax, nothing evaluated.
+    'scheme': dict(
+        globs=['*.scm', '*.ss', '*.sld', '*.sls', '*.sps'],
+        sources=[('guile.src', ['*/module/*.scm', '*/test-suite/*.scm', '*/test-suite/*.test']),
+                 ('guix.src', ['*.scm']),
+                 ('haunt.src', ['*.scm']),
+                 ('guile-lib.src', ['*.scm']),
+                 ('chibi.src', ['*.scm', '*.sld']),
+                 ('chez.src', ['*.ss', '*.sls', '*.sps']),
+                 ('gauche.src', ['*.scm'])],
+        dedupe=True,
+        old=('tree-sitter-grammars.tree-sitter-scheme.src', 'src'),
+        oracle=['guile', '--no-auto-compile', '-s', str(Path(__file__).resolve().parent / 'scheme_read.scm'), '{}'],
+        tokens=['(', ')', '[', ']', '"', '\\', '#|', '|#', '#;', '#\\', '#(', '#u8(', '#vu8(', "'", '`', ',', ',@',
+                '#\'', '#`', '#,', '#,@', '|', ';', '#:', '#!', '#t', '#f', '1/2', '.', '+i', '\n'],
+    ),
+    # Tcl's and Tk's own libraries and test suites, and tcllib. The old
+    # grammar is nixpkgs' tree-sitter-tcl (dropped from nixpkgs-unstable
+    # since; flake.lock's still has it). The oracle is Tcl's own parser:
+    # tcl_check.tcl compiles the file without running it.
+    # Go: the Go 1.26 tree's own src/ (the toolchain, the standard library,
+    # their tests and testdata -- some deliberately invalid), then Go
+    # programs nixpkgs packages (their vendored modules included). The old
+    # grammar is tree-sitter-go 0.25.0 from flake.lock's nixpkgs. The oracle
+    # is go/parser, the parser behind gofmt (go_check.go; `just go-check`).
+    'go': dict(
+        globs=['*.go'],
+        sources=[('@pinned:go', ['share/go/src/*.go'])] + [
+            (f'{p}.src', ['*.go']) for p in ['gh', 'hugo', 'fzf', 'delve', 'caddy', 'go-tools']],
+        dedupe=True,
+        old=('@pinned:tree-sitter-grammars.tree-sitter-go.src', 'src'),
+        oracle=[str(REPO / 'build' / 'grammar-diff' / 'go' / 'go-check'), '{}'],
+        tokens=['{', '}', '(', ')', '[', ']', '`', '"', "'", '/*', '*/', '//', ';', '\n', ':=', '<-', '...', '.',
+                'func ', 'type ', 'interface{', 'struct{', 'chan ', 'go ', 'case ', 'default:', '[T any]', '0x', '1e'],
+    ),
+    # Kotlin: the 2.4.10 standard library and compiler (their Maven sources
+    # jars: the stdlib, the K1/K2 front ends, IR, backends), then
+    # kotlinx.coroutines, kotlinx.serialization, ktor and okhttp (with their
+    # Gradle .kts build scripts) and ktfmt. The old grammar is nixpkgs'
+    # tree-sitter-kotlin (fwcd, 0.3.8). The oracle is the compiler's own PSI
+    # parser (KotlinCheck.java; `just kotlin-check`).
+    'kotlin': dict(
+        globs=['*.kt', '*.kts'],
+        sources=[('@maven:org.jetbrains.kotlin/kotlin-stdlib/2.4.10/sources/'
+                  'sha256-XE+oTslFpjRT5kvAFBwiLs6AaiAmwpYf52sL5IOJYyM=', ['*.kt', '*.kts']),
+                 ('@maven:org.jetbrains.kotlin/kotlin-compiler/2.4.10/sources/'
+                  'sha256-emgxPg3t/naGXW4IG71+lbw78uCZtWE0VfHnpoafvCc=', ['*.kt', '*.kts']),
+                 ('@github:Kotlin/kotlinx.coroutines/1.11.0/sha256-7BZkE5t5K4kGPbyJwVz86SJ1k7qJXlSd6UQt2PSSKVA=',
+                  ['*.kt', '*.kts']),
+                 ('@github:Kotlin/kotlinx.serialization/v1.12.0/sha256-5oYw+MnwNvOy+dNRDq2uxSKopngSCKlhtlDmd9b2VcQ=',
+                  ['*.kt', '*.kts']),
+                 ('@github:ktorio/ktor/3.6.1/sha256-iG988YK3dYlAKRJU0QIwvaW4obCkCySWldCIq3BrVGo=', ['*.kt', '*.kts']),
+                 ('@github:square/okhttp/parent-5.5.1/sha256-e7sBjP7ita2j/TyR+ZdMvzxgUjqsmnPF85KFgtv3P9w=',
+                  ['*.kt', '*.kts']),
+                 ('ktfmt.src', ['*.kt', '*.kts'])],
+        dedupe=True,
+        old=('@pinned:tree-sitter-grammars.tree-sitter-kotlin.src', 'src'),
+        oracle=[str(REPO / 'build' / 'grammar-diff' / 'kotlin' / 'kotlin-check'), '{}'],
+        tokens=['{', '}', '(', ')', '[', ']', '"', '"""', "'", '${', '$', '/*', '*/', '//', ';', '\n', '::', '?.',
+                '?:', '!!', '->', '..', '..<', '@', 'fun ', 'val ', 'var ', 'class ', 'object ', 'when ', 'if (',
+                'else ', 'is ', 'as ', 'in ', '<T>', '<', '>', '0x', '1e', '`'],
+    ),
+    # D: LDC 1.41's source tree -- Phobos, druntime, the dmd front end
+    # itself and dmd's test suite (tests/dmd; fail_compilation is
+    # deliberately invalid) -- then dub, D-Scanner and serve-d from nixpkgs,
+    # and DCD, libdparse, dfmt and vibe.d from GitHub. The old grammar is
+    # gdamore/tree-sitter-d from flake.lock's nixpkgs. The oracle is the
+    # compiler's own parser (d_check.sh: `ldc2 -o- -v`, a syntax error is
+    # one reported before importall; `just d-check` links the ldc).
+    'd': dict(
+        globs=['*.d', '*.di'],
+        sources=[('@pinned:ldc.src', ['runtime/*.d', 'runtime/*.di', 'dmd/*.d', 'tests/*.d', 'tests/*.di'])] + [
+            (f'{p}.src', ['*.d', '*.di']) for p in ['dub', 'dscanner', 'serve-d']] + [
+            ('@github:dlang-community/DCD/4946d49abdc35810254151923bab30fb3cc2c004/'
+             'sha256-dJ4Ql3P9kPQhQ3ZrNcTAEB5JHSslYn2BN8uqq6vGetY=', ['*.d']),
+            ('@github:dlang-community/libdparse/f8a6c28589aae180532fb460a1b22e92a0978292/'
+             'sha256-D+fFf/JjL3H39qsbfiS6A6zvz5272m/HAXVYmFYVSPo=', ['*.d']),
+            ('@github:dlang-community/dfmt/d8e43e23eca0aa32f064fe7efe8e74a9efa8018e/'
+             'sha256-QjmYPIQFs+91jB1sdaFoenfWt5TLXyEJauSSHP2fd+M=', ['*.d']),
+            ('@github:vibe-d/vibe.d/faf66b99de605b8a4eb8af37bc8b49f0f0e1c922/'
+             'sha256-/V1Ez1W7fSquVWZG4RfhZxOOxO+i8R5u9+343VAzE1E=', ['*.d'])],
+        dedupe=True,
+        old=('@pinned:tree-sitter-grammars.tree-sitter-d.src', 'src'),
+        oracle=[str(Path(__file__).resolve().parent / 'd_check.sh'), '{}'],
+        tokens=['{', '}', '(', ')', '[', ']', '"', "'", '`', '/*', '*/', '/+', '+/', '//', ';', '\n', 'q{', 'q"(',
+                'r"', 'x"', 'i"', '$(', '!', '!(', '=>', '..', '...', '@', 'static if (', 'version (', 'mixin(',
+                'template ', 'class ', 'struct ', 'enum ', 'alias ', 'auto ', 'scope(exit) ', 'in {', 'out(r) {',
+                '__traits(', 'asm {', '0x', '1e', '__EOF__'],
+    ),
+    # Zig: the Zig 0.16 tree's own lib/ (std, compiler_rt, the C shims),
+    # src/ (the compiler) and test/ (some deliberately invalid), then zls,
+    # ghostty, river, waylock, ncdu and linuxwave from nixpkgs, and
+    # tigerbeetle's and bun's sources from GitHub.
+    # The old grammar is tree-sitter-zig (tree-sitter-grammars) from
+    # flake.lock's nixpkgs. The oracle is Zig's own parser, std.zig.Ast, as
+    # `zig fmt --stdin` runs it (zig_check.sh): parse only, unlike `zig
+    # ast-check`, whose AstGen errors (unused locals ...) are no syntax error.
+    'zig': dict(
+        globs=['*.zig'],
+        sources=[('@pinned:zig.src', ['lib/*.zig', 'src/*.zig', 'test/*.zig'])] + [
+            (f'{p}.src', ['*.zig']) for p in ['zls', 'ghostty', 'river', 'waylock', 'ncdu', 'linuxwave']] + [
+            # nixpkgs packages these two as release binaries: their sources.
+            ('@github:tigerbeetle/tigerbeetle/0.17.9/sha256-LgiVqyQCIIrvpm9Jg3g8DjmX9eEYye36SARHZTTwJvc=',
+             ['*.zig']),
+            ('@github:oven-sh/bun/bun-v1.3.13/sha256-sN3HnhI2kNc+P1E5MnE6A0VyMAk2dwPp+uITZiPdfKM=', ['*.zig'])],
+        dedupe=True,
+        old=('@pinned:tree-sitter-grammars.tree-sitter-zig.src', 'src'),
+        oracle=[str(Path(__file__).resolve().parent / 'zig_check.sh'), '{}'],
+        tokens=['{', '}', '(', ')', '[', ']', '"', "'", '\\\\', '//', ';', '\n', '.{', '.*', '.?', '..', '...',
+                '=>', '|', 'fn ', 'const ', 'var ', 'pub ', 'struct {', 'enum {', 'union(enum) {', 'switch (', 'try ',
+                'catch ', 'orelse ', 'comptime ', '@import(', 'error{', '!', '?', '0x', '1e'],
+    ),
+    # Nim: the Nim 2.2.10 tree's own lib/ (the standard library), compiler/,
+    # nimsuggest/, nimpretty/, tools/, testament/ and tests/ (some
+    # deliberately invalid), then Nim programs nixpkgs packages (nimble,
+    # nimlangserver, nimlsp, nph, nitter, c2nim, nimmm) and karax and jester
+    # from GitHub. The old grammar is alaviss/tree-sitter-nim (MPL-2.0) from
+    # flake.lock's nixpkgs. The oracle is Nim's own parser,
+    # compiler/parser.nim, with nothing else run (nim_check.nim; `just
+    # nim-check`).
+    'nim': dict(
+        globs=['*.nim', '*.nims', '*.nimble'],
+        sources=[('@pinned:nim-unwrapped.src', [f'nim-*/{d}/*.{e}' for d in
+                                                ['lib', 'compiler', 'nimsuggest', 'nimpretty', 'tools', 'testament',
+                                                 'tests'] for e in ['nim', 'nims', 'nimble']])] + [
+            (f'{p}.src', ['*.nim', '*.nims', '*.nimble'])
+            for p in ['nimble', 'nimlangserver', 'nimlsp', 'nph', 'nitter', 'c2nim', 'nimmm']] + [
+            ('@github:karaxnim/karax/1.5.0/sha256-U82TGbXwsCFFL1idRvRjGsI9ysuqF4bchaiP9ANmw/c=',
+             ['*.nim', '*.nims', '*.nimble']),
+            ('@github:dom96/jester/v0.6.0/sha256-F/zWWGipJ4lBE3njceXn5HBFTYEXB4l2rk6+FfqqZTQ=',
+             ['*.nim', '*.nims', '*.nimble'])],
+        filter_globs=True,
+        dedupe=True,
+        old=('@pinned:tree-sitter-grammars.tree-sitter-nim.src', 'src'),
+        oracle=[str(REPO / 'build' / 'grammar-diff' / 'nim' / 'nim-check'), '{}'],
+        tokens=['(', ')', '[', ']', '{', '}', '{.', '.}', '"', '"""', "'", '`', '#', '#[', ']#', '##', '\n', '  ',
+                ':', '=', ',', ';', '.', '..', '*', 'proc ', 'type ', 'var ', 'let ', 'const ', 'if ', 'elif ',
+                'else:', 'case ', 'of ', 'object', 'ref ', 'tuple[', 'do:', 'when ', 'template ', 'macro ', 'r"',
+                '0x', '1e', "'u8"],
+    ),
+    # Rust: rustc 1.97's own tree -- the standard library (core, alloc, std
+    # and the crates vendored under library/), the compiler, rustfmt, clippy's
+    # lints, rust-analyzer's crates and cargo -- plus widely used crates from
+    # its vendor/ directory (one version each) and Rust programs nixpkgs
+    # packages. The old grammar is tree-sitter-rust 0.24.2 from flake.lock's
+    # nixpkgs. The oracle is rustc's own parser (`-Zparse-crate-root-only`,
+    # rust_check.py), at the edition the file's crate declares.
+    'rust': dict(
+        globs=['*.rs'],
+        sources=[('@pinned:rustc.unwrapped.src',
+                  ['rustc-*-src/library/*.rs', 'rustc-*-src/compiler/*.rs', 'rustc-*-src/src/tools/rustfmt/src/*.rs',
+                   'rustc-*-src/src/tools/clippy/clippy_lints/*.rs', 'rustc-*-src/src/tools/rust-analyzer/crates/*.rs',
+                   'rustc-*-src/src/tools/cargo/src/*.rs', 'rustc-*-src/*/Cargo.toml', 'rustc-*-src/Cargo.toml']
+                  + [f'rustc-*-src/vendor/{c}/*.rs' for c in VENDORED_RUST_CRATES]
+                  + [f'rustc-*-src/vendor/{c}/Cargo.toml' for c in VENDORED_RUST_CRATES])] + [
+            (f'{p}.src', ['*.rs', '*Cargo.toml']) for p in ['ripgrep', 'fd', 'bat', 'helix']],
+        # Cargo.toml files are unpacked beside the sources (rust_check.py reads
+        # each crate's edition from them) but are not corpus files.
+        filter_globs=True,
+        dedupe=True,
+        old=('@pinned:tree-sitter-grammars.tree-sitter-rust.src', 'src'),
+        oracle=['python3', '-I', str(Path(__file__).resolve().parent / 'rust_check.py'), '{}'],
+        tokens=['{', '}', '(', ')', '[', ']', '<', '>', '"', "'", 'r#"', '"#', 'b"', '/*', '*/', '//', '///', ';', '\n',
+                '::', '->', '=>', '#[', '#![', '!', '?', '&', "'a", '|', '..', 'fn ', 'impl ', 'let ', 'match ',
+                'macro_rules! ', 'where ', 'async ', 'unsafe ', '0x', '1e', '1u8'],
+    ),
+    'tcl': dict(
+        globs=['*.tcl', '*.test', '*.tm'],
+        sources=[('tcl.src', ['*/library/*.tcl', '*/library/*.tm', '*/tests/*.test', '*/tests/*.tcl',
+                              '*/tools/*.tcl']),
+                 ('tk.src', ['*/library/*.tcl', '*/tests/*.test', '*/tests/*.tcl']),
+                 ('tclPackages.tcllib.src', ['*.tcl', '*.test', '*.tm'])],
+        dedupe=True,
+        old=('tree-sitter-grammars.tree-sitter-tcl.src', 'src'),
+        oracle=['tclsh', str(Path(__file__).resolve().parent / 'tcl_check.tcl'), '{}'],
+        tokens=['{', '}', '[', ']', '"', '$', '${', '\\', '\\\n', ';', '#', '{*}', '(', ')', '\n', 'proc ', 'if ',
+                'expr {', ' else '],
+    ),
+    # Octave/MATLAB (.m): Octave's own scripts, tests and examples, then
+    # Octave Forge packages (some written as plain MATLAB). The old grammar
+    # is nixpkgs' tree-sitter-matlab (acristoffers, MATLAB only). The oracle
+    # is Octave's own parser: octave_check.sh runs __parse_file__, which
+    # parses a function file, script or classdef and runs nothing.
+    'matlab': dict(
+        globs=['*.m'],
+        sources=[('octave.src', ['*/scripts/*.m', '*/test/*.m', '*/examples/*.m'])] + [
+            (f'octavePackages.{p}.src', ['*.m'])
+            for p in ['statistics', 'signal', 'control', 'image', 'io', 'optim', 'symbolic', 'geometry',
+                      'matgeom', 'nurbs', 'interval', 'communications', 'financial', 'mapping', 'ltfat',
+                      'general', 'miscellaneous', 'queueing', 'stk', 'struct', 'strings', 'tsa', 'nan',
+                      'splines', 'fuzzy-logic-toolkit', 'bim', 'msh', 'fpl', 'datatypes', 'dataframe']],
+        dedupe=True,
+        old=('tree-sitter-grammars.tree-sitter-matlab.src', 'src'),
+        oracle=[str(Path(__file__).resolve().parent / 'octave_check.sh'), '{}'],
+        tokens=['%', '#', '%{\n', '%}\n', '#{\n', '#}\n', "'", '"', '...', '...\n', '[', ']', '{', '}', '(', ')',
+                ';', ',', '\n', 'end', 'endfunction', 'endif', 'function ', 'if ', 'classdef ', "x'", '.^', '!=',
+                '~', '@(', ':', '\\\n'],
+    ),
+    # Fortran, free form (.f90 ...) and fixed form (.f/.for): reference
+    # LAPACK/BLAS, scipy's and ARPACK's Fortran, Quantum ESPRESSO, SIESTA,
+    # Octopus, Wannier90, netCDF-Fortran and HDF5's Fortran API, plus
+    # gfortran's own test suite (gcc 14), which is full of edge cases and
+    # deliberately invalid files. The old grammar is nixpkgs'
+    # tree-sitter-fortran (stadelmanma). The oracle is gfortran
+    # -fsyntax-only behind fortran_check.py, which keeps only syntax-class
+    # errors (modules a file USEs are built from the corpus, or stubbed).
+    'fortran': dict(
+        globs=['*.f90', '*.F90', '*.f95', '*.F95', '*.f03', '*.F03', '*.f08', '*.F08', '*.f', '*.F', '*.for',
+               '*.FOR'],
+        sources=[(a, ['*.f90', '*.F90', '*.f95', '*.F95', '*.f03', '*.F03', '*.f08', '*.F08', '*.f', '*.F',
+                      '*.for', '*.FOR'])
+                 for a in ['lapack-reference.src', 'python3Packages.scipy.src', 'arpack.src', 'wannier90.src',
+                           'quantum-espresso.src', 'netcdffortran.src', 'hdf5-fortran.src', 'siesta.src',
+                           'octopus.src']] + [
+            ('gfortran.cc.src', ['*/gcc/testsuite/gfortran.dg/*.f90', '*/gcc/testsuite/gfortran.dg/*.F90',
+                                 '*/gcc/testsuite/gfortran.dg/*.f', '*/gcc/testsuite/gfortran.dg/*.F',
+                                 '*/gcc/testsuite/gfortran.dg/*.f03', '*/gcc/testsuite/gfortran.dg/*.f08'])],
+        dedupe=True,
+        old=('tree-sitter-grammars.tree-sitter-fortran.src', 'src'),
+        oracle=['python3', '-I', str(Path(__file__).resolve().parent / 'fortran_check.py'), '{}'],
+        tokens=['&', '&\n', '\n', '!', "'", '"', '(', ')', '(/', '/)', '[', ']', '::', ';', '%', '=>', '.and.',
+                'end', 'end do', 'end if', 'subroutine ', 'function ', 'module ', 'type ', 'if (', ') then',
+                'contains\n', '#ifdef X\n', '#endif\n', '\n     $', '\nC ', '\n*'],
+    ),
+    # GAP: its library (lib/, grp/, hpcgap/) and the ~160 packages bundled
+    # with it, plus the input lines of every .tst file (test transcripts:
+    # `gap> ` / `> ` lines, extracted per file by gap_test_inputs). The old
+    # grammar is gap-system/tree-sitter-gap, which mep built from GitHub in
+    # flake.nix (no nixpkgs attribute). The oracle is GAP's own reader
+    # (gap_check.py): ReadAsFunction, which parses without running, with the
+    # file's top-level expression statements and quit/? lines located by
+    # mep-gap-lsp (--toplevel; $MEP_GAP_LSP overrides build/native's).
+    'gap': dict(
+        globs=['*.g', '*.gi', '*.gd'],
+        sources=[('gap.src', ['*.g', '*.gi', '*.gd']), ('@gap-tests', [])],
+        dedupe=True,
+        old=('@github:gap-system/tree-sitter-gap/96fe2e49745ecd62b80cd19dca01fb52b83f93a1/'
+             'sha256-bHbWHfwzQVnbqNZ65Ls2h3hsnIpQpylzy2Sviw8aTcs=', 'src'),
+        oracle=['python3', '-I', str(Path(__file__).resolve().parent / 'gap_check.py'), '--toplevel',
+                os.environ.get('MEP_GAP_LSP', str(REPO / 'build' / 'native' / 'mep-gap-lsp')), '{}'],
+        tokens=['"', '"""', "'", '\\', '\\\n', '#', ';', ':=', '->', 'function(', 'end', 'fi', 'od', 'do', 'then',
+                'local ', 'rec(', '[', ']', '(', ')', '{', '}', '..', '.', '!.', '![', '~', 'atomic ', '\n'],
+    ),
     'lua': dict(
         globs=['*.lua'],
         sources=[(a, ['*.lua']) for a in ['luarocks.src', 'awesome.src', 'lua-language-server.src',
@@ -125,6 +403,94 @@ LANGUAGES = {
                 'esbuild --loader=jsx --log-level=error "$1" >/dev/null;; '
                 '*) exec node --check "$1";; esac', 'sh', '{}'],
         tokens=['`', '${', '/', '/g', '=>', '<div>', '</div>', ';', '\n'],
+    ),
+    # TypeScript's two dialects. The old grammars were never vendored: mep
+    # loaded nixpkgs' tree-sitter-typescript/-tsx, whose source ('old') is
+    # the reference. TypeScript's own parser is the oracle (ts_check.js).
+    'typescript': dict(
+        globs=['*.ts', '*.mts', '*.cts'],
+        # TypeScript's compiler, services and lib .d.ts files, and two
+        # TypeScript front ends' non-JSX code (Outline, Mastodon).
+        sources=[('typescript.src', ['src/*.ts']),
+                 ('outline.src', ['app/*.ts', 'server/*.ts', 'shared/*.ts', 'plugins/*.ts']),
+                 ('mastodon.src', ['app/javascript/*.ts'])],
+        old=('tree-sitter-grammars.tree-sitter-typescript.src', 'typescript/src'),
+        oracle=['nix', 'shell', 'nixpkgs#nodejs', 'nixpkgs#typescript', '--command', 'node',
+                str(Path(__file__).resolve().parent / 'ts_check.js'), '{}'],
+        tokens=['`', '${', '<T>', '<', '>', ': ', '?', '!', '=>', 'as ', 'type ', 'interface ', 'declare ', ';',
+                '\n'],
+    ),
+    'tsx': dict(
+        globs=['*.tsx'],
+        sources=[('outline.src', ['app/*.tsx', 'server/*.tsx', 'shared/*.tsx', 'plugins/*.tsx']),
+                 ('mastodon.src', ['app/javascript/*.tsx'])],
+        old=('tree-sitter-grammars.tree-sitter-tsx.src', 'tsx/src'),
+        oracle=['nix', 'shell', 'nixpkgs#nodejs', 'nixpkgs#typescript', '--command', 'node',
+                str(Path(__file__).resolve().parent / 'ts_check.js'), '{}'],
+        tokens=['`', '${', '<div>', '</div>', '<T,>', '<', '>', ': ', '?', '!', '=>', 'as ', '{', '}', ';', '\n'],
+    ),
+    # fish: its own functions, completions and test scripts, then the fish
+    # plugins nixpkgs packages. mep loaded nixpkgs' tree-sitter-fish
+    # (ram02z) before; its source ('old') is the reference. fish's own
+    # parser is the oracle (`--no-execute` parses, reports, runs nothing).
+    # Julia: Base, the standard library, Julia's own tests and the compiler
+    # (julia-bin ships their sources), plus registry packages as nixpkgs'
+    # julia.withPackages fetches them. The old grammar is tree-sitter-julia
+    # 0.25.0 from flake.lock's nixpkgs ('@pinned:'). The oracle is
+    # JuliaSyntax, the parser behind Meta.parseall (julia_check.jl).
+    'julia': dict(
+        globs=['*.jl'],
+        sources=[('julia-bin', ['share/julia/base/*.jl', 'share/julia/stdlib/*.jl', 'share/julia/test/*.jl',
+                                'share/julia/Compiler/*.jl']),
+                 ('@julia-packages', ['*.jl'])],
+        dedupe=True,
+        old=('@pinned:tree-sitter-grammars.tree-sitter-julia.src', 'src'),
+        oracle=['julia', '--startup-file=no', '--history-file=no',
+                str(Path(__file__).resolve().parent / 'julia_check.jl'), '{}'],
+        tokens=['end', 'begin', 'function ', '"""', '"', "'", '`', '```', '$(', '#=', '=#', '(', ')', '[', ']', '{',
+                '}', ';', ',', '\n', '::', '...', "'", '.', '@', ':', 'do ', '->', 'where ', '\\'],
+    ),
+    # Java: JDK 25's own module sources (src.zip of flake.lock's jdk25:
+    # java.base, the desktop, XML, compiler, JFR, HTTP, SQL, jshell and
+    # javadoc modules), then guava, spring-framework, commons-lang, JUnit 5,
+    # Kafka and Elasticsearch's server/ and libs/, cloned at pinned commits
+    # ('@git:'). The old grammar is tree-sitter-java 0.23.5 from flake.lock's
+    # nixpkgs. The oracle is javac's own parser (JavaCheck.java, JDK 25's
+    # JavacTask.parse(); `just java-check`).
+    'java': dict(
+        globs=['*.java'],
+        sources=[('@zip:jdk25:lib/openjdk/lib/src.zip', [
+            f'{m}/*.java' for m in ['java.base', 'java.desktop', 'java.xml', 'jdk.compiler', 'java.management',
+                                    'jdk.jfr', 'java.net.http', 'java.sql', 'jdk.jshell', 'jdk.javadoc',
+                                    'java.compiler', 'jdk.httpserver', 'java.logging', 'java.naming']])] + [
+            (f'@git:https://github.com/{repo}@{rev}', pats) for repo, rev, pats in [
+                ('google/guava', 'ed0921b633d73d5a1d32c8c147784ca7add48757', ['*.java']),
+                ('spring-projects/spring-framework', 'f95aca035c97d3a80bb4679877784b728d037ca4', ['*.java']),
+                ('apache/commons-lang', '42bd1f218caf86df139b08d010334e97392af80d', ['*.java']),
+                ('junit-team/junit5', '11fbe0ec4825b50890fefd441e0d5fd8738d477c', ['*.java']),
+                ('apache/kafka', '38faa94fe5b68fe8390c6968e872318b2b6cadfa', ['*.java']),
+                ('elastic/elasticsearch', '87860ac45d16e216fe893a558684f478736cbabe',
+                 ['server/*.java', 'libs/*.java'])]],
+        dedupe=True,
+        old=('@pinned:tree-sitter-grammars.tree-sitter-java.src', 'src'),
+        oracle=[str(REPO / 'build' / 'grammar-diff' / 'java' / 'java-check'), '{}'],
+        tokens=['{', '}', '(', ')', '[', ']', '<', '>', '"', "'", '"""', '/*', '*/', '/**', '//', ';', '\n', '->',
+                '::', '...', '.', '@', 'class ', 'record ', 'enum ', 'interface ', 'case ', 'default:', 'new ',
+                'yield ', 'sealed ', 'permits ', 'when ', '0x', '1e', '\\u0022'],
+    ),
+    'fish': dict(
+        globs=['*.fish'],
+        sources=[('fish.src', ['*.fish'])] + [
+            (f'fishPlugins.{p}.src', ['*.fish'])
+            for p in ['tide', 'pure', 'hydro', 'bobthefish', 'fzf-fish', 'forgit', 'done', 'z', 'bass',
+                      'autopair', 'plugin-git', 'puffer', 'sponge', 'colored-man-pages', 'foreign-env', 'fifc',
+                      'async-prompt', 'fishtape_3', 'transient-fish', 'git-abbr', 'sdkman-for-fish', 'nvm',
+                      'humantime-fish', 'fish-you-should-use', 'spark', 'grc', 'gruvbox', 'clownfish']],
+        dedupe=True,
+        old=('tree-sitter-grammars.tree-sitter-fish.src', 'src'),
+        oracle=['fish', '--no-execute', '{}'],
+        tokens=['end', 'begin', '; ', '\n', '(', ')', '$(', '"', "'", '{', '}', ',', '$', '[', ']', '..', '|',
+                '&&', '>', '2>&1', '\\\n', '#'],
     ),
     'commonlisp': dict(
         globs=['*.lisp', '*.lsp', '*.cl', '*.asd'],
@@ -267,16 +633,68 @@ def language(name):
 # ---- corpus -----------------------------------------------------------------
 
 def nix_out_path(attr):
+    if attr.startswith('@maven:'):
+        # A Maven Central artifact (a sources jar): fetchurl, fixed-output,
+        # rooted like the GitHub ones. group/artifact/version/classifier/hash.
+        group, artifact, version, classifier, sha = attr[len('@maven:'):].split('/', 4)
+        url = (f'https://repo1.maven.org/maven2/{group.replace(".", "/")}/{artifact}/{version}/'
+               f'{artifact}-{version}-{classifier}.jar')
+        expr = (f'(builtins.getFlake "nixpkgs").legacyPackages.${{builtins.currentSystem}}.fetchurl '
+                f'{{ url = "{url}"; hash = "{sha}"; }}')
+        root = CORPUS / '.gcroots' / f'maven-{artifact}-{version}-{classifier}'
+        root.parent.mkdir(parents=True, exist_ok=True)
+        return subprocess.run(['nix', 'build', '--impure', '--out-link', str(root), '--print-out-paths', '--expr', expr],
+                              check=True, capture_output=True, text=True).stdout.strip()
+    if attr.startswith('@github:'):
+        # A grammar built straight from GitHub (flake.nix's fetchFromGitHub):
+        # the same fixed-output path, so it is found in the store offline.
+        owner, repo, rev, sha = attr[len('@github:'):].split('/', 3)
+        expr = (f'(builtins.getFlake "nixpkgs").legacyPackages.${{builtins.currentSystem}}.fetchFromGitHub '
+                f'{{ owner = "{owner}"; repo = "{repo}"; rev = "{rev}"; hash = "{sha}"; }}')
+        # Rooted, so a garbage collection doesn't empty a corpus built from it.
+        root = CORPUS / '.gcroots' / f'github-{owner}-{repo}-{rev}'
+        root.parent.mkdir(parents=True, exist_ok=True)
+        return subprocess.run(['nix', 'build', '--impure', '--out-link', str(root), '--print-out-paths', '--expr', expr],
+                              check=True, capture_output=True, text=True).stdout.strip()
     if attr == '@nixpkgs':
         return subprocess.run(['nix', 'eval', '--raw', '--impure', '--expr', '(builtins.getFlake "nixpkgs").outPath'],
                               check=True, capture_output=True, text=True).stdout.strip()
+    if attr.startswith('@pinned:'):
+        # flake.lock's nixpkgs, not the registry's: the grammar mep's flake
+        # actually loaded (the registry's tree-sitter-julia is a different,
+        # older revision with another node API).
+        attr = attr[len('@pinned:'):]
+        root = CORPUS / '.gcroots' / f'pinned-{attr}'
+        root.parent.mkdir(parents=True, exist_ok=True)
+        return subprocess.run(['nix', 'build', '--out-link', str(root), '--print-out-paths', f'nixpkgs#{attr}',
+                               '--inputs-from', str(REPO)],
+                              check=True, capture_output=True, text=True).stdout.strip().splitlines()[0]
+    if attr == '@julia-packages':
+        # Julia packages from the General registry, as nixpkgs'
+        # julia.withPackages fetches them (fixed-output, no precompiling):
+        # the depot's packages/ directory.
+        names = ' '.join(f'"{p}"' for p in JULIA_PACKAGES)
+        expr = ('let p = (builtins.getFlake "nixpkgs").legacyPackages.${builtins.currentSystem}; in '
+                f'(p.julia-bin.withPackages.override {{ precompile = false; }}) [ {names} ]')
+        root = CORPUS / '.gcroots' / 'julia-packages'
+        root.parent.mkdir(parents=True, exist_ok=True)
+        env = subprocess.run(['nix', 'build', '--impure', '--out-link', str(root), '--print-out-paths', '--expr', expr],
+                             check=True, capture_output=True, text=True).stdout.strip().splitlines()[0]
+        wrapper = Path(env, 'bin', 'julia').read_text()
+        depot = re.search(r'(/nix/store/[^/\'":]+-julia-depot)/depot', wrapper).group(1)
+        return f'{depot}/depot/packages'
     # A GC root beside the corpus: a source directory is read in place, and
     # an unrooted store path can be garbage-collected between `corpus` and
     # `diff` (it was: half of Python's corpus, once).
     root = CORPUS / '.gcroots' / attr
     root.parent.mkdir(parents=True, exist_ok=True)
-    return subprocess.run(['nix', 'build', '--out-link', str(root), '--print-out-paths', f'nixpkgs#{attr}'],
-                          check=True, capture_output=True, text=True).stdout.strip().splitlines()[0]
+    argv = ['nix', 'build', '--out-link', str(root), '--print-out-paths', f'nixpkgs#{attr}']
+    got = subprocess.run(argv, capture_output=True, text=True)
+    if got.returncode != 0:
+        # Gone from the registry's nixpkgs (tree-sitter-tcl was dropped
+        # upstream): the one flake.lock pins still has it.
+        got = subprocess.run(argv + ['--inputs-from', str(REPO)], check=True, capture_output=True, text=True)
+    return got.stdout.strip().splitlines()[0]
 
 
 SPEC_FILES = [('cmark.src', ['test/spec.txt', 'test/regression.txt']),
@@ -386,9 +804,56 @@ def just_test_justfiles(dest):
     return out
 
 
+def gap_test_inputs(dest):
+    """The GAP code in GAP's and its packages' test files (.tst): a test is
+    a transcript, `gap> ` starting an input and `> ` continuing it, with
+    the expected output between. Each .tst becomes one .g of its inputs, in
+    order (line numbers are not kept)."""
+    if dest.exists():
+        shutil.rmtree(dest)
+    raw = dest.parent / '_gap-tests-raw'
+    tests = unpack(nix_out_path('gap.src'), ['*.tst'], raw)
+    out = []
+    for tst in tests:
+        lines = []
+        continuing = False
+        for line in Path(tst).read_text(encoding='utf-8', errors='replace').splitlines():
+            if line.startswith('gap>'):
+                lines.append(line[5:] if line.startswith('gap> ') else line[4:])
+                continuing = True
+            elif continuing and line.startswith('>'):
+                lines.append(line[2:] if line.startswith('> ') else line[1:])
+            else:
+                continuing = False
+        if not lines:
+            continue
+        path = dest / Path(tst).relative_to(raw).with_suffix('.g')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(''.join(line + '\n' for line in lines), encoding='utf-8')
+        out.append(str(path))
+    return out
+
+
 def corpus_list(lang):
     # A grammar parsed over another's ranges reads that one's corpus.
     return CORPUS / RANGES_FROM.get(lang, lang) / 'files.txt'
+
+
+def git_checkout(spec):
+    """'<url>@<commit>': a shallow clone of that one commit under
+    build/grammar-corpus/.git/, made once and read in place. Nothing in it
+    is run."""
+    url, rev = spec.rsplit('@', 1)
+    dest = CORPUS / '.git' / url.rstrip('/').split('/')[-1]
+    have = subprocess.run(['git', '-C', str(dest), 'rev-parse', 'HEAD'], capture_output=True, text=True)
+    if have.returncode != 0 or have.stdout.strip() != rev:
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.mkdir(parents=True)
+        run(['git', '-C', str(dest), 'init', '-q'])
+        run(['git', '-C', str(dest), 'fetch', '-q', '--depth', '1', url, rev])
+        run(['git', '-C', str(dest), '-c', 'advice.detachedHead=false', 'checkout', '-q', 'FETCH_HEAD'])
+    return dest
 
 
 def cmd_corpus(args):
@@ -400,13 +865,24 @@ def cmd_corpus(args):
         dest = CORPUS / args.lang / attr.replace('@', '_')
         if attr == '@just-tests':
             got = just_test_justfiles(dest)
+        elif attr == '@gap-tests':
+            got = gap_test_inputs(dest)
         elif attr == '@spec-examples':
             got = spec_examples(dest)
+        elif attr.startswith('@zip:'):
+            # A zip inside a pinned package ('@zip:<attr>:<member>'): the
+            # JDK's src.zip.
+            pkg, member = attr[len('@zip:'):].split(':', 1)
+            got = unpack(Path(nix_out_path('@pinned:' + pkg)) / member, patterns, dest)
+        elif attr.startswith('@git:'):
+            got = unpack(git_checkout(attr[len('@git:'):]), patterns, dest)
         else:
             got = unpack(nix_out_path(attr), patterns, dest)
         print(f'{attr}: {len(got)} files')
         files += got
     files = sorted(set(files))
+    if spec.get('filter_globs'):
+        files = [f for f in files if matches(f, spec['globs'])]
     if spec.get('dedupe'):
         # The same library inside several jars: keep one copy of each text.
         seen, kept = set(), []
@@ -450,6 +926,10 @@ def old_source(name, override):
     vendored = REPO / 'third_party' / 'grammars' / name / 'src'
     if (vendored / 'parser.c').exists():
         return vendored, 'third_party (vendored)'
+    if 'old' in LANGUAGES.get(name, {}):
+        # A grammar mep loaded from nixpkgs rather than vendoring: its source.
+        attr, sub = LANGUAGES[name]['old']
+        return Path(nix_out_path(attr)) / sub, f'nixpkgs#{attr}'
     rel = f'third_party/grammars/{name}'
     if git('cat-file', '-e', f'HEAD:{rel}/src/parser.c').returncode == 0:
         rev = git('rev-parse', 'HEAD').stdout.strip()

@@ -7692,7 +7692,10 @@ const char *kBuiltinTodo =
 // other phase this session.
 const char *kBuiltinLsp =
     "mep.lsp_servers = {\n"
-    "  lua = {cmd = {'lua-language-server'}, filetypes = {'lua'}},\n"
+    // lua-language-server keeps its entry but claims no filetype: mep's own
+    // Lua server (lua_ls below) has .lua. Give this one {'lua'} (and clear
+    // lua_ls's) in init.lua to use it instead.
+    "  lua = {cmd = {'lua-language-server'}, filetypes = {}},\n"
     // clangd keeps its entry but no longer claims a filetype at all:
     // mep's own C++ and C servers (cpp_ls and c_ls below) claim them
     // between them, so a fresh checkout gets diagnostics for both with
@@ -7719,11 +7722,21 @@ const char *kBuiltinLsp =
     // included as a registered *alternative* to `pyright` with no
     // filetypes claim of its own for that reason -- select it explicitly
     // via `mep.lsp_servers.basedpyright.cmd` if preferred over `pyright`.
-    "  gopls = {cmd = {'gopls'}, filetypes = {'go'}},\n"
+    // gopls is registered but claims nothing: Go is mep's own (go_ls
+    // below). To use it instead, give it {'go'} and clear go_ls's
+    // filetypes in init.lua (help/go-lsp.org).
+    "  gopls = {cmd = {'gopls'}, filetypes = {}},\n"
     "  rust_analyzer = {cmd = {'rust-analyzer'}, filetypes = {'rs'}},\n"
+    // typescript-language-server is registered but claims nothing:
+    // JavaScript and TypeScript are mep's own (js_ls below). To use it
+    // instead, give it the filetypes and clear js_ls's in init.lua
+    // (help/js-lsp.org, "Using typescript-language-server instead").
     "  typescript_language_server = {cmd = {'typescript-language-server', '--stdio'},\n"
-    "    filetypes = {'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs'}},\n"
-    "  jdtls = {cmd = {'jdtls'}, filetypes = {'java'}},\n"
+    "    filetypes = {}},\n"
+    // jdtls is registered but claims nothing: Java is mep's own (java_ls
+    // below). To use it instead, give it {'java'} and clear java_ls's
+    // filetypes in init.lua (help/java-lsp.org).
+    "  jdtls = {cmd = {'jdtls'}, filetypes = {}},\n"
     "  solargraph = {cmd = {'solargraph', 'stdio'}, filetypes = {'rb'}},\n"
     "  intelephense = {cmd = {'intelephense', '--stdio'}, filetypes = {'php'}},\n"
     // 'OmniSharp' (capitalized), not 'omnisharp' -- the binary nixpkgs'
@@ -7736,7 +7749,10 @@ const char *kBuiltinLsp =
     "  omnisharp = {cmd = {'OmniSharp', '-lsp'}, filetypes = {}},\n"
     "  hls = {cmd = {'haskell-language-server-wrapper', '--lsp'}, filetypes = {'hs'}},\n"
     "  ocamllsp = {cmd = {'ocamllsp'}, filetypes = {'ml', 'mli'}},\n"
-    "  zls = {cmd = {'zls'}, filetypes = {'zig'}},\n"
+    // zls is registered but claims nothing: Zig is mep's own (zig_ls
+    // below). To use it instead, give it {'zig'} and clear zig_ls's
+    // filetypes in init.lua (help/zig-lsp.org).
+    "  zls = {cmd = {'zls'}, filetypes = {}},\n"
     "  elixirls = {cmd = {'elixir-ls'}, filetypes = {'ex', 'exs'}},\n"
     // bash-language-server keeps its entry but no longer claims `sh`/`bash`:
     // mep's own Bash server (bash_ls below) does, so a fresh checkout gets
@@ -7787,7 +7803,10 @@ const char *kBuiltinLsp =
     // the same reason rWrapper replaced plain pkgs.R.
     "  perl_languageserver = {cmd = {'perl', '-MPerl::LanguageServer', '-e', 'Perl::LanguageServer::run()'},\n"
     "    filetypes = {'pl', 'pm'}},\n"
-    "  fortls = {cmd = {'fortls'}, filetypes = {'f90', 'f', 'for'}},\n"
+    // fortls is the alternative to mep's own fortran_ls below: set
+    // mep.lsp_servers.fortls.filetypes = {'f90', 'f', 'for'} (and fortran_ls's
+    // to {}) to use it.
+    "  fortls = {cmd = {'fortls'}, filetypes = {}},\n"
     // metals needs at least one real file already present in its rootUri
     // directory to report full capabilities -- an empty/nonexistent
     // workspace silently degrades to an empty capabilities response
@@ -7800,7 +7819,11 @@ const char *kBuiltinLsp =
     // documenting since it would silently misbehave for any other would-
     // be caller that starts the client before its first file exists.
     "  metals = {cmd = {'metals'}, filetypes = {'scala', 'sbt'}},\n"
-    "  nimlsp = {cmd = {'nimlsp'}, filetypes = {'nim'}},\n"
+    // nimlsp and nimlangserver stay registered but claim nothing: mep's
+    // own server (nim_ls below) is the default; one line in init.lua swaps
+    // either back.
+    "  nimlsp = {cmd = {'nimlsp'}, filetypes = {}},\n"
+    "  nimlangserver = {cmd = {'nimlangserver'}, filetypes = {}},\n"
     // crystalline stays registered but claims nothing: mep's own server
     // (crystal_ls below) is the default; one line in init.lua swaps it back.
     "  crystalline = {cmd = {'crystalline'}, filetypes = {}},\n"
@@ -7819,9 +7842,17 @@ const char *kBuiltinLsp =
     // path arguments): it already defaults to stdin/stdout and
     // auto-detects env_path from pwd(), and passing them positionally
     // wrong (tried during verification) fails with a confusing multiple-
-    // dispatch error rather than a clear one.
+    // dispatch error rather than a clear one. mep's own server (julia_ls
+    // below) is the default; `mep.lsp_servers.julials.filetypes = {'jl'}`
+    // in init.lua puts LanguageServer.jl back (help/julia-lsp.org).
     "  julials = {cmd = {'julia', '--startup-file=no', '--history-file=no', '-e', 'using LanguageServer; runserver()'},\n"
-    "    filetypes = {'jl'}},\n"
+    "    filetypes = {}},\n"
+    // mep's own Julia server (src/julia_lsp_server.cpp), bundled like the
+    // others: its reader is a port of JuliaSyntax, so syntax errors are
+    // Meta.parseall's, word for word and at the same place; formatting is
+    // Runic's layout (help/julia-lsp.org). Also `mep-julia-lsp --lint
+    // FILE...` and `--julia-check FILE...`.
+    "  julia_ls = {cmd = {mep.bundled_tool('mep-julia-lsp')}, filetypes = {'jl'}},\n"
     "  yamlls = {cmd = {'yaml-language-server', '--stdio'}, filetypes = {'yaml', 'yml'}},\n"
     "  jsonls = {cmd = {'vscode-json-language-server', '--stdio'}, filetypes = {'json', 'jsonc'}},\n"
     "  html = {cmd = {'vscode-html-language-server', '--stdio'}, filetypes = {'html', 'htm'}},\n"
@@ -7945,6 +7976,75 @@ const char *kBuiltinLsp =
     "  sql_ls = {cmd = {mep.bundled_tool('mep-sql-lsp')}, filetypes = {'sql'}},\n"
     "  sqls = {cmd = {'sqls'}, filetypes = {}},\n"
     "  sqlls = {cmd = {'sql-language-server', 'up', '--method', 'stdio'}, filetypes = {}},\n"
+    // mep's own Nix server (src/nix_lsp_server.cpp), bundled the same way.
+    // It never evaluates anything: its parser runs Nix's own lexer rules
+    // and LALR tables, so its errors are `nix-instantiate --parse`'s word
+    // for word and at the same line:col, and it resolves variables the way
+    // Nix does (undefined variables before you evaluate). Builtin docs come
+    // from the installed Nix when there is one; formatting is the nixfmt
+    // port (help/nix-lsp.org). Also `mep-nix-lsp --lint FILE...`. nil and
+    // nixd keep entries without filetypes: give one {'nix'} (and clear
+    // nix_ls's) in init.lua to use it instead.
+    "  nix_ls = {cmd = {mep.bundled_tool('mep-nix-lsp')}, filetypes = {'nix'}},\n"
+    // mep's own Lua server (src/lua_lsp_server.cpp), bundled the same way
+    // (help/lua-lsp.org). Also `mep-lua-lsp --lint FILE...`.
+    "  lua_ls = {cmd = {mep.bundled_tool('mep-lua-lsp')}, filetypes = {'lua'}},\n"
+    // mep's own JavaScript server (src/js_lsp_server.cpp), bundled the same
+    // way: acorn's parser ported (its syntax errors, word for word), an
+    // eslint-scope-style scope analysis with ESLint-named lints, and
+    // TypeScript's lib signatures for hover/completion (help/js-lsp.org).
+    // TypeScript too: the same parser's TypeScript dialect (tsc's syntax
+    // errors), a scope analysis with the type namespace, and
+    // typescript-eslint's recommended lints. Also `mep-js-lsp --lint FILE...`.
+    "  js_ls = {cmd = {mep.bundled_tool('mep-js-lsp')},\n"
+    "    filetypes = {'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts'}},\n"
+    // mep's own Scheme server (src/scheme_lsp_server.cpp), bundled the same way
+    // (help/scheme-lsp.org). Also `mep-scheme-lsp --lint FILE...`.
+    "  scheme_ls = {cmd = {mep.bundled_tool('mep-scheme-lsp')}, filetypes = {'scm', 'ss', 'sld', 'sls', 'sps'}},\n"
+    // mep's own Tcl server (src/tcl_lsp_server.cpp), bundled the same way
+    // (help/tcl-lsp.org). Also `mep-tcl-lsp --lint FILE...`.
+    "  tcl_ls = {cmd = {mep.bundled_tool('mep-tcl-lsp')}, filetypes = {'tcl', 'tk', 'tm'}},\n"
+    // mep's own Octave server (src/octave_lsp_server.cpp), bundled the same
+    // way: its reader's syntax errors are Octave's `__parse_file__`'s, message
+    // and position (help/octave-lsp.org). Also `mep-octave-lsp --lint FILE...`.
+    "  octave_ls = {cmd = {mep.bundled_tool('mep-octave-lsp')}, filetypes = {'m'}},\n"
+    // mep's own Fish server (src/fish_lsp_server.cpp), bundled the same way:
+    // its reader's syntax errors are `fish --no-execute`'s, word for word and
+    // at the same line; formatting is fish_indent's layout (help/fish-lsp.org).
+    // Also `mep-fish-lsp --lint FILE...` and `--fish-check FILE...`.
+    "  fish_ls = {cmd = {mep.bundled_tool('mep-fish-lsp')}, filetypes = {'fish'}},\n"
+    // mep's own Fortran server (src/fortran_lsp_server.cpp), bundled the same
+    // way: free and fixed form, the preprocessor gfortran runs on .F90 files
+    // modelled; its reader's syntax errors are gfortran's, worded the same and
+    // checked against gfortran -fsyntax-only (help/fortran-lsp.org). Also
+    // `mep-fortran-lsp --lint FILE...` and `--gfortran-check FILE...`.
+    "  fortran_ls = {cmd = {mep.bundled_tool('mep-fortran-lsp')},\n"
+    "    filetypes = {'f90', 'f95', 'f03', 'f08', 'f', 'for', 'ftn', 'fpp', 'F90', 'F95', 'F03', 'F08', 'F', 'FOR'}},\n"
+    // mep's own Go server (src/go_lsp_server.cpp), bundled the same way
+    // (help/go-lsp.org). Also `mep-go-lsp --lint FILE...`.
+    "  go_ls = {cmd = {mep.bundled_tool('mep-go-lsp')}, filetypes = {'go'}},\n"
+    // mep's own GAP server (src/gap_lsp_server.cpp), bundled the same way:
+    // its reader's syntax errors are GAP's own, message and line, and its
+    // "unbound global variable" warning is GAP's, decided as GAP's reader
+    // decides it (help/gap-lsp.org). Also `mep-gap-lsp --lint FILE...`.
+    "  gap_ls = {cmd = {mep.bundled_tool('mep-gap-lsp')}, filetypes = {'g', 'gi', 'gd', 'gap'}},\n"
+    // mep's own Rust server (src/rust_lsp_server.cpp), bundled the same way
+    // (help/rust-lsp.org). Also `mep-rust-lsp --lint FILE...`.
+    "  rust_ls = {cmd = {mep.bundled_tool('mep-rust-lsp')}, filetypes = {'rs'}},\n"
+    // mep's own Zig server (src/zig_lsp_server.cpp), bundled the same way
+    // (help/zig-lsp.org). Also `mep-zig-lsp --lint FILE...`.
+    "  zig_ls = {cmd = {mep.bundled_tool('mep-zig-lsp')}, filetypes = {'zig', 'zon'}},\n"
+    // mep's own Kotlin server (src/kotlin_lsp_server.cpp), bundled the same way
+    // (help/kotlin-lsp.org). Also `mep-kotlin-lsp --lint FILE...`.
+    "  kotlin_ls = {cmd = {mep.bundled_tool('mep-kotlin-lsp')}, filetypes = {'kt', 'kts'}},\n"
+    // mep's own Java server (src/java_lsp_server.cpp), bundled the same way
+    // (help/java-lsp.org). Also `mep-java-lsp --lint FILE...`.
+    "  java_ls = {cmd = {mep.bundled_tool('mep-java-lsp')}, filetypes = {'java'}},\n"
+    // mep's own Nim server (src/nim_lsp_server.cpp), bundled the same way
+    // (help/nim-lsp.org). Also `mep-nim-lsp --lint FILE...`.
+    "  nim_ls = {cmd = {mep.bundled_tool('mep-nim-lsp')}, filetypes = {'nim', 'nims', 'nimble'}},\n"
+    "  nil_ls = {cmd = {'nil'}, filetypes = {}},\n"
+    "  nixd = {cmd = {'nixd'}, filetypes = {}},\n"
     // mep's own Clojure server (src/clojure_lsp_server.cpp), bundled the
     // same way. No JVM: its reader's errors are the JVM reader's, the
     // vocabulary of clojure.core is generated from Clojure itself, and it
@@ -18661,6 +18761,89 @@ const char *kBuiltinFormat =
     // are nixfmt's options; mep.format_languages.nix = {'nixfmt', '-'} puts
     // nixfmt itself back.
     "  nix = {builtin = 'format_nix', name = \"mep's Nix formatter\", width = 100},\n"
+    // mep's Nim formatter (src/nim_format.cpp): a port of nimpretty (Nim
+    // 2.2's compiler/layouter.nim), checked byte for byte against
+    // `nimpretty` (default settings: indentation detected, maxLineLen 80)
+    // on Nim's own tree. mep.format_languages.nim = {'nimpretty', '--stdin'}
+    // puts nimpretty itself back.
+    "  nim = {builtin = 'format_nim', name = \"mep's Nim formatter\", width = 80},\n"
+    "  nims = {builtin = 'format_nim', name = \"mep's Nim formatter\", width = 80},\n"
+    "  nimble = {builtin = 'format_nim', name = \"mep's Nim formatter\", width = 80},\n"
+    "  java = {builtin = 'format_java', name = \"mep's Java formatter\", width = 100},\n"
+    "  kt = {builtin = 'format_kotlin', name = \"mep's Kotlin formatter\", width = 100},\n"
+    "  kts = {builtin = 'format_kotlin', name = \"mep's Kotlin formatter\", width = 100},\n"
+    "  zig = {builtin = 'format_zig', name = \"mep's Zig formatter\", width = 100},\n"
+    "  zon = {builtin = 'format_zig', name = \"mep's Zig formatter\", width = 100},\n"
+    "  rs = {builtin = 'format_rust', name = \"mep's Rust formatter\", width = 100},\n"
+    "  go = {builtin = 'format_go', name = \"mep's Go formatter\", width = 100},\n"
+    // Julia: mep's own (src/julia_format*.cpp), a port of Runic.jl -- which
+    // has no options -- checked byte for byte against Runic on Julia's own
+    // base/stdlib and registry packages. mep.format_languages.jl =
+    // {'runic'} puts Runic itself back.
+    "  jl = {builtin = 'format_julia', name = \"mep's Julia formatter\", width = 92},\n"
+    // Fish: mep's own (src/fish_format.cpp), fish_indent's layout, checked
+    // byte for byte against fish_indent on fish's own scripts. `indent`
+    // (columns, default 4); mep.format_languages.fish = {'fish_indent'}
+    // puts fish_indent itself back.
+    "  fish = {builtin = 'format_fish', name = \"mep's Fish formatter\", width = 100},\n"
+    // Fortran: mep's own (src/fortran_format.cpp), fprettify 0.3.7's layout
+    // at its defaults, checked byte for byte against fprettify on LAPACK,
+    // scipy, Quantum ESPRESSO and more. Free form only (fixed form is
+    // refused, as fprettify mangles it). `width` is fprettify's
+    // --line-length, `indent` its --indent (default 3);
+    // mep.format_languages.f90 = {'fprettify', '-'} puts fprettify back.
+    "  f90 = {builtin = 'format_fortran', name = \"mep's Fortran formatter\", width = 132},\n"
+    "  f95 = {builtin = 'format_fortran', name = \"mep's Fortran formatter\", width = 132},\n"
+    "  f03 = {builtin = 'format_fortran', name = \"mep's Fortran formatter\", width = 132},\n"
+    "  f08 = {builtin = 'format_fortran', name = \"mep's Fortran formatter\", width = 132},\n"
+    "  F90 = {builtin = 'format_fortran', name = \"mep's Fortran formatter\", width = 132},\n"
+    // GAP: mep's own (src/gap_format.cpp). GAP has no standard formatter; it
+    // re-indents the way GAP's function printer lays code out and changes
+    // nothing else. `indent` (columns, default 4).
+    "  g = {builtin = 'format_gap', name = \"mep's GAP formatter\"},\n"
+    "  gi = {builtin = 'format_gap', name = \"mep's GAP formatter\"},\n"
+    "  gd = {builtin = 'format_gap', name = \"mep's GAP formatter\"},\n"
+    "  gap = {builtin = 'format_gap', name = \"mep's GAP formatter\"},\n"
+    "  tcl = {builtin = 'format_tcl', name = \"mep's Tcl formatter\", width = 100},\n"
+    "  tk = {builtin = 'format_tcl', name = \"mep's Tcl formatter\", width = 100},\n"
+    "  tm = {builtin = 'format_tcl', name = \"mep's Tcl formatter\", width = 100},\n"
+    // Octave/MATLAB: mep's own (src/octave_format.cpp), MISS_HIT's
+    // `mh_style --fix` layout over mep's Octave reader, checked byte for
+    // byte against mh_style. `indent` (columns, default 4); `semicolons =
+    // true` ends every statement with ';' as mh_style does (off: it changes
+    // what Octave prints).
+    "  m = {builtin = 'format_octave', name = \"mep's Octave formatter\"},\n"
+    // Scheme: mep's own (src/scheme_format.cpp), Emacs scheme-mode's
+    // indentation with no Emacs -- byte-identical to tools/scheme_indent_oracle.el
+    // on the corpus. It never re-breaks lines, so no width; `indent` is a
+    // table of extra scheme-indent-function specs ({['my-with'] = 1}).
+    "  scm = {builtin = 'format_scheme', name = \"mep's Scheme formatter\"},\n"
+    "  ss = {builtin = 'format_scheme', name = \"mep's Scheme formatter\"},\n"
+    "  sld = {builtin = 'format_scheme', name = \"mep's Scheme formatter\"},\n"
+    "  sls = {builtin = 'format_scheme', name = \"mep's Scheme formatter\"},\n"
+    "  sps = {builtin = 'format_scheme', name = \"mep's Scheme formatter\"},\n"
+    // Lua: mep's own (src/lua_format*.cpp), a port of StyLua 2.3.1 with its
+    // default config -- byte-identical to `stylua -` on the corpus it was
+    // checked against. `indent` (columns per level) and `tabs` (false for
+    // spaces) are StyLua's indent_width/indent_type;
+    // mep.format_languages.lua = {'stylua', '-'} puts StyLua itself back.
+    "  lua = {builtin = 'format_lua', name = \"mep's Lua formatter\", width = 120},\n"
+    // JavaScript (and JSX), TypeScript and TSX: mep's own
+    // (src/js_format*.cpp), a port of Prettier 3.6.2 with its default
+    // options -- byte-identical to prettier (--parser acorn for JS,
+    // --parser typescript for TS) on the corpora it was checked against.
+    // `dialect` ('ts' or 'tsx'; JavaScript without it) picks the parser;
+    // `indent`, `tabs`, `semi` and `single_quote` are Prettier's options;
+    // mep.format_languages.js = {'prettier', '--stdin-filepath', '{}'} puts
+    // Prettier itself back (likewise .ts).
+    "  js = {builtin = 'format_js', name = \"mep's JavaScript formatter\", width = 80},\n"
+    "  jsx = {builtin = 'format_js', name = \"mep's JavaScript formatter\", width = 80},\n"
+    "  mjs = {builtin = 'format_js', name = \"mep's JavaScript formatter\", width = 80},\n"
+    "  cjs = {builtin = 'format_js', name = \"mep's JavaScript formatter\", width = 80},\n"
+    "  ts = {builtin = 'format_js', dialect = 'ts', name = \"mep's TypeScript formatter\", width = 80},\n"
+    "  mts = {builtin = 'format_js', dialect = 'ts', name = \"mep's TypeScript formatter\", width = 80},\n"
+    "  cts = {builtin = 'format_js', dialect = 'ts', name = \"mep's TypeScript formatter\", width = 80},\n"
+    "  tsx = {builtin = 'format_js', dialect = 'tsx', name = \"mep's TypeScript formatter\", width = 80},\n"
     // C: mep's own (src/c_format.cpp), a port of clang-format's pipeline in
     // its LLVM style -- byte-identical to clang-format on the corpus it was
     // checked against, except that #includes are never re-sorted. `indent`

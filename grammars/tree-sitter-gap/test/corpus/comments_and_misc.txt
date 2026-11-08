@@ -1,0 +1,174 @@
+========
+Comments
+========
+
+# Anything else here should be ignored
+
+---
+
+(source_file (comment))
+
+========
+Pragmas
+========
+
+#% Anything else here should be ignored
+
+---
+
+(source_file (pragma))
+
+===================
+IsBound discrepancy
+===================
+
+# Ported from GAP test file: tst/testinstall/kernel/read.tst
+# The following should produce a syntax error, but dont.
+# For now we do not treat `IsBound` and similar functions any
+# differently to normal functions
+IsBound("a");
+IsBound(x->x);
+
+---
+
+(source_file
+  (comment)
+  (comment)
+  (comment)
+  (comment)
+  (call
+    (identifier)
+    (argument_list
+      (string
+        (string_start)
+        (string_content)
+        (string_end))))
+  (call
+    (identifier)
+    (argument_list
+      (lambda
+        (lambda_parameters
+          (identifier))
+        (identifier))))
+)
+
+==============================
+Associativity of ^ discrepancy
+==============================
+
+# Ported from GAP test file: tst/testinstall/kernel/read.tst
+# The following should produce a syntax error, but does not.
+# For now we treat `^` as associative. It is unclear how to
+# make double exponentiation raise an error without significant
+# changes to binary expression handling.
+2^3^4;
+
+---
+
+(source_file
+  (comment)
+  (comment)
+  (comment)
+  (comment)
+  (comment)
+  (binary_expression
+    (integer)
+    (binary_expression
+      (integer)
+      (integer))
+      )
+)
+
+===============
+Quit statements
+===============
+
+quit;
+QUIT;
+if 1 = 2 then
+  quit;
+fi;
+if true then
+  QUIT;
+fi;
+1+1; quit;
+1+1;QUIT;
+quit := 3;
+
+---
+
+(source_file
+  (quit_statement)
+  (quit_statement)
+  (if_statement
+    (binary_expression
+      (integer)
+      (integer))
+        (ERROR
+          (identifier)))
+  (if_statement
+    (bool)
+    (ERROR
+      (identifier)))
+  (binary_expression
+    (integer)
+    (integer))
+  (quit_statement)
+  (binary_expression
+    (integer)
+    (integer))
+  (quit_statement)
+  (quit_statement) (ERROR (integer))
+)
+
+==============
+Help statement
+==============
+
+?Integer
+?Reference:Integer
+?Reference:?Integer
+?>
+?<
+?>>
+?<<
+?-
+?+
+?
+?&
+?1
+?120
+?Reference:
+?Reference:?
+1+1; ?Integer
+"""
+?Integer
+""";
+
+---
+
+(source_file
+  (help_statement (help_topic))
+  (help_statement (help_book) (help_topic))
+  (help_statement (help_book) (help_topic))
+  (help_statement (help_operator))
+  (help_statement (help_operator))
+  (help_statement (help_operator))
+  (help_statement (help_operator))
+  (help_statement (help_operator))
+  (help_statement (help_operator))
+  (help_statement)
+  (help_statement (help_operator))
+  (help_statement (help_selector))
+  (help_statement (help_selector))
+  (help_statement (help_book))
+  (help_statement (help_book))
+  (binary_expression (integer) (integer))
+  (help_statement (help_topic))
+  (string
+    (string_start)
+    (string_content)
+    (string_end)
+  )
+)
+

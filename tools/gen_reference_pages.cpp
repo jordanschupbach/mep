@@ -377,9 +377,12 @@ Str PageFor(const Str &token, const std::map<Str, HelpPage> &where, bool leader)
     // A page naming the command as such (=:exec=) explains it; one that
     // merely contains the word somewhere is only the fallback.
     if (!leader) {
+        // `=:Serve=`, or `=:Serve [dir] [port]=` in a usage table.
         const Str named = U"=:" + token + U"=";
+        const Str with_args = U"=:" + token + U" ";
         for (const auto &[stem, pg] : where) {
-            if (pg.body.find(named) != Str::npos) return U"[[file:" + stem + U".html][" + pg.title + U"]]";
+            if (pg.body.find(named) != Str::npos || pg.body.find(with_args) != Str::npos)
+                return U"[[file:" + stem + U".html][" + pg.title + U"]]";
         }
     }
     for (const auto &[stem, pg] : where) {

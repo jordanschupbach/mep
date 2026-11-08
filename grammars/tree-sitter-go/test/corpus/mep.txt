@@ -1,0 +1,37 @@
+================================================================================
+new with an expression (Go 1.26)
+================================================================================
+
+package main
+
+var p = new(int64(300))
+
+--------------------------------------------------------------------------------
+
+(source_file (package_clause (package_identifier)) (var_declaration (var_spec (identifier) (expression_list (call_expression (identifier) (argument_list (call_expression (identifier) (argument_list (int_literal)))))))))
+
+================================================================================
+Constant with a type and no value
+================================================================================
+
+package main
+
+const x int
+
+--------------------------------------------------------------------------------
+
+(source_file (package_clause (package_identifier)) (const_declaration (const_spec (identifier) (type_identifier))))
+
+================================================================================
+A label on a label at the end of a block
+================================================================================
+
+package main
+
+func f() {
+L1: L2:
+}
+
+--------------------------------------------------------------------------------
+
+(source_file (package_clause (package_identifier)) (function_declaration (identifier) (parameter_list) (block (statement_list (labeled_statement (label_name) (labeled_statement (label_name)))))))

@@ -1,0 +1,138 @@
+#+TITLE: The Scheme language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Scheme files get a language server of their own, =mep-scheme-lsp=, built
+and shipped with mep. Open a =.scm=, =.ss=, =.sld=, =.sls= or =.sps= file
+and it attaches by itself. There is nothing to install, and *no Scheme is
+ever started*. The server is mep's own reader, a scope analyser and a
+table of 5,621 names generated from Guile. The table covers R7RS-small's
+=(scheme ...)= libraries, =(guile)=, the SRFIs, and the common =(ice-9 ...)=
+and =(rnrs ...)= modules (125 modules in all). It holds each name's kind,
+the argument counts Guile's own arity allows and the argument list. It
+holds names and signatures only, no documentation text.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* Reading Scheme the way Guile does
+
+The reader's reference is Guile's own =read=. Wherever Guile rejects a
+file, this reader rejects it too, with the same message at the same line
+and column. That was checked on 3,610 files from Guile, Guix, haunt,
+guile-lib, chibi, Chez and Gauche, plus two damaged copies of each, with
+=just scheme-read-check=. Some consequences:
+
+- A token is a number only when Guile's =string->number= accepts it.
+  =1+=, =...=, =->x= and =vars'= are symbols, and only =#=-prefixed numbers
+  such as =#x1G= are errors.
+- =#\(= is a character, and =|a b|= and =#{a b}#= are one symbol each.
+- =#;DATUM= comments out one datum. =#| |#= comments nest.
+- =#!r6rs=, =#!fold-case=, =#!no-fold-case= and =#!curly-infix= change the
+  reader for the rest of the file. Any other =#!= opens a comment that
+  runs to =!#=.
+- Square brackets are parens.
+- Guix's G-expressions (=#~= =#$= =#$@= =#+= =#+@=) are read as
+  =(guix gexp)= installs them.
+
+Guile stops at the first error. This reader reports that one too, but it
+then recovers: a stray =)= is skipped and a list left open is closed. So
+the outline and completion keep working while you type.
+
+* What it reports
+
+| Code                    | Severity | What it means                                                    |
+|-------------------------+----------+------------------------------------------------------------------|
+| =unexpected-eof=        | error    | the file ends inside a list (an unbalanced paren)                |
+| =unexpected-close=      | error    | a =)=, =]= or =}= with nothing to close                          |
+| =mismatched-paren=      | error    | =(= closed by =]=, or =[= by =)=                                 |
+| =unterminated-string=   | error    | a string that never ends                                         |
+| =unterminated-comment=  | error    | a =#\vert ... \vert#= or =#! ... !#= comment that never ends     |
+| =unterminated-symbol=   | error    | a =\vert...\vert= or =#{...}#= symbol that never ends            |
+| =bad-character=         | error    | =#\foo=: an unknown character name                               |
+| =bad-escape=            | error    | an escape Guile does not accept in a string                      |
+| =bad-number=            | error    | =#x1G= and other prefixed numbers Guile cannot read              |
+| =unknown-dispatch=      | error    | =#= followed by something Guile does not know                    |
+| =duplicate-binding=     | error    | =(let ((a 1) (a 2)) ...)=: a name bound twice in one form        |
+| =wrong-arity=           | warning  | a known procedure called with too few or too many arguments      |
+| =unused-variable=       | warning  | a =let=/=let*=/=letrec= variable never used                      |
+| =unused-definition=     | warning  | an internal =define= never used                                  |
+| =unused-parameter=      | hint     | a procedure parameter never used                                 |
+| =unused-destructured=   | hint     | a =receive=, =let-values= or =define-values= variable never used |
+
+The other reader errors (=bad-array=, =bad-keyword=, =read-eval=, ...)
+are Guile's own messages, word for word.
+
+The checks are deliberately careful:
+
+- Names beginning with =_= are never "unused", and neither is anything
+  exported by a module or library.
+- A file that uses =include= or =the-environment= has no unused checks:
+  names can be used by text the server cannot see.
+- Arity is checked for:
+  - the file's own procedures (not ones defined twice or =set!=);
+  - names imported from a module the table knows, when every import in
+    the file is one it knows (=define-module=, =use-modules=, =import=,
+    =define-library=, =library=).
+- A call that passes a keyword argument is not checked. Neither is a call
+  inside a macro use or inside an unknown head's operands, since a macro
+  can mean anything there.
+- After the first reader error the file is only read, not linted.
+
+** Calibration
+
+On the 3,557-file corpus the lints fire as follows:
+
+| Code                  | Count | Files      |
+|-----------------------+-------+------------|
+| =unused-parameter=    | 6,266 | 863 (24%)  |
+| =unused-variable=     |   456 | 213 (6%)   |
+| =unused-destructured= |   246 | 73         |
+| =unused-definition=   |    96 | 62         |
+| =wrong-arity=         |     6 | 4          |
+| =duplicate-binding=   |     1 | 1          |
+
+Every =wrong-arity= hit is a real bug in the code. The one
+=duplicate-binding= is a Gauche test that is invalid on purpose. On 354 of
+Guile's own modules, Guile's compiler (=guild compile -W unused-variable=)
+confirms 76 of the server's 80 unused-variable warnings. The other 4 are
+variables that are only ever =set!=.
+
+* What else it does
+
+- *Hover*: the signature, its kind and the modules that export it. For
+  your own definitions: the form that binds the name.
+- *Completion*: the names in scope at the cursor, then the vocabulary.
+- *Signature help* inside a call, with the current argument marked.
+- *Go to definition*, *references* and *rename* across the lexical scopes:
+  - =let=, named =let=, =let*=, =letrec=, =do=, =lambda=, =case-lambda=;
+  - =define-record-type=, =define-values=, =receive=, =let-values=;
+  - =match=, =syntax-rules= and =syntax-case= patterns.
+- *Document symbols*: modules and libraries, definitions, macros, records
+  and their fields.
+- *Folding* of multi-line forms, strings and comment runs.
+- *Formatting* with mep's own Scheme formatter, the same one as =gf=. See
+  [[file:formatting.html][Formatting]].
+
+* Linting from the command line
+
+#+begin_src sh
+mep-scheme-lsp --lint FILE...
+#+end_src
+
+prints every diagnostic as =path:line:col: severity: message [code]= --
+1-based line and column, then the severity (=error=, =warning=, =info=,
+=hint=), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, =mep-scheme-lsp= is the language server on stdio.
+
+=mep-scheme-lsp --guile-check FILE...= prints only the reader's verdict,
+worded the way Guile's =read= words it. =tools/scheme_read_check.py=
+compares that verdict with Guile's.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:formatting.html][Formatting]] -- =gf= and the Scheme formatter.

@@ -1,0 +1,285 @@
+=====================================
+If statements
+=====================================
+
+if true then
+  x:=1;
+fi;
+
+if true then
+  x:=1;
+else
+  x:=2;
+fi;
+
+if false then
+  x:=1;
+elif true then
+  x:=2;
+fi;
+
+if false then
+  x:=1;
+elif true then
+  x:=2;
+else
+  x:=3;
+fi;
+
+---
+
+(source_file
+    (if_statement (bool)
+        (assignment_statement (identifier) (integer)))
+    (if_statement (bool)
+        (assignment_statement (identifier) (integer))
+        (else_clause
+            (assignment_statement (identifier) (integer))))
+    (if_statement (bool)
+        (assignment_statement (identifier) (integer))
+        (elif_clause (bool) (assignment_statement (identifier) (integer))))
+    (if_statement (bool)
+        (assignment_statement (identifier) (integer))
+        (elif_clause (bool)
+            (assignment_statement (identifier) (integer)))
+        (else_clause
+            (assignment_statement (identifier) (integer))))
+    )
+
+
+=====================================
+For loops
+=====================================
+
+for i in list do
+od;
+
+for i in list do
+    break;
+od;
+
+for i in list do
+    continue;
+od;
+
+for i in [1, 2, 3] do
+    x := x + 1;
+od;
+
+for i in [1..10] do
+    y := y * 2;
+od;
+
+for i in [1..10] do
+  for j in [1..10] do
+    x := x + i*j;
+  od;
+od;
+
+---
+
+(source_file
+    (for_statement (identifier) (identifier))
+    (for_statement (identifier) (identifier) (break_statement))
+    (for_statement (identifier) (identifier) (continue_statement))
+    (for_statement (identifier) (list_expression (integer) (integer) (integer))
+        (assignment_statement (identifier) (binary_expression (identifier) (integer))))
+    (for_statement (identifier) (range_expression (integer) (integer))
+        (assignment_statement (identifier) (binary_expression (identifier) (integer))))
+    (for_statement (identifier) (range_expression (integer) (integer))
+        (for_statement (identifier) (range_expression (integer) (integer)) (assignment_statement (identifier) (binary_expression (identifier) (binary_expression (identifier) (identifier))))))
+    )
+
+=====================================
+While loops
+=====================================
+
+while false do
+od;
+
+while false do
+  break;
+od;
+
+while false do
+  continue;
+od;
+
+while false do
+  f();
+od;
+
+---
+
+(source_file
+    (while_statement (bool))
+    (while_statement (bool) (break_statement))
+    (while_statement (bool) (continue_statement))
+    (while_statement (bool) (call (identifier) (argument_list)))
+    )
+
+
+=====================================
+Repeat loops
+=====================================
+
+repeat
+until false;
+
+repeat
+  break;
+until false;
+
+repeat
+  continue;
+until false;
+
+---
+
+(source_file
+    (repeat_statement (bool))
+    (repeat_statement (break_statement) (bool))
+    (repeat_statement (continue_statement) (bool))
+)
+
+=====================================
+Atomic statements
+=====================================
+
+atomic A do
+    f(A);
+od;
+
+atomic readonly A do
+    f(A);
+od;
+
+atomic readwrite A do
+    f(A);
+od;
+
+atomic A, B do
+    f(A);
+    g(B);
+od;
+
+atomic readonly A, B do
+    f(A);
+    g(B);
+od;
+
+atomic readonly A, readwrite B do
+    f(A);
+    g(B);
+od;
+
+atomic readonly A, readwrite B, C do
+    f(A);
+    g(B);
+od;
+
+atomic readonly A, readwrite B, C, readonly D do
+    f(A);
+    g(B);
+od;
+
+---
+
+(source_file
+    (atomic_statement
+        (identifier)
+        (call
+            (identifier)
+            (argument_list
+                (identifier))))
+    (atomic_statement
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (call
+            (identifier)
+            (argument_list
+                (identifier))))
+      (atomic_statement
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (call
+            (identifier)
+            (argument_list
+                (identifier))))
+    (atomic_statement
+        (identifier)
+        (identifier)
+        (call
+            (identifier)
+            (argument_list
+                (identifier)))
+        (call
+            (identifier)
+            (argument_list
+                (identifier))))
+    (atomic_statement
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (identifier)
+        (call
+            (identifier)
+            (argument_list
+                (identifier)))
+        (call
+            (identifier)
+            (argument_list
+                (identifier))))
+    (atomic_statement
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (call
+            (identifier)
+            (argument_list
+                (identifier)))
+        (call
+            (identifier)
+            (argument_list
+                (identifier))))
+    (atomic_statement
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (identifier)
+        (call
+            (identifier)
+            (argument_list
+                (identifier)))
+        (call
+            (identifier)
+            (argument_list
+                (identifier))))
+    (atomic_statement
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (identifier)
+        (qualified_expression
+            (qualifier)
+            (identifier))
+        (call
+            (identifier)
+            (argument_list
+                (identifier)))
+        (call
+            (identifier)
+            (argument_list
+                (identifier))))
+)

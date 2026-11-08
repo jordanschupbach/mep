@@ -1,0 +1,16 @@
+# Reviewed differences from the old grammar (tree-sitter-go 0.25.0) in files
+# go/parser accepts: each is a place the old grammar had a parse error or a
+# wrong node, and this one follows go/parser. `<path glob>  # why`.
+
+# new(expr), Go 1.26: the old grammar read only a type inside new(...).
+*/runtime/secret/secret_test.go  # new(secretType(secretValue)): a conversion, not a type
+*/internal/types/testdata/fixedbugs/issue75986.go  # new(nil), new(panic(0)): expressions in new()
+*/internal/types/testdata/check/go1_25.go  # new(123)
+# make/new with an expression argument (a local function named make, or a
+# type error the checker reports, not the parser).
+*/encoding/json/v2/arshal_test.go  # make(n - 1) where make is a local func
+*/internal/types/testdata/check/builtins0.go  # make(1): a type error, not a syntax error
+# const x T with no value: go/parser reads it, the type checker rejects it.
+*/internal/types/testdata/check/constdecl.go  # const _ int
+# A label labelling a label at the end of a block (`L: L1:` before `}`).
+*/internal/types/testdata/check/gotos.go  # L: L1:

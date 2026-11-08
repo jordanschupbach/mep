@@ -1,0 +1,107 @@
+# Corpus files whose trees differ from nixpkgs' tree-sitter-fortran (stadelmanma,
+# the grammar mep loaded before), reviewed. gfortran -fsyntax-only accepts them
+# all (tools/ts_grammar_diff/fortran_check.py), so the oracle cannot settle the
+# difference; see README.md. Format: <path glob>  # why.  Read by tools/ts_grammar_diff.
+
+# Fixed form. The old grammar read every file as free form: column-1 C/c/*/D
+# comment lines, column-6 continuation marks and the 72-column limit all came out
+# as ERROR. This grammar's scanner detects fixed form from the text.
+*.f      # fixed form, read as free form by the old grammar
+*.F      # fixed form, read as free form by the old grammar
+*.for    # fixed form, read as free form by the old grammar
+*.FOR    # fixed form, read as free form by the old grammar
+*.ftn    # fixed form, read as free form by the old grammar
+
+# Free form, both grammars parse: the new tree is the right one.
+*-source/KCW/src/solve_linter_koop_mod.f90                                                 # string continued over '&' lines
+*-source/PHonon/PH/solve_linter.f90                                                        # string continued over '&' lines
+*-source/PP/src/pw2wannier90.f90                                                           # string continued over '&' lines
+*-source/PW/src/setup.f90                                                                  # string continued over '&' lines
+*-source/External/libgridxc/src/precision.F90                                              # preprocessor call line ends at its newline
+*-source/Src/grimme_dispersion_m.F90                                                       # string continued over '&' lines
+
+# Free form, both grammars fail. gfortran accepts these through macros from
+# headers the grammar never sees (PUSH_SUB, DEVICEATTR, ...) or legacy extensions
+# (DEC STRUCTURE, CARRIAGECONTROL=, Hollerith); only the error recovery differs.
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/altreturn_4.f90                     # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/assign-debug.f90                    # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/assign.f90                          # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/assign_1.f90                        # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/assign_3.f90                        # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/assumed_rank_11.f90                 # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/assumed_rank_14.f90                 # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/asynchronous_1.f90                  # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/bind_c_usage_34.f90                 # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/blockdata_1.f90                     # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/bom_UTF-32.f90                      # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/bom_UTF16-BE.f90                    # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/bom_UTF16-LE.f90                    # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/coarray_26.f90                      # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/common_1.f90                        # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/common_19.f90                       # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/common_20.f90                       # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/continuation_11.f90                 # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/cray_pointers_11.f90                # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/equiv_5.f90                         # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/gomp/declare-variant-10.f90         # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/gomp/omp_do1.f90                    # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/goto_9.f90                          # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/hollerith.f90                       # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/hollerith_f95.f90                   # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/hollerith_legacy.f90                # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/implicit_16.f90                     # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/iomsg_1.f90                         # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/oldstyle_1.f90                      # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/pr102332.f90                        # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/pr44491.f90                         # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/pr71067_2.f90                       # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/pr78240.f90                         # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/pr95709.f90                         # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/print_fmt_5.f90                     # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/select_rank_1.f90                   # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/use_6.f90                           # both fail: macros/extensions, recovery differs
+*/gfortran.cc.src/gcc-14.3.0/gcc/testsuite/gfortran.dg/warnings_are_errors_1.f90           # both fail: macros/extensions, recovery differs
+*-source/src/basic/clblas.F90                                                              # both fail: macros/extensions, recovery differs
+*-source/src/basic/cuda.F90                                                                # both fail: macros/extensions, recovery differs
+*-source/src/hamiltonian/pcm.F90                                                           # both fail: macros/extensions, recovery differs
+*-source/hl/fortran/src/H5LTff.F90                                                         # both fail: macros/extensions, recovery differs
+*-source/hl/fortran/src/H5TBff.F90                                                         # both fail: macros/extensions, recovery differs
+*-source/CPV/src/cp_interfaces.f90                                                         # both fail: macros/extensions, recovery differs
+*-source/CPV/src/exx_module.f90                                                            # both fail: macros/extensions, recovery differs
+*-source/CPV/src/exx_psi.f90                                                               # both fail: macros/extensions, recovery differs
+*-source/CPV/src/forces.f90                                                                # both fail: macros/extensions, recovery differs
+*-source/CPV/src/gram.f90                                                                  # both fail: macros/extensions, recovery differs
+*-source/CPV/src/mainvar.f90                                                               # both fail: macros/extensions, recovery differs
+*-source/CPV/src/nl_base.f90                                                               # both fail: macros/extensions, recovery differs
+*-source/CPV/src/ortho.f90                                                                 # both fail: macros/extensions, recovery differs
+*-source/CPV/src/ortho_base.f90                                                            # both fail: macros/extensions, recovery differs
+*-source/CPV/src/potentials.f90                                                            # both fail: macros/extensions, recovery differs
+*-source/CPV/src/runcp.f90                                                                 # both fail: macros/extensions, recovery differs
+*-source/CPV/src/smallbox_subs.f90                                                         # both fail: macros/extensions, recovery differs
+*-source/CPV/src/vofrho.f90                                                                # both fail: macros/extensions, recovery differs
+*-source/FFTXlib/src/fft_scalar.DFTI.f90                                                   # both fail: macros/extensions, recovery differs
+*-source/FFTXlib/src/fft_scatter_2d_gpu.f90                                                # both fail: macros/extensions, recovery differs
+*-source/PHonon/PH/elphon.f90                                                              # both fail: macros/extensions, recovery differs
+*-source/PW/src/exx_band.f90                                                               # both fail: macros/extensions, recovery differs
+*-source/TDDFPT/src/lr_charg_resp.f90                                                      # both fail: macros/extensions, recovery differs
+*-source/TDDFPT/src/lr_dav_routines.f90                                                    # both fail: macros/extensions, recovery differs
+*-source/TDDFPT/src/lr_readin.f90                                                          # both fail: macros/extensions, recovery differs
+*-source/UtilXlib/mp.f90                                                                   # both fail: macros/extensions, recovery differs
+*-source/External/ELSI-project/elsi_interface/external/ELPA/ELPA-2020.05.001/src/kernel_real.f90  # both fail: macros/extensions, recovery differs
+*-source/External/ELSI-project/elsi_interface/external/ELPA/ELPA-2020.05.001/src/mod_pack_unpack_gpu.f90  # both fail: macros/extensions, recovery differs
+*-source/External/ELSI-project/elsi_interface/external/ELPA/ELPA-2021.11.001/src/kernels/kernels_real.f90  # both fail: macros/extensions, recovery differs
+*-source/External/ELSI-project/elsi_interface/external/SIPS/src/sips.F90                   # both fail: macros/extensions, recovery differs
+*-source/External/libgridxc/src/ggaxc.F90                                                  # both fail: macros/extensions, recovery differs
+*-source/Src/MatrixSwitch/src/MatrixSwitch_wrapper.F90                                     # both fail: macros/extensions, recovery differs
+*-source/Src/class_Distribution.F90                                                        # both fail: macros/extensions, recovery differs
+*-source/Src/class_OrbitalDistribution.F90                                                 # both fail: macros/extensions, recovery differs
+*-source/Src/io_sparse.F90                                                                 # both fail: macros/extensions, recovery differs
+*-source/Src/iogrid_netcdf.F90                                                             # both fail: macros/extensions, recovery differs
+*-source/Src/m_ncdf_siesta.F90                                                             # both fail: macros/extensions, recovery differs
+*-source/Src/m_ts_gf.F90                                                                   # both fail: macros/extensions, recovery differs
+*-source/Src/ncdf/src/netcdf_ncdf_pp.F90                                                   # both fail: macros/extensions, recovery differs
+*-source/Src/ncdf_io.F90                                                                   # both fail: macros/extensions, recovery differs
+*-source/Src/pdos.F90                                                                      # both fail: macros/extensions, recovery differs
+*-source/Util/MPI_test/class_Dist.F90                                                      # both fail: macros/extensions, recovery differs
+*-source/Util/TS/TBtrans/m_tbt_proj.F90                                                    # both fail: macros/extensions, recovery differs
+*-source/Util/TS/TBtrans/m_tbt_sigma_save.F90                                              # both fail: macros/extensions, recovery differs

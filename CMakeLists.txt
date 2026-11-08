@@ -542,6 +542,22 @@ mep_grammar(clojure Clojure)
 mep_grammar(crystal Crystal)
 mep_grammar(c_sharp CSharp)
 mep_grammar(sql SQL)
+mep_grammar(maxima Maxima)
+mep_grammar(typescript Typescript)
+mep_grammar(tsx Tsx)
+mep_grammar(scheme Scheme)
+mep_grammar(fish Fish)
+mep_grammar(tcl Tcl)
+mep_grammar(fortran Fortran)
+mep_grammar(matlab Matlab)
+mep_grammar(gap Gap)
+mep_grammar(go Go)
+mep_grammar(julia Julia)
+mep_grammar(rust Rust)
+mep_grammar(zig Zig)
+mep_grammar(d D)
+mep_grammar(java Java)
+mep_grammar(nim Nim)
 
 # Regenerating a grammar needs neither the tree-sitter CLI nor Node
 # (tools/ts_generate/README.md): mep-ts-generate runs grammar.js on mep's
@@ -778,12 +794,102 @@ set(MEP_GIT_SOURCES
 if(NOT DEFINED MEP_CRYSTAL_SYNTAX_SOURCES)
     set(MEP_CRYSTAL_SYNTAX_SOURCES src/crystal_syntax.cpp src/crystal_ast.cpp src/crystal_parser.cpp)
 endif()
+if(NOT DEFINED MEP_LUA_FORMAT_SOURCES)
+    set(MEP_LUA_FORMAT_SOURCES src/lua_format.cpp src/lua_format_cst.cpp src/lua_format_expr.cpp)
+endif()
+if(NOT DEFINED MEP_SCHEME_FORMAT_SOURCES)
+    set(MEP_SCHEME_FORMAT_SOURCES src/scheme_format.cpp src/scheme_reader.cpp)
+endif()
+# mep's own Fish formatter (fish_indent's layout) over mep's fish reader.
+if(NOT DEFINED MEP_FISH_FORMAT_SOURCES)
+    set(MEP_FISH_FORMAT_SOURCES src/fish_format.cpp src/fish_parse.cpp src/fish_parse_errors.cpp)
+endif()
+if(NOT DEFINED MEP_TCL_FORMAT_SOURCES)
+    set(MEP_TCL_FORMAT_SOURCES src/tcl_format.cpp src/tcl_format_parse.cpp)
+endif()
+# mep's own Fortran formatter (fprettify 0.3.7's layout; free form only).
+if(NOT DEFINED MEP_FORTRAN_FORMAT_SOURCES)
+    set(MEP_FORTRAN_FORMAT_SOURCES src/fortran_format.cpp)
+endif()
+if(NOT DEFINED MEP_OCTAVE_FORMAT_SOURCES)
+    set(MEP_OCTAVE_FORMAT_SOURCES src/octave_format.cpp src/octave_parse.cpp)
+endif()
+if(NOT DEFINED MEP_GAP_FORMAT_SOURCES)
+    set(MEP_GAP_FORMAT_SOURCES src/gap_format.cpp src/gap_parse.cpp)
+endif()
+# mep's JuliaSyntax 0.4.10 port: the Julia formatter (a Runic port) walks its
+# green trees, and mep-julia-lsp below gets it through MEP_JULIA_FORMAT_SOURCES.
+if(NOT DEFINED MEP_JULIA_PARSE_SOURCES)
+    set(MEP_JULIA_PARSE_SOURCES src/julia_parse_kinds.cpp src/julia_tokenize.cpp src/julia_parse_stream.cpp
+        src/julia_parser.cpp)
+endif()
+if(NOT DEFINED MEP_JULIA_FORMAT_SOURCES)
+    set(MEP_JULIA_FORMAT_SOURCES src/julia_format.cpp src/julia_format_passes.cpp src/julia_format_indent.cpp
+        ${MEP_JULIA_PARSE_SOURCES})
+endif()
+if(NOT DEFINED MEP_GO_FORMAT_SOURCES)
+    # gofmt's port (go_printer*, go_doc_comment, go_tabwriter, go_sort_imports) over the
+    # go/parser port (go_parse, go_ast), which mep-go-lsp shares through this list.
+    set(MEP_GO_FORMAT_SOURCES src/go_format.cpp src/go_printer.cpp src/go_printer_nodes.cpp
+        src/go_printer_build.cpp src/go_sort_imports.cpp src/go_doc_comment.cpp src/go_tabwriter.cpp
+        src/go_parse.cpp src/go_ast.cpp)
+endif()
+if(NOT DEFINED MEP_RUST_PARSE_SOURCES)
+    # The rustc_lexer + rustc_parse port (rust_lex, rust_ast, rust_parse*),
+    # shared by the Rust formatter and mep-rust-lsp through MEP_RUST_FORMAT_SOURCES.
+    set(MEP_RUST_PARSE_SOURCES src/rust_lex.cpp src/rust_ast.cpp src/rust_parse.cpp src/rust_parse_expr.cpp
+        src/rust_parse_item.cpp src/rust_parse_stmt.cpp src/rust_parse_attr.cpp src/rust_parse_pat.cpp
+        src/rust_parse_ty.cpp src/rust_parse_path.cpp src/rust_parse_generics.cpp)
+endif()
+if(NOT DEFINED MEP_RUST_FORMAT_SOURCES)
+    # rustfmt's port (one rust_format_<module>.cpp per rustfmt module, see
+    # src/rust_format_internal.h) over the rustc_parse port.
+    set(MEP_RUST_FORMAT_SOURCES src/rust_format.cpp src/rust_format_utils.cpp src/rust_format_check.cpp
+        src/rust_format_comment.cpp src/rust_format_attr.cpp src/rust_format_lists.cpp
+        src/rust_format_overflow.cpp src/rust_format_pairs.cpp src/rust_format_expr.cpp
+        src/rust_format_stmt.cpp src/rust_format_matches.cpp src/rust_format_chains.cpp
+        src/rust_format_closures.cpp src/rust_format_patterns.cpp src/rust_format_types.cpp
+        src/rust_format_items.cpp src/rust_format_visitor.cpp src/rust_format_missed_spans.cpp
+        src/rust_format_imports.cpp src/rust_format_reorder.cpp src/rust_format_macros.cpp
+        src/rust_format_stubs.cpp src/rust_format_parse_stubs.cpp ${MEP_RUST_PARSE_SOURCES})
+endif()
+if(NOT DEFINED MEP_ZIG_FORMAT_SOURCES)
+    # The formatter (a port of `zig fmt`'s Ast/Render.zig) over the port of
+    # Zig's own tokenizer and parser, which mep-zig-lsp shares.
+    set(MEP_ZIG_FORMAT_SOURCES src/zig_format.cpp src/zig_ast.cpp src/zig_parse.cpp src/zig_tokenizer.cpp)
+endif()
+if(NOT DEFINED MEP_KOTLIN_FORMAT_SOURCES)
+    set(MEP_KOTLIN_FORMAT_SOURCES src/kotlin_format.cpp)
+endif()
+if(NOT DEFINED MEP_JAVA_FORMAT_SOURCES)
+    set(MEP_JAVA_FORMAT_SOURCES src/java_format.cpp)
+endif()
+if(NOT DEFINED MEP_NIM_FORMAT_SOURCES)
+    set(MEP_NIM_FORMAT_SOURCES src/nim_format.cpp)
+endif()
 if(NOT DEFINED MEP_NIX_FORMAT_SOURCES)
     set(MEP_NIX_FORMAT_SOURCES src/nix_format.cpp src/nix_format_parse.cpp src/nix_format_pretty.cpp
         src/nix_format_layout.cpp)
 endif()
 if(NOT DEFINED MEP_CRYSTAL_FORMAT_SOURCES)
     set(MEP_CRYSTAL_FORMAT_SOURCES src/crystal_format.cpp src/crystal_format_visit.cpp src/crystal_format_call.cpp)
+endif()
+# mep's own JavaScript parser (js_parse.h): a port of acorn 8.15.0 plus
+# acorn-jsx 5.3.2 -- same tokens, ESTree tree and errors, with error
+# recovery on top; checked against acorn itself by tools/js_parse_check.py.
+# For mep-js-lsp and the JS formatter.
+if(NOT DEFINED MEP_JS_PARSE_SOURCES)
+    set(MEP_JS_PARSE_SOURCES src/js_parse.cpp src/js_parse_tokenize.cpp src/js_parse_unicode.cpp
+        src/js_parse_statement.cpp src/js_parse_expression.cpp src/js_parse_regexp.cpp src/js_parse_jsx.cpp
+        src/js_parse_ts.cpp src/js_parse_ts_statement.cpp src/js_parse_ts_expression.cpp)
+endif()
+# mep's JavaScript formatter (js_format.h): a port of prettier 3.6.2's
+# estree printer and doc printer over js_parse's tree, self-checked by
+# re-parsing its output. Compared with prettier by tools/format_compare.py.
+if(NOT DEFINED MEP_JS_FORMAT_SOURCES)
+    set(MEP_JS_FORMAT_SOURCES src/js_format.cpp src/js_format_doc.cpp src/js_format_util.cpp
+        src/js_format_comments.cpp src/js_format_print.cpp src/js_format_expr.cpp src/js_format_jsx.cpp
+        src/js_format_ts.cpp)
 endif()
 
 # mep's own C# parser: a method-for-method translation of Roslyn's lexer and
@@ -1042,6 +1148,39 @@ add_library(mep_core STATIC
     # mep's own Nix formatter (mep.format_nix): a port of nixfmt's lexer,
     # parser, printer and layout engine.
     ${MEP_NIX_FORMAT_SOURCES}
+    # mep.format_nim: mep's own Nim formatter.
+    ${MEP_NIM_FORMAT_SOURCES}
+    # mep.format_java: mep's own Java formatter.
+    ${MEP_JAVA_FORMAT_SOURCES}
+    # mep.format_kotlin: mep's own Kotlin formatter.
+    ${MEP_KOTLIN_FORMAT_SOURCES}
+    # mep.format_zig: mep's own Zig formatter.
+    ${MEP_ZIG_FORMAT_SOURCES}
+    # mep.format_rust: mep's own Rust formatter.
+    ${MEP_RUST_FORMAT_SOURCES}
+    # mep.format_go: mep's own Go formatter.
+    ${MEP_GO_FORMAT_SOURCES}
+    # mep.format_julia: mep's own Julia formatter (a port of Runic) over its
+    # JuliaSyntax port.
+    ${MEP_JULIA_FORMAT_SOURCES}
+    # mep.format_tcl: mep's own Tcl formatter.
+    ${MEP_TCL_FORMAT_SOURCES}
+    # mep.format_octave: mep's own Octave formatter, over its Octave reader.
+    ${MEP_OCTAVE_FORMAT_SOURCES}
+    # mep.format_gap: mep's own GAP formatter, over its GAP reader.
+    ${MEP_GAP_FORMAT_SOURCES}
+    # mep.format_scheme: mep's own Scheme formatter.
+    ${MEP_SCHEME_FORMAT_SOURCES}
+    # mep.format_fish: mep's own Fish formatter.
+    ${MEP_FISH_FORMAT_SOURCES}
+    # mep.format_fortran: mep's own Fortran formatter (fprettify's layout).
+    ${MEP_FORTRAN_FORMAT_SOURCES}
+    # mep.format_lua: mep's own Lua formatter.
+    ${MEP_LUA_FORMAT_SOURCES}
+    # mep.format_js: mep's own JavaScript formatter (a port of Prettier) and
+    # the acorn port it formats from.
+    ${MEP_JS_FORMAT_SOURCES}
+    ${MEP_JS_PARSE_SOURCES}
     # mep's own C formatter (mep.format_c): a port of clang-format's
     # pipeline in its LLVM style.
     ${MEP_C_FORMAT_SOURCES}
@@ -2380,6 +2519,336 @@ target_compile_options(mep-sql-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITI
 target_link_options(mep-sql-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-sql-lsp-test)
 
+# mep's own Lua language server and linter: the wire half
+# (src/lua_lsp_server.cpp, also `mep-lua-lsp --lint FILE...`) over the
+# analysis half (src/lua_lsp.cpp). Same reasoning as mep-nix-lsp above.
+set(MEP_LUA_LSP_SOURCES src/lua_parse.cpp src/lua_lsp.cpp src/lua_lsp_vocab.cpp ${MEP_LUA_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-lua-lsp src/lua_lsp_server.cpp ${MEP_LUA_LSP_SOURCES})
+    target_include_directories(mep-lua-lsp PRIVATE src)
+    target_compile_options(mep-lua-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-lua-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-lua-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-lua-lsp-test EXCLUDE_FROM_ALL src/lua_lsp_test.cpp ${MEP_LUA_LSP_SOURCES})
+target_include_directories(mep-lua-lsp-test PRIVATE src)
+target_compile_options(mep-lua-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-lua-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-lua-lsp-test)
+
+# mep's own JavaScript language server and linter: the wire half
+# (src/js_lsp_server.cpp, also `mep-js-lsp --lint FILE...`) over the
+# analysis half (src/js_lsp.cpp diagnostics, js_lsp_scope.cpp scopes,
+# js_lsp_features.cpp hover/completion/navigation) on js_parse.h. Same
+# reasoning as mep-nix-lsp above.
+set(MEP_JS_LSP_SOURCES src/js_lsp.cpp src/js_lsp_scope.cpp src/js_lsp_features.cpp src/js_lsp_vocab.cpp
+    ${MEP_JS_FORMAT_SOURCES} ${MEP_JS_PARSE_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-js-lsp src/js_lsp_server.cpp ${MEP_JS_LSP_SOURCES})
+    target_include_directories(mep-js-lsp PRIVATE src)
+    target_compile_options(mep-js-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-js-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-js-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-js-lsp-test EXCLUDE_FROM_ALL src/js_lsp_test.cpp ${MEP_JS_LSP_SOURCES})
+target_include_directories(mep-js-lsp-test PRIVATE src)
+target_compile_options(mep-js-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-js-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-js-lsp-test)
+
+# mep's own Scheme language server and linter: the wire half
+# (src/scheme_lsp_server.cpp, also `mep-scheme-lsp --lint FILE...`) over the
+# analysis half (src/scheme_lsp.cpp). Same reasoning as mep-nix-lsp above.
+set(MEP_SCHEME_LSP_SOURCES src/scheme_lsp.cpp src/scheme_lsp_names.cpp ${MEP_SCHEME_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-scheme-lsp src/scheme_lsp_server.cpp ${MEP_SCHEME_LSP_SOURCES})
+    target_include_directories(mep-scheme-lsp PRIVATE src)
+    target_compile_options(mep-scheme-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-scheme-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-scheme-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-scheme-lsp-test EXCLUDE_FROM_ALL src/scheme_lsp_test.cpp ${MEP_SCHEME_LSP_SOURCES})
+target_include_directories(mep-scheme-lsp-test PRIVATE src)
+target_compile_options(mep-scheme-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-scheme-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-scheme-lsp-test)
+
+# mep's own Fish language server and linter: the wire half
+# (src/fish_lsp_server.cpp, also `mep-fish-lsp --lint FILE...` and
+# `--fish-check FILE...`) over the analysis half (src/fish_lsp.cpp) and
+# mep's fish reader (src/fish_parse*.cpp). Same reasoning as mep-nix-lsp.
+set(MEP_FISH_LSP_SOURCES src/fish_lsp.cpp src/fish_lsp_vocab.cpp ${MEP_FISH_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-fish-lsp src/fish_lsp_server.cpp ${MEP_FISH_LSP_SOURCES})
+    target_include_directories(mep-fish-lsp PRIVATE src)
+    target_compile_options(mep-fish-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-fish-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-fish-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-fish-lsp-test EXCLUDE_FROM_ALL src/fish_lsp_test.cpp ${MEP_FISH_LSP_SOURCES})
+target_include_directories(mep-fish-lsp-test PRIVATE src)
+target_compile_options(mep-fish-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fish-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fish-lsp-test)
+
+# mep's own Fortran language server and linter: the wire half
+# (src/fortran_lsp_server.cpp, also `mep-fortran-lsp --lint FILE...` and
+# `--gfortran-check FILE...`) over the analysis half (src/fortran_lsp.cpp)
+# and mep's Fortran reader (src/fortran_parse*.cpp: free and fixed form,
+# the preprocessor model). Same reasoning as mep-nix-lsp.
+set(MEP_FORTRAN_LSP_SOURCES src/fortran_lsp.cpp src/fortran_lsp_vocab.cpp src/fortran_parse.cpp
+    src/fortran_parse_stmt.cpp ${MEP_FORTRAN_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-fortran-lsp src/fortran_lsp_server.cpp ${MEP_FORTRAN_LSP_SOURCES})
+    target_include_directories(mep-fortran-lsp PRIVATE src)
+    target_compile_options(mep-fortran-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-fortran-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-fortran-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-fortran-lsp-test EXCLUDE_FROM_ALL src/fortran_lsp_test.cpp ${MEP_FORTRAN_LSP_SOURCES})
+target_include_directories(mep-fortran-lsp-test PRIVATE src)
+target_compile_options(mep-fortran-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fortran-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fortran-lsp-test)
+
+# mep's own Tcl language server and linter: the wire half
+# (src/tcl_lsp_server.cpp, also `mep-tcl-lsp --lint FILE...`) over the
+# analysis half (src/tcl_lsp.cpp). Same reasoning as mep-nix-lsp above.
+set(MEP_TCL_LSP_SOURCES src/tcl_lsp.cpp src/tcl_parse.cpp src/tcl_lsp_vocab.cpp ${MEP_TCL_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-tcl-lsp src/tcl_lsp_server.cpp ${MEP_TCL_LSP_SOURCES})
+    target_include_directories(mep-tcl-lsp PRIVATE src)
+    target_compile_options(mep-tcl-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-tcl-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-tcl-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-tcl-lsp-test EXCLUDE_FROM_ALL src/tcl_lsp_test.cpp ${MEP_TCL_LSP_SOURCES})
+target_include_directories(mep-tcl-lsp-test PRIVATE src)
+target_compile_options(mep-tcl-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-tcl-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-tcl-lsp-test)
+
+# mep's own Octave language server and linter: the wire half
+# (src/octave_lsp_server.cpp, also `mep-octave-lsp --lint FILE...` and
+# `--octave-check FILE...`) over the analysis half (src/octave_lsp.cpp), the
+# Octave reader (src/octave_parse.cpp) and the generated vocabulary.
+set(MEP_OCTAVE_LSP_SOURCES src/octave_lsp.cpp src/octave_lsp_vocab.cpp ${MEP_OCTAVE_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-octave-lsp src/octave_lsp_server.cpp ${MEP_OCTAVE_LSP_SOURCES})
+    target_include_directories(mep-octave-lsp PRIVATE src)
+    target_compile_options(mep-octave-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-octave-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-octave-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-octave-lsp-test EXCLUDE_FROM_ALL src/octave_lsp_test.cpp ${MEP_OCTAVE_LSP_SOURCES})
+target_include_directories(mep-octave-lsp-test PRIVATE src)
+target_compile_options(mep-octave-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-octave-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-octave-lsp-test)
+
+# mep's own Julia language server and linter: the wire half
+# (src/julia_lsp_server.cpp, also `mep-julia-lsp --lint FILE...` and
+# `--julia-check FILE...`) over the analysis half (src/julia_lsp.cpp) and
+# mep's JuliaSyntax port. Same reasoning as mep-nix-lsp below.
+# (MEP_JULIA_PARSE_SOURCES is set with MEP_JULIA_FORMAT_SOURCES, which carries it.)
+set(MEP_JULIA_LSP_SOURCES src/julia_lsp.cpp src/julia_lsp_features.cpp src/julia_lsp_vocab.cpp
+    ${MEP_JULIA_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-julia-lsp src/julia_lsp_server.cpp ${MEP_JULIA_LSP_SOURCES})
+    target_include_directories(mep-julia-lsp PRIVATE src)
+    target_compile_options(mep-julia-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-julia-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-julia-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-julia-lsp-test EXCLUDE_FROM_ALL src/julia_lsp_test.cpp ${MEP_JULIA_LSP_SOURCES})
+target_include_directories(mep-julia-lsp-test PRIVATE src)
+target_compile_options(mep-julia-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-julia-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-julia-lsp-test)
+
+# The JuliaSyntax port's unit tests; `--tree FILE` / `--diag FILE` dump the
+# green tree / diagnostics for tools/julia_parse_check.py.
+add_executable(mep-julia-parse-test EXCLUDE_FROM_ALL src/julia_parse_test.cpp ${MEP_JULIA_PARSE_SOURCES})
+target_include_directories(mep-julia-parse-test PRIVATE src)
+target_compile_options(mep-julia-parse-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-julia-parse-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-julia-parse-test)
+
+# The rustc_parse port's unit tests; `--check FILE...` / `--dump FILE` for
+# tools/rust_parse_check.py (`just rust-parse-check`).
+add_executable(mep-rust-parse-test EXCLUDE_FROM_ALL src/rust_parse_test.cpp ${MEP_RUST_PARSE_SOURCES})
+target_include_directories(mep-rust-parse-test PRIVATE src)
+target_compile_options(mep-rust-parse-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-rust-parse-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-rust-parse-test)
+
+# mep's own GAP language server and linter: the wire half
+# (src/gap_lsp_server.cpp, also `mep-gap-lsp --lint FILE...` and
+# `--gap-check FILE...`) over the analysis half (src/gap_lsp.cpp) and its
+# GAP reader (src/gap_parse.cpp). Same reasoning as mep-nix-lsp below.
+set(MEP_GAP_LSP_SOURCES src/gap_lsp.cpp src/gap_lsp_vocab.cpp ${MEP_GAP_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-gap-lsp src/gap_lsp_server.cpp ${MEP_GAP_LSP_SOURCES})
+    target_include_directories(mep-gap-lsp PRIVATE src)
+    target_compile_options(mep-gap-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-gap-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-gap-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-gap-lsp-test EXCLUDE_FROM_ALL src/gap_lsp_test.cpp ${MEP_GAP_LSP_SOURCES})
+target_include_directories(mep-gap-lsp-test PRIVATE src)
+target_compile_options(mep-gap-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-gap-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-gap-lsp-test)
+
+# mep's own Go language server and linter: the wire half
+# (src/go_lsp_server.cpp, also `mep-go-lsp --lint FILE...`) over the
+# analysis half (src/go_lsp.cpp). Same reasoning as mep-nix-lsp above.
+set(MEP_GO_LSP_SOURCES src/go_lsp.cpp src/go_lsp_features.cpp src/go_lsp_vocab.cpp src/go_lsp_vocab_data.cpp ${MEP_GO_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-go-lsp src/go_lsp_server.cpp ${MEP_GO_LSP_SOURCES})
+    target_include_directories(mep-go-lsp PRIVATE src)
+    target_compile_options(mep-go-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-go-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-go-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-go-lsp-test EXCLUDE_FROM_ALL src/go_lsp_test.cpp ${MEP_GO_LSP_SOURCES})
+target_include_directories(mep-go-lsp-test PRIVATE src)
+target_compile_options(mep-go-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-go-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-go-lsp-test)
+
+# mep's own Rust language server and linter: the wire half
+# (src/rust_lsp_server.cpp, also `mep-rust-lsp --lint FILE...`) over the
+# analysis half (src/rust_lsp.cpp). Same reasoning as mep-nix-lsp above.
+set(MEP_RUST_LSP_SOURCES src/rust_lsp.cpp src/rust_lsp_vocab.cpp src/rust_lsp_vocab_data.cpp ${MEP_RUST_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-rust-lsp src/rust_lsp_server.cpp ${MEP_RUST_LSP_SOURCES})
+    target_include_directories(mep-rust-lsp PRIVATE src)
+    target_compile_options(mep-rust-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-rust-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-rust-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-rust-lsp-test EXCLUDE_FROM_ALL src/rust_lsp_test.cpp ${MEP_RUST_LSP_SOURCES})
+target_include_directories(mep-rust-lsp-test PRIVATE src)
+target_compile_options(mep-rust-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-rust-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-rust-lsp-test)
+
+# The generated std vocabulary (tools/gen_rust_vocab.py) on its own: no
+# parser, no server.
+add_executable(mep-rust-vocab-test EXCLUDE_FROM_ALL src/rust_lsp_vocab_test.cpp src/rust_lsp_vocab.cpp src/rust_lsp_vocab_data.cpp)
+target_include_directories(mep-rust-vocab-test PRIVATE src)
+target_compile_options(mep-rust-vocab-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-rust-vocab-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-rust-vocab-test)
+
+# mep's own Zig language server and linter: the wire half
+# (src/zig_lsp_server.cpp, also `mep-zig-lsp --lint FILE...`) over the
+# analysis half (src/zig_lsp.cpp), the AstGen checks (src/zig_check.cpp) and
+# the generated vocabulary (src/zig_lsp_vocab_data.cpp, `just zig-lsp-vocab`).
+# Same reasoning as mep-nix-lsp above.
+set(MEP_ZIG_LSP_SOURCES src/zig_lsp.cpp src/zig_check.cpp src/zig_lsp_vocab_data.cpp ${MEP_ZIG_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-zig-lsp src/zig_lsp_server.cpp ${MEP_ZIG_LSP_SOURCES})
+    target_include_directories(mep-zig-lsp PRIVATE src)
+    target_compile_options(mep-zig-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-zig-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-zig-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-zig-lsp-test EXCLUDE_FROM_ALL src/zig_lsp_test.cpp ${MEP_ZIG_LSP_SOURCES})
+target_include_directories(mep-zig-lsp-test PRIVATE src)
+target_compile_options(mep-zig-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-zig-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-zig-lsp-test)
+
+# mep's own Kotlin language server and linter: the wire half
+# (src/kotlin_lsp_server.cpp, also `mep-kotlin-lsp --lint FILE...`) over the
+# analysis half (src/kotlin_lsp.cpp). Same reasoning as mep-nix-lsp above.
+set(MEP_KOTLIN_LSP_SOURCES src/kotlin_lsp.cpp ${MEP_KOTLIN_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-kotlin-lsp src/kotlin_lsp_server.cpp ${MEP_KOTLIN_LSP_SOURCES})
+    target_include_directories(mep-kotlin-lsp PRIVATE src)
+    target_compile_options(mep-kotlin-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-kotlin-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-kotlin-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-kotlin-lsp-test EXCLUDE_FROM_ALL src/kotlin_lsp_test.cpp ${MEP_KOTLIN_LSP_SOURCES})
+target_include_directories(mep-kotlin-lsp-test PRIVATE src)
+target_compile_options(mep-kotlin-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-kotlin-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-kotlin-lsp-test)
+
+# mep's own Java language server and linter: the wire half
+# (src/java_lsp_server.cpp, also `mep-java-lsp --lint FILE...`) over the
+# analysis half (src/java_lsp.cpp). Same reasoning as mep-nix-lsp above.
+set(MEP_JAVA_LSP_SOURCES src/java_lsp.cpp ${MEP_JAVA_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-java-lsp src/java_lsp_server.cpp ${MEP_JAVA_LSP_SOURCES})
+    target_include_directories(mep-java-lsp PRIVATE src)
+    target_compile_options(mep-java-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-java-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-java-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-java-lsp-test EXCLUDE_FROM_ALL src/java_lsp_test.cpp ${MEP_JAVA_LSP_SOURCES})
+target_include_directories(mep-java-lsp-test PRIVATE src)
+target_compile_options(mep-java-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-java-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-java-lsp-test)
+
+# mep's own Nim language server and linter: the wire half
+# (src/nim_lsp_server.cpp, also `mep-nim-lsp --lint FILE...`) over the
+# analysis half (src/nim_lsp.cpp). Same reasoning as mep-nix-lsp above.
+set(MEP_NIM_LSP_SOURCES src/nim_lsp.cpp ${MEP_NIM_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-nim-lsp src/nim_lsp_server.cpp ${MEP_NIM_LSP_SOURCES})
+    target_include_directories(mep-nim-lsp PRIVATE src)
+    target_compile_options(mep-nim-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-nim-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-nim-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-nim-lsp-test EXCLUDE_FROM_ALL src/nim_lsp_test.cpp ${MEP_NIM_LSP_SOURCES})
+target_include_directories(mep-nim-lsp-test PRIVATE src)
+target_compile_options(mep-nim-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-nim-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-nim-lsp-test)
+
+# mep's own Nix language server and linter: the wire half
+# (src/nix_lsp_server.cpp, also `mep-nix-lsp --lint FILE...` and
+# `--nix-check FILE...`) over the analysis half (src/nix_lsp.cpp) and a
+# parser built from Nix's own lexer rules and LALR tables
+# (src/nix_parse.cpp, src/nix_parse_tables.h from tools/nix_lalr.py) whose
+# errors are `nix-instantiate --parse`'s (tools/nix_parse_check.py).
+# Formatting reuses the nixfmt port. Same reasoning as mep-sql-lsp above.
+set(MEP_NIX_LSP_SOURCES src/nix_parse.cpp src/nix_lsp.cpp src/nix_lsp_builtins.cpp ${MEP_NIX_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-nix-lsp src/nix_lsp_server.cpp ${MEP_NIX_LSP_SOURCES})
+    target_include_directories(mep-nix-lsp PRIVATE src)
+    target_compile_options(mep-nix-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-nix-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-nix-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-nix-lsp-test EXCLUDE_FROM_ALL src/nix_lsp_test.cpp ${MEP_NIX_LSP_SOURCES})
+target_include_directories(mep-nix-lsp-test PRIVATE src)
+target_compile_options(mep-nix-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-nix-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-nix-lsp-test)
+
 # mep's own SQL formatter (sql_format.cpp). `--format FILE...` prints each
 # file formatted, for checking it against a corpus.
 add_executable(mep-sql-format-test EXCLUDE_FROM_ALL src/sql_format_test.cpp src/sql_format.cpp src/sql_parse.cpp
@@ -2723,6 +3192,138 @@ add_dependencies(tests mep-csharp-format-test)
 
 # The Clojure formatter (cljfmt's layout); `--format FILE...` prints each
 # file formatted, for comparing with cljfmt on a corpus.
+# The Lua formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-lua-format-test EXCLUDE_FROM_ALL src/lua_format_test.cpp ${MEP_LUA_FORMAT_SOURCES})
+target_include_directories(mep-lua-format-test PRIVATE src)
+target_compile_options(mep-lua-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-lua-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-lua-format-test)
+
+# The JavaScript parser's unit tests; `--json [--module|--script] [--jsx] FILE`
+# prints acorn-shaped JSON for tools/js_parse_check.py.
+add_executable(mep-js-parse-test EXCLUDE_FROM_ALL src/js_parse_test.cpp ${MEP_JS_PARSE_SOURCES})
+target_include_directories(mep-js-parse-test PRIVATE src)
+target_compile_options(mep-js-parse-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-js-parse-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-js-parse-test)
+
+# The JavaScript formatter's unit tests; `--format [-w N] [--tabs] [--no-semi]
+# [--single-quote] FILE...` prints each file formatted, for format_compare.py.
+add_executable(mep-js-format-test EXCLUDE_FROM_ALL src/js_format_test.cpp ${MEP_JS_FORMAT_SOURCES}
+               ${MEP_JS_PARSE_SOURCES})
+target_include_directories(mep-js-format-test PRIVATE src)
+target_compile_options(mep-js-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-js-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-js-format-test)
+
+# The Scheme formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-scheme-format-test EXCLUDE_FROM_ALL src/scheme_format_test.cpp ${MEP_SCHEME_FORMAT_SOURCES})
+target_include_directories(mep-scheme-format-test PRIVATE src)
+target_compile_options(mep-scheme-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-scheme-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-scheme-format-test)
+
+# The Fish formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py (against fish_indent).
+add_executable(mep-fish-format-test EXCLUDE_FROM_ALL src/fish_format_test.cpp ${MEP_FISH_FORMAT_SOURCES})
+target_include_directories(mep-fish-format-test PRIVATE src)
+target_compile_options(mep-fish-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fish-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fish-format-test)
+
+# The Fortran formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py (against fprettify).
+add_executable(mep-fortran-format-test EXCLUDE_FROM_ALL src/fortran_format_test.cpp ${MEP_FORTRAN_FORMAT_SOURCES})
+target_include_directories(mep-fortran-format-test PRIVATE src)
+target_compile_options(mep-fortran-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-fortran-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-fortran-format-test)
+
+# The Tcl formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-tcl-format-test EXCLUDE_FROM_ALL src/tcl_format_test.cpp ${MEP_TCL_FORMAT_SOURCES})
+target_include_directories(mep-tcl-format-test PRIVATE src)
+target_compile_options(mep-tcl-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-tcl-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-tcl-format-test)
+
+# The Octave formatter (MISS_HIT mh_style's layout); `--format FILE...`
+# prints each file formatted, for tools/format_compare.py.
+add_executable(mep-octave-format-test EXCLUDE_FROM_ALL src/octave_format_test.cpp ${MEP_OCTAVE_FORMAT_SOURCES})
+target_include_directories(mep-octave-format-test PRIVATE src)
+target_compile_options(mep-octave-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-octave-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-octave-format-test)
+
+# The Julia formatter (Runic's layout); `--format FILE...` prints each file
+# formatted, for tools/format_compare.py (against Runic).
+add_executable(mep-julia-format-test EXCLUDE_FROM_ALL src/julia_format_test.cpp ${MEP_JULIA_FORMAT_SOURCES})
+target_include_directories(mep-julia-format-test PRIVATE src)
+target_compile_options(mep-julia-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-julia-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-julia-format-test)
+
+# The GAP formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-gap-format-test EXCLUDE_FROM_ALL src/gap_format_test.cpp ${MEP_GAP_FORMAT_SOURCES})
+target_include_directories(mep-gap-format-test PRIVATE src)
+target_compile_options(mep-gap-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-gap-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-gap-format-test)
+
+# The Go formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-go-format-test EXCLUDE_FROM_ALL src/go_format_test.cpp ${MEP_GO_FORMAT_SOURCES})
+target_include_directories(mep-go-format-test PRIVATE src)
+target_compile_options(mep-go-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-go-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-go-format-test)
+
+# The Rust formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+# The parser's sources join here explicitly: targets without them (mep,
+# mep-rust-lsp until they link the parser) get rust_format_parse_stubs.cpp.
+add_executable(mep-rust-format-test EXCLUDE_FROM_ALL src/rust_format_test.cpp ${MEP_RUST_FORMAT_SOURCES}
+    ${MEP_RUST_PARSE_SOURCES})
+target_include_directories(mep-rust-format-test PRIVATE src)
+target_compile_options(mep-rust-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-rust-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-rust-format-test)
+
+# The Zig formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-zig-format-test EXCLUDE_FROM_ALL src/zig_format_test.cpp ${MEP_ZIG_FORMAT_SOURCES})
+target_include_directories(mep-zig-format-test PRIVATE src)
+target_compile_options(mep-zig-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-zig-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-zig-format-test)
+
+# The Kotlin formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-kotlin-format-test EXCLUDE_FROM_ALL src/kotlin_format_test.cpp ${MEP_KOTLIN_FORMAT_SOURCES})
+target_include_directories(mep-kotlin-format-test PRIVATE src)
+target_compile_options(mep-kotlin-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-kotlin-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-kotlin-format-test)
+
+# The Java formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-java-format-test EXCLUDE_FROM_ALL src/java_format_test.cpp ${MEP_JAVA_FORMAT_SOURCES})
+target_include_directories(mep-java-format-test PRIVATE src)
+target_compile_options(mep-java-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-java-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-java-format-test)
+
+# The Nim formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-nim-format-test EXCLUDE_FROM_ALL src/nim_format_test.cpp ${MEP_NIM_FORMAT_SOURCES})
+target_include_directories(mep-nim-format-test PRIVATE src)
+target_compile_options(mep-nim-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-nim-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-nim-format-test)
+
 # The Nix formatter (nixfmt's layout); `--format FILE...` prints each file
 # formatted, for comparing with nixfmt on a corpus.
 add_executable(mep-nix-format-test EXCLUDE_FROM_ALL src/nix_format_test.cpp ${MEP_NIX_FORMAT_SOURCES})
@@ -3649,7 +4250,7 @@ if(NOT EMSCRIPTEN)
         mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test
         mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-format-test mep-mepml-style-test
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
-        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-nix-format-test mep-vterm-test mep-spell-test
+        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-nix-format-test mep-nix-lsp-test mep-nim-lsp-test mep-nim-format-test mep-java-lsp-test mep-java-format-test mep-kotlin-lsp-test mep-kotlin-format-test mep-zig-lsp-test mep-zig-format-test mep-rust-lsp-test mep-rust-vocab-test mep-rust-format-test mep-rust-parse-test mep-go-lsp-test mep-go-format-test mep-gap-lsp-test mep-gap-format-test mep-julia-parse-test mep-julia-lsp-test mep-julia-format-test mep-tcl-lsp-test mep-tcl-format-test mep-octave-lsp-test mep-octave-format-test mep-fish-lsp-test mep-fish-format-test mep-fortran-lsp-test mep-fortran-format-test mep-scheme-lsp-test mep-scheme-format-test mep-lua-lsp-test mep-lua-format-test mep-js-parse-test mep-js-format-test mep-js-lsp-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test
         mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test
         mep-editor-fold-test mep-editor-reload-test mep-editor-text-object-test mep-editor-block-settings-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test

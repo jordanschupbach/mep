@@ -1,0 +1,34 @@
+=====================================
+A file opening with local
+=====================================
+
+local helper, i;
+helper := 1;
+
+---
+
+(source_file
+  locals: (locals
+    (identifier)
+    (identifier))
+  (assignment_statement
+    left: (identifier)
+    right: (integer)))
+
+=====================================
+A file opening with a comment, then local
+=====================================
+
+# helpers
+local x;
+x := [];
+
+---
+
+(source_file
+  (comment)
+  locals: (locals
+    (identifier))
+  (assignment_statement
+    left: (identifier)
+    right: (list_expression)))

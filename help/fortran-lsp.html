@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Fortran language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Fortran language server</h1>
+<h1>What it is</h1>
+<p>Fortran gets a language server of its own, <code>mep-fortran-lsp</code>, built and
+shipped with mep. Open a <code>.f90</code> (or <code>.f95</code>, <code>.f03</code>, <code>.f08</code>, <code>.F90</code>, <code>.f</code>,
+<code>.for</code>) file and it attaches by itself -- nothing to install, no compiler
+needed, and nothing in the file is ever compiled or run. It knows the
+intrinsic procedures and modules gfortran documents (<code>sum</code>, <code>matmul</code>,
+<code>iso_c_binding</code>, <code>ieee_arithmetic</code>, ...): their argument lists, what kind
+of procedure each is and which standard brought it in.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>Free form, fixed form and the preprocessor</h1>
+<p>The source form comes from the file name, as gfortran decides it:
+<code>.f</code>, <code>.for</code>, <code>.ftn</code> and <code>.fpp</code> are fixed form (column-1 <code>C</code> / <code>*</code>
+comments, labels in columns 1-5, a continuation mark in column 6, nothing
+past column 72, and blanks that don't separate words: <code>CALLFOO(X)</code>,
+<code>GOTO10</code>, <code>DO10I=1,N</code> all read), the rest free form.</p>
+<p>Files whose suffix is upper case (<code>.F90</code>, <code>.F</code>) go through the C
+preprocessor first with gfortran, and the server models it rather than
+running it: <code>#define</code> (object- and function-like macros, expanded where
+they're used), <code>#undef</code>, <code>#if</code> / <code>#ifdef</code> / <code>#elif</code> / <code>#else</code> / <code>#endif</code>
+evaluated against the file's own definitions and gfortran's predefined
+macros (<code>__GFORTRAN__</code>, <code>__GNUC__</code>, ...). Lines in a branch that is off
+are skipped, as the compiler would skip them. An <code>#include</code> or <code>INCLUDE</code>
+line it can't see into makes it more careful rather than wrong: the
+structural checks and the lints that would need the included text step
+aside.</p>
+<h1>The same errors as gfortran</h1>
+<p>Its reader reports a syntax error where <code>gfortran -fsyntax-only</code> reports
+one, in gfortran's words:</p>
+<pre>Syntax error in CALL statement
+Unclassifiable statement
+Expecting END DO statement
+Unexpected ELSE statement
+Unexpected data declaration statement in CONTAINS section
+Expected label 'solve' for END SUBROUTINE statement
+Unexpected end of file</pre>
+<p>That covers unbalanced parentheses, malformed program-unit, <code>END</code>, <code>USE</code>,
+declaration, <code>DO</code>, <code>IF</code>, I/O and <code>CALL</code> statements, statements out of
+place (declarations after executable statements, executable statements
+in a module, <code>USE</code> after <code>IMPLICIT</code>, <code>ELSE</code> or <code>CASE</code> outside their
+construct), mismatched or missing <code>END</code> statements and their names, and
+unterminated character constants. It is checked against gfortran 15 with
+<code>just fortran-parse-check</code> (<code>tools/fortran_parse_check.py</code>) over LAPACK,
+BLAS, scipy, ARPACK, Quantum ESPRESSO, SIESTA, Octopus, HDF5 and
+netCDF-Fortran and gcc's own gfortran testsuite: 16,409 files, of which
+gfortran accepts 15,315; the server agrees on 15,278 of those (99.8%), and
+the 37 it rejects are blank-insensitive fixed-form spellings
+(<code>GO TO = 55</code>, <code>do i x = 1, 3</code>), Hollerith constants holding a <code>!</code>, and
+DEC extensions gfortran tolerates. Where both report an error it is on the
+same line in 255 of 319 files, in the same words in 151.</p>
+<p>gfortran also rejects much that is not syntax -- type mismatches,
+interface checks, <code>Redundant STAT tag</code>, constraint after constraint.
+Those are a compiler's business, and the server leaves them to the
+compiler.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>what <code>gfortran -fsyntax-only</code> says, in its words</td></tr>
+<tr><td><code>undeclared</code></td><td>error</td><td>under <code>IMPLICIT NONE</code>, a name nothing declares (gfortran: "has no IMPLICIT type")</td></tr>
+<tr><td><code>undefined-label</code></td><td>error</td><td><code>GOTO 20</code>, <code>DO 20 ...</code>, <code>ERR=20</code>, <code>FMT=20</code> where no statement has label 20</td></tr>
+<tr><td><code>unused-variable</code></td><td>warning</td><td>a local variable of a subprogram that is declared and never used</td></tr>
+<tr><td><code>line-too-long</code></td><td>warning</td><td>free-form code past column 132, which gfortran truncates unless told otherwise</td></tr>
+</table>
+<p>The lints run only on a file without syntax errors, and they know what
+they can't see: <code>undeclared</code> stays quiet in a scope that =USE=s a module
+not defined in the same file (any name could come from it), in a
+separate module procedure (its arguments are declared in an interface
+elsewhere) and in a file with an unresolved include or macros.</p>
+<h2>Calibration</h2>
+<p>Over the 12,734 corpus files gfortran compiles without a single error,
+<code>undeclared</code> fires 4 times (three of them in gfortran's own tests of
+Hollerith constants). <code>unused-variable</code> was measured against gfortran's
+<code>-Wunused-variable</code> on a 600-file sample: 99 of its 100 reports are
+reports gfortran makes too; it finds about half of gfortran's, missing
+those that need an <code>INCLUDE</code> or another file to decide.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> on a name shows its declaration -- type, attributes, kind (dummy argument, parameter, function result, component, ...) and line; on an intrinsic, its argument lists, a one-line summary, its class (elemental function, subroutine, ...) and standard.</li>
+<li><b>Completion</b> offers the names in scope (the unit's own, its host's, and those of modules in the same file that it =USE=s), intrinsics and keywords; after <code>var%</code>, the components and bindings of <code>var</code>'s derived type; after <code>use</code>, the modules in the file and the intrinsic modules.</li>
+<li><b>Signature help</b> shows the dummy arguments of the file's own subroutines and functions, and the argument list of an intrinsic.</li>
+<li><b>Go to definition</b>, <b>references</b> and <b>rename</b> follow Fortran's scoping: host association into internal and module procedures, <code>USE</code> of modules in the same file (renames included), components through <code>a%b</code>, kind parameters in literals (<code>1.0_dp</code>), and <code>END SUBROUTINE name</code>. Rename refuses a name that is not a Fortran name or that is taken in the scope.</li>
+<li>The <b>outline</b> lists programs, modules, submodules, subroutines, functions, derived types with their components and bindings, named interfaces, and module variables and parameters.</li>
+<li><b>Folding</b> covers program units, interfaces, derived types, every block construct and runs of comments.</li>
+<li><b>Formatting</b> is mep's own Fortran formatter, the one <code>gf</code> runs: fprettify's layout at its defaults, byte for byte, with no Python installed. Fixed-form files are left alone. See <a href="formatting.html">Formatting</a>.</li>
+</ul>
+<h1>Using fortls instead</h1>
+<p><code>fortls</code> stays registered but claims no files. To use it, in <code>init.lua</code>:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.fortran_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.fortls.filetypes = <span class="tok-blue">{</span><span class="tok-green">'f90'</span>, <span class="tok-green">'f'</span>, <span class="tok-green">'for'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-fortran-lsp</span> <span class="tok-red">--lint</span> src/*.f90
+<span class="tok-blue">cat</span> solver.f90 | <span class="tok-blue">mep-fortran-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>
+<p>prints every diagnostic as</p>
+<pre>solver.f90:41:9: error: Symbol 'resid' has no IMPLICIT type [undeclared]</pre>
+<p>-- 1-based line and column, then the severity (<code>error</code>, <code>warning</code>,
+<code>info</code>, <code>hint</code>), the message and the code. It exits 1 if anything printed
+is an error or a warning, 2 if a file could not be read, and 0 otherwise.
+Standard input is read as free form. =mep-fortran-lsp --gfortran-check
+FILE...= prints just the first syntax error for each file, as =LINE:
+message= (line 0 for the end of the file), or <code>ok</code>. With no arguments,
+<code>mep-fortran-lsp</code> is the language server on stdio.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="formatting.html">Formatting</a>.</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,37 @@
+#+TITLE: The Nim language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Nim files get a language server of their own, =mep-nim-lsp=, built
+and shipped with mep. Open a =.nim= file and it attaches by itself --
+nothing to install.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* What it reports
+
+| Code | Severity | What it means |
+|------+----------+---------------|
+
+* What else it does
+
+- *Completion* offers the words of the document.
+
+* Linting from the command line
+
+#+begin_src sh
+mep-nim-lsp --lint FILE...
+#+end_src
+
+prints every diagnostic as =path:line:col: severity: message [code]= --
+1-based line and column, then the severity (=error=, =warning=, =info=,
+=hint=), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, =mep-nim-lsp= is the language server on stdio.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Scheme language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Scheme language server</h1>
+<h1>What it is</h1>
+<p>Scheme files get a language server of their own, <code>mep-scheme-lsp</code>, built
+and shipped with mep. Open a <code>.scm</code>, <code>.ss</code>, <code>.sld</code>, <code>.sls</code> or <code>.sps</code> file
+and it attaches by itself. There is nothing to install, and *no Scheme is
+ever started*. The server is mep's own reader, a scope analyser and a
+table of 5,621 names generated from Guile. The table covers R7RS-small's
+<code>(scheme ...)</code> libraries, <code>(guile)</code>, the SRFIs, and the common <code>(ice-9 ...)</code>
+and <code>(rnrs ...)</code> modules (125 modules in all). It holds each name's kind,
+the argument counts Guile's own arity allows and the argument list. It
+holds names and signatures only, no documentation text.</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>Reading Scheme the way Guile does</h1>
+<p>The reader's reference is Guile's own <code>read</code>. Wherever Guile rejects a
+file, this reader rejects it too, with the same message at the same line
+and column. That was checked on 3,610 files from Guile, Guix, haunt,
+guile-lib, chibi, Chez and Gauche, plus two damaged copies of each, with
+<code>just scheme-read-check</code>. Some consequences:</p>
+<ul>
+<li>A token is a number only when Guile's <code>string-&gt;number</code> accepts it. <code>1+</code>, <code>...</code>, <code>-&gt;x</code> and <code>vars'= are symbols, and only =#</code>-prefixed numbers such as <code>#x1G</code> are errors.</li>
+<li><code>#\(</code> is a character, and <code>|a b|</code> and <code>#{a b}#</code> are one symbol each.</li>
+<li><code>#;DATUM</code> comments out one datum. <code>#| |#</code> comments nest.</li>
+<li><code>#!r6rs</code>, <code>#!fold-case</code>, <code>#!no-fold-case</code> and <code>#!curly-infix</code> change the reader for the rest of the file. Any other <code>#!</code> opens a comment that runs to <code>!#</code>.</li>
+<li>Square brackets are parens.</li>
+<li>Guix's G-expressions (<code>#~</code> <code>#$</code> <code>#$@</code> <code>#+</code> <code>#+@</code>) are read as <code>(guix gexp)</code> installs them.</li>
+</ul>
+<p>Guile stops at the first error. This reader reports that one too, but it
+then recovers: a stray <code>)</code> is skipped and a list left open is closed. So
+the outline and completion keep working while you type.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>unexpected-eof</code></td><td>error</td><td>the file ends inside a list (an unbalanced paren)</td></tr>
+<tr><td><code>unexpected-close</code></td><td>error</td><td>a <code>)</code>, <code>]</code> or <code>}</code> with nothing to close</td></tr>
+<tr><td><code>mismatched-paren</code></td><td>error</td><td><code>(</code> closed by <code>]</code>, or <code>[</code> by <code>)</code></td></tr>
+<tr><td><code>unterminated-string</code></td><td>error</td><td>a string that never ends</td></tr>
+<tr><td><code>unterminated-comment</code></td><td>error</td><td>a <code>#\vert ... \vert#</code> or <code>#! ... !#</code> comment that never ends</td></tr>
+<tr><td><code>unterminated-symbol</code></td><td>error</td><td>a <code>\vert...\vert</code> or <code>#{...}#</code> symbol that never ends</td></tr>
+<tr><td><code>bad-character</code></td><td>error</td><td><code>#\foo</code>: an unknown character name</td></tr>
+<tr><td><code>bad-escape</code></td><td>error</td><td>an escape Guile does not accept in a string</td></tr>
+<tr><td><code>bad-number</code></td><td>error</td><td><code>#x1G</code> and other prefixed numbers Guile cannot read</td></tr>
+<tr><td><code>unknown-dispatch</code></td><td>error</td><td><code>#</code> followed by something Guile does not know</td></tr>
+<tr><td><code>duplicate-binding</code></td><td>error</td><td><code>(let ((a 1) (a 2)) ...)</code>: a name bound twice in one form</td></tr>
+<tr><td><code>wrong-arity</code></td><td>warning</td><td>a known procedure called with too few or too many arguments</td></tr>
+<tr><td><code>unused-variable</code></td><td>warning</td><td>a <code>let=/=let*=/=letrec</code> variable never used</td></tr>
+<tr><td><code>unused-definition</code></td><td>warning</td><td>an internal <code>define</code> never used</td></tr>
+<tr><td><code>unused-parameter</code></td><td>hint</td><td>a procedure parameter never used</td></tr>
+<tr><td><code>unused-destructured</code></td><td>hint</td><td>a <code>receive</code>, <code>let-values</code> or <code>define-values</code> variable never used</td></tr>
+</table>
+<p>The other reader errors (<code>bad-array</code>, <code>bad-keyword</code>, <code>read-eval</code>, ...)
+are Guile's own messages, word for word.</p>
+<p>The checks are deliberately careful:</p>
+<ul>
+<li>Names beginning with <code>_</code> are never "unused", and neither is anything exported by a module or library.</li>
+<li>A file that uses <code>include</code> or <code>the-environment</code> has no unused checks: names can be used by text the server cannot see.</li>
+<li>Arity is checked for:</li>
+<li>the file's own procedures (not ones defined twice or <code>set!</code>);</li>
+<li>names imported from a module the table knows, when every import in the file is one it knows (<code>define-module</code>, <code>use-modules</code>, <code>import</code>, <code>define-library</code>, <code>library</code>).</li>
+<li>A call that passes a keyword argument is not checked. Neither is a call inside a macro use or inside an unknown head's operands, since a macro can mean anything there.</li>
+<li>After the first reader error the file is only read, not linted.</li>
+</ul>
+<h2>Calibration</h2>
+<p>On the 3,557-file corpus the lints fire as follows:</p>
+<table>
+<tr><th>Code</th><th>Count</th><th>Files</th></tr>
+<tr><td><code>unused-parameter</code></td><td>6,266</td><td>863 (24%)</td></tr>
+<tr><td><code>unused-variable</code></td><td>456</td><td>213 (6%)</td></tr>
+<tr><td><code>unused-destructured</code></td><td>246</td><td>73</td></tr>
+<tr><td><code>unused-definition</code></td><td>96</td><td>62</td></tr>
+<tr><td><code>wrong-arity</code></td><td>6</td><td>4</td></tr>
+<tr><td><code>duplicate-binding</code></td><td>1</td><td>1</td></tr>
+</table>
+<p>Every <code>wrong-arity</code> hit is a real bug in the code. The one
+<code>duplicate-binding</code> is a Gauche test that is invalid on purpose. On 354 of
+Guile's own modules, Guile's compiler (<code>guild compile -W unused-variable</code>)
+confirms 76 of the server's 80 unused-variable warnings. The other 4 are
+variables that are only ever <code>set!</code>.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b>: the signature, its kind and the modules that export it. For your own definitions: the form that binds the name.</li>
+<li><b>Completion</b>: the names in scope at the cursor, then the vocabulary.</li>
+<li><b>Signature help</b> inside a call, with the current argument marked.</li>
+<li><b>Go to definition</b>, <b>references</b> and <b>rename</b> across the lexical scopes:</li>
+<li><code>let</code>, named <code>let</code>, <code>let*</code>, <code>letrec</code>, <code>do</code>, <code>lambda</code>, <code>case-lambda</code>;</li>
+<li><code>define-record-type</code>, <code>define-values</code>, <code>receive</code>, <code>let-values</code>;</li>
+<li><code>match</code>, <code>syntax-rules</code> and <code>syntax-case</code> patterns.</li>
+<li><b>Document symbols</b>: modules and libraries, definitions, macros, records and their fields.</li>
+<li><b>Folding</b> of multi-line forms, strings and comment runs.</li>
+<li><b>Formatting</b> with mep's own Scheme formatter, the same one as <code>gf</code>. See <a href="formatting.html">Formatting</a>.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-scheme-lsp</span> <span class="tok-red">--lint</span> FILE...</code></pre></div>
+<p>prints every diagnostic as <code>path:line:col: severity: message [code]</code> --
+1-based line and column, then the severity (<code>error</code>, <code>warning</code>, <code>info</code>,
+<code>hint</code>), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, <code>mep-scheme-lsp</code> is the language server on stdio.</p>
+<p><code>mep-scheme-lsp --guile-check FILE...</code> prints only the reader's verdict,
+worded the way Guile's <code>read</code> words it. <code>tools/scheme_read_check.py</code>
+compares that verdict with Guile's.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="formatting.html">Formatting</a> -- <code>gf</code> and the Scheme formatter.</li>
+</ul>
+</body>
+</html>

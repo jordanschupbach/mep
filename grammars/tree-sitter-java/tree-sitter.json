@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "java",
+      "camelcase": "Java",
+      "scope": "source.java",
+      "path": ".",
+      "file-types": ["java"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Java, mep's own grammar (node API of tree-sitter/tree-sitter-java)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

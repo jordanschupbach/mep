@@ -1,0 +1,88 @@
+#+TITLE: The GAP language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+GAP files get a language server of their own, =mep-gap-lsp=, built
+and shipped with mep. Open a =.g=, =.gi=, =.gd= or =.gap= file and it
+attaches by itself -- nothing to install, and no GAP needed.
+
+Its reader makes the decisions GAP 4.15's own reader makes: the same
+tokens, the same grammar, and the same first syntax error, worded the same
+and on the same line. Its warning about unbound globals is GAP's own,
+decided the way GAP decides it when it reads the file.
+
+The same binary is a command-line linter; see /Linting from the command line/ below.
+
+* What it reports
+
+| Code | Severity | What it means |
+|------+----------+---------------|
+| =syntax-error= | error | GAP would refuse to read the file here. The first one is GAP's own message, on GAP's line; reading resumes at the next statement, so later ones are reported too. |
+| =unbound-global= | warning | Inside a function, a global that is not bound when GAP reads the function -- GAP's "Syntax warning: Unbound global variable". Usually a typo (=Lenght=), or a variable assigned in a function without being declared =local=. |
+| =unbound-global= | info | The same, for a name the file binds only further down. GAP warns about it too; it works if the function is not called before then. Declare it first (=DeclareGlobalFunction=) or move the definition up. |
+| =unassigned-local= | warning | A local that is read but never assigned anywhere -- GAP stops with "Variable: 'x' must have an assigned value" when that line runs. |
+| =unused-local= | hint | A local that is never used, or assigned but never read. A =for= loop's variable is exempt. Shown faded. |
+
+What counts as bound, as GAP sees it when it reads a function:
+
+- everything GAP binds at start-up with its default packages, and every
+  name documented in the manuals of GAP and the packages it ships with;
+- a name assigned at the top level earlier in the file (including the
+  name being assigned: =f := function() ... f(...) ... end;= is fine), or
+  bound by an earlier =DeclareGlobalFunction=, =DeclareAttribute= (with its
+  =HasX= and =SetX=), =DeclareOperation=, =BindGlobal=, ... call;
+- a name the rest of the package binds: the server reads the package's
+  other =.g=, =.gd=, =.gi= files (the package is the nearest directory with
+  a =PackageInfo.g=; outside a package, the file's own directory) and the
+  packages its =PackageInfo.g= depends on, where they are installed beside
+  it. A package with a compiled kernel extension binds names no GAP file
+  shows, so there the check is off.
+
+GAP only warns inside functions; a bare statement at the top level is
+evaluated when read, and gets no warning.
+
+* What else it does
+
+- *Completion* offers the parameters and locals in scope (also while the
+  statement being typed does not parse yet), keywords, the globals the
+  file defines, and GAP's documented names, each with its argument list.
+  After =r.= it offers the record components the file uses.
+- *Hover* on a name shows a local's or parameter's function, the
+  definition and the comment block above it for a global the file defines,
+  and for GAP's own names their documented forms and the manuals that
+  describe them (=?Name= opens the full entry in GAP).
+- *Signature help* inside a call shows the argument list, for the file's
+  own functions and GAP's documented ones.
+- *Go to definition*, *references* and *rename* follow GAP's scoping: a
+  local is found in its function and the functions nested in it; a global
+  the file defines also by the string in =DeclareGlobalFunction("Name")=.
+  Renaming a GAP library name is refused.
+- *Outline*: top-level assignments, =Declare...= declarations, and
+  =InstallMethod= / =InstallGlobalFunction= calls (a method shows its
+  description string).
+- *Folding* for functions, =if= branches, loops, records, lists and comment
+  blocks.
+- *Formatting* is mep's GAP formatter (see the formatting help).
+
+* Linting from the command line
+
+#+begin_src sh
+mep-gap-lsp --lint FILE...
+#+end_src
+
+prints every diagnostic as =path:line:col: severity: message [code]= --
+1-based line and column, then the severity (=error=, =warning=, =info=,
+=hint=), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, =mep-gap-lsp= is the language server on stdio.
+
+=mep-gap-lsp --gap-check FILE...= prints only the verdict GAP's
+=ReadAsFunction= would give each file: =ok=, or =LINE:COL: message=.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:formatting.html][Formatting]] -- =gf=, and mep's GAP formatter.

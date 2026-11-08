@@ -1,0 +1,124 @@
+# Corpus files whose trees differ from nixpkgs' tree-sitter-matlab 1.3.0's
+# (acristoffers, the grammar mep loaded before) in a part the old grammar
+# parsed without errors, reviewed, where this grammar is right and the old
+# one wrong. Octave's own parser (octave_check.sh, __parse_file__) accepts
+# them all, so the oracle cannot tell; see README.md. The old grammar has
+# errors in 4,241 of the corpus's 6,676 files (it reads no `#` comment), so
+# the gate is `--old-clean`. Format: <path glob>  # why.  Read by
+# tools/ts_grammar_diff.
+
+# an Octave end keyword (endfunction, endif, ...): the old grammar read it as a command inside the block
+*/octave-10.3.0/examples/code/@FIRfilter/display.m                                         # end
+*/octave-10.3.0/examples/code/@polynomial/double.m                                         # end
+*/octave-10.3.0/examples/code/@polynomial/mtimes.m                                         # end
+*/octave-10.3.0/examples/code/@polynomial/roots.m                                          # end
+*/octave-10.3.0/test/bug-36025/@testclass/one.m                                            # end
+*/octave-10.3.0/test/bug-36025/@testclass/testclass.m                                      # end
+*/octave-10.3.0/test/bug-36025/@testclass/two.m                                            # end
+*/octave-10.3.0/test/bug-38691/dir1/func1.m                                                # end
+*/octave-10.3.0/test/bug-38691/dir2/func1.m                                                # end
+*/octave-10.3.0/test/bug-38691/dir2/func2.m                                                # end
+*/octave-10.3.0/test/bug-38691/dir2/func3.m                                                # end
+*/octave-10.3.0/test/bug-50035/@bug50035/bug50035.m                                        # end
+*/octave-10.3.0/test/bug-50035/@bug50035/display.m                                         # end
+*/octave-10.3.0/test/bug-51532/+package_bug51532/foo.m                                     # end
+*/octave-10.3.0/test/bug-52851/script2.m                                                   # end
+*/octave-10.3.0/test/bug-52851/script4.m                                                   # end
+*/octave-10.3.0/test/bug-53027/ntest53027a.m                                               # end
+*/octave-10.3.0/test/bug-54995/@testclass54995/subsref.m                                   # end
+*/octave-10.3.0/test/bug-54995/@testclass54995/testclass54995.m                            # end
+*/octave-10.3.0/test/bug-59451/bug59451.m                                                  # end
+*/octave-10.3.0/test/bug-59451/foo/@double/bug59451.m                                      # end
+*/octave-10.3.0/test/bug-59451/foo/@single/bug59451.m                                      # end
+*/octave-10.3.0/test/bug-59617/@bug59617/bug59617.m                                        # end
+*/octave-10.3.0/test/bug-59704/bug59704_1_test.m                                           # end
+*/octave-10.3.0/test/bug-60237/bug_60237.m                                                 # end
+*/octave-10.3.0/test/bug-60882/bug_60882.m                                                 # end
+*/octave-10.3.0/test/bug-61105/nested_test_1.m                                             # end
+*/octave-10.3.0/test/bug-61105/nested_test_2.m                                             # end
+*/octave-10.3.0/test/bug-61105/nested_test_3.m                                             # end
+*/octave-10.3.0/test/class-concat/@foo/foo.m                                               # end
+*/octave-10.3.0/test/colon-op/@legacy_colon_op/legacy_colon_op.m                           # end
+*/octave-10.3.0/test/fcn-handle/+pkga/+pkgb/f1.m                                           # end
+*/octave-10.3.0/test/fcn-handle/+pkga/+pkgb/f2.m                                           # end
+*/octave-10.3.0/test/fcn-handle/f1.m                                                       # end
+*/octave-10.3.0/test/fcn-handle/shared_ctx.m                                               # end
+*/octave-10.3.0/test/load-path/not-in-load-path/load_path_fcn.m                            # end
+*/octave-10.3.0/test/local-functions/local_function_eval.m                                 # end
+*/octave-10.3.0/test/nest/arg_ret.m                                                        # end
+*/octave-10.3.0/test/nest/bug_59989.m                                                      # end
+*/octave-10.3.0/test/nest/nest_eval.m                                                      # end
+*/octave-10.3.0/test/nest/recursive_nest3.m                                                # end
+*/octave-10.3.0/test/nest/varg_nest.m                                                      # end
+*/octave-10.3.0/test/private-functions/private/pfcn1.m                                     # end
+*/octave-10.3.0/test/private-functions/private/pfcn2.m                                     # end
+
+# Octave `+=`/`-=`/`++`: an assignment or increment, not a command with arguments
+*/octave-10.3.0/scripts/polynomial/private/__splinefit__.m                                 # compound
+
+# Octave `unwind_protect`, which the old grammar read as a command
+*/dataframe-1.2.0/inst/@dataframe/dataframe.m                                              # unwind
+
+# `catch` followed by a newline: the next line is the catch block, not the error identifier
+*/dataframe-1.2.0/inst/@dataframe/private/df_pad.m                                         # catch
+*/dataframe-1.2.0/inst/@dataframe/subsref.m                                                # catch
+*/ltfat/inst/mulaclab.m                                                                    # catch
+
+# leading blank lines are newline tokens of the file (the old grammar skipped them)
+*/ltfat/inst/deprecated/test_framemulappr.m                                                # lead
+*/ltfat/inst/deprecated/test_ola.m                                                         # lead
+*/ltfat/src/modules/libphaseret/testing/mUnit/test_libphaseret_gla.m                       # lead
+*/ltfat/src/modules/libphaseret/testing/mUnit/test_libphaseret_pghi.m                      # lead
+*/nan-3.7.0/test/test_perf_skipnan.m                                                       # lead
+
+# `...` before a CRLF line end: the continuation now takes the whole \r\n (the old one stopped at \r and ended the statement)
+*/matgeom-1.2.4/inst/geom2d/createRotation90.m                                             # crlf
+*/matgeom-1.2.4/inst/geom2d/drawArrow.m                                                    # crlf
+*/matgeom-1.2.4/inst/geom2d/drawPoint.m                                                    # crlf
+*/matgeom-1.2.4/inst/geom2d/edgeToPolyline.m                                               # crlf
+*/matgeom-1.2.4/inst/geom2d/fitAffineTransform2d.m                                         # crlf
+*/matgeom-1.2.4/inst/geom2d/fitPolynomialTransform2d.m                                     # crlf
+*/matgeom-1.2.4/inst/geom2d/intersectEdges.m                                               # crlf
+*/matgeom-1.2.4/inst/geom2d/intersectLineCircle.m                                          # crlf
+*/matgeom-1.2.4/inst/geom2d/intersectLines.m                                               # crlf
+*/matgeom-1.2.4/inst/geom2d/linePosition.m                                                 # crlf
+*/matgeom-1.2.4/inst/geom2d/midPoint.m                                                     # crlf
+*/matgeom-1.2.4/inst/geom2d/projPointOnLine.m                                              # crlf
+*/matgeom-1.2.4/inst/geom3d/createRotationOx.m                                             # crlf
+*/matgeom-1.2.4/inst/geom3d/createRotationOz.m                                             # crlf
+*/matgeom-1.2.4/inst/geom3d/createScaling3d.m                                              # crlf
+*/matgeom-1.2.4/inst/geom3d/distanceLines3d.m                                              # crlf
+*/matgeom-1.2.4/inst/geom3d/drawAxis3d.m                                                   # crlf
+*/matgeom-1.2.4/inst/geom3d/drawAxisCube.m                                                 # crlf
+*/matgeom-1.2.4/inst/geom3d/eulerAnglesToRotation3d.m                                      # crlf
+*/matgeom-1.2.4/inst/geom3d/intersectLinePlane.m                                           # crlf
+*/matgeom-1.2.4/inst/geom3d/midPoint3d.m                                                   # crlf
+*/matgeom-1.2.4/inst/geom3d/planePosition.m                                                # crlf
+*/matgeom-1.2.4/inst/geom3d/rotation3dToEulerAngles.m                                      # crlf
+*/matgeom-1.2.4/inst/geom3d/transformLine3d.m                                              # crlf
+*/matgeom-1.2.4/inst/graphs/clipGraphPolygon.m                                             # crlf
+*/matgeom-1.2.4/inst/graphs/grFindGeodesicPath.m                                           # crlf
+*/matgeom-1.2.4/inst/graphs/grMergeMultipleEdges.m                                         # crlf
+*/matgeom-1.2.4/inst/graphs/prim_mst.m                                                     # crlf
+*/matgeom-1.2.4/inst/graphs/readGraph.m                                                    # crlf
+*/matgeom-1.2.4/inst/meshes3d/clipMeshVertices.m                                           # crlf
+*/matgeom-1.2.4/inst/meshes3d/createCube.m                                                 # crlf
+*/matgeom-1.2.4/inst/meshes3d/createCubeOctahedron.m                                       # crlf
+*/matgeom-1.2.4/inst/meshes3d/createDodecahedron.m                                         # crlf
+*/matgeom-1.2.4/inst/meshes3d/createIcosahedron.m                                          # crlf
+*/matgeom-1.2.4/inst/meshes3d/createMengerSponge.m                                         # crlf
+*/matgeom-1.2.4/inst/meshes3d/createRhombododecahedron.m                                   # crlf
+*/matgeom-1.2.4/inst/meshes3d/createTetrahedron.m                                          # crlf
+*/matgeom-1.2.4/inst/meshes3d/createTetrakaidecahedron.m                                   # crlf
+*/matgeom-1.2.4/inst/meshes3d/cylinderMesh.m                                               # crlf
+*/matgeom-1.2.4/inst/meshes3d/meshAdjacencyMatrix.m                                        # crlf
+*/matgeom-1.2.4/inst/meshes3d/readMesh_off.m                                               # crlf
+*/matgeom-1.2.4/inst/meshes3d/trimMesh.m                                                   # crlf
+*/matgeom-1.2.4/inst/polygons2d/private/InterX.m                                           # crlf
+*/matgeom-1.2.4/inst/polygons2d/removeMultipleVertices.m                                   # crlf
+*/nurbs-1.4.4/inst/nrbglue.m                                                               # crlf
+*/nurbs-1.4.4/inst/nrbmak.m                                                                # crlf
+*/nurbs-1.4.4/inst/nrbmodw.m                                                               # crlf
+
+# Octave `do ... until`, which the old grammar read as a command
+*-source/inst/private/readblock.m                                                          # do

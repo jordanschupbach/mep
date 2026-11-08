@@ -17,8 +17,8 @@ Both render through the same [[file:highlight-groups.html][decoration]] pipeline
 
 * Grammars compiled in
 
-=bash=, =c=, =c_sharp=, =clojure=, =commonlisp=, =cpp=, =crystal=, =javascript=, =just=, =lua=, =markdown=, =mepml=,
-=nix=, =org=, =python=, =r=, =sql=.
+=bash=, =c=, =c_sharp=, =clojure=, =commonlisp=, =cpp=, =crystal=, =fish=, =fortran= (free and fixed form), =go=, =java=, =javascript=, =julia=, =just=, =lua=, =markdown=, =matlab=
+(=.m=: MATLAB and Octave), =maxima=, =mepml=, =nix=, =org=, =python=, =r=, =rust=, =scheme=, =sql=, =tcl=, =tsx=, =typescript=, =zig=.
 
 * Grammars you can add
 

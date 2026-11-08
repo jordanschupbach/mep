@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "rust",
+      "camelcase": "Rust",
+      "scope": "source.rust",
+      "path": ".",
+      "file-types": ["rs"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Rust, mep's own grammar (node API of tree-sitter/tree-sitter-rust)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

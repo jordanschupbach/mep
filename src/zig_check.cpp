@@ -1067,6 +1067,7 @@ private:
     }
 
     void ifExpr(const Gz &g, Ri ri, NodeIndex node, const zig::full::If &f) {
+        (void)node;
         Gz block = subBlock(g);
         bool payload_is_ref = f.payload_token && t.tokenTag(*f.payload_token) == TokenTag::asterisk;
         Ri cond_ri{payload_is_ref ? Rl::ref : Rl::none, Ctx::none};

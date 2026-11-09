@@ -6,6 +6,9 @@
 #include <clocale>
 #include <cstdlib>
 #include <locale.h>
+#ifdef __APPLE__
+#include <xlocale.h>
+#endif
 #include <climits>
 #include <cmath>
 #include <cstring>

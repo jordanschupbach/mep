@@ -8310,8 +8310,13 @@ void Editor::SyncModeToActivePaneBuffer() {
         // OfficeInsert/Visual -- matches every other mode transition here.
         mode_ = Mode::OfficeNormal;
     } else if (IsSheetBuffer(CurPane().buffer_id)) {
-        // Always re-enters at SheetNormal, same reasoning as Office above.
-        mode_ = Mode::SheetNormal;
+        // Re-enters at SheetNormal, same reasoning as Office above -- unless
+        // a cell is open for editing. The editor is drawn in the cell, so a
+        // click into it (which focuses the pane through its catch-all click
+        // region) must keep the typing going, as a deck's text box does,
+        // rather than strand an open cell that keys no longer reach.
+        const SheetSession *ss = GetSheet(CurPane().buffer_id);
+        mode_ = ss && ss->editing ? Mode::SheetInsert : Mode::SheetNormal;
     } else if (IsPresBuffer(CurPane().buffer_id)) {
         // Keeps typing: a click into the text being typed focuses its own
         // pane (the pane's catch-all click region) mid-edit -- and keeps a
@@ -17870,7 +17875,16 @@ const SheetSession *Editor::GetSheet(int buffer_id) const {
  * @param sess The session to fix up.
  */
 void Editor::EnsureSheetViews(SheetSession &sess) {
+    const size_t had = sess.views.size();
     if (sess.views.size() != sess.wb.sheets.size()) sess.views.resize(sess.wb.sheets.size());
+    // A sheet seen for the first time whose first row is plainly a row of
+    // column names gets it frozen: it stays on screen while the data
+    // scrolls, it is drawn as a header, and the sort and filters leave it
+    // where it is. :MepSheetUnfreeze undoes it for the odd file this
+    // misjudges.
+    for (size_t i = had; i < sess.views.size(); i++) {
+        if (SheetLooksLikeHeader(sess.wb.sheets[i])) sess.views[i].freeze_rows = 1;
+    }
     if (sess.active_sheet < 0) sess.active_sheet = 0;
     if (!sess.wb.sheets.empty() && static_cast<size_t>(sess.active_sheet) >= sess.wb.sheets.size()) {
         sess.active_sheet = static_cast<int>(sess.wb.sheets.size()) - 1;
@@ -17956,12 +17970,23 @@ void Editor::SheetStepColWidth(int buffer_id, int delta, bool all_cols) {
     SheetSession *sess = GetSheetMutable(buffer_id);
     SheetView *sview = SheetViewMutable(buffer_id);
     if (!sess || !sview) return;
-    const int last = all_cols ? sess->wb.sheets[static_cast<size_t>(sess->active_sheet)].max_col : sess->cursor_col;
-    const int first = all_cols ? 0 : sess->cursor_col;
+    // A Visual selection sizes every column it spans, the way selecting
+    // columns in a spreadsheet and dragging one edge sizes them all.
+    const bool in_sel = mode_ == Mode::SheetVisual && sess->has_selection;
+    int first = sess->cursor_col, last = sess->cursor_col;
+    if (all_cols) {
+        first = 0;
+        last = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)].max_col;
+    } else if (in_sel) {
+        first = std::min(sess->sel_anchor_col, sess->cursor_col);
+        last = std::max(sess->sel_anchor_col, sess->cursor_col);
+    }
     for (int c = first; c <= last; c++) SheetSetColWidth(*sview, c, SheetStoredColWidth(*sview, c) + delta);
     const int shown = SheetStoredColWidth(*sview, sess->cursor_col);
-    status_message_ = "column " + ColumnIndexToLetters(sess->cursor_col) + ": " + std::to_string(shown) + "px" +
-                      (all_cols ? " (all columns)" : "");
+    std::string which = "column " + ColumnIndexToLetters(sess->cursor_col);
+    if (all_cols) which = "all columns";
+    else if (last > first) which = "columns " + ColumnIndexToLetters(first) + "-" + ColumnIndexToLetters(last);
+    status_message_ = which + ": " + std::to_string(shown) + "px";
 }
 
 /**
@@ -17974,18 +17999,147 @@ void Editor::SheetStepRowHeight(int buffer_id, int delta, bool all_rows) {
     SheetSession *sess = GetSheetMutable(buffer_id);
     SheetView *sview = SheetViewMutable(buffer_id);
     if (!sess || !sview) return;
+    EnsureSheetOrder(*sview, sess->wb, sess->active_sheet);
+    const float zoom = std::max(0.01f, sess->zoom);
+    const SheetGeom geom = MakeSheetGeom(*sview, zoom);
+    // The height a row is actually drawn at, unzoomed. Stepping from the
+    // stored value instead would mean the first press or two did nothing
+    // visible whenever the font's floor is above it (a 22px row drawn at
+    // 26px for an 18px font).
+    auto drawn = [&](int r) {
+        return static_cast<int>(std::lround(static_cast<float>(SheetRowHeight(geom, r)) / zoom));
+    };
+    const int drawn_floor = drawn(-1);
+    auto step = [&](int r) {
+        int want = drawn(r) + delta;
+        // Shrinking below what the font allows is a no-op on screen, so
+        // the stored value never sinks under it out of sight.
+        if (delta < 0) want = std::max(want, std::min(drawn_floor, drawn(r)));
+        SheetSetRowHeight(*sview, r, want);
+    };
+    const bool in_sel = mode_ == Mode::SheetVisual && sess->has_selection;
+    std::string which = "row " + std::to_string(sess->cursor_row + 1);
     if (all_rows) {
         // Every row in the used range, which is also the only way to
         // change the *default* -- a per-row override map cannot express
         // "and every row I have not visited yet".
         const int rows = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)].max_row;
-        for (int r = 0; r <= rows; r++) SheetSetRowHeight(*sview, r, SheetStoredRowHeight(*sview, r) + delta);
+        for (int r = 0; r <= rows; r++) step(r);
+        which = "all rows";
+    } else if (in_sel && sess->sel_anchor_row != sess->cursor_row) {
+        // Rows by display position, the same set the selection highlights.
+        int n = 0;
+        const int rows = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)].max_row;
+        const int top = std::max(sess->sel_anchor_row, sess->cursor_row);
+        for (int r = 0; r <= std::max(rows, top); r++) {
+            if (!SheetDisplayRangeContains(*sview, sess->sel_anchor_row, sess->cursor_row, r)) continue;
+            step(r);
+            n++;
+        }
+        which = std::to_string(n) + " rows";
     } else {
-        SheetSetRowHeight(*sview, sess->cursor_row, SheetStoredRowHeight(*sview, sess->cursor_row) + delta);
+        step(sess->cursor_row);
     }
-    const int shown = SheetStoredRowHeight(*sview, sess->cursor_row);
-    status_message_ = "row " + std::to_string(sess->cursor_row + 1) + ": " + std::to_string(shown) + "px" +
-                      (all_rows ? " (all rows)" : "");
+    status_message_ = which + ": " + std::to_string(drawn(sess->cursor_row)) + "px";
+}
+
+void Editor::SheetYank(int buffer_id, char what) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview || sess->wb.sheets.empty()) return;
+    EnsureSheetOrder(*sview, sess->wb, sess->active_sheet);
+    const Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
+    std::vector<int> rows{sess->cursor_row};
+    int c0 = sess->cursor_col, c1 = sess->cursor_col;
+    if (what == 'r') {
+        c0 = 0;
+        c1 = sh.max_col;
+    } else if (what == 'v' && sess->has_selection) {
+        rows = SheetDisplayRangeRows(*sview, sess->sel_anchor_row, sess->cursor_row);
+        c0 = std::min(sess->sel_anchor_col, sess->cursor_col);
+        c1 = std::max(sess->sel_anchor_col, sess->cursor_col);
+    }
+    Register &target = RegisterFor(0);
+    std::string what_text;
+    if (rows.size() == 1 && c0 == c1 && what != 'r') {
+        // One cell: its value, plain -- what you would want pasted into a
+        // sentence, not a one-field CSV record with quotes round it.
+        target.text = CsvCellText(sess->wb, sess->active_sheet, rows[0], c0);
+        target.linewise = false;
+        what_text = "cell " + ColumnIndexToLetters(c0) + std::to_string(rows[0] + 1);
+    } else {
+        target.text = SheetBlockToCsv(sess->wb, sess->active_sheet, rows, c0, c1);
+        target.linewise = true;
+        what_text = std::to_string(rows.size()) + (rows.size() == 1 ? " row" : " rows") + " x " +
+                    std::to_string(c1 - c0 + 1) + (c1 == c0 ? " column" : " columns") + " as CSV";
+    }
+    target.blockwise = false;
+    registers_['0'] = target;
+    SyncUnnamedToSystemClipboard();
+    status_message_ = "yanked " + what_text;
+}
+
+void Editor::SheetPaste(int buffer_id) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sess || !sview || sess->wb.sheets.empty()) return;
+    PullSystemClipboard();
+    const Register &reg = RegisterFor(0);
+    std::string text = reg.text;
+    if (text.empty()) {
+        status_message_ = "nothing to paste";
+        return;
+    }
+    EnsureSheetOrder(*sview, sess->wb, sess->active_sheet);
+    PushUndoSheet();
+    const int sheet = sess->active_sheet;
+    if (!reg.linewise) {
+        // A value, not records: the whole text is one cell's, commas and
+        // all ("Smith, John" stays one name).
+        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+        SetCellRaw(sess->wb, sheet, sess->cursor_row, sess->cursor_col, text);
+        status_message_ = "pasted into " + ColumnIndexToLetters(sess->cursor_col) + std::to_string(sess->cursor_row + 1);
+    } else {
+        Workbook block;
+        std::string error;
+        LoadCsvFromMemory(reinterpret_cast<const unsigned char *>(text.data()), text.size(), block, error);
+        const Sheet &src = block.sheets[0];
+        // Rows go down the grid as it is shown, so pasting into a sorted or
+        // filtered view fills the rows you see; past the last one shown,
+        // new rows are added after the sheet's data.
+        const int count = SheetDisplayCount(*sview);
+        const int start = SheetDisplayOfRow(*sview, sess->cursor_row);
+        int appended = sess->wb.sheets[static_cast<size_t>(sheet)].max_row;
+        for (int r = 0; r <= src.max_row; r++) {
+            int target_row;
+            if (start >= 0 && start + r < count) {
+                target_row = SheetRowAtDisplay(*sview, start + r);
+            } else if (start < 0) {
+                target_row = sess->cursor_row + r;
+            } else {
+                target_row = ++appended;
+            }
+            for (int c = 0; c <= src.max_col; c++) {
+                const Cell *cell = src.FindCell(r, c);
+                SetCellRaw(sess->wb, sheet, target_row, sess->cursor_col + c, cell ? cell->raw : "");
+            }
+        }
+        status_message_ = "pasted " + std::to_string(src.max_row + 1) + " x " + std::to_string(src.max_col + 1) + " cells";
+    }
+    sess->modified = true;
+    MarkSheetOrderDirty(*sview);
+}
+
+bool Editor::SheetResizeStep(const std::string &direction) {
+    const int bid = CurPane().buffer_id;
+    if (!IsSheetBuffer(bid)) return false;
+    if (mode_ != Mode::SheetNormal && mode_ != Mode::SheetVisual && mode_ != Mode::SheetInsert) return false;
+    if (direction == "left") SheetStepColWidth(bid, -kSheetColWidthStep, false);
+    else if (direction == "right") SheetStepColWidth(bid, kSheetColWidthStep, false);
+    else if (direction == "up") SheetStepRowHeight(bid, -kSheetRowHeightStep, false);
+    else if (direction == "down") SheetStepRowHeight(bid, kSheetRowHeightStep, false);
+    else return false;
+    return true;
 }
 
 // `+`/`-`/`=` in a sheet pane, the same keys and the same meaning as in
@@ -18187,6 +18341,143 @@ void Editor::SheetRequestAutofit(int buffer_id, int col) {
     sess->autofit_pending = true;
 }
 
+void Editor::SheetRequestRowFit(int buffer_id, int row) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess) return;
+    sess->rowfit_request = row;
+    sess->rowfit_pending = true;
+}
+
+void Editor::SheetToggleWrap(int buffer_id) {
+    SheetView *sview = SheetViewMutable(buffer_id);
+    if (!sview) return;
+    sview->wrapped = !sview->wrapped;
+    if (sview->wrapped) {
+        SheetRequestRowFit(buffer_id, -1);  // main.cpp measures and reports
+    } else {
+        sview->row_h.clear();
+        status_message_ = "wrap off: rows back to one line";
+    }
+}
+
+bool Editor::SheetShowAsText(int buffer_id) {
+    auto it = sheetdocs_.find(buffer_id);
+    if (it == sheetdocs_.end() || it->second.wb.source_format != "csv") {
+        status_message_ = "E: only a .csv grid can be shown as text";
+        return false;
+    }
+    SheetSession &sess = it->second;
+    if (sess.editing) {
+        status_message_ = "E: finish editing the cell first";
+        return false;
+    }
+    // Unsaved edits travel as the text `:w` would write; an untouched
+    // file is shown exactly as it is on disk, byte for byte.
+    std::string text;
+    if (sess.modified) {
+        std::string err;
+        if (!SaveCsvToMemory(sess.wb, text, err)) {
+            status_message_ = "E: " + err;
+            return false;
+        }
+    } else {
+        text.assign(sess.original_bytes.begin(), sess.original_bytes.end());
+    }
+    SheetTextStash stash;
+    stash.views = sess.views;
+    stash.zoom = sess.zoom;
+    stash.cursor_col = sess.cursor_col;
+    const int cursor_row = sess.cursor_row;
+    const bool modified = sess.modified || buffers_[static_cast<size_t>(buffer_id)].modified;
+    sheet_text_stash_[buffer_id] = std::move(stash);
+    sheetdocs_.erase(it);
+
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    buf.lines = SplitIntoLines(text);
+    buf.modified = modified;
+    // A fresh text history: the grid's undo stack holds workbooks, not lines.
+    buf.undo_stack.clear();
+    buf.redo_stack.clear();
+    buf.undo_base = buf.lines;
+    buf.undo_pending = false;
+    if (CurPane().buffer_id == buffer_id) {
+        // Sheet rows and text lines only differ when a quoted field spans
+        // lines, so the cursor's row is a good place to land.
+        CurPane().cursor = {std::min(cursor_row, buf.LineCount() - 1), 0};
+        CurPane().scroll_row = std::max(0, CurPane().cursor.row - 5);
+    }
+    pending_g_ = false;
+    SyncModeToActivePaneBuffer();
+    // The lines were replaced wholesale, not edited, so nothing has told the
+    // highlighter yet; without this the text stays uncoloured until a key.
+    if (lua_ && CurPane().buffer_id == buffer_id) {
+        lua_->DoString("if mep.syntax_highlight then mep.syntax_highlight() end");
+    }
+    status_message_ = "plain text -- :MepSheetGrid (or <leader>Sv) shows the grid again";
+    return true;
+}
+
+bool Editor::SheetShowAsGrid(int buffer_id) {
+    if (buffer_id < 0 || static_cast<size_t>(buffer_id) >= buffers_.size()) return false;
+    Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
+    if (IsSheetBuffer(buffer_id)) return true;
+    if (!IsCsvPath(buf.filename)) {
+        status_message_ = "E: only a .csv buffer can be shown as a grid";
+        return false;
+    }
+    std::string text;
+    for (size_t i = 0; i < buf.lines.size(); i++) {
+        text += buf.lines[i];
+        text += '\n';
+    }
+    Workbook wb;
+    std::string error;
+    if (!LoadCsvFromMemory(reinterpret_cast<const unsigned char *>(text.data()), text.size(), wb, error)) {
+        status_message_ = "E: " + error;
+        return false;
+    }
+    SheetSession sess;
+    sess.buffer_id = buffer_id;
+    sess.wb = std::move(wb);
+    sess.original_bytes.assign(text.begin(), text.end());
+    sess.modified = buf.modified;
+    const int text_row = CurPane().buffer_id == buffer_id ? CurPane().cursor.row : 0;
+    sess.cursor_row = std::max(0, std::min(text_row, sess.wb.sheets.empty() ? 0 : sess.wb.sheets[0].max_row));
+    if (auto st = sheet_text_stash_.find(buffer_id); st != sheet_text_stash_.end()) {
+        // The view as it was left. A CSV is one sheet, so the counts match;
+        // the rows may not, so the display order is rebuilt from the text.
+        if (st->second.views.size() == sess.wb.sheets.size()) {
+            sess.views = std::move(st->second.views);
+            for (SheetView &v : sess.views) MarkSheetOrderDirty(v);
+        }
+        sess.zoom = st->second.zoom;
+        sess.cursor_col = st->second.cursor_col;
+        sheet_text_stash_.erase(st);
+    }
+    sheetdocs_[buffer_id] = std::move(sess);
+    // The text buffer's lines are now only a stand-in; the session holds
+    // the document.
+    buf.lines = {""};
+    buf.undo_stack.clear();
+    buf.redo_stack.clear();
+    buf.undo_base = buf.lines;
+    buf.undo_pending = false;
+    if (CurPane().buffer_id == buffer_id) {
+        CurPane().cursor = {0, 0};
+        CurPane().scroll_row = 0;
+        ReclampSheetCursor(sheetdocs_[buffer_id]);
+    }
+    pending_g_ = false;
+    SyncModeToActivePaneBuffer();
+    status_message_.clear();
+    return true;
+}
+
+void Editor::SheetToggleText(int buffer_id) {
+    if (IsSheetBuffer(buffer_id)) SheetShowAsText(buffer_id);
+    else SheetShowAsGrid(buffer_id);
+}
+
 /**
  * @brief Reports a column's statistics in the status line.
  * @param buffer_id The spreadsheet buffer id.
@@ -18364,7 +18655,7 @@ void Editor::ResizeSheetViewport(int buffer_id, int w, int h) {
     sess.scroll_col = std::max(0, sess.scroll_col);
 }
 
-void Editor::SetSheetFontMetrics(int buffer_id, float line_height) {
+void Editor::SetSheetFontMetrics(int buffer_id, float line_height, float char_width) {
     auto it = sheetdocs_.find(buffer_id);
     if (it == sheetdocs_.end()) return;
     SheetSession &sess = it->second;
@@ -18374,6 +18665,12 @@ void Editor::SetSheetFontMetrics(int buffer_id, float line_height) {
     // Only a real change counts: this arrives every frame, and treating
     // float jitter as a change would invalidate geometry continuously.
     if (std::abs(view.font_line_height - line_height) > 0.01f) view.font_line_height = line_height;
+    if (char_width > 0.0f && std::abs(view.font_char_w - char_width) > 0.01f) view.font_char_w = char_width;
+    // The largest row number the gutter may have to show: the data's last
+    // row, the cursor's (it can go past the data), and what was drawn.
+    const Sheet &sh = sess.wb.sheets[static_cast<size_t>(sess.active_sheet)];
+    const int largest = std::max({sh.max_row, sess.cursor_row, sess.last_row_drawn}) + 1;
+    view.row_label_digits = SheetDigitCount(largest);
 }
 
 SheetSession *Editor::GetSheetMutable(int buffer_id) {
@@ -18492,7 +18789,9 @@ void Editor::HandleSheetNormalInput() {
         if (held(gfx::Key::Right)) SheetStepColWidth(CurPane().buffer_id, kSheetColWidthStep, shift);
         if (held(gfx::Key::Up)) SheetStepRowHeight(CurPane().buffer_id, -kSheetRowHeightStep, shift);
         if (held(gfx::Key::Down)) SheetStepRowHeight(CurPane().buffer_id, kSheetRowHeightStep, shift);
-    } else {
+    } else if (!sess->pending_y) {
+        // (After a `y`, the next h/j/k/l completes the yank -- `yl` -- and
+        // must not also move the cursor.)
         if (held(gfx::Key::H) || held(gfx::Key::Left)) sess->cursor_col = std::max(0, sess->cursor_col - 1);
         if (held(gfx::Key::L) || held(gfx::Key::Right)) sess->cursor_col++;
         // Row motion goes through the display order, so j/k step over rows
@@ -18503,8 +18802,45 @@ void Editor::HandleSheetNormalInput() {
         }
     }
 
+    // Enter edits the cell with the caret after its value -- the
+    // spreadsheet key for it, beside Vim's i/a/c.
+    if (!alt && (gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter))) {
+        pending_g_ = false;
+        SheetBeginEdit(CurPane().buffer_id, SheetEditStart::AtEnd);
+        while (gfx::GetCharPressed() > 0) {
+        }
+        return;
+    }
+
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
+        // Yank: `yy` (or `Y`) the row as a CSV record, `yl` the cell's value.
+        // Anything else after a `y` cancels it.
+        if (sess->pending_y) {
+            sess->pending_y = false;
+            if (cp == 'y') SheetYank(CurPane().buffer_id, 'r');
+            else if (cp == 'l') SheetYank(CurPane().buffer_id, 'c');
+            cp = gfx::GetCharPressed();
+            continue;
+        }
+        if (cp == 'y') {
+            pending_g_ = false;
+            sess->pending_y = true;
+            cp = gfx::GetCharPressed();
+            continue;
+        }
+        if (cp == 'Y') {
+            pending_g_ = false;
+            SheetYank(CurPane().buffer_id, 'r');
+            cp = gfx::GetCharPressed();
+            continue;
+        }
+        if (cp == 'p' || cp == 'P') {
+            pending_g_ = false;
+            SheetPaste(CurPane().buffer_id);
+            cp = gfx::GetCharPressed();
+            continue;
+        }
         if (cp == ':') {
             EnterCommand();
             return;  // mode_ is no longer SheetNormal -- stop draining as this mode
@@ -18556,14 +18892,14 @@ void Editor::HandleSheetNormalInput() {
         } else if (cp == '$') {
             pending_g_ = false;
             sess->cursor_col = sh.max_col;
-        } else if (cp == 'i' || cp == 'a') {
+        } else if (cp == 'i' || cp == 'a' || cp == 'c' || cp == 's') {
+            // Editing happens in the cell itself (main.cpp draws the editor
+            // over it). Vim's sense of the keys: `i` puts the caret before
+            // the value, `a` after it, and `c`/`s` replace it outright.
             pending_g_ = false;
-            PushUndoSheet();
-            const Cell *cell = sh.FindCell(sess->cursor_row, sess->cursor_col);
-            sess->edit_buffer = cell ? cell->raw : "";
-            sess->edit_cursor = static_cast<int>(sess->edit_buffer.size());
-            sess->editing = true;
-            mode_ = Mode::SheetInsert;
+            SheetBeginEdit(CurPane().buffer_id, cp == 'i'   ? SheetEditStart::AtStart
+                                                : cp == 'a' ? SheetEditStart::AtEnd
+                                                            : SheetEditStart::Replace);
             return;
         } else if (cp == 'v') {
             pending_g_ = false;
@@ -18578,6 +18914,8 @@ void Editor::HandleSheetNormalInput() {
             // simplification the Office pane made by skipping operator-
             // pending mode entirely.
             pending_g_ = false;
+            // As in a text buffer, what is deleted is yanked first.
+            SheetYank(CurPane().buffer_id, 'c');
             PushUndoSheet();
             SetCellRaw(sess->wb, sess->active_sheet, sess->cursor_row, sess->cursor_col, "");
             // The order is only restamped, not rebuilt here: a live resort
@@ -18706,6 +19044,67 @@ void Editor::PrevSheet() {
     status_message_ = "-- " + sess.wb.sheets[static_cast<size_t>(sess.active_sheet)].name + " --";
 }
 
+namespace {
+
+// UTF-8 helpers for the cell editor, whose caret is a byte offset that
+// must only ever sit on a character boundary.
+size_t Utf8PrevBoundary(const std::string &s, size_t i) {
+    if (i == 0) return 0;
+    i--;
+    while (i > 0 && (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80) i--;
+    return i;
+}
+
+size_t Utf8NextBoundary(const std::string &s, size_t i) {
+    if (i >= s.size()) return s.size();
+    i++;
+    while (i < s.size() && (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80) i++;
+    return i;
+}
+
+}  // namespace
+
+void Editor::SheetBeginEdit(int buffer_id, SheetEditStart how) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess || sess->wb.sheets.empty()) return;
+    if (sess->header_menu_col >= 0) sess->header_menu_col = -1;
+    PushUndoSheet();
+    const Sheet &sh = sess->wb.sheets[static_cast<size_t>(sess->active_sheet)];
+    const Cell *cell = sh.FindCell(sess->cursor_row, sess->cursor_col);
+    sess->edit_buffer = how == SheetEditStart::Replace || !cell ? "" : cell->raw;
+    sess->edit_cursor = how == SheetEditStart::AtStart ? 0 : static_cast<int>(sess->edit_buffer.size());
+    sess->editing = true;
+    sess->has_selection = false;
+    mode_ = Mode::SheetInsert;
+}
+
+void Editor::SheetCommitEdit(int buffer_id) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess || !sess->editing) return;
+    SetCellRaw(sess->wb, sess->active_sheet, sess->cursor_row, sess->cursor_col, sess->edit_buffer);
+    sess->modified = true;
+    sess->editing = false;
+    if (mode_ == Mode::SheetInsert && CurPane().buffer_id == buffer_id) mode_ = Mode::SheetNormal;
+    // Restamp, don't rebuild: a live resort in the middle of typing
+    // would move the row out from under the cursor on every commit.
+    // ResizeSheetViewport rebuilds on the next frame, and the cursor
+    // tracks its *sheet* row, so it stays on the cell just edited
+    // even if the new value sorts it somewhere else -- scroll-follow
+    // then brings it back into view rather than stranding it.
+    if (SheetView *sview = SheetViewMutable(buffer_id)) MarkSheetOrderDirty(*sview);
+}
+
+void Editor::SheetSetEditCaret(int buffer_id, int byte_offset) {
+    SheetSession *sess = GetSheetMutable(buffer_id);
+    if (!sess || !sess->editing) return;
+    size_t at = static_cast<size_t>(std::max(0, std::min(byte_offset, static_cast<int>(sess->edit_buffer.size()))));
+    while (at > 0 && at < sess->edit_buffer.size() &&
+           (static_cast<unsigned char>(sess->edit_buffer[at]) & 0xC0) == 0x80) {
+        at--;
+    }
+    sess->edit_cursor = static_cast<int>(at);
+}
+
 void Editor::HandleSheetInsertInput() {
     SheetSession *sess = nullptr;
     {
@@ -18716,70 +19115,73 @@ void Editor::HandleSheetInsertInput() {
         }
         sess = &it->second;
     }
+    const int bid = CurPane().buffer_id;
+    const bool alt = gfx::IsKeyDown(gfx::Key::LeftAlt) || gfx::IsKeyDown(gfx::Key::RightAlt);
+    const bool shift = gfx::IsKeyDown(gfx::Key::LeftShift) || gfx::IsKeyDown(gfx::Key::RightShift);
+    auto held = [](gfx::Key key) { return gfx::IsKeyPressed(key) || gfx::IsKeyPressedRepeat(key); };
 
-    bool escape = false, enter = false, backspace = false, del = false;
-    for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
-        if (key == gfx::Key::Escape) escape = true;
-        else if (key == gfx::Key::Enter) enter = true;
-        else if (key == gfx::Key::Backspace) backspace = true;
-        else if (key == gfx::Key::Delete) del = true;
+    // Leaving the cell. Escape keeps the edit, as leaving Insert mode does
+    // in a text buffer; the others are a spreadsheet's: Enter and the
+    // up/down arrows commit and move a row, Tab a column.
+    int move_rows = 0, move_cols = 0;
+    bool leave = false;
+    if (gfx::IsKeyPressed(gfx::Key::Escape)) {
+        leave = true;
+    } else if ((gfx::IsKeyPressed(gfx::Key::Enter) || gfx::IsKeyPressed(gfx::Key::KpEnter)) && !alt) {
+        leave = true;
+        move_rows = shift ? -1 : 1;
+    } else if (gfx::IsKeyPressed(gfx::Key::Tab)) {
+        leave = true;
+        move_cols = shift ? -1 : 1;
+    } else if (held(gfx::Key::Up)) {
+        leave = true;
+        move_rows = -1;
+    } else if (held(gfx::Key::Down)) {
+        leave = true;
+        move_rows = 1;
     }
-    /**
-     * @brief Writes the in-progress edit buffer into the current cell and returns to SheetNormal mode.
-     */
-    auto commit = [&]() {
-        SetCellRaw(sess->wb, sess->active_sheet, sess->cursor_row, sess->cursor_col, sess->edit_buffer);
-        sess->modified = true;
-        sess->editing = false;
-        mode_ = Mode::SheetNormal;
-        // Restamp, don't rebuild: a live resort in the middle of typing
-        // would move the row out from under the cursor on every commit.
-        // ResizeSheetViewport rebuilds on the next frame, and the cursor
-        // tracks its *sheet* row, so it stays on the cell just edited
-        // even if the new value sorts it somewhere else -- scroll-follow
-        // then brings it back into view rather than stranding it.
-        if (SheetView *sview = SheetViewMutable(CurPane().buffer_id)) MarkSheetOrderDirty(*sview);
-    };
-    if (escape) {
-        commit();
-        return;
-    }
-    if (enter) {
-        commit();
-        // Real-spreadsheet "Enter commits and advances" -- by a display
-        // row, so advancing in a filtered sheet lands on the next row the
-        // user can actually see.
-        if (SheetView *sview = SheetViewMutable(CurPane().buffer_id)) {
-            MoveSheetCursorRows(*sess, *sview, 1);
-        } else {
-            sess->cursor_row++;
+    if (leave) {
+        SheetCommitEdit(bid);
+        // By display row, so advancing in a filtered sheet lands on the
+        // next row the user can actually see.
+        if (move_rows != 0) {
+            if (SheetView *sview = SheetViewMutable(bid)) MoveSheetCursorRows(*sess, *sview, move_rows);
+            else sess->cursor_row = std::max(0, sess->cursor_row + move_rows);
+        }
+        if (move_cols != 0) sess->cursor_col = std::max(0, sess->cursor_col + move_cols);
+        while (gfx::GetCharPressed() > 0) {
         }
         return;
     }
 
-    int cp = gfx::GetCharPressed();
-    while (cp > 0) {
-        if (cp >= 32 && cp <= 126) {
-            sess->edit_buffer.insert(sess->edit_buffer.begin() + sess->edit_cursor, static_cast<char>(cp));
-            sess->edit_cursor++;
-        }
-        cp = gfx::GetCharPressed();
+    std::string &text = sess->edit_buffer;
+    size_t caret = static_cast<size_t>(std::max(0, std::min(sess->edit_cursor, static_cast<int>(text.size()))));
+    // Alt+Enter breaks the line inside the cell, as in other spreadsheets;
+    // a CSV keeps it as a quoted field.
+    if (gfx::IsKeyPressed(gfx::Key::Enter) && alt) {
+        text.insert(caret, 1, '\n');
+        caret++;
     }
-    if (backspace || gfx::IsKeyPressedRepeat(gfx::Key::Backspace)) {
-        if (sess->edit_cursor > 0) {
-            sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor - 1);
-            sess->edit_cursor--;
-        }
+    for (int cp = gfx::GetCharPressed(); cp > 0; cp = gfx::GetCharPressed()) {
+        if (cp < 32 || cp == 127) continue;
+        std::string bytes;
+        AppendUtf8(bytes, cp);
+        text.insert(caret, bytes);
+        caret += bytes.size();
     }
-    if (del || gfx::IsKeyPressedRepeat(gfx::Key::Delete)) {
-        if (sess->edit_cursor < static_cast<int>(sess->edit_buffer.size())) {
-            sess->edit_buffer.erase(sess->edit_buffer.begin() + sess->edit_cursor);
-        }
+    if (held(gfx::Key::Backspace) && caret > 0) {
+        const size_t from = Utf8PrevBoundary(text, caret);
+        text.erase(from, caret - from);
+        caret = from;
     }
-    if (gfx::IsKeyPressed(gfx::Key::Left) || gfx::IsKeyPressedRepeat(gfx::Key::Left)) sess->edit_cursor = std::max(0, sess->edit_cursor - 1);
-    if (gfx::IsKeyPressed(gfx::Key::Right) || gfx::IsKeyPressedRepeat(gfx::Key::Right)) {
-        sess->edit_cursor = std::min(static_cast<int>(sess->edit_buffer.size()), sess->edit_cursor + 1);
+    if (held(gfx::Key::Delete) && caret < text.size()) {
+        text.erase(caret, Utf8NextBoundary(text, caret) - caret);
     }
+    if (held(gfx::Key::Left)) caret = Utf8PrevBoundary(text, caret);
+    if (held(gfx::Key::Right)) caret = Utf8NextBoundary(text, caret);
+    if (gfx::IsKeyPressed(gfx::Key::Home)) caret = 0;
+    if (gfx::IsKeyPressed(gfx::Key::End)) caret = text.size();
+    sess->edit_cursor = static_cast<int>(caret);
 }
 
 void Editor::HandleSheetVisualInput() {
@@ -18867,25 +19269,30 @@ void Editor::HandleSheetVisualInput() {
         } else if (cp == '$') {
             pending_g_ = false;
             sess->cursor_col = sh.max_col;
-        } else if (cp == 'x' || cp == 'd') {
+        } else if (cp == 'y' || cp == 'x' || cp == 'd') {
             pending_g_ = false;
-            PushUndoSheet();
-            int r0 = std::min(sess->sel_anchor_row, sess->cursor_row);
-            int r1 = std::max(sess->sel_anchor_row, sess->cursor_row);
-            int c0 = std::min(sess->sel_anchor_col, sess->cursor_col);
-            int c1 = std::max(sess->sel_anchor_col, sess->cursor_col);
-            // Only the rows actually shown between the two corners. With a
-            // filter active, every hidden row whose number happens to fall
-            // between them is NOT part of the selection the user drew --
-            // clearing those would destroy data that was never on screen.
-            for (int r = r0; r <= r1; r++) {
-                if (sview && !SheetDisplayRangeContains(*sview, sess->sel_anchor_row, sess->cursor_row, r)) continue;
-                for (int c = c0; c <= c1; c++) SetCellRaw(sess->wb, sess->active_sheet, r, c, "");
+            // The rows actually shown between the two corners, top to
+            // bottom as shown. With a filter active, a hidden row whose
+            // number falls between them is NOT part of the selection the
+            // user drew; in a sorted view, the rows drawn between the
+            // corners are not the rows *numbered* between them.
+            const std::vector<int> rows =
+                sview ? SheetDisplayRangeRows(*sview, sess->sel_anchor_row, sess->cursor_row)
+                      : std::vector<int>{sess->cursor_row};
+            const int c0 = std::min(sess->sel_anchor_col, sess->cursor_col);
+            const int c1 = std::max(sess->sel_anchor_col, sess->cursor_col);
+            // `y` copies the block; `x`/`d` copy it and then clear it.
+            SheetYank(CurPane().buffer_id, 'v');
+            if (cp != 'y') {
+                PushUndoSheet();
+                for (int r : rows) {
+                    for (int c = c0; c <= c1; c++) SetCellRaw(sess->wb, sess->active_sheet, r, c, "");
+                }
+                if (sview) MarkSheetOrderDirty(*sview);
+                sess->modified = true;
             }
-            if (sview) MarkSheetOrderDirty(*sview);
-            sess->modified = true;
             sess->has_selection = false;
-            sess->cursor_row = r0;
+            if (!rows.empty()) sess->cursor_row = rows.front();
             sess->cursor_col = c0;
             mode_ = Mode::SheetNormal;
             return;
@@ -32329,7 +32736,7 @@ const std::vector<std::string> &BuiltinCommandNames() {
         "bnext", "bn", "bprevious", "bprev", "bp", "bNext", "bN", "bdelete", "bd", "bdelete!", "bd!",
         "set", "normal", "norm", "normal!", "norm!", "MepNotifyClear", "MepNotifyDismiss",
         "MepNotifyPanel", "MepLayout", "MepScratch", "MepZen", "MepPaneZoom", "colorscheme", "colo", "lua", "source",
-        "MepNextSheet", "MepPrevSheet", "MepSheetSort", "MepSheetSortClear", "MepSheetFilter", "MepSheetFilterClear", "MepSheetFreeze", "MepSheetUnfreeze", "MepSheetZoom", "MepSheetWidth", "MepSheetHeight", "MepSheetAutofit", "MepSheetStats", "MepSheetFind", "MepSheetApply", "PresNew", "PresImage", "PresExport", "PresPresent", "PresBackground", "PresMath", "Model3DNew", "SketchNew", "CadNew", "CadExport", "Viewer", "ViewerBind", "ViewerRun", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
+        "MepNextSheet", "MepPrevSheet", "MepSheetSort", "MepSheetSortClear", "MepSheetFilter", "MepSheetFilterClear", "MepSheetFreeze", "MepSheetUnfreeze", "MepSheetZoom", "MepSheetWidth", "MepSheetHeight", "MepSheetAutofit", "MepSheetWrap", "MepSheetText", "MepSheetGrid", "MepSheetToggle", "MepSheetStats", "MepSheetFind", "MepSheetApply", "PresNew", "PresImage", "PresExport", "PresPresent", "PresBackground", "PresMath", "Model3DNew", "SketchNew", "CadNew", "CadExport", "Viewer", "ViewerBind", "ViewerRun", "Kanban", "Gantt", "Org", "Text", "CollabJoin", "CollabLeave",
         "CollabStatus", "AgentSocket",
     };
     return kNames;
@@ -35288,6 +35695,12 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         NextSheet();
     } else if (name == "MepPrevSheet") {
         PrevSheet();
+    } else if (name == "MepSheetText") {
+        SheetShowAsText(CurPane().buffer_id);
+    } else if (name == "MepSheetGrid") {
+        SheetShowAsGrid(CurPane().buffer_id);
+    } else if (name == "MepSheetToggle") {
+        SheetToggleText(CurPane().buffer_id);
     } else if (name.rfind("MepSheet", 0) == 0) {
         // The spreadsheet view commands. All of them work on the active
         // pane's sheet, take an optional leading column (letters or a
@@ -35412,9 +35825,12 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                     }
                 }
                 if (at >= words.size()) {
-                    status_message_ = "E: :" + base + " [index] <pixels> | +<n> | -<n>" + (is_width ? " | auto" : "");
-                } else if (is_width && words[at] == "auto") {
-                    SheetRequestAutofit(sheet_buf, index);
+                    status_message_ = "E: :" + base + " [index] <pixels> | +<n> | -<n> | auto";
+                } else if (words[at] == "auto") {
+                    // A column fits its widest value; a row fits its
+                    // tallest wrapped value at the current widths.
+                    if (is_width) SheetRequestAutofit(sheet_buf, index);
+                    else SheetRequestRowFit(sheet_buf, index);
                 } else {
                     const SheetView *v = SheetViewFor(sheet_buf);
                     const int current = !v ? 0
@@ -35439,6 +35855,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
                                           "px";
                     }
                 }
+            } else if (base == "MepSheetWrap") {
+                SheetToggleWrap(sheet_buf);
             } else if (base == "MepSheetAutofit") {
                 int col = -1;
                 if (!words.empty() && words[0] != "all") {
@@ -35543,6 +35961,8 @@ void Editor::ExecuteCommandLine(const std::string &raw) {
         OpenKanbanView();
     } else if (name == "Gantt") {
         OpenGanttView();
+    } else if (name == "Text" && IsSheetBuffer(CurPane().buffer_id)) {
+        SheetShowAsText(CurPane().buffer_id);
     } else if (name == "Org" || name == "Text") {
         CloseOrgView();
     } else if (name == "CollabJoin") {
@@ -36127,6 +36547,50 @@ std::vector<Editor::ActivityTestFailureLine> Editor::ActivityTestFailureLines(
         }
     }
     return out;
+}
+
+void Editor::SyntaxHighlightCsv(int ns) {
+    static const char *const kColumnHl[] = {"Blue", "Green", "Yellow", "Purple", "Cyan", "Orange"};
+    constexpr int kColumnHlCount = static_cast<int>(sizeof(kColumnHl) / sizeof(kColumnHl[0]));
+    // Recoloured on every edit, so a very long file is coloured only as
+    // far as anyone is likely to read it as text.
+    const int n = std::min(Buf().LineCount(), 50000);
+    int col = 0;
+    bool in_quotes = false;
+    auto add = [&](int row, int start, int end, const char *hl) {
+        if (end <= start) return;
+        Decoration d;
+        d.row = row;
+        d.col_start = start;
+        d.col_end = end;
+        d.hl_group = hl;
+        AddDecoration(ns, d);
+    };
+    for (int row = 0; row < n; row++) {
+        const std::string &line = Buf().lines[static_cast<size_t>(row)];
+        const int len = static_cast<int>(line.size());
+        if (!in_quotes) col = 0;  // a new record; inside quotes the field goes on
+        int field_start = 0;
+        for (int i = 0; i < len; i++) {
+            const char c = line[static_cast<size_t>(i)];
+            if (in_quotes) {
+                if (c != '"') continue;
+                if (i + 1 < len && line[static_cast<size_t>(i) + 1] == '"') {
+                    i++;  // "" is a literal quote
+                    continue;
+                }
+                in_quotes = false;
+            } else if (c == '"' && i == field_start) {
+                in_quotes = true;
+            } else if (c == ',') {
+                add(row, field_start, i, kColumnHl[col % kColumnHlCount]);
+                add(row, i, i + 1, "Comment");
+                col++;
+                field_start = i + 1;
+            }
+        }
+        add(row, field_start, len, kColumnHl[col % kColumnHlCount]);
+    }
 }
 
 void Editor::SyntaxHighlightFallback(int ns, const std::vector<std::string> &keywords,

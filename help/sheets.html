@@ -15,8 +15,37 @@
 <h1>Opening</h1>
 <p><code>.xlsx</code>, <code>.ods</code> and <code>.csv</code> open as a grid: a real spreadsheet view with
 rows, columns and cell selection.</p>
+<p>Opening a sheet fits each column to its contents, up to a limit, so one
+long notes column does not push the rest off screen. A value too long
+for its column ends in <code>…</code>, which means there is more: widen the column,
+or wrap the row (see below). A newline inside a value shows as <code>⏎</code> until
+the row is tall enough to show the lines themselves.</p>
+<p>If the first row is a row of column names -- all text, no blanks, no
+repeats -- it is frozen and drawn as a header: it stays on screen while
+the data scrolls, and sorting and filtering leave it where it is.
+<code>:MepSheetUnfreeze</code> puts it back among the data.</p>
 <h1>Moving and editing</h1>
-<p>The usual motions move between cells. Type to edit the selected cell.
+<p>The usual motions move between cells.</p>
+<p>Editing happens in the cell itself: it opens with a caret in it, and what
+you type appears there (the formula bar above mirrors it). A value longer
+than its column spills over the cells to its right while you type, and
+scrolls once it reaches the edge of the pane.</p>
+<table>
+<tr><th>Key</th><th>Does</th></tr>
+<tr><td><code>i</code></td><td>edit the cell, caret before its value</td></tr>
+<tr><td><code>a</code>, <code>Enter</code></td><td>edit the cell, caret after its value</td></tr>
+<tr><td><code>c</code>, <code>s</code></td><td>replace the value: edit from empty</td></tr>
+<tr><td>double-click</td><td>edit the cell under the pointer</td></tr>
+<tr><td><code>Left</code> / <code>Right</code>, <code>Home</code> / <code>End</code></td><td>move the caret</td></tr>
+<tr><td><code>Alt-Enter</code></td><td>a line break inside the cell</td></tr>
+<tr><td><code>Esc</code></td><td>finish, keeping the edit, and stay on the cell</td></tr>
+<tr><td><code>Enter</code> / <code>Shift-Enter</code></td><td>finish and move down / up</td></tr>
+<tr><td><code>Up</code> / <code>Down</code></td><td>finish and move up / down</td></tr>
+<tr><td><code>Tab</code> / <code>Shift-Tab</code></td><td>finish and move right / left</td></tr>
+</table>
+<p>A click inside the cell being edited puts the caret there; a click on any
+other cell finishes the edit and moves to it. The edit is written to the
+cell only when you finish it, and <code>u</code> undoes it as one change.
 <code>gg</code> and <code>G</code> go to the first and last row <b>shown</b> -- which, once a sort or
 a filter is on, is not the same as the sheet's first and last row.</p>
 <table>
@@ -26,6 +55,27 @@ a filter is on, is not the same as the sheet's first and last row.</p>
 <tr><td><code>mep.sheet_next()</code></td><td>the Lua form</td></tr>
 <tr><td><code>mep.sheet_prev()</code></td><td>the Lua form</td></tr>
 </table>
+<h1>Yanking and pasting</h1>
+<p><code>y</code> copies from the grid into the unnamed register and the system
+clipboard, so what you yank can be pasted into a text buffer, a CSV's
+own text view or another program.</p>
+<table>
+<tr><th>Key</th><th>Yanks</th></tr>
+<tr><td><code>yy</code> or <code>Y</code></td><td>the cursor's row, as a CSV record</td></tr>
+<tr><td><code>yl</code></td><td>the cursor's cell, as its plain value</td></tr>
+<tr><td><code>y</code> in Visual</td><td>the selected block, as CSV records</td></tr>
+<tr><td><code>x</code> / <code>d</code></td><td>clear the cell (or the Visual block) and yank what was there</td></tr>
+</table>
+<p>Records are written exactly as <code>:w</code> would write them: values as the file
+spells them, fields quoted when they hold a comma, a quote or a newline,
+and empty cells kept so a block stays square. They are yanked as whole
+lines, so <code>p</code> in a text buffer adds them below the cursor line. In a
+sorted or filtered view a Visual block is the rows as you see them, in
+that order -- never a row the filter hides.</p>
+<p><code>p</code> (or <code>P</code>) pastes at the cursor cell. Records -- anything yanked as lines
+-- fill a block of cells down and to the right, empty fields clearing
+their cells; any other text goes into the cursor's cell whole, so a pasted
+"Smith, John" stays one value. <code>u</code> undoes a paste.</p>
 <h1>Zoom</h1>
 <p><code>+</code> and <code>-</code> make the grid bigger and smaller -- cells and text together,
 so nothing clips -- and <code>=</code> puts it back to 100%. <code>Ctrl</code> with the mouse
@@ -33,16 +83,28 @@ wheel does the same. The zoom belongs to the pane, so switching between a
 workbook's sheets keeps it. <code>:MepSheetZoom in|out|reset|&lt;percent&gt;</code> sets it
 from the command line, and <code>&lt;leader&gt;Sz</code> resets it.</p>
 <h1>Column widths and row heights</h1>
-<p><code>Alt-Left</code> and <code>Alt-Right</code> narrow and widen the column the cursor is in;
-<code>Alt-Up</code> and <code>Alt-Down</code> make its row shorter and taller. Hold <code>Shift</code> as
-well to size every column or row at once. (The arrow keys, not <code>hjkl</code>:
-<code>Alt-h/j/k/l</code> already move between panes.)</p>
+<p>The keys that resize a pane size a cell in a spreadsheet:
+<code>Alt-Shift-h</code> and <code>Alt-Shift-l</code> narrow and widen the cursor's column,
+<code>Alt-Shift-k</code> and <code>Alt-Shift-j</code> make its row shorter and taller. Hold them
+to keep going. In Visual mode they size every selected column or row
+together, and they work while a cell is being edited, without typing
+anything into it. (To resize the pane a sheet is in, drag its border.)</p>
+<p><code>Alt-Left</code> and <code>Alt-Right</code> / <code>Alt-Up</code> and <code>Alt-Down</code> do the same, and
+with <code>Shift</code> held as well they size every column or row at once.</p>
 <p>With the mouse, drag the edge of a column header -- or of a row number --
-to size it, and double-click that edge to fit the column to its contents.</p>
+to size it. Double-click a column's edge to fit it to its contents, and a
+row's edge to fit the row to its wrapped text (double-click again to put it
+back to one line).</p>
+<p>A row taller than one line wraps its values to fill it, so making a row
+taller is the other way to read a long value. <code>:MepSheetWrap</code> (<code>&lt;leader&gt;Sr</code>)
+does it for every row at once: each grows to fit its longest value at the
+current widths, and running it again puts them all back to one line.</p>
 <table>
 <tr><th>Command</th><th>Does</th></tr>
 <tr><td><code>:MepSheetWidth [col] &lt;px&gt;</code></td><td>set a width; <code>+10</code> / <code>-10</code> adjust, <code>auto</code> fits</td></tr>
-<tr><td><code>:MepSheetHeight [row] &lt;px&gt;</code></td><td>set a row height</td></tr>
+<tr><td><code>:MepSheetHeight [row] &lt;px&gt;</code></td><td>set a row height; <code>auto</code> fits its text</td></tr>
+<tr><td><code>:MepSheetWrap</code></td><td>fit every row to its text, or back to one line</td></tr>
+<tr><td><code>&lt;leader&gt;Sr</code> / <code>&lt;leader&gt;SR</code></td><td>wrap every row / fit this row</td></tr>
 <tr><td><code>:MepSheetAutofit [col\vert all]</code></td><td>fit one column, or every column</td></tr>
 <tr><td><code>&lt;leader&gt;Sw</code></td><td>prompt for this column's width</td></tr>
 <tr><td><code>&lt;leader&gt;Sa</code></td><td>autofit this column</td></tr>
@@ -137,14 +199,23 @@ file and is not saved with it.</p>
 <code>mep.sheet_freeze(rows, cols)</code>, <code>mep.sheet_zoom(factor)</code>,
 <code>mep.sheet_zoom_reset()</code>, <code>mep.sheet_autofit(col)</code>,
 <code>mep.sheet_col_width(col, px)</code>, <code>mep.sheet_row_height(row, px)</code>,
+<code>mep.sheet_fit_rows(row)</code>, <code>mep.sheet_wrap()</code>, <code>mep.sheet_toggle_text()</code>,
 <code>mep.sheet_stats(col)</code>, <code>mep.sheet_find(text, forward)</code>,
 <code>mep.sheet_apply()</code>, <code>mep.sheet_cell(row, col)</code> and <code>mep.sheet_info()</code>,
 which returns the cursor, the zoom, the sort, the filters, the row counts
 and the display order in one table. Rows and columns are 1-based.</p>
 <h1>CSV</h1>
 <p>A <code>.csv</code> opens in the same grid, which makes it a comfortable way to read
-data files that are painful as text. Saving writes CSV back -- as values,
-so a formula is saved as its result.</p>
+data files that are painful as text. Numbers are shown as the file spells
+them (<code>19.00</code>, not <code>19</code>), and saving writes every value back the way it
+was read, in the file's own line endings -- only a formula, which CSV
+cannot hold, is saved as its result.</p>
+<h2>Grid or plain text</h2>
+<p><code>:MepSheetText</code> shows the same buffer as its plain text, each column in
+its own colour, and <code>:MepSheetGrid</code> shows the grid again; <code>:MepSheetToggle</code>
+and <code>&lt;leader&gt;Sv</code> switch between them. Edits made in either view carry over
+to the other unsaved, and <code>:w</code> works from both. The grid's widths, frozen
+rows, sort, filters and zoom are kept while you are in the text.</p>
 <h1>See also</h1>
 <ul>
 <li><a href="office.html">Word processor documents</a> -- the other office formats.</li>

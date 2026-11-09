@@ -621,17 +621,32 @@ constexpr int kMathSerifCodepoints[] = {
 // mark -- Editor::MepmlGlyphs), so a sheet may name any glyph JetBrains
 // Mono has rather than only the ones listed above.
 std::vector<int> g_math_extra_codepoints;
+// The same set, for lookup: text drawn from a file (a CSV of names and
+// cities) can add a few hundred accented letters, and IsMathCodepoint is
+// asked about every non-ASCII character drawn.
+std::unordered_set<int> g_math_extra_set;
+// RequestTextGlyph added a codepoint; the frame loop re-bakes g_math_font
+// once, between frames, rather than mid-draw.
+bool g_math_rebake_pending = false;
 
 bool IsMathCodepoint(int cp) {
     if (cp < 0x80) return false;  // ASCII always renders from the caller's own font tier
     for (int c : kMathCodepoints) {
         if (c == cp) return true;
     }
-    for (int c : g_math_extra_codepoints) {
-        if (c == cp) return true;
-    }
-    return false;
+    return g_math_extra_set.count(cp) != 0;
 }
+
+void AddMathExtraCodepoint(int cp) {
+    if (g_math_extra_set.insert(cp).second) g_math_extra_codepoints.push_back(cp);
+}
+
+// Asks for a glyph that text is about to be drawn with but no font tier
+// has baked -- g_font's atlas is ASCII-only, so before this an ordinary
+// "München" in a buffer or a spreadsheet cell drew as "M?nchen". The
+// glyph joins g_math_font (the same face) for the next frame; one the
+// face does not have is remembered and left as '?'.
+void RequestTextGlyph(int cp);
 
 // Same "separate atlas, same reload point" pattern as g_icon_font/
 // g_math_font above -- for VTerm cell rendering (DrawTerminalGrid,
@@ -2425,6 +2440,7 @@ float DrawUiText(const std::string &text, gfx::Vector2 pos, float font_size, gfx
                              // untouched.
                              : IsMathCodepoint(cp)   ? g_math_font
                                                      : g_font;
+        if (cp >= 0x80 && &f == &g_font) RequestTextGlyph(cp);
         if (!measure_only) gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{x, pos.y}, font_size, 0, tint);
         x += gfx::MeasureTextEx(f, glyph.c_str(), font_size, 0).x;
     }
@@ -2565,6 +2581,20 @@ void BakeMathFont() {
                                       static_cast<int>(g_font_size * 2), math_codepoints.data(),
                                       static_cast<int>(math_codepoints.size()));
     gfx::SetTextureFilter(g_math_font.texture, gfx::TextureFilter::Bilinear);
+}
+
+void RequestTextGlyph(int cp) {
+    static std::unordered_set<int> asked;
+    // A cap, so a file of CJK text (which this face lacks anyway) cannot
+    // grow the set without bound.
+    if (cp < 0x80 || asked.size() >= 4096 || !asked.insert(cp).second) return;
+    if (IsIconCodepoint(cp) || IsSymbolCodepoint(cp) || IsMathCodepoint(cp)) return;
+    static gfx::tt::FontInfo face;
+    static const bool face_ok =
+        gfx::tt::InitFont(&face, kJetBrainsMonoRegularTtf, static_cast<int>(kJetBrainsMonoRegularTtfLen));
+    if (!face_ok || gfx::tt::FindGlyphIndex(&face, cp) == 0) return;
+    AddMathExtraCodepoint(cp);
+    g_math_rebake_pending = true;
 }
 
 void ApplyFontSize(float size) {
@@ -3185,6 +3215,7 @@ void DrawLineFast(const std::string &line, float x, float y, float font_size, gf
                 std::string glyph(&text[i - codepoint_size], static_cast<size_t>(codepoint_size));
                 gfx::DrawTextEx(f, glyph.c_str(), gfx::Vector2{cx, y}, font_size, 0, tint);
             } else {
+                RequestTextGlyph(codepoint);
                 gfx::DrawTextCodepoint(g_font, codepoint, gfx::Vector2{cx, y}, font_size, tint);
             }
             continue;
@@ -3689,6 +3720,7 @@ const char *kKeybindingsText =
     "               <leader>aa        toggle the AI agents sidebar\n"
     "  Alt+h j k l                    move focus left / down / up / right\n"
     "  Alt+Shift+h j k l              resize pane left / down / up / right\n"
+    "                                 (in a spreadsheet: the cell's column / row)\n"
     "  Alt+Ctrl+h j k l               move active tab into pane that way\n"
     "  Alt+d                          remove active tab (closes pane if last)\n"
     "  Alt+n / Alt+Tab                next buffer tab in pane\n"
@@ -3724,10 +3756,14 @@ const char *kDefaultMod1Bindings =
     // repeat=true (4th arg): resizing is naturally a hold-and-repeat action,
     // like holding h/j/k/l to move the cursor -- unlike every other mod1
     // binding here, which fires once per press.
-    "mep.map_mod1('S-h', function() mep.resize_pane('left') end, true)\n"
-    "mep.map_mod1('S-j', function() mep.resize_pane('down') end, true)\n"
-    "mep.map_mod1('S-k', function() mep.resize_pane('up') end, true)\n"
-    "mep.map_mod1('S-l', function() mep.resize_pane('right') end, true)\n"
+    // In a spreadsheet the same keys size the cell under the cursor
+    // instead -- its column (h/l) and row (j/k) -- since that is what
+    // "make this bigger" means there; mep.sheet_resize_step declines
+    // anywhere else and the pane is resized as usual.
+    "mep.map_mod1('S-h', function() if not mep.sheet_resize_step('left') then mep.resize_pane('left') end end, true)\n"
+    "mep.map_mod1('S-j', function() if not mep.sheet_resize_step('down') then mep.resize_pane('down') end end, true)\n"
+    "mep.map_mod1('S-k', function() if not mep.sheet_resize_step('up') then mep.resize_pane('up') end end, true)\n"
+    "mep.map_mod1('S-l', function() if not mep.sheet_resize_step('right') then mep.resize_pane('right') end end, true)\n"
     "mep.map_mod1('C-h', function() mep.pane_move_buffer('left') end)\n"
     "mep.map_mod1('C-j', function() mep.pane_move_buffer('down') end)\n"
     "mep.map_mod1('C-k', function() mep.pane_move_buffer('up') end)\n"
@@ -16022,6 +16058,9 @@ const char *kBuiltinSheet =
     "mep.leader_map('Sa', 'Sheet: autofit this column', function() mep.sheet_autofit(mep.sheet_info().cursor_col) end)\n"
     "mep.leader_map('SA', 'Sheet: autofit every column', function() mep.sheet_autofit() end)\n"
     "mep.leader_map('St', 'Sheet: column statistics', function() mep.sheet_stats() end)\n"
+    "mep.leader_map('Sv', 'Sheet: toggle grid / plain text (.csv)', function() mep.sheet_toggle_text() end)\n"
+    "mep.leader_map('Sr', 'Sheet: wrap rows to show all their text', function() mep.sheet_wrap() end)\n"
+    "mep.leader_map('SR', 'Sheet: fit this row to its text', function() mep.sheet_fit_rows(mep.sheet_info().cursor_row) end)\n"
     "mep.leader_map('Sw', 'Sheet: set this column width', function() mep.sheet_width_prompt() end)\n"
     "mep.leader_map('Sz', 'Sheet: reset zoom', function() mep.sheet_zoom_reset() end)\n"
     "mep.leader_map('Sp', 'Sheet: apply the view order to the data', function() mep.sheet_apply() end)\n"
@@ -17988,6 +18027,12 @@ const char *kBuiltinSyntax =
     "  if not mep_syntax_ns then mep_syntax_ns = mep.ns_create('syntax') end\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
     "  if not ft then mep.ns_clear(mep_syntax_ns) return end\n"
+    // A .csv shown as text (:MepSheetText): one colour per column.
+    "  if ft == 'csv' then\n"
+    "    mep.ns_clear(mep_syntax_ns)\n"
+    "    if not pcall(mep.sheet_info) then mep.csv_highlight(mep_syntax_ns) end\n"
+    "    return\n"
+    "  end\n"
     // mepml: its own grammar (grammars/tree-sitter-mepml) colours the
     // markup's structure -- the delimiters, directives, metadata, callout
     // kinds -- and each ``` code block is highlighted in its own language
@@ -61432,7 +61477,8 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         // measure a font itself) so the row height it computes below can be
         // floored by the text it has to hold.
         const float cell_font = std::max(6.0f, font_size * sheet_sess->zoom);
-        g_editor.SetSheetFontMetrics(pane.buffer_id, gfx::MeasureTextEx(g_font, "Mg", cell_font, 0).y);
+        g_editor.SetSheetFontMetrics(pane.buffer_id, gfx::MeasureTextEx(g_font, "Mg", cell_font, 0).y,
+                                     gfx::MeasureTextEx(g_font, "0", cell_font, 0).x);
 
         float bar_h = static_cast<float>(bar_unit);
         float grid_y = content_y + bar_h;
@@ -61450,6 +61496,82 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             DrawPaneBorder(x, y, w, h, is_active);
             return;
         }
+        // The grid's font is monospace (JetBrains Mono, and every fallback
+        // tier is the same face), so a value's width is its character count
+        // times one advance -- which is what lets the fitting below scan
+        // thousands of cells, and the cell layout wrap them, without a
+        // MeasureTextEx per cell.
+        const float cell_char_w = std::max(1.0f, gfx::MeasureTextEx(g_font, "M", cell_font, 0).x);
+        const float cell_line_h = std::round(cell_font * 1.2f);
+        const float cell_pad_x = static_cast<float>(kSheetCellPadX) * sheet_sess->zoom;
+        const float cell_pad_y = static_cast<float>(kSheetCellPadY) * sheet_sess->zoom;
+        const bool csv_sheet = sheet_sess->wb.source_format == "csv";
+        // What a cell shows. A CSV number is shown as the file spells it --
+        // "19.00", not "19" -- since in a CSV that spelling is the only
+        // formatting there is (and it is what `:w` writes back).
+        auto cell_text = [&](int row, int col, CellValue *out_value) -> std::string {
+            const Cell *cell = sh.FindCell(row, col);
+            if (!cell) return std::string();
+            CellValue v = g_editor.EvaluateSheetCell(pane.buffer_id, row, col);
+            std::string t = csv_sheet && cell->kind == CellKind::Number ? cell->raw : FormatCellValue(v);
+            if (out_value) *out_value = std::move(v);
+            return t;
+        };
+        // The widest line of a value, in characters.
+        auto widest_line = [](const std::string &t) {
+            int widest = 0;
+            size_t start = 0;
+            while (start <= t.size()) {
+                size_t nl = t.find('\n', start);
+                if (nl == std::string::npos) nl = t.size();
+                widest = std::max(widest, SheetTextColumns(t.substr(start, nl - start)));
+                start = nl + 1;
+            }
+            return widest;
+        };
+        // Fits columns [first, last] to their widest value (and their own
+        // letter), scanning at most kSheetAutofitScanRows rows. Returns
+        // whether that cap was hit. `cap` > 0 limits the width (on open);
+        // columns with nothing in them are left alone when `skip_empty`.
+        auto fit_columns = [&](int first, int last, int cap, bool skip_empty) {
+            const SheetView *fv = g_editor.SheetViewFor(pane.buffer_id);
+            if (!fv) return false;
+            const int display_rows = SheetDisplayCount(*fv);
+            const float zoom = std::max(0.01f, sheet_sess->zoom);
+            bool sampled = false;
+            for (int c = first; c <= last; c++) {
+                int widest = static_cast<int>(ColumnIndexToLetters(c).size()) + 2;  // room for a sort/filter mark
+                bool any = false;
+                int scanned = 0;
+                for (int d = 0; d < display_rows; d++) {
+                    if (scanned >= kSheetAutofitScanRows) {
+                        sampled = true;
+                        break;
+                    }
+                    const int row = SheetRowAtDisplay(*fv, d);
+                    if (row < 0) continue;
+                    scanned++;
+                    if (!sh.FindCell(row, c)) continue;
+                    any = true;
+                    widest = std::max(widest, widest_line(cell_text(row, c, nullptr)));
+                }
+                if (skip_empty && !any) continue;
+                // Widths are stored unzoomed, so a column fitted at 2x
+                // zoom is still the right width at 1x.
+                int px = static_cast<int>(std::ceil(static_cast<float>(widest) * cell_char_w / zoom)) + kSheetFitPadding;
+                if (cap > 0) px = std::max(kSheetOpenFitMinWidth, std::min(px, cap));
+                g_editor.SheetSetColumnWidth(pane.buffer_id, c, px);
+            }
+            return sampled;
+        };
+        // A sheet seen for the first time has its columns fitted -- capped,
+        // so one paragraph-long notes column cannot push the rest off
+        // screen. Silent: this is how a sheet opens, not something the user
+        // asked for.
+        if (SheetView *first_view = g_editor.SheetViewMutable(pane.buffer_id); first_view && !first_view->fitted) {
+            first_view->fitted = true;
+            fit_columns(0, std::min(sh.max_col, kSheetAutofitMaxCols - 1), kSheetOpenFitMaxWidth, true);
+        }
         // A pending autofit is carried out here, before the geometry is
         // measured, because only this side can measure text: editor.cpp
         // parks the request (SheetRequestAutofit) and this consumes it.
@@ -61458,33 +61580,57 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             const int only = fit->autofit_request;
             const int first = only < 0 ? 0 : only;
             const int last = only < 0 ? std::min(sh.max_col, first + kSheetAutofitMaxCols - 1) : only;
-            const int display_rows = SheetDisplayCount(*view);
-            bool sampled = false;
-            for (int c = first; c <= last; c++) {
-                // The column letter is part of the column: fitting to the
-                // data alone would clip the header on a narrow column.
-                float widest = gfx::MeasureTextEx(g_font, ColumnIndexToLetters(c).c_str(), cell_font, 0).x + 14.0f;
-                int scanned = 0;
-                for (int d = 0; d < display_rows; d++) {
-                    if (scanned >= kSheetAutofitScanRows) {
-                        sampled = true;
-                        break;
-                    }
-                    const int row = SheetRowAtDisplay(*view, d);
-                    if (row < 0) continue;
-                    scanned++;
-                    if (!sh.FindCell(row, c)) continue;
-                    const std::string t = FormatCellValue(g_editor.EvaluateSheetCell(pane.buffer_id, row, c));
-                    widest = std::max(widest, gfx::MeasureTextEx(g_font, t.c_str(), cell_font, 0).x + 10.0f);
-                }
-                // Widths are stored unzoomed, so a column fitted at 2x
-                // zoom is still the right width at 1x.
-                const float unzoomed = widest / std::max(0.01f, sheet_sess->zoom);
-                g_editor.SheetSetColumnWidth(pane.buffer_id, c, static_cast<int>(std::lround(unzoomed)));
-            }
+            const bool sampled = fit_columns(first, last, 0, false);
             std::string note = only < 0 ? "autofit: " + std::to_string(last - first + 1) + " columns"
                                         : "autofit: column " + ColumnIndexToLetters(only);
             if (sampled) note += " (widest of the first " + std::to_string(kSheetAutofitScanRows) + " rows)";
+            g_editor.Notify(note, Editor::NotifyLevel::Info);
+        }
+        // Fitting rows: each row is made as tall as its most-wrapped value
+        // needs at the columns' current widths, or put back to one line when
+        // nothing in it wraps.
+        if (SheetSession *fit = g_editor.GetSheetMutable(pane.buffer_id); fit && fit->rowfit_pending) {
+            fit->rowfit_pending = false;
+            const SheetView *fv = g_editor.SheetViewFor(pane.buffer_id);
+            const int only = fit->rowfit_request;
+            const float zoom = std::max(0.01f, sheet_sess->zoom);
+            int fitted_rows = 0, tall_rows = 0;
+            bool sampled = false;
+            auto fit_row = [&](int row) {
+                int lines = 1;
+                for (int c = 0; c <= sh.max_col; c++) {
+                    if (!sh.FindCell(row, c)) continue;
+                    const float w = static_cast<float>(SheetColWidth(MakeSheetGeom(*fv, zoom), c));
+                    const int cols = std::max(1, static_cast<int>((w - 2.0f * cell_pad_x) / cell_char_w));
+                    lines = std::max(lines, SheetWrappedLineCount(cell_text(row, c, nullptr), cols));
+                }
+                lines = std::min(lines, 40);  // a row taller than the pane helps nobody
+                fitted_rows++;
+                if (lines <= 1) {
+                    g_editor.SheetSetRowHeightPx(pane.buffer_id, row, kSheetRowHeight);
+                    return;
+                }
+                tall_rows++;
+                const float px = (static_cast<float>(lines) * cell_line_h + 2.0f * cell_pad_y) / zoom;
+                g_editor.SheetSetRowHeightPx(pane.buffer_id, row, static_cast<int>(std::ceil(px)));
+            };
+            if (fv && only >= 0) {
+                fit_row(only);
+            } else if (fv) {
+                const int display_rows = SheetDisplayCount(*fv);
+                for (int d = 0; d < display_rows; d++) {
+                    if (fitted_rows >= 20000) {
+                        sampled = true;
+                        break;
+                    }
+                    const int row = SheetRowAtDisplay(*fv, d);
+                    if (row >= 0) fit_row(row);
+                }
+            }
+            std::string note = only >= 0 ? "row " + std::to_string(only + 1) + ": fitted to its text"
+                                         : "wrap: " + std::to_string(tall_rows) + " of " +
+                                               std::to_string(fitted_rows) + " rows need more than one line";
+            if (sampled) note += " (first 20000 rows)";
             g_editor.Notify(note, Editor::NotifyLevel::Info);
         }
 
@@ -61520,14 +61666,10 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         gfx::DrawTextEx(g_font, addr.c_str(), gfx::Vector2{x + 6, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
                    ResolveHlGroup("Comment"));
         const float bar_text_x = x + 6 + addr_sz.x;
-        gfx::DrawTextEx(g_font, bar_text.c_str(), gfx::Vector2{bar_text_x, content_y + (bar_h - font_size) / 2.0f}, font_size, 0,
+        DrawUiText(bar_text, gfx::Vector2{bar_text_x, content_y + (bar_h - font_size) / 2.0f}, font_size,
                    ResolveHlGroup("Normal"));
-        if (is_active && sheet_sess->editing) {
-            std::string pre = bar_text.substr(0, std::min<size_t>(static_cast<size_t>(sheet_sess->edit_cursor), bar_text.size()));
-            float cx = bar_text_x + gfx::MeasureTextEx(g_font, pre.c_str(), font_size, 0).x;
-            gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(content_y + (bar_h - font_size) / 2.0f), 2,
-                          static_cast<int>(font_size), ResolveHlGroup("Normal"));
-        }
+        // While a cell is being edited the bar mirrors its text, but the
+        // caret is drawn in the cell itself, which is where the typing goes.
         // Right-aligned status: the sheet name when there is more than one
         // to disambiguate (Ctrl-PageDown/Ctrl-PageUp switch between them --
         // see HandleSheetNormalInput), the active sort/filter, and how many
@@ -61569,6 +61711,11 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
         std::vector<SheetRowSlot> row_slots;
         std::vector<SheetColSlot> col_slots;
         BuildSheetSlots(*sheet_sess, *view, geom, metrics, x, grid_y, w, grid_h, &row_slots, &col_slots);
+        if (SheetSession *drawn = g_editor.GetSheetMutable(pane.buffer_id)) {
+            int last = 0;
+            for (const SheetRowSlot &rs : row_slots) last = std::max(last, rs.row);
+            drawn->last_row_drawn = last;
+        }
 
         // Column-letter strip, with the view's state shown on the columns
         // it applies to: an arrow on the sorted column and a funnel on each
@@ -61586,6 +61733,13 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                 if (f.col == cs.col) filtered = true;
             }
             if (filtered) letters += " *";
+            // The cursor's column letter (and below, its row number) is
+            // lit, so which column a value belongs to is never a matter of
+            // counting gridlines up to the header.
+            if (is_active && cs.col == sheet_sess->cursor_col) {
+                gfx::DrawRectangle(static_cast<int>(cs.x), static_cast<int>(grid_y), static_cast<int>(cs.w),
+                              static_cast<int>(col_header_h), gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 120});
+            }
             gfx::Vector2 sz = gfx::MeasureTextEx(g_font, letters.c_str(), cell_font, 0);
             gfx::DrawTextEx(g_font, letters.c_str(),
                        gfx::Vector2{cs.x + (cs.w - sz.x) / 2.0f, grid_y + (col_header_h - cell_font) / 2.0f}, cell_font, 0,
@@ -61600,10 +61754,15 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
                       static_cast<int>(grid_h - col_header_h), header_row_bg);
         for (const SheetRowSlot &rs : row_slots) {
             if (rs.row < 0) continue;
+            if (is_active && rs.row == sheet_sess->cursor_row) {
+                gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(rs.y), static_cast<int>(header_w),
+                              static_cast<int>(rs.h), gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 120});
+            }
             std::string rownum = std::to_string(rs.row + 1);
             gfx::Vector2 sz = gfx::MeasureTextEx(g_font, rownum.c_str(), cell_font, 0);
             gfx::DrawTextEx(g_font, rownum.c_str(),
-                       gfx::Vector2{x + header_w - sz.x - 6, rs.y + (rs.h - cell_font) / 2.0f}, cell_font, 0, text_color);
+                       gfx::Vector2{x + header_w - sz.x - cell_pad_x, rs.y + (rs.h - cell_font) / 2.0f}, cell_font, 0,
+                       text_color);
         }
 
         bool sheet_visual = is_active && g_editor.CurrentMode() == Mode::SheetVisual && sheet_sess->has_selection;
@@ -61613,6 +61772,18 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             sel_c1 = std::max(sheet_sess->sel_anchor_col, sheet_sess->cursor_col);
         }
 
+        // Frozen rows are the header band: tinted, and their labels drawn in
+        // the accent colour, so column names never read as one more record.
+        // Data rows alternate a faint stripe, which is what lets the eye
+        // follow a row across a wide sheet. Past the sheet's used range the
+        // gridlines fade, so where the data ends is visible at a glance.
+        // The theme's accent, which every theme defines -- a syntax group
+        // like Keyword is plain foreground in some of them.
+        const gfx::Color header_text = ResolveHlGroup("ProjectLabel");
+        const gfx::Color accent = ResolveHlGroup("BorderActive");
+        const gfx::Color header_band = gfx::Color{accent.r, accent.g, accent.b, 70};
+        const gfx::Color stripe = gfx::Color{text_color.r, text_color.g, text_color.b, 14};
+        const gfx::Color faint_line = gfx::Color{text_color.r, text_color.g, text_color.b, 16};
         for (const SheetRowSlot &rs : row_slots) {
             if (rs.row < 0) continue;
             // Rows are selected by DISPLAY position, which with a filter
@@ -61622,50 +61793,118 @@ void DrawPane(const Pane &pane, float x, float y, float w, float h, bool is_acti
             // highlighted is exactly what gets cleared.
             const bool row_in_sel =
                 sheet_visual && SheetDisplayRangeContains(*view, sheet_sess->sel_anchor_row, sheet_sess->cursor_row, rs.row);
+            const bool header_row = rs.disp < view->freeze_rows;
+            const bool row_in_data = rs.row <= sh.max_row;
+            // How many lines this row has room for: one, unless it has been
+            // made taller (Alt-Down, a drag, :MepSheetWrap), in which case
+            // its values wrap to fill it.
+            const int lines_fit = std::max(1, static_cast<int>((rs.h - 2.0f * cell_pad_y) / cell_line_h));
             for (const SheetColSlot &cs : col_slots) {
                 const bool is_cursor = is_active && rs.row == sheet_sess->cursor_row && cs.col == sheet_sess->cursor_col;
                 const bool in_sel = row_in_sel && cs.col >= sel_c0 && cs.col <= sel_c1;
+                const bool in_data = row_in_data && cs.col <= sh.max_col;
                 if (is_cursor) {
                     gfx::DrawRectangle(static_cast<int>(cs.x), static_cast<int>(rs.y), static_cast<int>(cs.w),
                                   static_cast<int>(rs.h), cursor_bg);
                 } else if (in_sel) {
                     gfx::DrawRectangle(static_cast<int>(cs.x), static_cast<int>(rs.y), static_cast<int>(cs.w),
                                   static_cast<int>(rs.h), sel_bg);
+                } else if (header_row && in_data) {
+                    gfx::DrawRectangle(static_cast<int>(cs.x), static_cast<int>(rs.y), static_cast<int>(cs.w),
+                                  static_cast<int>(rs.h), header_band);
+                } else if (in_data && ((rs.disp - view->freeze_rows) % 2) == 1) {
+                    gfx::DrawRectangle(static_cast<int>(cs.x), static_cast<int>(rs.y), static_cast<int>(cs.w),
+                                  static_cast<int>(rs.h), stripe);
                 }
 
                 if (sh.FindCell(rs.row, cs.col)) {
-                    CellValue v = g_editor.EvaluateSheetCell(pane.buffer_id, rs.row, cs.col);
-                    std::string text = FormatCellValue(v);
-                    // Truncated to the column width, not wrapped and not
-                    // spilling into an empty neighbour -- but the width is
-                    // the user's now (Alt+arrows, a header-edge drag, or
-                    // autofit), so a clipped value is a column to widen
-                    // rather than a limit of the pane. The estimate before
-                    // the pop loop matters for the same reason: user-set
-                    // widths make narrow columns common, and popping one
-                    // character at a time with a MeasureTextEx per
-                    // iteration is O(length) measurements per cell.
-                    const float avail_text = cs.w - 6;
-                    gfx::Vector2 full = gfx::MeasureTextEx(g_font, text.c_str(), cell_font, 0);
-                    if (full.x > avail_text && !text.empty()) {
-                        const float per_char = full.x / static_cast<float>(text.size());
-                        if (per_char > 0.0f) {
-                            const size_t keep = static_cast<size_t>(std::max(0.0f, avail_text / per_char));
-                            if (keep < text.size()) text.resize(keep);
-                        }
-                        while (!text.empty() && gfx::MeasureTextEx(g_font, text.c_str(), cell_font, 0).x > avail_text) {
-                            text.pop_back();
-                        }
+                    CellValue v;
+                    const std::string text = cell_text(rs.row, cs.col, &v);
+                    // Laid out to the cell, never clipped mid-glyph: a value
+                    // too long for its column ends in an ellipsis, and a row
+                    // with room for several lines wraps it. The width is the
+                    // user's (Alt-arrows, a header-edge drag, autofit), so an
+                    // ellipsis is a column to widen or a row to wrap.
+                    const int avail_cols = static_cast<int>((cs.w - 2.0f * cell_pad_x) / cell_char_w);
+                    const std::vector<std::string> lines = SheetLayoutCellText(text, avail_cols, lines_fit);
+                    gfx::Color cell_color = v.kind == CellKind::Error ? ResolveHlGroup("ErrorText")
+                                            : header_row             ? header_text
+                                                                     : text_color;
+                    const bool right = v.kind == CellKind::Number && !header_row;
+                    // One line sits centred in its row; wrapped text starts
+                    // at the top, the way a reader expects a paragraph to.
+                    float ty = lines_fit > 1 ? rs.y + cell_pad_y : rs.y + (rs.h - cell_font) / 2.0f;
+                    for (const std::string &line : lines) {
+                        const float tx = right ? cs.x + cs.w - cell_pad_x -
+                                                     static_cast<float>(SheetTextColumns(line)) * cell_char_w
+                                               : cs.x + cell_pad_x;
+                        DrawUiText(line, gfx::Vector2{tx, ty}, cell_font, cell_color);
+                        ty += cell_line_h;
                     }
-                    gfx::Color cell_color = v.kind == CellKind::Error ? ResolveHlGroup("ErrorText") : text_color;
-                    float text_x = (v.kind == CellKind::Number)
-                                        ? cs.x + cs.w - 6 - gfx::MeasureTextEx(g_font, text.c_str(), cell_font, 0).x
-                                        : cs.x + 4;
-                    gfx::DrawTextEx(g_font, text.c_str(), gfx::Vector2{text_x, rs.y + (rs.h - cell_font) / 2.0f}, cell_font, 0,
-                               cell_color);
                 }
                 gfx::DrawRectangleLines(static_cast<int>(cs.x), static_cast<int>(rs.y), static_cast<int>(cs.w),
-                                   static_cast<int>(rs.h), grid_line);
+                                   static_cast<int>(rs.h), in_data ? grid_line : faint_line);
+            }
+        }
+
+        // The in-cell editor. Typing goes into the cell itself: the value
+        // being edited is drawn in place, over the cell, with the caret in
+        // it. Text longer than the column spills right over its neighbours
+        // the way a spreadsheet's editor does, up to the pane's edge, and
+        // past that scrolls to keep the caret in view.
+        if (is_active && sheet_sess->editing) {
+            const SheetRowSlot *er = nullptr;
+            const SheetColSlot *ec = nullptr;
+            for (const SheetRowSlot &rs : row_slots) {
+                if (rs.row == sheet_sess->cursor_row) er = &rs;
+            }
+            for (const SheetColSlot &cs : col_slots) {
+                if (cs.col == sheet_sess->cursor_col) ec = &cs;
+            }
+            if (er && ec) {
+                // One display character per codepoint (monospace), with a
+                // newline in the value shown as a single return mark.
+                const std::string &et = sheet_sess->edit_buffer;
+                std::vector<std::string> chars;
+                int caret_chars = 0;
+                for (size_t i = 0; i < et.size();) {
+                    size_t n = 1;
+                    while (i + n < et.size() && (static_cast<unsigned char>(et[i + n]) & 0xC0) == 0x80) n++;
+                    if (static_cast<int>(i) < sheet_sess->edit_cursor) caret_chars++;
+                    chars.push_back(et[i] == '\n' ? std::string("\xE2\x8F\x8E") : et.substr(i, n));
+                    i += n;
+                }
+                const int total = static_cast<int>(chars.size());
+                const float caret_room = 3.0f;
+                const float max_w = std::max(ec->w, x + w - ec->x);
+                const float want_w = static_cast<float>(total) * cell_char_w + 2.0f * cell_pad_x + caret_room;
+                const float box_w = std::min(max_w, std::max(ec->w, want_w));
+                const int visible =
+                    std::max(1, static_cast<int>((box_w - 2.0f * cell_pad_x - caret_room) / cell_char_w));
+                const int first = std::max(0, caret_chars - visible);
+                std::string shown;
+                for (int i = first; i < total && i < first + visible; i++) shown += chars[static_cast<size_t>(i)];
+                const gfx::Rectangle box{ec->x, er->y, box_w, er->h};
+                gfx::DrawRectangle(static_cast<int>(box.x), static_cast<int>(box.y), static_cast<int>(box.width),
+                              static_cast<int>(box.height), ResolveHlGroup("CursorLine"));
+                const gfx::Color edit_border = ResolveHlGroup("BorderActive");
+                gfx::DrawRectangleLinesEx(box, 2.0f, edit_border);
+                const float lines_room = (er->h - 2.0f * cell_pad_y) / cell_line_h;
+                const float ty = lines_room >= 2.0f ? er->y + cell_pad_y : er->y + (er->h - cell_font) / 2.0f;
+                const float tx = box.x + cell_pad_x;
+                DrawUiText(shown, gfx::Vector2{tx, ty}, cell_font, text_color);
+                const float caret_x = tx + static_cast<float>(caret_chars - first) * cell_char_w;
+                gfx::DrawRectangle(static_cast<int>(caret_x), static_cast<int>(ty), 2, static_cast<int>(cell_font),
+                              text_color);
+                if (SheetSession *es = g_editor.GetSheetMutable(pane.buffer_id)) {
+                    es->edit_box_x = box.x;
+                    es->edit_box_y = box.y;
+                    es->edit_box_w = box.width;
+                    es->edit_box_h = box.height;
+                    es->edit_text_x = tx;
+                    es->edit_char_w = cell_char_w;
+                    es->edit_first_char = first;
+                }
             }
         }
 
@@ -69428,7 +69667,7 @@ int g_sheet_last_edge_click_row = -2;
 
 void UpdateSheetMouseInteraction() {
     const Mode mode = g_editor.CurrentMode();
-    if (mode != Mode::SheetNormal && mode != Mode::SheetVisual) return;
+    if (mode != Mode::SheetNormal && mode != Mode::SheetVisual && mode != Mode::SheetInsert) return;
     const int buffer_id = g_editor.CurrentBufferId();
     SheetSession *sess = g_editor.GetSheetMutable(buffer_id);
     if (!sess || sess->grid_w <= 0 || sess->grid_h <= 0) return;
@@ -69487,6 +69726,29 @@ void UpdateSheetMouseInteraction() {
     // from either side of its own edge.
     constexpr float kEdgeGrab = 4.0f;
 
+    // While a cell is being edited, a click inside it moves the caret to
+    // the character under the pointer; a click anywhere else in the grid
+    // keeps the edit, as leaving the cell by key does, and then does what
+    // that click would have done anyway.
+    if (sess->editing && pressed) {
+        const gfx::Rectangle box{sess->edit_box_x, sess->edit_box_y, sess->edit_box_w, sess->edit_box_h};
+        if (sess->edit_box_w > 0 && PointInRect(mouse, box)) {
+            const float cw = std::max(1.0f, sess->edit_char_w);
+            const int target =
+                sess->edit_first_char + std::max(0, static_cast<int>(std::lround((mouse.x - sess->edit_text_x) / cw)));
+            int byte = 0, chars = 0;
+            const std::string &et = sess->edit_buffer;
+            while (byte < static_cast<int>(et.size()) && chars < target) {
+                byte++;
+                while (byte < static_cast<int>(et.size()) && (static_cast<unsigned char>(et[static_cast<size_t>(byte)]) & 0xC0) == 0x80) byte++;
+                chars++;
+            }
+            g_editor.SheetSetEditCaret(buffer_id, byte);
+            return;
+        }
+        g_editor.SheetCommitEdit(buffer_id);
+    }
+
     if (in_col_header && !in_row_header) {
         for (const SheetColSlot &cs : col_slots) {
             if (std::abs(mouse.x - (cs.x + cs.w)) > kEdgeGrab) continue;
@@ -69532,9 +69794,14 @@ void UpdateSheetMouseInteraction() {
                 g_sheet_last_edge_click_col = -2;
                 g_sheet_last_edge_click_time = now;
                 if (dbl) {
-                    // There is no "fit a row to its content" -- cell text
-                    // is one line -- so a double-click resets the height.
-                    g_editor.SheetSetRowHeightPx(buffer_id, rs.row, kSheetRowHeight);
+                    // Double-clicking a row's edge fits it to its wrapped
+                    // text; doing it again on a row already taller than one
+                    // line puts it back to one.
+                    if (SheetStoredRowHeight(*view, rs.row) > kSheetRowHeight) {
+                        g_editor.SheetSetRowHeightPx(buffer_id, rs.row, kSheetRowHeight);
+                    } else {
+                        g_editor.SheetRequestRowFit(buffer_id, rs.row);
+                    }
                 } else {
                     sess->resizing_row = rs.row;
                     sess->resize_start_mouse = mouse.y;
@@ -69572,7 +69839,18 @@ void UpdateSheetMouseInteraction() {
     int row = 0, col = 0;
     if (pressed && cell_under(&row, &col)) {
         if (sess->header_menu_col >= 0) OpenSheetColumnMenu(buffer_id, -1);
+        // A double-click on a cell edits it in place, caret after its value.
+        static double last_cell_click = -1.0;
+        static int last_cell_row = -1, last_cell_col = -1;
+        const bool dbl = row == last_cell_row && col == last_cell_col && (now - last_cell_click) < kDoubleClickThresholdSec;
+        last_cell_click = dbl ? -1.0 : now;
+        last_cell_row = row;
+        last_cell_col = col;
         g_editor.SheetSetCursorFromMouse(buffer_id, row, col, /*extend=*/false);
+        if (dbl) {
+            g_editor.SheetBeginEdit(buffer_id, SheetEditStart::AtEnd);
+            return;
+        }
         sess->drag_selecting = true;
         return;
     }
@@ -70457,10 +70735,15 @@ void UpdateDrawFrame() {
                 for (int cp : g_editor.MepmlGlyphs()) {
                     if (cp < 0x80 || IsIconCodepoint(cp) || IsSymbolCodepoint(cp) || IsMathCodepoint(cp)) continue;
                     if (!face_ok || gfx::tt::FindGlyphIndex(&face, cp) == 0) continue;
-                    g_math_extra_codepoints.push_back(cp);
+                    AddMathExtraCodepoint(cp);
                     added = true;
                 }
                 if (added) BakeMathFont();
+            }
+            // Glyphs RequestTextGlyph found in drawn text last frame.
+            if (g_math_rebake_pending) {
+                g_math_rebake_pending = false;
+                BakeMathFont();
             }
         }
         g_editor.MepmlPresentTick();

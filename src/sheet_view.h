@@ -138,6 +138,15 @@ struct SheetView {
     SheetSort sort;
     std::vector<SheetFilter> filters;
 
+    // Set once the renderer has sized this sheet's columns to their
+    // contents on first sight (main.cpp's DrawPane). A fixed default width
+    // clipped nearly every real column, so opening fits them -- once, so a
+    // width the user then sets is never taken back.
+    bool fitted = false;
+    // Every row's height has been fitted to its wrapped text
+    // (:MepSheetWrap). Toggling it off puts the heights back to default.
+    bool wrapped = false;
+
     // The rendered font's line height in pixels, pushed in once per frame
     // by main.cpp (Editor::SetSheetFontMetrics). The model cannot measure
     // a font -- that needs MeasureTextEx and a GL context -- but it does
@@ -146,6 +155,12 @@ struct SheetView {
     // geometric 22px row on its own, with no sheet zoom involved. Zero
     // until the first frame, which simply means no floor is applied yet.
     float font_line_height = 0.0f;
+    // The same handshake for the row-number gutter: the font's character
+    // advance (rendered pixels) and how many digits the largest row number
+    // on show has. The gutter used to be a fixed 50px, so at a larger font
+    // "174" was clipped to "74" -- a row number that silently lies.
+    float font_char_w = 0.0f;
+    int row_label_digits = 1;
 
     // ---- Derived. Rebuilt by RebuildSheetOrder; never assigned directly.
     //
@@ -191,6 +206,71 @@ SheetGeom MakeSheetGeom(const SheetView &view, float zoom);
  * @return The zoom clamped to [kSheetMinZoom, kSheetMaxZoom].
  */
 float ClampSheetZoom(float zoom);
+
+/**
+ * @brief The row-number gutter's width: wide enough for every digit of the largest row number shown.
+ * @param g The view and zoom; uses the view's font_char_w and row_label_digits once main.cpp has measured them.
+ * @return The width in rendered pixels, never below the default kSheetRowHeaderW (scaled).
+ */
+int SheetRowHeaderWidth(const SheetGeom &g);
+
+/**
+ * @brief Counts the decimal digits of a non-negative number (0 has one).
+ * @param n The number.
+ * @return Its digit count.
+ */
+int SheetDigitCount(int n);
+
+/**
+ * @brief Guesses whether a sheet's first row is a row of column names rather than data.
+ * @param sh The sheet.
+ * @return True when row 1 is wholly non-empty, non-numeric, distinct text and the sheet has rows below it.
+ *
+ * The same idea as Python's csv.Sniffer.has_header, kept simpler: a row of
+ * labels is all text, has no blanks and no repeats. A first row with a
+ * number in it is data, which is what keeps a headerless numeric CSV from
+ * having its first record frozen out of the sort.
+ */
+bool SheetLooksLikeHeader(const Sheet &sh);
+
+/**
+ * @brief Lays a cell's text out in a box so many characters wide and lines tall.
+ * @param text The cell's displayed text; it may hold newlines (a quoted CSV field can).
+ * @param max_cols Characters per line -- the grid's font is monospace, so a width is a character count.
+ * @param max_lines Lines the row has room for.
+ * @return The lines to draw. Text that does not fit ends in an ellipsis rather than being cut off
+ * silently, and in a one-line box an embedded newline is shown as a return mark rather than dropped.
+ */
+std::vector<std::string> SheetLayoutCellText(const std::string &text, int max_cols, int max_lines);
+
+/**
+ * @brief Counts the lines a cell's text wraps to at a given width, with no limit on how many.
+ * @param text The cell's displayed text.
+ * @param max_cols Characters per line.
+ * @return The line count; at least 1.
+ */
+int SheetWrappedLineCount(const std::string &text, int max_cols);
+
+/**
+ * @brief Counts a UTF-8 string's codepoints, which in the grid's monospace font is its width in characters.
+ * @param text The text.
+ * @return The number of codepoints.
+ */
+int SheetTextColumns(const std::string &text);
+
+// Extra room, in unzoomed pixels, a fitted column gets beyond its widest
+// value -- the cell's own left/right text inset plus a little air -- and
+// the widest a column is made when a file is first opened. Beyond that cap
+// the value is shown with an ellipsis: one long notes column fitted to its
+// longest paragraph would otherwise push every other column off screen.
+// An explicit autofit (double-click, :MepSheetAutofit) is not capped.
+inline constexpr int kSheetFitPadding = 18;
+inline constexpr int kSheetOpenFitMaxWidth = 360;
+inline constexpr int kSheetOpenFitMinWidth = 44;
+// Space between a cell's text and its edges, unzoomed: the horizontal
+// inset, and what a row keeps above and below its line(s).
+inline constexpr int kSheetCellPadX = 7;
+inline constexpr int kSheetCellPadY = 4;
 
 // ============================================================================
 // Geometry
@@ -426,6 +506,27 @@ int SheetNearestVisibleDisplay(const SheetView &view, int row);
  * and `x` would then clear data that was never on screen.
  */
 bool SheetDisplayRangeContains(const SheetView &view, int anchor_row, int cursor_row, int row);
+
+/**
+ * @brief The sheet rows a Visual range covers, in the order they are shown.
+ * @param view The view, its display order current.
+ * @param anchor_row The selection's anchor (a sheet row).
+ * @param cursor_row The cursor's sheet row.
+ * @return The rows on screen between the two corners, top to bottom -- never a row a filter hides, and in a
+ * sorted view the rows as they appear, not the sheet rows numbered between the corners.
+ */
+std::vector<int> SheetDisplayRangeRows(const SheetView &view, int anchor_row, int cursor_row);
+
+/**
+ * @brief Writes a block of cells as CSV text, one record per row, "\n" after each.
+ * @param wb The workbook.
+ * @param sheet Sheet index.
+ * @param rows The rows, in the order to write them.
+ * @param c0 First column.
+ * @param c1 Last column; every column between is written, empty ones as empty fields, so the block stays square.
+ * @return The CSV text.
+ */
+std::string SheetBlockToCsv(Workbook &wb, int sheet, const std::vector<int> &rows, int c0, int c1);
 
 /**
  * @brief Tests one row against a filter list (all filters must pass).

@@ -3596,6 +3596,9 @@ struct OfficeSession {
 // stays a dummy single empty line, real content lives here as a
 // Workbook. Held *by value* like OfficeDoc, for the same reason (a plain
 // data struct, no opaque C-library handle to hide).
+// Where the caret starts when a cell is opened for editing.
+enum class SheetEditStart { AtStart, AtEnd, Replace };
+
 struct SheetSession {
     int buffer_id = 0;
     Workbook wb;
@@ -3707,6 +3710,26 @@ struct SheetSession {
     // neither of. -1 means every column; >= 0 means that one.
     bool autofit_pending = false;
     int autofit_request = -1;
+    // Same handshake for fitting row heights to their wrapped text, which
+    // depends on the font's character width: -1 every row, >= 0 that one.
+    // rowfit_reset says to put the heights back to the default instead.
+    bool rowfit_pending = false;
+    int rowfit_request = -1;
+
+    // The in-cell editor as main.cpp last drew it, read back by the mouse
+    // handler so a click inside the cell puts the caret under the pointer:
+    // its box, the x where its text starts, the first character shown
+    // (it scrolls once the text is wider than the pane), and the advance.
+    float edit_box_x = 0, edit_box_y = 0, edit_box_w = 0, edit_box_h = 0;
+    float edit_text_x = 0, edit_char_w = 0;
+    int edit_first_char = 0;
+    // The largest sheet row the grid drew last frame (0-based), so the
+    // row-number gutter can be sized for it -- rows past the data are
+    // numbered too, and scrolling there can add a digit.
+    int last_row_drawn = 0;
+    // `y` was pressed and waits for its second key: `yy` yanks the row,
+    // `yl` the cell.
+    bool pending_y = false;
 
     // Insert-mode live edit state (Mode::SheetInsert): editing the
     // current cell's text as a plain string, seeded from its `raw` on
@@ -7663,7 +7686,7 @@ public:
      * @param buffer_id The spreadsheet buffer id.
      * @param line_height The font's line height in rendered (post-zoom) pixels.
      */
-    void SetSheetFontMetrics(int buffer_id, float line_height);
+    void SetSheetFontMetrics(int buffer_id, float line_height, float char_width = 0.0f);
     // The spreadsheet view operations. Each is the single implementation
     // behind all three surfaces that offer it -- an ex-command, a <leader>
     // mapping, and the column-header menu -- so the three cannot drift
@@ -7722,6 +7745,79 @@ public:
      * @param col Column to fit, or -1 for every column.
      */
     void SheetRequestAutofit(int buffer_id, int col);
+    /**
+     * @brief Asks the renderer to fit row heights to their wrapped text on its next frame.
+     * @param buffer_id The spreadsheet buffer id.
+     * @param row Row to fit, or -1 for every row.
+     */
+    void SheetRequestRowFit(int buffer_id, int row);
+    /**
+     * @brief Toggles wrapping every row: on fits each row's height to its wrapped text, off restores the default.
+     * @param buffer_id The spreadsheet buffer id.
+     */
+    void SheetToggleWrap(int buffer_id);
+    /**
+     * @brief Shows a CSV opened as a grid as its plain text instead, in the same buffer.
+     * @param buffer_id The spreadsheet buffer id.
+     * @return False (with a status message) if the buffer is not a CSV grid.
+     *
+     * Unsaved grid edits carry over as the text they would be saved as;
+     * the grid's view (widths, freeze, sort, zoom) is kept for the way back.
+     */
+    bool SheetShowAsText(int buffer_id);
+    /**
+     * @brief Shows a .csv text buffer as a grid again, parsing its current text.
+     * @param buffer_id The text buffer id.
+     * @return False (with a status message) if the buffer is not a .csv file.
+     */
+    bool SheetShowAsGrid(int buffer_id);
+    /**
+     * @brief Switches a .csv buffer between the grid and its plain text.
+     * @param buffer_id The buffer id.
+     */
+    void SheetToggleText(int buffer_id);
+    /**
+     * @brief The sheet half of mod1+Shift+hjkl: sizes the cursor's column (left/right) or row (up/down).
+     * @param direction "left" narrows, "right" widens, "up" shortens, "down" heightens.
+     * @return False when the active pane is not a sheet, so the caller resizes the pane instead.
+     *
+     * In Visual mode every selected column or row is sized together.
+     */
+    bool SheetResizeStep(const std::string &direction);
+    /**
+     * @brief Yanks from the grid into the unnamed register (and the system clipboard).
+     * @param buffer_id The spreadsheet buffer id.
+     * @param what 'r' the cursor's row, 'c' the cursor's cell, 'v' the Visual selection.
+     *
+     * One cell yanks its value as plain text; anything larger yanks CSV records -- quoted and
+     * escaped as `:w` would write them -- linewise, so `p` in a text buffer adds them as lines.
+     */
+    void SheetYank(int buffer_id, char what);
+    /**
+     * @brief Pastes the unnamed register into the grid at the cursor.
+     * @param buffer_id The spreadsheet buffer id.
+     *
+     * Linewise text is read as CSV and fills a block of cells from the cursor down and right,
+     * empty fields clearing their cells; anything else goes into the cursor's cell whole.
+     */
+    void SheetPaste(int buffer_id);
+    /**
+     * @brief Starts editing the cursor's cell in place (Mode::SheetInsert).
+     * @param buffer_id The spreadsheet buffer id.
+     * @param how Where the caret starts, or Replace to start from an empty value.
+     */
+    void SheetBeginEdit(int buffer_id, SheetEditStart how);
+    /**
+     * @brief Writes the cell being edited and returns to SheetNormal; a no-op when nothing is being edited.
+     * @param buffer_id The spreadsheet buffer id.
+     */
+    void SheetCommitEdit(int buffer_id);
+    /**
+     * @brief Moves the in-cell editor's caret (a click inside the cell being edited).
+     * @param buffer_id The spreadsheet buffer id.
+     * @param byte_offset Byte offset into the edit text, snapped back to a character boundary.
+     */
+    void SheetSetEditCaret(int buffer_id, int byte_offset);
     /**
      * @brief Reports a column's statistics in the status line.
      * @param buffer_id The spreadsheet buffer id.
@@ -8492,6 +8588,11 @@ public:
      * @param comment_prefix The filetype's line-comment prefix.
      */
     void SyntaxHighlightFallback(int ns, const std::vector<std::string> &keywords, const std::string &comment_prefix);
+    // A .csv shown as text: each column in its own colour (cycling), the
+    // commas and quotes dimmed, so a column can be followed down the file
+    // the way the grid shows it. Quote state carries across lines, so a
+    // quoted field with a newline in it keeps its column's colour.
+    void SyntaxHighlightCsv(int ns);
     // Org emphasis markup (*bold*//italic//_underline_/+strike+/=verbatim=/
     // ~code~) over the *current* buffer, added into `ns` -- ported from
     // the Lua mep_org_scan_emphasis + mep_syntax_highlight_org_emphasis
@@ -16011,6 +16112,15 @@ private:
     // Keyed by buffer_id -- one entry per open spreadsheet pane, same
     // never-reaped lifetime reasoning as images_ above.
     std::unordered_map<int, SheetSession> sheetdocs_;
+    // What a CSV's grid looked like when it was switched to plain text
+    // (SheetShowAsText), so switching back restores its widths, freeze,
+    // sort, filters and zoom instead of starting over. Keyed by buffer id.
+    struct SheetTextStash {
+        std::vector<SheetView> views;
+        float zoom = 1.0f;
+        int cursor_col = 0;
+    };
+    std::unordered_map<int, SheetTextStash> sheet_text_stash_;
     std::unordered_map<int, PresSession> presdocs_;
     void HandlePresNormalInput();
     void HandlePresInsertInput();

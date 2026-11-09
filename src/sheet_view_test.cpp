@@ -501,7 +501,7 @@ void TestFontFloorRaisesRowHeight() {
     // would clip the glyphs, so the measured line height floors it.
     v.font_line_height = 40.0f;
     SheetGeom g = MakeSheetGeom(v, 1.0f);
-    CHECK(SheetRowHeight(g, 0) == 44);
+    CHECK(SheetRowHeight(g, 0) == 40 + 2 * kSheetCellPadY);
     // The floor is in rendered pixels, so it is not scaled a second time
     // by the zoom -- but a zoom big enough to exceed it still wins.
     SheetGeom g3 = MakeSheetGeom(v, 3.0f);
@@ -1023,6 +1023,101 @@ void TestDirtyFlag() {
     CHECK(SheetRowAtDisplay(v, 20) == 20);
 }
 
+void TestHeaderDetection() {
+    // Labels: all text, no blanks, no repeats.
+    CHECK(SheetLooksLikeHeader(LoadCsv("name,city,spend\nAda,Paris,12\n").sheets[0]));
+    // A number in the first row means it is data.
+    CHECK(!SheetLooksLikeHeader(LoadCsv("1,2,3\n4,5,6\n").sheets[0]));
+    CHECK(!SheetLooksLikeHeader(LoadCsv("name,2024\nAda,1\n").sheets[0]));
+    // A blank or a repeated label is not a header row either.
+    CHECK(!SheetLooksLikeHeader(LoadCsv("name,,spend\nAda,x,1\n").sheets[0]));
+    CHECK(!SheetLooksLikeHeader(LoadCsv("yes,Yes\nno,no\n").sheets[0]));
+    // A single row has nothing below it to be the header of.
+    CHECK(!SheetLooksLikeHeader(LoadCsv("name,city\n").sheets[0]));
+}
+
+void TestCsvSaveKeepsTheFilesText() {
+    // Numbers keep their spelling, and an LF file stays LF.
+    const std::string lf = "id,price,zip\n1,19.00,01234\n2,1249.50,99501\n";
+    Workbook wb = LoadCsv(lf);
+    std::string out, error;
+    CHECK(SaveCsvToMemory(wb, out, error));
+    CHECK(out == lf);
+    // CRLF stays CRLF.
+    const std::string crlf = "a,b\r\n1.0,x\r\n";
+    Workbook wb2 = LoadCsv(crlf);
+    CHECK(SaveCsvToMemory(wb2, out, error));
+    CHECK(out == crlf);
+    // A formula -- which CSV cannot hold -- is written as its result.
+    SetCellRaw(wb, 0, 1, 1, "=1+2");
+    CHECK(SaveCsvToMemory(wb, out, error));
+    CHECK(out.find("1,3,01234\n") != std::string::npos);
+}
+
+void TestCellTextLayout() {
+    const std::string ell = "\xE2\x80\xA6";
+    // Fits: unchanged.
+    CHECK(SheetLayoutCellText("Berlin", 10, 1) == std::vector<std::string>{"Berlin"});
+    // Too long for one line: cut, and the cut is visible.
+    CHECK(SheetLayoutCellText("Saint Petersburg", 8, 1) == std::vector<std::string>{"Saint P" + ell});
+    // Counted in characters, not bytes.
+    CHECK(SheetLayoutCellText("M\xC3\xBCnchen", 7, 1) == std::vector<std::string>{"M\xC3\xBCnchen"});
+    CHECK(SheetTextColumns("M\xC3\xBCnchen") == 7);
+    // A newline in a one-line box is a mark, not a run-together.
+    CHECK(SheetLayoutCellText("a\nb", 20, 1) == std::vector<std::string>{"a \xE2\x8F\x8E b"});
+    // Room for more lines: word wrap, and newlines break.
+    CHECK((SheetLayoutCellText("needs invoice in EUR", 10, 3) ==
+           std::vector<std::string>{"needs", "invoice in", "EUR"}));
+    CHECK((SheetLayoutCellText("one\ntwo", 10, 3) == std::vector<std::string>{"one", "two"}));
+    // A word longer than the line is broken rather than overflowing.
+    CHECK((SheetLayoutCellText("abcdefghij", 4, 5) == std::vector<std::string>{"abcd", "efgh", "ij"}));
+    // More than fits: the last line shown says there is more.
+    CHECK((SheetLayoutCellText("aa bb cc dd ee", 5, 2) == std::vector<std::string>{"aa bb", "cc d" + ell}));
+    CHECK(SheetWrappedLineCount("aa bb cc dd ee", 5) == 3);
+    CHECK(SheetWrappedLineCount("", 5) == 1);
+    CHECK(SheetLayoutCellText("x", 0, 1).empty());
+}
+
+void TestRowHeaderFitsItsDigits() {
+    SheetView v;
+    // Before the renderer has measured anything: the default width.
+    CHECK(SheetRowHeaderWidth(MakeSheetGeom(v, 1.0f)) == kSheetRowHeaderW);
+    // A large font: three digits at 20px each do not fit in 50px, so the
+    // gutter grows rather than clipping "174" to "74".
+    v.font_char_w = 20.0f;
+    v.row_label_digits = 3;
+    CHECK(SheetRowHeaderWidth(MakeSheetGeom(v, 1.0f)) == 60 + 2 * kSheetCellPadX);
+    // A small font never shrinks it below the default.
+    v.font_char_w = 5.0f;
+    CHECK(SheetRowHeaderWidth(MakeSheetGeom(v, 1.0f)) == kSheetRowHeaderW);
+    // And the body is laid out after it.
+    v.font_char_w = 20.0f;
+    v.row_label_digits = 6;
+    CHECK(SheetMeasurePane(MakeSheetGeom(v, 1.0f), 800, 400).header_w == 120 + 2 * kSheetCellPadX);
+    CHECK(SheetDigitCount(0) == 1 && SheetDigitCount(9) == 1 && SheetDigitCount(10) == 2 &&
+          SheetDigitCount(174) == 3 && SheetDigitCount(100000) == 6);
+}
+
+void TestYankRowsAndCsvBlock() {
+    Workbook wb = LoadCsv("name,qty,note\nb,2,\"x, y\"\na,1,plain\nc,3,\nd,4,\"say \"\"hi\"\"\"\n");
+    SheetView v;
+    v.freeze_rows = 1;
+    v.sort = SheetSort{0, SheetSortKind::Text, false};
+    RebuildSheetOrder(v, wb, 0);
+    // Shown: name, a(row 2), b(row 1), c(row 3), d(row 4). Selecting from
+    // "a" down to "c" is rows 2, 1, 3 -- not the rows numbered 2..3.
+    CHECK((SheetDisplayRangeRows(v, 2, 3) == std::vector<int>{2, 1, 3}));
+    CHECK((SheetDisplayRangeRows(v, 3, 2) == std::vector<int>{2, 1, 3}));
+    // A block comes out as CSV: quoted where it must be, empty cells kept
+    // so it stays square, a formula as its value.
+    CHECK(SheetBlockToCsv(wb, 0, {1, 3}, 0, 2) == "b,2,\"x, y\"\nc,3,\n");
+    CHECK(SheetBlockToCsv(wb, 0, {4}, 2, 2) == "\"say \"\"hi\"\"\"\n");
+    SetCellRaw(wb, 0, 2, 1, "=1+1");
+    CHECK(SheetBlockToCsv(wb, 0, {2}, 0, 1) == "a,2\n");
+    // Past the data, both corners: the rows themselves.
+    CHECK((SheetDisplayRangeRows(v, 40, 41) == std::vector<int>{40, 41}));
+}
+
 int main() {
     TestFixtureShape();
 
@@ -1068,6 +1163,12 @@ int main() {
 
     TestEmptyAndOutOfRange();
     TestDirtyFlag();
+
+    TestHeaderDetection();
+    TestCsvSaveKeepsTheFilesText();
+    TestCellTextLayout();
+    TestRowHeaderFitsItsDigits();
+    TestYankRowsAndCsvBlock();
 
     std::printf("sheet_view_test: all checks passed\n");
     return 0;

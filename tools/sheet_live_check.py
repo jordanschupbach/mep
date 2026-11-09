@@ -212,21 +212,29 @@ def scenario_sizing(build_dir, xv, keep):
 
 
 def scenario_autofit(build_dir, xv, keep):
-    print("== autofit: a column sizes itself to its widest value")
+    print("== autofit: columns fit their contents on open, and on request")
     home = tempfile.mkdtemp(prefix="/tmp/meps-")
-    text = "short,long\na,%s\nb,x\n" % ("w" * 60)
+    text = "s,long\na,%s\nb,x\n" % ("w" * 60)
     sh = Sheet(build_dir, xv, home, text=text)
     try:
+        # Opening fits every column -- the short one below the old fixed
+        # 90px default, the long one up to the open-time cap, not past it.
+        narrow_open = int(sh.m.lua_value("mep.sheet_col_width(1)"))
+        wide_open = int(sh.m.lua_value("mep.sheet_col_width(2)"))
+        check("opening fits a short column narrower than the old default", narrow_open < 90, str(narrow_open))
+        check("opening caps a long column", wide_open == 360, str(wide_open))
+        # An explicit autofit is not capped.
         sh.cmd("MepSheetAutofit B")
         sh.m.pump(12)
         wide = int(sh.m.lua_value("mep.sheet_col_width(2)"))
-        narrow_before = int(sh.m.lua_value("mep.sheet_col_width(1)"))
-        check("the long column grew past the default", wide > 120, str(wide))
+        check("an explicit autofit fits the whole value", wide > 360, str(wide))
+        # And fitting a column the user widened brings it back down.
+        sh.cmd("MepSheetWidth A 300")
         sh.cmd("MepSheetAutofit A")
         sh.m.pump(12)
         narrow = int(sh.m.lua_value("mep.sheet_col_width(1)"))
-        check("the short column shrank", narrow < narrow_before, "%d -> %d" % (narrow_before, narrow))
-        check("but stayed grabbable", narrow >= 24, str(narrow))
+        check("autofit shrinks a widened column", narrow == narrow_open, "%d (opened at %d)" % (narrow, narrow_open))
+        check("but it stays grabbable", narrow >= 24, str(narrow))
     finally:
         sh.quit()
         if not keep:
@@ -496,7 +504,9 @@ def scenario_menu_filter(build_dir, xv, keep):
         sh.m.lua_value("tostring(mep.sheet_filter(1, 'oneof', {'West', 'South'}))")
         sh.m.pump(8)
         info = sh.info("visible_rows", "filters")
-        check("an oneof filter keeps just those values", info["visible_rows"] == "6", str(info))
+        # Six West/South rows, plus the header row, which opening froze
+        # (its labels are all text) and which a filter therefore keeps.
+        check("an oneof filter keeps just those values", info["visible_rows"] == "7", str(info))
         sh.m.lua_value("tostring(mep.sheet_filter_clear())")
         sh.m.pump(6)
         check("clearing restores them", sh.info("visible_rows")["visible_rows"] == "13",
@@ -547,6 +557,329 @@ def scenario_visual_range(build_dir, xv, keep):
             shutil.rmtree(home, ignore_errors=True)
 
 
+def scenario_header(build_dir, xv, keep):
+    print("== a row of column names is frozen on open; a numeric first row is not")
+    home = tempfile.mkdtemp(prefix="/tmp/meps-")
+    sh = Sheet(build_dir, xv, home)
+    try:
+        check("the FIXTURE header is frozen", sh.info("freeze_rows")["freeze_rows"] == "1",
+              str(sh.info("freeze_rows")))
+        # Sorting leaves it on top without being asked to.
+        sh.cmd("MepSheetSort C desc num")
+        check("a sort keeps the header first", sh.display_rows(2) == [1, 10], str(sh.display_rows(2)))
+    finally:
+        sh.quit()
+    home2 = tempfile.mkdtemp(prefix="/tmp/meps-")
+    sh = Sheet(build_dir, xv, home2, text="3,1\n1,2\n2,3\n")
+    try:
+        check("a headerless numeric file freezes nothing", sh.info("freeze_rows")["freeze_rows"] == "0",
+              str(sh.info("freeze_rows")))
+    finally:
+        sh.quit()
+        if not keep:
+            shutil.rmtree(home, ignore_errors=True)
+            shutil.rmtree(home2, ignore_errors=True)
+
+
+def scenario_wrap(build_dir, xv, keep):
+    print("== wrap: rows grow to show their whole text, and shrink back")
+    home = tempfile.mkdtemp(prefix="/tmp/meps-")
+    text = "id,note\n1,short\n2,%s\n3,\"two\nlines\"\n" % " ".join(["word"] * 40)
+    sh = Sheet(build_dir, xv, home, text=text)
+    try:
+        h = lambda r: int(sh.m.lua_value("mep.sheet_row_height(%d)" % r))
+        base = h(2)
+        sh.cmd("MepSheetWrap")
+        sh.m.pump(12)
+        check("a one-line row stays one line", h(2) == base, "%d vs %d" % (h(2), base))
+        check("a long value's row grows", h(3) > base * 2, "%d vs %d" % (h(3), base))
+        check("a value with a newline gets two lines", base < h(4) < h(3), "%d (long row %d)" % (h(4), h(3)))
+        sh.cmd("MepSheetWrap")
+        sh.m.pump(6)
+        check("wrapping off puts them back", h(3) == base and h(4) == base, "%d %d" % (h(3), h(4)))
+        sh.cmd("MepSheetHeight 3 auto")
+        sh.m.pump(12)
+        check(":MepSheetHeight N auto fits one row", h(3) > base * 2 and h(4) == base, "%d %d" % (h(3), h(4)))
+    finally:
+        sh.quit()
+        if not keep:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def scenario_text_toggle(build_dir, xv, keep):
+    print("== text toggle: the same buffer as plain text and back, edits carried both ways")
+    home = tempfile.mkdtemp(prefix="/tmp/meps-")
+    sh = Sheet(build_dir, xv, home)
+    try:
+        is_grid = lambda: sh.m.lua_value("mep.sheet_info() ~= nil and mep.sheet_info().cursor_row ~= nil")
+        sh.cmd("MepSheetWidth B 222")
+        sh.cmd("MepSheetText")
+        first = sh.m.lua_value("mep.get_line(1)")
+        check("text view shows the file's own text", first == "region,rep,units,revenue,status", repr(first))
+        check("and the number spellings in it", sh.m.lua_value("mep.get_line(2)") == "West,Alice,120,15400.50,closed",
+              repr(sh.m.lua_value("mep.get_line(2)")))
+        # Edit the text, go back to the grid: the grid reads the edit.
+        sh.m.lua_value("(function() mep.set_line(3, 'East,BOBBY,45,5120.00,open') return 1 end)()")
+        sh.cmd("MepSheetGrid")
+        check("back in the grid", sh.cell(3, 2) == "BOBBY", repr(sh.cell(3, 2)))
+        check("the column width survived the round trip", sh.m.lua_value("mep.sheet_col_width(2)") == "222",
+              repr(sh.m.lua_value("mep.sheet_col_width(2)")))
+        # Edit in the grid, go to text: the text shows it, unsaved.
+        sh.cmd("MepSheetFind Carol")
+        sh.key("i")
+        sh.m.rpc.call("ui.type_text", {"text": "CAROLINE"})
+        sh.m.pump(25)
+        sh.key("Escape")
+        sh.cmd("MepSheetToggle")
+        line4 = sh.m.lua_value("mep.get_line(4)")
+        check("a grid edit shows in the text", line4 is not None and "CAROLINE" in line4, repr(line4))
+        check("nothing was written yet", b"CAROLINE" not in sh.file_bytes() and b"BOBBY" not in sh.file_bytes(),
+              sh.file_bytes()[:80])
+        sh.cmd("w")
+        body = sh.file_bytes().decode()
+        check(":w from the text view writes both edits", "BOBBY" in body and "CAROLINE" in body, body[:160])
+        check("and leaves the other rows as they were", "West,Alice,120,15400.50,closed\n" in body, body[:120])
+    finally:
+        sh.quit()
+        if not keep:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def scenario_edit(build_dir, xv, keep):
+    print("== editing happens in the cell: keys, mouse, and characters, not bytes")
+    home = tempfile.mkdtemp(prefix="/tmp/meps-")
+    sh = Sheet(build_dir, xv, home, text=FIXTURE.replace("North,dave", "North,M\u00e9xico"))
+    try:
+        ed = lambda: sh.info("editing", "edit_text", "edit_caret", "cursor_row", "cursor_col")
+        sh.cmd("MepSheetFind Carol")
+        sh.key("a")
+        st = ed()
+        check("`a` opens the cell with the caret after its value",
+              st["editing"] == "true" and st["edit_text"] == "Carol" and st["edit_caret"] == "5", str(st))
+        sh.m.rpc.call("ui.type_text", {"text": "ine"})
+        sh.m.pump(20)
+        check("typing goes into the open cell", ed()["edit_text"] == "Caroline", str(ed()))
+        check("the cell is not written until the edit ends", sh.cell(4, 2) == "Carol", repr(sh.cell(4, 2)))
+        box = sh.info("edit_box_x", "edit_box_y", "edit_box_w", "edit_box_h", "edit_text_x")
+        check("the editor is drawn over the cell", int(box["edit_box_w"]) > 0 and int(box["edit_box_h"]) > 0, str(box))
+        sh.key("Escape")
+        check("Escape keeps the edit", sh.cell(4, 2) == "Caroline" and ed()["editing"] == "false", str(ed()))
+        sh.key("i")
+        check("`i` puts the caret before the value", ed()["edit_caret"] == "0", str(ed()))
+        sh.key("Escape")
+        sh.key("c")
+        check("`c` starts from an empty value", ed()["edit_text"] == "", str(ed()))
+        sh.m.rpc.call("ui.type_text", {"text": "Zed"})
+        sh.m.pump(20)
+        sh.key("Tab")
+        st = ed()
+        check("Tab commits and moves right", sh.cell(4, 2) == "Zed" and st["cursor_col"] == "3", str(st))
+        sh.key("Return")
+        check("Enter opens the cell", ed()["editing"] == "true" and ed()["edit_text"] == "330", str(ed()))
+        sh.key("Down")
+        st = ed()
+        check("Down commits and moves down", st["editing"] == "false" and st["cursor_row"] == "5", str(st))
+
+        # The mouse: a click inside the open cell places the caret, a click
+        # on another cell keeps the edit and moves there.
+        sh.cmd("MepSheetFind Frank")
+        sh.key("a")
+        box = sh.info("edit_box_x", "edit_box_y", "edit_box_h", "edit_text_x", "edit_char_w")
+        cw = float(box["edit_char_w"])
+        sh.click(float(box["edit_text_x"]) + 2 * cw + 1, int(box["edit_box_y"]) + 4)
+        check("a click in the open cell moves the caret", ed()["edit_caret"] == "2", str(ed()))
+        sh.m.rpc.call("ui.type_text", {"text": "Q"})
+        sh.m.pump(20)
+        below_y = int(box["edit_box_y"]) + int(box["edit_box_h"]) + 6
+        sh.click(int(box["edit_box_x"]) + 6, below_y)
+        st = ed()
+        check("a click elsewhere commits and moves", st["editing"] == "false" and st["cursor_row"] == "8",
+              str(st))
+        check("with the typed character where the caret was", sh.cell(7, 2) == "FrQank", repr(sh.cell(7, 2)))
+        # A double-click on a cell opens it.
+        sh.m.rpc.call("ui.mouse_click", {"x": int(box["edit_box_x"]) + 6, "y": below_y})
+        sh.m.pump(1)
+        sh.m.rpc.call("ui.mouse_click", {"x": int(box["edit_box_x"]) + 6, "y": below_y})
+        sh.m.pump(8)
+        check("a double-click edits the cell", ed()["editing"] == "true", str(ed()))
+        sh.key("Escape")
+
+        # Backspace removes a character, not a byte: "México" never ends
+        # up holding half of its é.
+        sh.cmd("MepSheetFind xico")
+        sh.key("a")
+        sh.key("Left", 4)  # M é | x i c o
+        sh.key("BackSpace")
+        sh.key("Escape")
+        check("Backspace deletes the whole é", sh.cell(5, 2) == "Mxico", repr(sh.cell(5, 2)))
+    finally:
+        sh.quit()
+        if not keep:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def scenario_pane_keys(build_dir, xv, keep):
+    print("== mod1+Shift+hjkl: the pane-resize keys size the cell's column and row in a sheet")
+    home = tempfile.mkdtemp(prefix="/tmp/meps-")
+    sh = Sheet(build_dir, xv, home)
+    try:
+        def chord(key, times=1):
+            for _ in range(times):
+                sh.m.rpc.call("ui.key_down", {"key": "Alt_L"})
+                sh.m.rpc.call("ui.key_down", {"key": "Shift_L"})
+                sh.m.rpc.call("ui.key_press", {"key": key})
+                sh.m.rpc.call("ui.key_up", {"key": "Shift_L"})
+                sh.m.rpc.call("ui.key_up", {"key": "Alt_L"})
+                sh.m.pump(5)
+        cw = lambda c: int(sh.m.lua_value("mep.sheet_col_width(%d)" % c))
+        rh = lambda r: int(sh.m.lua_value("mep.sheet_row_height(%d)" % r))
+        sh.key("l")
+        sh.key("j")
+        before = sh.info("cursor_row", "cursor_col")
+        w0, h0, n0 = cw(2), rh(2), cw(3)
+        chord("l", 3)
+        check("mod1+Shift+l widens the cursor's column", cw(2) == w0 + 30, "%d -> %d" % (w0, cw(2)))
+        chord("h")
+        check("mod1+Shift+h narrows it", cw(2) == w0 + 20, "%d -> %d" % (w0, cw(2)))
+        check("the neighbouring column is untouched", cw(3) == n0, "%d -> %d" % (n0, cw(3)))
+        chord("j")
+        h1 = rh(2)
+        check("mod1+Shift+j makes the row taller, visibly on the first press", h1 > h0 and h1 > 22,
+              "%d -> %d" % (h0, h1))
+        chord("k")
+        check("mod1+Shift+k makes it shorter again", rh(2) < h1, "%d -> %d" % (h1, rh(2)))
+        check("the cursor did not move", sh.info("cursor_row", "cursor_col") == before, str(sh.info("cursor_row", "cursor_col")))
+        # Visual: every selected column grows together.
+        sh.key("v")
+        sh.key("l")
+        sh.key("l")
+        c2, c3, c4 = cw(2), cw(3), cw(4)
+        chord("l")
+        sh.key("Escape")
+        check("in Visual, every selected column is sized",
+              (cw(2), cw(3), cw(4)) == (c2 + 10, c3 + 10, c4 + 10), str((c2, c3, c4, cw(2), cw(3), cw(4))))
+        # While a cell is open, the chord sizes and nothing is typed.
+        sh.key("a")
+        text_before = sh.info("edit_text")["edit_text"]
+        w = cw(4)
+        chord("l")
+        check("while editing, the chord sizes the column", cw(4) == w + 10, "%d -> %d" % (w, cw(4)))
+        check("and types nothing into the cell", sh.info("edit_text")["edit_text"] == text_before,
+              repr(sh.info("edit_text")["edit_text"]))
+        sh.key("Escape")
+        # Anywhere but a grid the chord is the pane resize it always was.
+        sh.cmd("MepSheetText")
+        check("outside a grid the sheet step declines (the pane resizes)",
+              sh.m.lua_value("tostring(mep.sheet_resize_step('right'))") == "false",
+              repr(sh.m.lua_value("tostring(mep.sheet_resize_step('right'))")))
+    finally:
+        sh.quit()
+        if not keep:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def scenario_row_numbers(build_dir, xv, keep):
+    print("== the row-number gutter is wide enough for every digit")
+    home = tempfile.mkdtemp(prefix="/tmp/meps-")
+    rows = ["id,v"] + ["r%d,%d" % (i, i) for i in range(1, 1500)]
+    sh = Sheet(build_dir, xv, home, text="\n".join(rows) + "\n")
+    try:
+        sh.cmd("MepSheetZoom 250")
+        sh.cmd("MepSheetFind r1173")
+        sh.m.pump(10)
+        info = sh.info("header_w", "cursor_row")
+        # Four digits at the zoomed font must fit, with room either side;
+        # the old fixed gutter (50px * 2.5 = 125) is the floor, so check
+        # it actually grew past what three digits would need.
+        check("the cursor is on row 1174", info["cursor_row"] == "1174", str(info))
+        check("the gutter grew for four digits at a large zoom", int(info["header_w"]) > 125, str(info))
+    finally:
+        sh.quit()
+        if not keep:
+            shutil.rmtree(home, ignore_errors=True)
+
+
+def scenario_yank(build_dir, xv, keep):
+    print("== yank: the grid copies as CSV, to the register and the clipboard")
+    home = tempfile.mkdtemp(prefix="/tmp/meps-")
+    text = FIXTURE.replace("West,Alice,120,15400.50,closed", 'West,"Smith, Alice",120,15400.50,closed')
+    sh = Sheet(build_dir, xv, home, text=text)
+    try:
+        clip = lambda: sh.m.lua_value("mep.clipboard_get()")
+        sh.cmd("MepSheetFind Carol")
+        sh.key("y")
+        sh.key("y")
+        check("`yy` yanks the row as a CSV record", clip() == "West,Carol,330,41250.75,closed\n", repr(clip()))
+        sh.key("y")
+        sh.key("l")
+        check("`yl` yanks the cell's value", clip() == "Carol", repr(clip()))
+        check("and the cursor did not move", sh.info("cursor_col")["cursor_col"] == "2", str(sh.info("cursor_col")))
+        sh.cmd("MepSheetFind Smith")
+        sh.shift_key("y")
+        check("`Y` yanks the row, quoting a field with a comma",
+              clip() == 'West,"Smith, Alice",120,15400.50,closed\n', repr(clip()))
+        # A Visual block: two rows by two columns, an empty cell kept.
+        sh.cmd("MepSheetFind dave")
+        sh.key("v")
+        sh.key("l")
+        sh.key("j")
+        sh.key("y")
+        check("Visual `y` yanks the block as CSV", clip() == "dave,\nErin,78\n", repr(clip()))
+        check("and leaves Visual", sh.info("cursor_row", "cursor_col") == {"cursor_row": "5", "cursor_col": "2"},
+              str(sh.info("cursor_row", "cursor_col")))
+        # Paste it back somewhere empty: the same block of cells.
+        sh.cmd("MepSheetFind Ken")
+        sh.key("j")
+        sh.key("j")
+        at = int(sh.info("cursor_row")["cursor_row"])
+        sh.key("p")
+        got = (sh.cell(at, 2), sh.cell(at, 3), sh.cell(at + 1, 2), sh.cell(at + 1, 3))
+        check("`p` lays the block into cells at the cursor", got == ("dave", "", "Erin", "78"), str(got))
+        sh.key("u")
+        check("`u` undoes the paste", sh.cell(at, 2) == "", repr(sh.cell(at, 2)))
+        # A single value with a comma in it pastes into one cell.
+        sh.cmd("MepSheetFind Smith")
+        sh.key("y")
+        sh.key("l")
+        sh.cmd("MepSheetFind Ken")
+        sh.key("l")
+        sh.key("l")
+        sh.key("l")
+        sh.key("l")
+        sh.key("l")
+        sh.key("p")
+        check("a value with a comma stays one cell", sh.cell(13, 7) == "Smith, Alice", repr(sh.cell(13, 7)))
+        # `x` yanks what it clears.
+        sh.cmd("MepSheetFind Judy")
+        sh.key("x")
+        check("`x` yanks the cell it clears", clip() == "Judy" and sh.cell(12, 2) == "", repr(clip()))
+        # In a sorted view a Visual yank takes the rows as shown.
+        sh.cmd("MepSheetSort C desc num")
+        sh.cmd("MepSheetFind Heidi")
+        sh.key("v")
+        sh.key("j")
+        sh.key("j")
+        sh.key("y")
+        check("a sorted view yanks the rows in the order shown", clip() == "Heidi\nCarol\nFrank\n", repr(clip()))
+        sh.cmd("MepSheetSortClear")
+        # And a row yanked in the grid pastes as a line in the text view.
+        sh.cmd("MepSheetFind Ken")
+        sh.key("y")
+        sh.key("y")
+        sh.cmd("MepSheetText")
+        sh.shift_key("g")
+        sh.key("p")
+        last = sh.m.lua_value("mep.get_line(mep.line_count())")
+        # (Ken's row picked up "Smith, Alice" in column G above, so it is
+        # quoted on the way out -- the line is the record, ready to save.)
+        check("a yanked row pastes into the CSV text as a line",
+              last == 'South,Ken,62,7640.00,open,,"Smith, Alice"', repr(last))
+    finally:
+        sh.quit()
+        if not keep:
+            shutil.rmtree(home, ignore_errors=True)
+
+
 SCENARIOS = {
     "visual": scenario_visual_range,
     "zoom": scenario_zoom,
@@ -561,6 +894,13 @@ SCENARIOS = {
     "find": scenario_find,
     "mouse": scenario_mouse,
     "menu": scenario_menu_filter,
+    "header": scenario_header,
+    "wrap": scenario_wrap,
+    "text": scenario_text_toggle,
+    "edit": scenario_edit,
+    "panekeys": scenario_pane_keys,
+    "rownums": scenario_row_numbers,
+    "yank": scenario_yank,
 }
 
 

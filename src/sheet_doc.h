@@ -109,6 +109,10 @@ private:
 struct Workbook {
     std::vector<Sheet> sheets;
     std::string source_format;  // "xlsx" | "ods" | "csv"
+    // A CSV's own line ending, so `:w` after editing one cell does not
+    // also rewrite every line of an LF file as CRLF. Set by
+    // LoadCsvFromMemory from the file's first newline.
+    std::string csv_eol = "\r\n";
     // Bumped once per edit commit (any cell's raw changing) -- see
     // EvaluateCell's own comment for how this drives cache invalidation
     // without a dependency graph.
@@ -228,6 +232,23 @@ bool LoadCsvFromMemory(const unsigned char *bytes, size_t len, Workbook &out, st
  * @return True on success, false if wb has no sheets.
  */
 bool SaveCsvToMemory(Workbook &wb, std::string &out, std::string &error);
+
+/**
+ * @brief Quotes a field for CSV if it holds a comma, quote or newline, doubling any quotes inside.
+ * @param s The field's text.
+ * @return `s` unchanged when it needs no quoting, else its quoted form.
+ */
+std::string CsvEscapeField(const std::string &s);
+
+/**
+ * @brief The text a cell is written to CSV as: a literal exactly as read, a formula as its result.
+ * @param wb The workbook.
+ * @param sheet Sheet index.
+ * @param row Zero-based row.
+ * @param col Zero-based column.
+ * @return The unescaped field text ("" for an empty cell).
+ */
+std::string CsvCellText(Workbook &wb, int sheet, int row, int col);
 
 /**
  * @brief Loads an .xlsx workbook from an in-memory zip, parsing every worksheet part into `out`.

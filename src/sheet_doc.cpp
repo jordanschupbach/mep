@@ -684,6 +684,10 @@ bool LoadCsvFromMemory(const unsigned char *bytes, size_t len, Workbook &out, st
     out.sheets[0].name = "Sheet1";
 
     std::string text(reinterpret_cast<const char *>(bytes), len);
+    {
+        const size_t nl = text.find('\n');
+        out.csv_eol = (nl != std::string::npos && nl > 0 && text[nl - 1] == '\r') ? "\r\n" : "\n";
+    }
     size_t i = 0, n = text.size();
     int row = 0, col = 0;
     std::string field;
@@ -749,34 +753,40 @@ bool LoadCsvFromMemory(const unsigned char *bytes, size_t len, Workbook &out, st
     return true;
 }
 
+std::string CsvEscapeField(const std::string &s) {
+    if (s.find_first_of(",\"\n\r") == std::string::npos) return s;
+    std::string q = "\"";
+    for (char c : s) {
+        if (c == '"') q += "\"\"";
+        else q.push_back(c);
+    }
+    q += "\"";
+    return q;
+}
+
+std::string CsvCellText(Workbook &wb, int sheet, int row, int col) {
+    if (sheet < 0 || static_cast<size_t>(sheet) >= wb.sheets.size()) return std::string();
+    const Cell *cell = wb.sheets[static_cast<size_t>(sheet)].FindCell(row, col);
+    if (!cell) return std::string();
+    // A literal is written back as the text it was read as: its formatted
+    // value would turn "19.00" into "19" and a zip code "01234" into
+    // "1234". Only a formula -- which CSV cannot hold -- becomes its result.
+    return cell->kind == CellKind::Formula ? FormatCellValue(EvaluateCell(wb, sheet, row, col)) : cell->raw;
+}
+
 bool SaveCsvToMemory(Workbook &wb, std::string &out, std::string &error) {
     if (wb.sheets.empty()) {
         error = "workbook has no sheets";
         return false;
     }
     const Sheet &sh = wb.sheets[0];  // CSV is single-sheet by construction
-    /**
-     * @brief Quotes a field for CSV output if it contains a comma, quote, or newline, doubling any embedded quotes.
-     * @param s Field text to escape.
-     * @return s unchanged if it needs no quoting, otherwise a double-quoted, quote-doubled version of s.
-     */
-    auto escape = [](const std::string &s) -> std::string {
-        if (s.find_first_of(",\"\n\r") == std::string::npos) return s;
-        std::string q = "\"";
-        for (char c : s) {
-            if (c == '"') q += "\"\"";
-            else q.push_back(c);
-        }
-        q += "\"";
-        return q;
-    };
     std::ostringstream ss;
     for (int r = 0; r <= sh.max_row; r++) {
         for (int c = 0; c <= sh.max_col; c++) {
             if (c > 0) ss << ",";
-            if (sh.FindCell(r, c)) ss << escape(FormatCellValue(EvaluateCell(wb, 0, r, c)));
+            if (sh.FindCell(r, c)) ss << CsvEscapeField(CsvCellText(wb, 0, r, c));
         }
-        ss << "\r\n";
+        ss << wb.csv_eol;
     }
     out = ss.str();
     return true;

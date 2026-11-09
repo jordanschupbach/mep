@@ -212,7 +212,8 @@ int SheetRowHeight(const SheetGeom &g, int row) {
     const int base = it == g.view->row_h.end() ? kSheetRowHeight : it->second;
     int px = Scaled(base, g.zoom);
     if (g.view->font_line_height > 0.0f) {
-        px = std::max(px, static_cast<int>(std::ceil(static_cast<double>(g.view->font_line_height))) + 4);
+        px = std::max(px, static_cast<int>(std::ceil(static_cast<double>(g.view->font_line_height))) +
+                              Scaled(2 * kSheetCellPadY, g.zoom));
     }
     return px;
 }
@@ -233,9 +234,27 @@ void SheetSetRowHeight(SheetView &view, int row, int px) {
     view.row_h[row] = std::min(kSheetMaxRowHeight, std::max(kSheetMinRowHeight, px));
 }
 
+int SheetRowHeaderWidth(const SheetGeom &g) {
+    const int base = Scaled(kSheetRowHeaderW, g.zoom);
+    if (!g.view || g.view->font_char_w <= 0.0f) return base;
+    // Every digit of the widest row number, plus the cell inset either
+    // side. font_char_w is already at the zoomed size, like the line
+    // height, so only the padding scales.
+    const double digits = static_cast<double>(std::max(1, g.view->row_label_digits));
+    const int need = static_cast<int>(std::ceil(digits * static_cast<double>(g.view->font_char_w))) +
+                     Scaled(2 * kSheetCellPadX, g.zoom);
+    return std::max(base, need);
+}
+
+int SheetDigitCount(int n) {
+    int d = 1;
+    for (n = std::max(0, n); n >= 10; n /= 10) d++;
+    return d;
+}
+
 SheetPaneMetrics SheetMeasurePane(const SheetGeom &g, int pane_w, int grid_h) {
     SheetPaneMetrics m;
-    m.header_w = Scaled(kSheetRowHeaderW, g.zoom);
+    m.header_w = SheetRowHeaderWidth(g);
     m.col_header_h = Scaled(kSheetRowHeight, g.zoom);
 
     const int freeze_cols = g.view ? std::max(0, g.view->freeze_cols) : 0;
@@ -840,6 +859,167 @@ std::string SheetViewSummary(const SheetView &view) {
         if (!out.empty()) out += ", ";
         out += std::to_string(view.filters.size());
         out += view.filters.size() == 1 ? " filter" : " filters";
+    }
+    return out;
+}
+
+bool SheetLooksLikeHeader(const Sheet &sh) {
+    if (sh.max_row < 1) return false;
+    std::vector<std::string> seen;
+    for (int c = 0; c <= sh.max_col; c++) {
+        const Cell *cell = sh.FindCell(0, c);
+        if (!cell || cell->kind != CellKind::Text || cell->raw.empty()) return false;
+        std::string lower;
+        for (char ch : cell->raw) lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+        for (const std::string &s : seen) {
+            if (s == lower) return false;
+        }
+        seen.push_back(std::move(lower));
+    }
+    return true;
+}
+
+namespace {
+
+// The byte length of the first `n` codepoints of `text`.
+size_t Utf8PrefixBytes(const std::string &text, int n) {
+    size_t i = 0;
+    for (int seen = 0; i < text.size() && seen < n; seen++) {
+        i++;
+        while (i < text.size() && (static_cast<unsigned char>(text[i]) & 0xC0) == 0x80) i++;
+    }
+    return i;
+}
+
+constexpr const char *kEllipsis = "\xE2\x80\xA6";      // U+2026
+constexpr const char *kReturnMark = "\xE2\x8F\x8E";    // U+23CE -- JetBrains Mono has no U+21B5
+
+// `line` cut to `max_cols` characters with an ellipsis in the last one.
+std::string Ellipsize(const std::string &line, int max_cols) {
+    if (max_cols <= 1) return kEllipsis;
+    return line.substr(0, Utf8PrefixBytes(line, max_cols - 1)) + kEllipsis;
+}
+
+// Greedy word wrap of one newline-free paragraph. A word longer than a
+// whole line is broken mid-word rather than left to overflow.
+void WrapParagraph(const std::string &para, int max_cols, std::vector<std::string> *out) {
+    std::string line;
+    int line_cols = 0;
+    size_t i = 0;
+    while (i <= para.size()) {
+        size_t sp = para.find(' ', i);
+        if (sp == std::string::npos) sp = para.size();
+        std::string word = para.substr(i, sp - i);
+        i = sp + 1;
+        if (word.empty() && sp < para.size()) continue;
+        int word_cols = SheetTextColumns(word);
+        if (line_cols > 0 && line_cols + 1 + word_cols <= max_cols) {
+            line += ' ' + word;
+            line_cols += 1 + word_cols;
+            continue;
+        }
+        if (line_cols > 0) {
+            out->push_back(line);
+            line.clear();
+            line_cols = 0;
+        }
+        while (word_cols > max_cols) {
+            const size_t cut = Utf8PrefixBytes(word, max_cols);
+            out->push_back(word.substr(0, cut));
+            word.erase(0, cut);
+            word_cols -= max_cols;
+        }
+        line = word;
+        line_cols = word_cols;
+    }
+    out->push_back(line);
+}
+
+}  // namespace
+
+int SheetTextColumns(const std::string &text) {
+    int n = 0;
+    for (char c : text) {
+        if ((static_cast<unsigned char>(c) & 0xC0) != 0x80) n++;
+    }
+    return n;
+}
+
+std::vector<std::string> SheetLayoutCellText(const std::string &text, int max_cols, int max_lines) {
+    std::vector<std::string> lines;
+    if (max_cols < 1 || max_lines < 1 || text.empty()) return lines;
+    if (max_lines == 1) {
+        // One line: a newline cannot break the line, so it is shown as a
+        // mark -- dropping it would run two lines' words together.
+        std::string flat;
+        for (size_t i = 0; i < text.size(); i++) {
+            if (text[i] == '\r') continue;
+            if (text[i] == '\n') flat += std::string(" ") + kReturnMark + " ";
+            else flat.push_back(text[i]);
+        }
+        lines.push_back(SheetTextColumns(flat) <= max_cols ? flat : Ellipsize(flat, max_cols));
+        return lines;
+    }
+    size_t start = 0;
+    while (start <= text.size()) {
+        size_t nl = text.find('\n', start);
+        if (nl == std::string::npos) nl = text.size();
+        std::string para = text.substr(start, nl - start);
+        if (!para.empty() && para.back() == '\r') para.pop_back();
+        WrapParagraph(para, max_cols, &lines);
+        start = nl + 1;
+        if (static_cast<int>(lines.size()) > max_lines) break;
+    }
+    if (static_cast<int>(lines.size()) > max_lines) {
+        lines.resize(static_cast<size_t>(max_lines));
+        std::string &last = lines.back();
+        last = SheetTextColumns(last) < max_cols ? last + kEllipsis : Ellipsize(last, max_cols);
+    }
+    return lines;
+}
+
+int SheetWrappedLineCount(const std::string &text, int max_cols) {
+    if (text.empty() || max_cols < 1) return 1;
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start <= text.size()) {
+        size_t nl = text.find('\n', start);
+        if (nl == std::string::npos) nl = text.size();
+        std::string para = text.substr(start, nl - start);
+        if (!para.empty() && para.back() == '\r') para.pop_back();
+        WrapParagraph(para, max_cols, &lines);
+        start = nl + 1;
+    }
+    return std::max<int>(1, static_cast<int>(lines.size()));
+}
+
+std::vector<int> SheetDisplayRangeRows(const SheetView &view, int anchor_row, int cursor_row) {
+    std::vector<int> rows;
+    const int a = SheetDisplayOfRow(view, anchor_row);
+    const int c = SheetDisplayOfRow(view, cursor_row);
+    if (a < 0 && c < 0) {
+        // Both corners past the data (or both hidden): the rows themselves,
+        // which hold nothing but are what the user selected.
+        for (int r = std::min(anchor_row, cursor_row); r <= std::max(anchor_row, cursor_row); r++) rows.push_back(r);
+        return rows;
+    }
+    const int lo_d = a < 0 ? SheetNearestVisibleDisplay(view, anchor_row) : a;
+    const int hi_d = c < 0 ? SheetNearestVisibleDisplay(view, cursor_row) : c;
+    for (int d = std::min(lo_d, hi_d); d <= std::max(lo_d, hi_d); d++) {
+        const int r = SheetRowAtDisplay(view, d);
+        if (r >= 0) rows.push_back(r);
+    }
+    return rows;
+}
+
+std::string SheetBlockToCsv(Workbook &wb, int sheet, const std::vector<int> &rows, int c0, int c1) {
+    std::string out;
+    for (int r : rows) {
+        for (int c = c0; c <= c1; c++) {
+            if (c > c0) out += ',';
+            out += CsvEscapeField(CsvCellText(wb, sheet, r, c));
+        }
+        out += '\n';
     }
     return out;
 }

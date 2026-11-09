@@ -4885,6 +4885,13 @@ int l_syntax_highlight_fallback(lua_State *L) {
     return 0;
 }
 
+// mep.csv_highlight(ns): per-column colours over the current .csv buffer
+// -- see Editor::SyntaxHighlightCsv.
+int l_csv_highlight(lua_State *L) {
+    GetEditor(L)->SyntaxHighlightCsv(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
 // mep.org_highlight_emphasis(ns): org emphasis markup over the *current*
 // buffer -- see Editor::OrgHighlightEmphasis.
 /**
@@ -15356,6 +15363,43 @@ int l_sheet_autofit(lua_State *L) {
     return 0;
 }
 
+// mep.sheet_fit_rows([row]) -- fit a row's height to its wrapped text; no
+// argument fits every row.
+int l_sheet_fit_rows(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    const int row = lua_isnoneornil(L, 1) ? -1 : static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+    ed->SheetRequestRowFit(ed->CurrentBufferId(), row);
+    return 0;
+}
+
+// mep.sheet_wrap() -- toggle every row between one line and its wrapped
+// text. Returns whether wrapping is now on.
+int l_sheet_wrap(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->SheetToggleWrap(ed->CurrentBufferId());
+    const SheetView *v = ed->SheetViewFor(ed->CurrentBufferId());
+    lua_pushboolean(L, v && v->wrapped);
+    return 1;
+}
+
+// mep.sheet_resize_step(direction) -- in a sheet, narrow/widen the cursor's
+// column ("left"/"right") or shorten/heighten its row ("up"/"down"), the
+// way mod1+Shift+hjkl resizes a pane. Returns false outside a sheet, so a
+// binding can fall back to resizing the pane.
+int l_sheet_resize_step(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->SheetResizeStep(luaL_checkstring(L, 1)) ? 1 : 0);
+    return 1;
+}
+
+// mep.sheet_toggle_text() -- switch a .csv buffer between the grid and its
+// plain text. Returns whether it is now a grid.
+int l_sheet_toggle_text(lua_State *L) {
+    Editor *ed = GetEditor(L);
+    ed->SheetToggleText(ed->CurrentBufferId());
+    lua_pushboolean(L, ed->IsSheetBuffer(ed->CurrentBufferId()));
+    return 1;
+}
+
 // mep.sheet_col_width(col [, px]) / mep.sheet_row_height(row [, px]) --
 // set when given a size, read otherwise. Sizes are unzoomed pixels.
 int l_sheet_col_width(lua_State *L) {
@@ -15480,6 +15524,21 @@ int l_sheet_info(lua_State *L) {
         put_int("frozen_h", pm.frozen_h);
     }
     put_int("scroll_col", sess->scroll_col + 1);
+    // The in-cell editor: whether a cell is open, its text so far, the
+    // caret (a byte offset), and where it was drawn -- so a test can click
+    // inside the cell being edited.
+    lua_pushboolean(L, sess->editing ? 1 : 0);
+    lua_setfield(L, -2, "editing");
+    lua_pushstring(L, sess->edit_buffer.c_str());
+    lua_setfield(L, -2, "edit_text");
+    put_int("edit_caret", sess->edit_cursor);
+    put_int("edit_box_x", static_cast<long long>(std::lround(sess->edit_box_x)));
+    put_int("edit_box_y", static_cast<long long>(std::lround(sess->edit_box_y)));
+    put_int("edit_box_w", static_cast<long long>(std::lround(sess->edit_box_w)));
+    put_int("edit_box_h", static_cast<long long>(std::lround(sess->edit_box_h)));
+    put_int("edit_text_x", static_cast<long long>(std::lround(sess->edit_text_x)));
+    lua_pushnumber(L, static_cast<double>(sess->edit_char_w));
+    lua_setfield(L, -2, "edit_char_w");
     lua_pushnumber(L, static_cast<double>(sess->zoom));
     lua_setfield(L, -2, "zoom");
     if (!sess->wb.sheets.empty()) {
@@ -17941,6 +18000,7 @@ const luaL_Reg kMepFuncs[] = {
     {"test_protocol_parse_output", l_test_protocol_parse_output},
     {"test_driver_path", l_test_driver_path},
     {"syntax_highlight_fallback", l_syntax_highlight_fallback},
+    {"csv_highlight", l_csv_highlight},
     {"org_highlight_emphasis", l_org_highlight_emphasis},
     {"md_toggle_checkbox", l_md_toggle_checkbox},
     {"md_fold", l_md_fold},
@@ -18261,6 +18321,10 @@ const luaL_Reg kMepFuncs[] = {
     {"sheet_zoom", l_sheet_zoom},
     {"sheet_zoom_reset", l_sheet_zoom_reset},
     {"sheet_autofit", l_sheet_autofit},
+    {"sheet_fit_rows", l_sheet_fit_rows},
+    {"sheet_wrap", l_sheet_wrap},
+    {"sheet_toggle_text", l_sheet_toggle_text},
+    {"sheet_resize_step", l_sheet_resize_step},
     {"sheet_col_width", l_sheet_col_width},
     {"sheet_row_height", l_sheet_row_height},
     {"sheet_stats", l_sheet_stats},

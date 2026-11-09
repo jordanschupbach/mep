@@ -8,7 +8,9 @@
 #include <deque>
 #include <string>
 
+#include <dlfcn.h>
 #include <sys/select.h>
+#include <unistd.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -592,6 +594,61 @@ void ProcessEvent(NativeContext *ctx, const XEvent &event) {
     }
 }
 
+// -- GL driver fallback (CMakeLists.txt's MEP_MESA_DIR) ---------------------
+//
+// libGL here is libglvnd, which holds no driver of its own: it asks the X
+// server which vendor drives the screen and dlopen()s libGLX_<vendor>.so.0.
+// A Nix-built libglvnd only searches /run/opengl-driver/lib, which exists
+// on NixOS alone, so everywhere else that load fails and glXChooseFBConfig
+// comes back empty. Loading the build's own Mesa by absolute path first
+// makes glvnd's later dlopen("libGLX_mesa.so.0") resolve to it (glibc
+// matches an already-loaded library by its soname) without touching
+// LD_LIBRARY_PATH, which every program mep starts would inherit.
+#ifdef MEP_MESA_DIR
+bool HostHasNixGlDriver() { return access("/run/opengl-driver/lib", F_OK) == 0; }
+
+bool PreloadFallbackMesa() {
+    if (HostHasNixGlDriver()) return false;
+    if (dlopen(MEP_MESA_DIR "/lib/libGLX_mesa.so.0", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+        std::fprintf(stderr, "gfx native: couldn't load fallback Mesa: %s\n", dlerror());
+        return false;
+    }
+    return true;
+}
+#else
+bool PreloadFallbackMesa() { return false; }
+#endif
+
+GLXFBConfig ChooseFBConfig(Display *display, int screen) {
+    int visual_attribs[] = {GLX_X_RENDERABLE,
+                             True,
+                             GLX_DRAWABLE_TYPE,
+                             GLX_WINDOW_BIT,
+                             GLX_RENDER_TYPE,
+                             GLX_RGBA_BIT,
+                             GLX_X_VISUAL_TYPE,
+                             GLX_TRUE_COLOR,
+                             GLX_RED_SIZE,
+                             8,
+                             GLX_GREEN_SIZE,
+                             8,
+                             GLX_BLUE_SIZE,
+                             8,
+                             GLX_ALPHA_SIZE,
+                             8,
+                             GLX_DEPTH_SIZE,
+                             24,
+                             GLX_DOUBLEBUFFER,
+                             True,
+                             0};  // None (attrib-list terminator)
+    int fbcount = 0;
+    GLXFBConfig *fbc = glXChooseFBConfig(display, screen, visual_attribs, &fbcount);
+    if (fbc == nullptr || fbcount == 0) return nullptr;
+    GLXFBConfig best = fbc[0];
+    XFree(fbc);
+    return best;
+}
+
 }  // namespace
 
 // -- Platform ---------------------------------------------------------------
@@ -609,35 +666,30 @@ public:
         XSetErrorHandler(LogXError);
         ctx_->screen = DefaultScreen(ctx_->display);
 
-        int visual_attribs[] = {GLX_X_RENDERABLE,
-                                 True,
-                                 GLX_DRAWABLE_TYPE,
-                                 GLX_WINDOW_BIT,
-                                 GLX_RENDER_TYPE,
-                                 GLX_RGBA_BIT,
-                                 GLX_X_VISUAL_TYPE,
-                                 GLX_TRUE_COLOR,
-                                 GLX_RED_SIZE,
-                                 8,
-                                 GLX_GREEN_SIZE,
-                                 8,
-                                 GLX_BLUE_SIZE,
-                                 8,
-                                 GLX_ALPHA_SIZE,
-                                 8,
-                                 GLX_DEPTH_SIZE,
-                                 24,
-                                 GLX_DOUBLEBUFFER,
-                                 True,
-                                 0};  // None (attrib-list terminator)
-        int fbcount = 0;
-        GLXFBConfig *fbc = glXChooseFBConfig(ctx_->display, ctx_->screen, visual_attribs, &fbcount);
-        if (fbc == nullptr || fbcount == 0) {
-            std::fprintf(stderr, "gfx native: glXChooseFBConfig failed\n");
+        bool fallback_mesa = PreloadFallbackMesa();
+        GLXFBConfig best_fbc = ChooseFBConfig(ctx_->display, ctx_->screen);
+        if (best_fbc == nullptr && fallback_mesa) {
+            // The server named a vendor the host doesn't have a Nix-loadable
+            // driver for -- typically NVIDIA's own, whose libGLX_nvidia
+            // must match its kernel module and so can't come from the
+            // build. Fall back to Mesa (software rendering on such a GPU).
+            // glvnd settles a display's vendor once, on first use, so the
+            // retry needs a fresh connection; the override is dropped again
+            // straight after so programs mep starts don't inherit it.
+            std::fprintf(stderr, "gfx native: no host GL driver usable; falling back to Mesa\n");
+            XCloseDisplay(ctx_->display);
+            setenv("__GLX_VENDOR_LIBRARY_NAME", "mesa", 1);
+            ctx_->display = XOpenDisplay(nullptr);
+            if (ctx_->display != nullptr) {
+                ctx_->screen = DefaultScreen(ctx_->display);
+                best_fbc = ChooseFBConfig(ctx_->display, ctx_->screen);
+            }
+            unsetenv("__GLX_VENDOR_LIBRARY_NAME");
+        }
+        if (best_fbc == nullptr) {
+            std::fprintf(stderr, "gfx native: glXChooseFBConfig failed (no usable OpenGL driver for this display)\n");
             std::abort();
         }
-        GLXFBConfig best_fbc = fbc[0];
-        XFree(fbc);
 
         XVisualInfo *vi = glXGetVisualFromFBConfig(ctx_->display, best_fbc);
         if (vi == nullptr) {

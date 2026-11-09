@@ -564,6 +564,17 @@ int main(int argc, char **argv) {
     if (!g_getenv("GIO_EXTRA_MODULES") && g_file_test(MEP_GIO_MODULES_DIR, G_FILE_TEST_IS_DIR))
         g_setenv("GIO_EXTRA_MODULES", MEP_GIO_MODULES_DIR, FALSE);
 #endif
+#ifdef MEP_MESA_DIR
+    // WebKit draws through EGL, and a Nix-built libglvnd only looks for EGL
+    // vendors under /run/opengl-driver (NixOS alone): elsewhere, name the
+    // build's own Mesa (CMakeLists.txt's MEP_MESA_DIR). Its vendor file
+    // holds an absolute library path, so nothing else needs redirecting,
+    // and WebKit's web process inherits it like GIO_EXTRA_MODULES above.
+    if (!g_file_test("/run/opengl-driver/lib", G_FILE_TEST_EXISTS)) {
+        g_setenv("__EGL_VENDOR_LIBRARY_FILENAMES", MEP_MESA_DIR "/share/glvnd/egl_vendor.d/50_mesa.json", FALSE);
+        g_setenv("GBM_BACKENDS_PATH", MEP_MESA_DIR "/lib/gbm", FALSE);
+    }
+#endif
     // (No accessibility bus to speak to from inside a pane: GTK would
     // otherwise warn about it on every start.)
     g_setenv("GTK_A11Y", "none", FALSE);

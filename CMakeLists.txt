@@ -760,6 +760,18 @@ else()
     # just CMake bookkeeping, so it must be requested too or
     # X11::Xtst's own target fails to configure.
     find_package(X11 REQUIRED COMPONENTS Xtst Xi)
+    # A Mesa to fall back on when the host has no GL driver mep's libGL can
+    # load: Nix's libglvnd only looks in /run/opengl-driver, which exists
+    # on NixOS alone, so on any other distro no GLX vendor loads and
+    # glXChooseFBConfig finds nothing. The flake points this at its own
+    # pkgs.mesa; a distro build leaves it empty and uses the system's.
+    # backend_native.cpp (mep) and webview_gtk_main.cpp (mep-webview's
+    # EGL) both read it.
+    set(MEP_MESA_DIR "$ENV{MEP_MESA}" CACHE PATH "Mesa install mep falls back on when the host has no GL driver for it")
+    if(MEP_MESA_DIR)
+        set_property(SOURCE src/gfx/backend_native.cpp src/webview_gtk_main.cpp APPEND PROPERTY
+            COMPILE_DEFINITIONS "MEP_MESA_DIR=\"${MEP_MESA_DIR}\"")
+    endif()
 endif()
 
 # Every logical module (editor, lua_env, job, agent_rpc, vterm, treesitter,

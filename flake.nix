@@ -348,6 +348,10 @@
             # mep-webview's GIO TLS module (the devShell exports the same
             # path as MEP_GIO_MODULES).
             "-DMEP_GIO_MODULES_DIR=${pkgs.glib-networking}/lib/gio/modules"
+            # The Mesa mep and mep-webview fall back on where the host has
+            # no /run/opengl-driver -- i.e. any distro but NixOS (the
+            # devShell exports the same path as MEP_MESA).
+            "-DMEP_MESA_DIR=${pkgs.mesa}"
           ];
 
           installPhase = ''
@@ -790,6 +794,9 @@
             # mep-webview as where GIO's TLS module lives (see
             # pkgs.glib-networking above).
             export MEP_GIO_MODULES="${pkgs.glib-networking}/lib/gio/modules"
+            # CMakeLists.txt's MEP_MESA_DIR default: the GL driver a dev
+            # build falls back on off NixOS (see the package's cmakeFlags).
+            export MEP_MESA="${pkgs.mesa}"
           '' + ''
             export MEP_TS_PARSER_PATH="${tsGrammars}"
             # BUILD_PERFORMANCE_PLAN.md: CMake reads this env var as its

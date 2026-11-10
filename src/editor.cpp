@@ -7575,10 +7575,23 @@ void Editor::SplitTabRight(int buffer_id, float share) {
 
 void Editor::OpenTerminalInPlace(const std::string &args) {
 #if defined(_WIN32)
-    const char *comspec = std::getenv("COMSPEC");
-    const std::string shell = comspec && *comspec ? comspec : "cmd.exe";
+    // Prefer modern PowerShell, then the Windows-bundled version. Keep
+    // COMSPEC as the fallback for systems where neither is on PATH.
+    std::string shell;
+    for (const char *candidate : {"pwsh.exe", "powershell.exe"}) {
+        if (mep::compat::ProgramOnPath(candidate)) {
+            shell = candidate;
+            break;
+        }
+    }
+    const bool powershell = !shell.empty();
+    if (shell.empty()) {
+        const char *comspec = std::getenv("COMSPEC");
+        shell = comspec && *comspec ? comspec : "cmd.exe";
+    }
     const std::vector<std::string> argv = args.empty() ? std::vector<std::string>{shell}
-        : std::vector<std::string>{shell, "/d", "/s", "/c", args};
+        : powershell ? std::vector<std::string>{shell, "-Command", args}
+                     : std::vector<std::string>{shell, "/d", "/s", "/c", args};
 #else
     std::string shell;
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)

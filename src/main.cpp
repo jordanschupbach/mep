@@ -37014,7 +37014,7 @@ const char *kBuiltinRunButton =
     // deliberately embeds a backtick command substitution that must
     // reach the shell unescaped).
     "local function mep_run_button_shq(s)\n"
-    "  if mep_run_button_windows then return string.char(34) .. tostring(s) .. string.char(34) end\n"
+    "  if mep_run_button_windows then return \"'\" .. tostring(s):gsub(\"'\", \"''\") .. \"'\" end\n"
     "  return \"'\" .. tostring(s):gsub(\"'\", \"'\\\\''\") .. \"'\"\n"
     "end\n"
     // Compiled means the language's default names a compiler, so a new
@@ -37041,10 +37041,14 @@ const char *kBuiltinRunButton =
     "    local compiler_name = cfg.compiler:lower():match('([^/\\\\%s]+)%s*$') or ''\n"
     "    local msvc = c_family and (compiler_name == 'cl' or compiler_name == 'cl.exe' or compiler_name == 'clang-cl' or compiler_name == 'clang-cl.exe')\n"
     "    out = out .. (default.output_ext or (mep_run_button_windows and c_family and '.exe' or ''))\n"
+    // Windows PowerShell 5.1 has no &&; quoted executable paths also
+    // require the call operator. Preserve compile-success gating.
+    "    local run = (default.run_prefix or '') .. mep_run_button_shq(out)\n"
+    "    local after_build = mep_run_button_windows and ('; if ($LASTEXITCODE -eq 0) { & ' .. run .. ' }') or (' && ' .. run)\n"
     "    if msvc then\n"
     "      return cfg.compiler .. ' /nologo ' .. mep_run_button_shq(fname) .. flag_part\n"
     "        .. ' /Fo' .. mep_run_button_shq(out .. '.obj') .. ' /Fe' .. mep_run_button_shq(out)\n"
-    "        .. ' && ' .. mep_run_button_shq(out)\n"
+    "        .. after_build\n"
     "    end\n"
     // Flags go AFTER the source file, not between the compiler and it:
     // `pkg-config --cflags --libs` mixes -I/-D (order-independent) with
@@ -37055,7 +37059,7 @@ const char *kBuiltinRunButton =
     // hello-world with flags = '`pkg-config --cflags --libs gtk+-3.0`').\n"
     "    local output_flag = default.output_flag or '-o '\n"
     "    return cfg.compiler .. ' ' .. mep_run_button_shq(fname) .. flag_part .. ' ' .. output_flag .. mep_run_button_shq(out)\n"
-    "      .. ' && ' .. (default.run_prefix or '') .. mep_run_button_shq(out)\n"
+    "      .. after_build\n"
     "  end\n"
     // An interpreter naming {file} gets the file there instead of last --
     // for a tool that reads its script on stdin (`sqlite3 :memory: <

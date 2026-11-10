@@ -19,9 +19,10 @@ window. The buffer that was showing stays in the buffer list, so <code>:bnext</c
 brings it back. Split first with <code>:split</code> or <code>:vsplit</code> if you want the
 terminal beside the code.</p>
 <p>On Windows (Windows 10 version 1809 or newer), terminals use ConPTY and
-start <code>%COMSPEC%</code>, normally <code>cmd.exe</code>. <code>:term echo hello</code> runs a command
-with that shell; <code>:term powershell -NoLogo</code> opens Windows PowerShell, or
-<code>:term pwsh -NoLogo</code> opens PowerShell 7 if installed.</p>
+prefer PowerShell 7 (<code>pwsh.exe</code>), then Windows PowerShell (<code>powershell.exe</code>),
+when available on PATH. If neither is available, they fall back to
+<code>%COMSPEC%</code>, normally <code>cmd.exe</code>. <code>:term echo hello</code> runs a command
+with the selected shell.</p>
 <p><b>The per-tab terminal.</b> <code>&lt;leader&gt;&lt;CR&gt;</code> toggles one shell per tab along the
 bottom, spanning the tab's full width. This is the one you want most of the
 time.</p>

@@ -3928,6 +3928,8 @@ if(NOT EMSCRIPTEN)
     # runs with the rest of `just test` rather than in test-gui.
     if(WIN32)
         add_executable(mep-job-test EXCLUDE_FROM_ALL src/job_win_test.cpp src/job.cpp src/vterm.cpp)
+        target_compile_definitions(mep-job-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+        add_dependencies(mep-job-test mep-c-lsp)
     else()
         add_executable(mep-job-test EXCLUDE_FROM_ALL src/job_test.cpp src/job.cpp)
     endif()

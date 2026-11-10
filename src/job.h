@@ -32,8 +32,8 @@ using pid_t = int;
 // them without extra synchronization, matching how the rest of this
 // single-threaded renderer/editor is written.
 //
-// Windows terminal jobs use ConPTY; ordinary pipe jobs remain unsupported
-// there. Process jobs are unsupported in the wasm/browser sandbox.
+// Windows uses ConPTY for terminals and separate stdio pipes for other jobs.
+// Process jobs are unsupported in the wasm/browser sandbox.
 struct JobLine {
     bool is_stderr = false;
     std::string text;
@@ -68,8 +68,8 @@ public:
     // by default -- every existing call site just inherits mep's own
     // environment unmodified, same as before this parameter existed.
     /**
-     * @brief Spawns `argv` as a child process (fork/forkpty on POSIX; fails
-     * gracefully with SpawnFailed() set on wasm and Windows non-PTY jobs) and
+     * @brief Spawns `argv` as a child process (fork/forkpty on POSIX, CreateProcess on Windows; fails
+     * gracefully with SpawnFailed() set on wasm) and
      * starts a background reader thread that streams its output.
      * @param argv Command and arguments to execute (argv[0] is looked up via execvp).
      * @param cwd Working directory for the child; unchanged if empty.
@@ -199,7 +199,7 @@ public:
      * @param data Bytes to write. A pipe stdin never blocks the caller: what the pipe cannot take now is
      * queued, in order, and written by FlushStdin (JobManager::PollAll, every frame) as the child reads.
      * A PTY is written with a blocking loop, as before.
-     * @return False once the pipe is closed/gone (or this isn't a POSIX build).
+     * @return False once the pipe is closed/gone (or process jobs are unsupported).
      */
     bool WriteStdin(const std::string &data);
     /**
@@ -257,6 +257,8 @@ private:
     struct WindowsPty;
     std::unique_ptr<WindowsPty> windows_;
     void SpawnWindowsPty(const std::vector<std::string> &argv, const std::string &cwd);
+    void SpawnWindowsPipes(const std::vector<std::string> &argv, const std::string &cwd);
+    void ReadWindowsPipes();
     void ReadWindowsPty();
     void WriteWindowsPty();
     void CloseWindowsPty();

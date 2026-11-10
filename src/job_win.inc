@@ -4,6 +4,8 @@
 #include <map>
 
 namespace {
+void FeedChunk(std::string &partial, const char *data, size_t len, bool is_stderr, std::mutex &mu,
+               std::deque<JobLine> &pending);
 std::wstring TerminalWide(const std::string &s) {
     if (s.empty()) return {};
     int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);
@@ -39,15 +41,17 @@ void TerminalCloseHandle(HANDLE &h) {
 }  // namespace
 
 struct Job::WindowsPty {
-    HANDLE process = nullptr, tree = nullptr, input = nullptr, output = nullptr;
+    HANDLE process = nullptr, tree = nullptr, input = nullptr, output = nullptr, error = nullptr;
     HPCON console = nullptr;
     std::mutex console_mu;
     std::thread writer;
     std::atomic<bool> writer_done{false};
+    std::atomic<bool> stdin_closing{false};
     ~WindowsPty() {
         // Close output before the pseudoconsole: ClosePseudoConsole can emit
         // a final frame and would otherwise wait forever for an absent reader.
         TerminalCloseHandle(output);
+        TerminalCloseHandle(error);
         TerminalCloseHandle(input);
         if (console) ClosePseudoConsole(console);
         TerminalCloseHandle(process);
@@ -144,6 +148,133 @@ void Job::SpawnWindowsPty(const std::vector<std::string> &argv, const std::strin
     reader_thread_ = std::thread(&Job::ReadWindowsPty, this);
 }
 
+void Job::SpawnWindowsPipes(const std::vector<std::string> &argv, const std::string &cwd) {
+    auto fail = [this] { spawn_failed_ = true; finished_ = true; };
+    if (argv.empty() || argv[0].empty()) { fail(); return; }
+    auto state = std::make_unique<WindowsPty>();
+    struct ChildHandles {
+        HANDLE input = nullptr, output = nullptr, error = nullptr;
+        ~ChildHandles() { TerminalCloseHandle(input); TerminalCloseHandle(output); TerminalCloseHandle(error); }
+    } child;
+    SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    if (!CreatePipe(&child.input, &state->input, &security, 65536) ||
+        !CreatePipe(&state->output, &child.output, &security, 65536) ||
+        !CreatePipe(&state->error, &child.error, &security, 65536) ||
+        !SetHandleInformation(state->input, HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation(state->output, HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation(state->error, HANDLE_FLAG_INHERIT, 0)) { fail(); return; }
+
+    // Only these three handles may cross into the child. Other concurrent
+    // jobs must not inherit pipe ends and keep one another's EOF alive.
+    HANDLE handles[]{child.input, child.output, child.error};
+    SIZE_T bytes = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+    std::vector<unsigned char> storage(bytes);
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = child.input;
+    startup.StartupInfo.hStdOutput = child.output;
+    startup.StartupInfo.hStdError = child.error;
+    startup.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+    if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &bytes)) { fail(); return; }
+    if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                  handles, sizeof(handles), nullptr, nullptr)) {
+        DeleteProcThreadAttributeList(startup.lpAttributeList); fail(); return;
+    }
+    std::map<std::wstring, std::wstring, TerminalEnvLess> env;
+    if (wchar_t *block = GetEnvironmentStringsW()) {
+        for (const wchar_t *p = block; *p; p += wcslen(p) + 1) {
+            const std::wstring entry(p);
+            const size_t eq = entry.find(L'=', entry[0] == L'=' ? 1 : 0);
+            if (eq != std::wstring::npos) env[entry.substr(0, eq)] = entry.substr(eq + 1);
+        }
+        FreeEnvironmentStringsW(block);
+    }
+    for (const auto &[key, value] : extra_env_) env[TerminalWide(key)] = TerminalWide(value);
+    std::vector<wchar_t> environment;
+    for (const auto &[key, value] : env) {
+        const auto entry = key + L'=' + value;
+        environment.insert(environment.end(), entry.begin(), entry.end());
+        environment.push_back(0);
+    }
+    environment.push_back(0);
+    std::wstring command;
+    for (const auto &arg : argv) {
+        if (!command.empty()) command += L' ';
+        command += TerminalQuote(TerminalWide(arg));
+    }
+    const auto directory = TerminalWide(cwd);
+    PROCESS_INFORMATION process{};
+    const BOOL ok = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NO_WINDOW,
+        environment.data(), cwd.empty() ? nullptr : directory.c_str(), &startup.StartupInfo, &process);
+    DeleteProcThreadAttributeList(startup.lpAttributeList);
+    if (!ok) { fail(); return; }
+    state->process = process.hProcess;
+    state->tree = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!state->tree || !SetInformationJobObject(state->tree, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+        !AssignProcessToJobObject(state->tree, state->process)) {
+        TerminateProcess(state->process, 1); CloseHandle(process.hThread); fail(); return;
+    }
+    TerminalCloseHandle(child.input); TerminalCloseHandle(child.output); TerminalCloseHandle(child.error);
+    pid_ = static_cast<pid_t>(process.dwProcessId);
+    windows_ = std::move(state);
+    ResumeThread(process.hThread);
+    CloseHandle(process.hThread);
+    windows_->writer = std::thread(&Job::WriteWindowsPty, this);
+    reader_thread_ = std::thread(&Job::ReadWindowsPipes, this);
+}
+
+void Job::ReadWindowsPipes() {
+    std::string out_partial, err_partial;
+    while (!stopping_.load() && (windows_->output || windows_->error)) {
+        bool progress = false;
+        for (bool is_error : {false, true}) {
+            HANDLE &pipe = is_error ? windows_->error : windows_->output;
+            if (!pipe) continue;
+            if (!is_error && raw_stdout_) {
+                std::lock_guard<std::mutex> lock(mu_);
+                if (pending_raw_bytes_ >= kMaxPendingRawBytes) continue;
+            }
+            DWORD available = 0;
+            if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) {
+                TerminalCloseHandle(pipe); continue;
+            }
+            if (!available) continue;
+            char data[8192];
+            DWORD count = 0;
+            if (!ReadFile(pipe, data, std::min<DWORD>(available, sizeof(data)), &count, nullptr) || !count) {
+                TerminalCloseHandle(pipe); continue;
+            }
+            if (!is_error && raw_stdout_) {
+                std::lock_guard<std::mutex> lock(mu_);
+                pending_raw_.emplace_back(data, count);
+                pending_raw_bytes_ += count;
+            } else {
+                FeedChunk(is_error ? err_partial : out_partial, data, count, is_error, mu_, pending_);
+            }
+            progress = true;
+            mep::WakeMainLoop();
+        }
+        if (!progress) Sleep(5);
+    }
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (!out_partial.empty()) pending_.push_back({false, out_partial});
+        if (!err_partial.empty()) pending_.push_back({true, err_partial});
+    }
+    if (stopping_.load()) Kill();
+    WaitForSingleObject(windows_->process, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(windows_->process, &code);
+    exit_code_ = static_cast<int>(code);
+    finished_ = true;
+    mep::WakeMainLoop();
+}
+
 void Job::WriteWindowsPty() {
     while (!stopping_.load() && !finished_.load()) {
         std::string chunk;
@@ -153,7 +284,10 @@ void Job::WriteWindowsPty() {
             chunk = stdin_queue_.substr(0, n);
             // Keep the bytes counted until the blocking write completes.
         }
-        if (chunk.empty()) { Sleep(5); continue; }
+        if (chunk.empty()) {
+            if (windows_->stdin_closing.load()) { TerminalCloseHandle(windows_->input); break; }
+            Sleep(5); continue;
+        }
         DWORD written = 0;
         if (!WriteFile(windows_->input, chunk.data(), static_cast<DWORD>(chunk.size()), &written, nullptr)) break;
         std::lock_guard<std::mutex> lock(stdin_mu_);

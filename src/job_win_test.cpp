@@ -1,10 +1,16 @@
-// Real ConPTY integration checks. Run with a process timeout in CI.
+// Real Windows pipe/LSP and ConPTY integration checks. Run with a timeout in CI.
 #include "job.h"
 #include "vterm.h"
+#include "json.h"
+#include "rpc_framing.h"
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -14,6 +20,11 @@ using Clock = std::chrono::steady_clock;
 int failures = 0;
 void Check(bool ok, const char *what) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+}
+Json ParseJson(const std::string &text) {
+    Json value;
+    Check(Json::Parse(text, &value), "valid JSON message");
+    return value;
 }
 std::string Screen(const VTerm &term) {
     std::string text;
@@ -73,11 +84,107 @@ int Child(int argc, char **argv) {
 }
 }
 int main(int argc, char **argv) {
+    if (argc > 1 && std::string(argv[1]) == "--pipe-child") {
+        _setmode(_fileno(stdin), _O_BINARY);
+        _setmode(_fileno(stdout), _O_BINARY);
+        if (argc > 2 && std::string(argv[2]) == "--flood") {
+            for (;;) { std::cout << std::string(8192, 'x') << std::flush; }
+        }
+        std::cerr << "separate stderr\nlast stderr";
+        char data[4096];
+        int count;
+        while ((count = _read(_fileno(stdin), data, sizeof(data))) > 0) {
+            std::fwrite(data, 1, count, stdout);
+            std::fflush(stdout);
+        }
+        return 9;
+    }
     if (argc > 1 && std::string(argv[1]) == "--child") return Child(argc, argv);
     char exe[MAX_PATH];
     GetModuleFileNameA(nullptr, exe, MAX_PATH);
     const auto folder = std::filesystem::temp_directory_path() / ("mep pty test " + std::to_string(GetCurrentProcessId()));
     std::filesystem::create_directories(folder);
+    {
+        Job pipe({exe, "--pipe-child"}, folder.string(), true);
+        Check(!pipe.SpawnFailed(), "pipe subprocess starts (LSP transport)");
+        std::string payload = "Content-Length: 7\r\n\r\n";
+        payload += std::string("a\0b\r\nc", 6);
+        payload += std::string(256 * 1024, 'x');
+        Check(pipe.WriteStdin(payload), "queued binary pipe input accepted");
+        pipe.CloseStdin();
+        Check(!pipe.WriteStdin("late"), "stdin rejects writes after EOF request");
+        std::string output;
+        const auto deadline = Clock::now() + std::chrono::seconds(8);
+        while (!pipe.Finished() && Clock::now() < deadline) {
+            for (const auto &chunk : pipe.DrainRaw()) output += chunk;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        for (const auto &chunk : pipe.DrainRaw()) output += chunk;
+        Check(pipe.Finished() && pipe.ExitCode() == 9, "pipe EOF and exit code");
+        Check(output == payload, "raw pipes preserve CRLF, NUL, and queued data");
+        const auto errors = pipe.DrainLines();
+        Check(errors.size() == 2 && errors[0].is_stderr && errors[0].text == "separate stderr" &&
+              errors[1].is_stderr && errors[1].text == "last stderr", "stderr stays separate, including final partial line");
+    }
+    {
+        auto pipe = std::make_unique<Job>(std::vector<std::string>{exe, "--pipe-child", "--flood"}, "", true);
+        pipe->WriteStdin(std::string(2 * 1024 * 1024, 'a'));
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        const auto start = Clock::now();
+        pipe.reset();
+        Check(Clock::now() - start < std::chrono::seconds(3), "backlogged pipe teardown cancels blocked writer");
+    }
+    {
+        Job lines({exe, "--pipe-child"}, "");
+        lines.WriteStdin("first\r\nlast"); lines.CloseStdin();
+        const auto deadline = Clock::now() + std::chrono::seconds(5);
+        while (!lines.Finished() && Clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::vector<std::string> output;
+        for (const auto &line : lines.DrainLines()) if (!line.is_stderr) output.push_back(line.text);
+        Check(output == std::vector<std::string>{"first", "last"}, "line-mode pipes handle CRLF and final partial line");
+        Job bad({"mep-no-such-pipe-program.exe"}, "");
+        Check(bad.SpawnFailed(), "pipe spawn failure reported");
+    }
+    {
+        const auto server = std::filesystem::path(exe).parent_path() / "mep-c-lsp.exe";
+        Job lsp({server.string()}, folder.string(), true);
+        Check(!lsp.SpawnFailed(), "bundled C language server starts over pipes");
+        std::string buffer;
+        auto send = [&](const std::string &body) { Check(lsp.WriteStdin(FrameRpcMessage(body)), "LSP request queued"); };
+        auto await = [&](int id) {
+            Json result;
+            bool found = false;
+            const auto deadline = Clock::now() + std::chrono::seconds(8);
+            while (!found && Clock::now() < deadline) {
+                for (const auto &chunk : lsp.DrainRaw()) buffer += chunk;
+                Check(PumpRpcFrames(buffer, [&](const std::string &body) {
+                    const auto message = ParseJson(body);
+                    if (message.get("id").is_number() && message.get("id").as_int() == id) { result = message; found = true; }
+                }), "LSP response framing intact");
+                if (!found) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            Check(found, "LSP reply received");
+            return result;
+        };
+        send(R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}})");
+        Check(await(1).get("result").get("capabilities").get("hoverProvider").as_bool(), "C server advertises hover");
+        send(R"({"jsonrpc":"2.0","method":"initialized","params":{}})");
+        std::ifstream source(std::filesystem::path(MEP_SOURCE_DIR) / "examples/language/c_example.c", std::ios::binary);
+        const std::string code((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
+        const auto at = code.find("printf(");
+        Check(at != std::string::npos, "example contains printf");
+        Json open = ParseJson(R"({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///D:/mep/examples/language/c_example.c","languageId":"c","version":1}}})");
+        open["params"]["textDocument"]["text"] = code;
+        send(open.dump());
+        Json hover = ParseJson(R"({"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///D:/mep/examples/language/c_example.c"},"position":{"line":0,"character":5}}})");
+        hover["params"]["position"]["line"] = static_cast<int>(std::count(code.begin(), code.begin() + (at == std::string::npos ? 0 : at), '\n'));
+        send(hover.dump());
+        const auto reply = await(2).get("result").dump();
+        Check(reply.find("printf") != std::string::npos && reply.find("formatted") != std::string::npos,
+              "printf hover in c_example.c returns signature and documentation");
+        send(R"({"jsonrpc":"2.0","id":3,"method":"shutdown","params":null})"); await(3);
+        send(R"({"jsonrpc":"2.0","method":"exit","params":null})");
+    }
     {
         Job job({exe, "--child", "two words", "", "quote\"here", "trailing\\"}, folder.string(), true, true,
                 {{"MEP_PTY_TEST", "child-only"}, {"TERM", "xterm-256color"}});
@@ -155,6 +262,6 @@ int main(int argc, char **argv) {
         Check(Clock::now() - start < std::chrono::seconds(3), "backlogged input/output teardown stays prompt");
     }
     std::filesystem::remove(folder);
-    std::printf("ConPTY integration: %d failures\n", failures);
+    std::printf("Windows pipe/LSP and ConPTY integration: %d failures\n", failures);
     return failures ? 1 : 0;
 }

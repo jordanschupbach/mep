@@ -202,7 +202,8 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
     reader_thread_ = std::thread(&Job::ReaderLoop, this);
 #elif defined(_WIN32)
     (void)die_with_parent;
-    SpawnWindowsPty(argv, cwd);
+    if (use_pty_) SpawnWindowsPty(argv, cwd);
+    else SpawnWindowsPipes(argv, cwd);
 #else
     (void)argv;
     (void)cwd;
@@ -428,6 +429,7 @@ bool Job::WriteStdin(const std::string &data) {
 #elif defined(_WIN32)
     if (!windows_ || finished_.load() || stopping_.load() || windows_->writer_done.load()) return false;
     std::lock_guard<std::mutex> lock(stdin_mu_);
+    if (windows_->stdin_closing.load()) return false;
     stdin_queue_ += data;
     return true;
 #else
@@ -487,6 +489,8 @@ void Job::CloseStdin() {
         close(stdin_fd_);
         stdin_fd_ = -1;
     }
+#elif defined(_WIN32)
+    if (!use_pty_ && windows_) windows_->stdin_closing = true;
 #endif
 }
 
@@ -539,7 +543,7 @@ bool Job::HasPendingRaw() {
     return !pending_raw_.empty();
 }
 
-#if MEP_JOB_POSIX
+#if MEP_JOB_POSIX || defined(_WIN32)
 namespace {
 /**
  * @brief Appends `chunk` to `partial`, splitting on '\n' (stripping a trailing
@@ -568,7 +572,9 @@ void FeedChunk(std::string &partial, const char *data, size_t len, bool is_stder
     }
 }
 }  // namespace
+#endif
 
+#if MEP_JOB_POSIX
 void Job::ReaderLoop() {
     std::string stdout_partial, stderr_partial;
     bool out_open = true, err_open = (stderr_fd_ >= 0);  // PTY mode has no separate stderr fd

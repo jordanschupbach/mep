@@ -692,6 +692,75 @@ void TestQualifiedName() {
     CHECK(PythonLspQualifiedName({}, 0, 0) == std::string());
 }
 
+void TestFactoryResults() {
+    const Lines plot = {
+        "import matplotlib.pyplot as plt",
+        "(fig, ax) = plt.subplots(1, 1)",
+        "ax.set_title('My plot')",
+        "fig.savefig('plot.png')",
+        "saved = ax",
+        "ax = unknown()",
+        "saved.set_xlabel('x')",
+        "ax.set_title('unknown')",
+    };
+    CHECK(PythonLspQualifiedName(plot, 2, 6) == "matplotlib.axes.Axes.set_title");
+    CHECK(PythonLspQualifiedName(plot, 3, 6) == "matplotlib.figure.Figure.savefig");
+    CHECK(PythonLspQualifiedName(plot, 6, 9) == "matplotlib.axes.Axes.set_xlabel");
+    CHECK(PythonLspQualifiedName(plot, 7, 6).empty());
+
+    const auto axes_type = [](const std::string &call) {
+        return PythonLspQualifiedName({"from matplotlib.pyplot import subplots as make", "f, a = " + call,
+                                       "a.set_title('title')"}, 2, 5);
+    };
+    CHECK(axes_type("make()") == "matplotlib.axes.Axes.set_title");
+    CHECK(axes_type("make(ncols=1, nrows=1)") == "matplotlib.axes.Axes.set_title");
+    CHECK(axes_type("make(2, 1)") == "numpy.ndarray.set_title");
+    CHECK(axes_type("make(squeeze=False)") == "numpy.ndarray.set_title");
+    CHECK(axes_type("make(nrows=count)").empty());
+    CHECK(axes_type("make(**kwargs)").empty());
+    CHECK(axes_type("make(*shape)").empty());
+    CHECK(PythonLspQualifiedName({"import matplotlib.pyplot as plt", "def draw():",
+                                 "    (fig, ax) = plt.subplots(", "        1, 1)",
+                                 "    ax.set_title('title')"}, 4, 11) == "matplotlib.axes.Axes.set_title");
+    CHECK(PythonLspQualifiedName({"import custom as plt", "fig, ax = plt.subplots(1, 1)",
+                                 "ax.set_title('title')"}, 2, 5).empty());
+
+    PythonLspOptions opts = NoFiles();
+    int queries = 0;
+    opts.external_return_type = [&](const std::string &qualified) -> PythonLspExternalType {
+        queries++;
+        if (qualified == "library.make") return {"", {{"library.Figure", {}}, {"library.Axes", {}}}};
+        if (qualified == "library.Axes") return {"library.Axes", {}};
+        return {};
+    };
+    const Lines factory = {"import library as lib", "unused = lib.unrelated()", "pair = lib.make()",
+                           "[fig, ax] = pair", "ax.set_title('plot')", "pair[0].savefig('plot.png')"};
+    (void)PythonLspDiagnostics(factory, opts);
+    CHECK(queries == 0);
+    CHECK(PythonLspQualifiedName(factory, 4, 6, opts) == "library.Axes.set_title");
+    CHECK(queries == 1);  // Unrelated assignments must not trigger interpreter work.
+    CHECK(PythonLspQualifiedName(factory, 5, 10, opts) == "library.Figure.savefig");
+    CHECK(PythonLspQualifiedName({"from library import Axes", "ax = Axes()", "ax.set_title('x')"},
+                                 2, 6, opts) == "library.Axes.set_title");
+    CHECK(PythonLspQualifiedName({"import library as lib", "fig, *axes = lib.make()", "fig.savefig('x')"},
+                                 2, 6, opts).empty());
+    CHECK(PythonLspQualifiedName({"import library as lib", "a, b, c = lib.make()", "a.method()"},
+                                 2, 4, opts).empty());
+    CHECK(PythonLspQualifiedName({"a = b", "b = a", "a.method()"}, 2, 4, opts).empty());
+    CHECK(PythonLspQualifiedName({"import library as lib", "(ax, (fig, other)) = (lib.Axes(), lib.make())",
+                                 "fig.savefig('x')"}, 2, 6, opts) == "library.Figure.savefig");
+
+    const std::vector<PythonLspExternalMember> members = {
+        {"set_title", static_cast<int>(PythonLspKind::Method), "(label)", "Set a title."}};
+    opts.external_members = [&](const std::string &qualified) {
+        return qualified == "matplotlib.axes.Axes" || qualified == "library.Axes" ? &members : nullptr;
+    };
+    CHECK(Offers(PythonLspCompletions({"import matplotlib.pyplot as plt", "fig, ax = plt.subplots()", "ax."},
+                                     2, 3, opts), "set_title"));
+    CHECK(Offers(PythonLspCompletions({"import library as lib", "fig, ax = lib.make()", "ax."},
+                                     2, 3, opts), "set_title"));
+}
+
 // --- Symbols and folding ----------------------------------------------
 
 void TestSymbols() {
@@ -1219,6 +1288,7 @@ int main() {
     TestCompletion();
     TestHover();
     TestQualifiedName();
+    TestFactoryResults();
     TestSymbols();
     TestFolding();
     TestDefinition();

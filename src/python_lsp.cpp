@@ -131,6 +131,11 @@ enum class BindKind {
     MatchCapture,
 };
 
+struct UnpackStep {
+    size_t index = 0;
+    size_t count = 0;
+};
+
 struct Binding {
     std::string name;
     BindKind kind = BindKind::Variable;
@@ -148,6 +153,8 @@ struct Binding {
     std::string type_name;         // "str", "MyClass", "module:os.path", or ""
     std::string import_module;     // the module an Import/ImportFrom binding came from
     std::string import_symbol;     // the name inside that module, for `from x import y`
+    const PyNode *value = nullptr;  // assignment provenance, resolved only when requested
+    std::vector<UnpackStep> value_path;
 };
 
 enum class ScopeKind { Module, Class, Function, Lambda, Comprehension };
@@ -671,14 +678,18 @@ private:
     }
 
     /** @brief Binds an assignment target, recursing through tuple/list unpacking. */
-    void BindTarget(const PyNode *target, int scope, BindKind kind, const PyNode *value) {
+    void BindTarget(const PyNode *target, int scope, BindKind kind, const PyNode *value,
+                    const std::vector<UnpackStep> &path = {}) {
         if (target == nullptr) return;
         switch (target->kind) {
             case PyNodeKind::Name: {
                 const int index = Bind(target->name, kind, target->start,
                                        target->start.col + static_cast<int>(target->name.size()), scope, target);
                 if (index >= 0 && value != nullptr) {
-                    bindings_[static_cast<size_t>(index)].type_name = InferType(value, scope);
+                    Binding &b = bindings_[static_cast<size_t>(index)];
+                    b.value = value;
+                    b.value_path = path;
+                    if (path.empty()) b.type_name = InferType(value, scope);
                 }
                 return;
             }
@@ -689,7 +700,15 @@ private:
                 // ordinary Python, not a forgotten variable, so the
                 // unused-local check has to be able to tell them apart.
                 const size_t before = bindings_.size();
-                for (const PyNodePtr &item : target->kids) BindTarget(item.get(), scope, kind, nullptr);
+                const bool starred = target->kind == PyNodeKind::Starred ||
+                    std::any_of(target->kids.begin(), target->kids.end(), [](const PyNodePtr &item) {
+                        return item->kind == PyNodeKind::Starred;
+                    });
+                for (size_t i = 0; i < target->kids.size(); i++) {
+                    std::vector<UnpackStep> child_path = path;
+                    child_path.push_back({i, target->kids.size()});
+                    BindTarget(target->kids[i].get(), scope, kind, starred ? nullptr : value, child_path);
+                }
                 for (size_t i = before; i < bindings_.size(); i++) bindings_[i].unpacked = true;
                 return;
             }
@@ -1861,19 +1880,117 @@ std::string QualifiedNameOfBinding(const Binding &b) {
     return std::string();
 }
 
-/** @brief The dotted path of a Name/Attribute chain rooted in an import binding, else "". */
-std::string QualifiedNameOfExpr(const Analyzer &analyzer, const PyNode *expr, int scope, int depth = 0) {
+std::string QualifiedNameOfExpr(const Analyzer &analyzer, const PyNode *expr, int scope, int depth = 0);
+PythonLspExternalType ExternalTypeOfExpr(const Analyzer &analyzer, const PyNode *expr, int scope, int depth);
+
+/** @brief Resolves an assignment's inputs before later rebindings of those names. */
+int ValueBinding(const Analyzer &analyzer, const PyNode *expr, int scope) {
+    const int resolved = analyzer.ResolveFrom(scope, expr->name);
+    if (resolved < 0) return -1;
+    const int owner = analyzer.bindings()[static_cast<size_t>(resolved)].scope;
+    int found = -1;
+    for (int index : analyzer.scopes()[static_cast<size_t>(owner)].bindings) {
+        const Binding &b = analyzer.bindings()[static_cast<size_t>(index)];
+        if (b.name == expr->name &&
+            (b.pos.line < expr->start.line || (b.pos.line == expr->start.line && b.pos.col < expr->start.col))) {
+            found = index;
+        }
+    }
+    return found;
+}
+
+/** @brief Follows a stored assignment value and its fixed unpacking positions. */
+PythonLspExternalType ExternalTypeOfBinding(const Analyzer &analyzer, const Binding &b, int depth) {
+    PythonLspExternalType type = ExternalTypeOfExpr(analyzer, b.value, b.scope, depth + 1);
+    for (const UnpackStep &step : b.value_path) {
+        if (type.elements.size() != step.count) return {};
+        // Copy before assigning: the selected element belongs to type itself.
+        PythonLspExternalType element = type.elements[step.index];
+        type = std::move(element);
+    }
+    return type;
+}
+
+/** @brief Models subplots' documented scalar-versus-array result without creating a plot. */
+PythonLspExternalType SubplotsType(const PyNode *call) {
+    PythonLspExternalType result{"", {{"matplotlib.figure.Figure", {}}, {}}};
+    const PyNode *rows = nullptr, *cols = nullptr, *squeeze = nullptr;
+    size_t positional = 0;
+    for (size_t i = 1; i < call->kids.size(); i++) {
+        const PyNode *arg = call->kids[i].get();
+        if (arg->kind == PyNodeKind::Starred || (arg->kind == PyNodeKind::Keyword && arg->name.empty())) return result;
+        if (arg->kind == PyNodeKind::Keyword) {
+            if (arg->kids.empty()) continue;
+            if (arg->name == "nrows") rows = arg->kids[0].get();
+            if (arg->name == "ncols") cols = arg->kids[0].get();
+            if (arg->name == "squeeze") squeeze = arg->kids[0].get();
+        } else {
+            if (positional == 0) rows = arg;
+            if (positional == 1) cols = arg;
+            positional++;
+        }
+    }
+    if (squeeze != nullptr && squeeze->kind == PyNodeKind::Constant && squeeze->name == "False") {
+        result.elements[1].qualified_name = "numpy.ndarray";
+    } else if ((squeeze == nullptr || (squeeze->kind == PyNodeKind::Constant && squeeze->name == "True")) &&
+               (rows == nullptr || rows->kind == PyNodeKind::Number) &&
+               (cols == nullptr || cols->kind == PyNodeKind::Number)) {
+        const bool single = (rows == nullptr || rows->name == "1") && (cols == nullptr || cols->name == "1");
+        result.elements[1].qualified_name = single ? "matplotlib.axes.Axes" : "numpy.ndarray";
+    }
+    return result;
+}
+
+/** @brief Obtains only return metadata; never evaluates an expression from the document. */
+PythonLspExternalType ExternalTypeOfExpr(const Analyzer &analyzer, const PyNode *expr, int scope, int depth) {
+    if (expr == nullptr || depth > 32) return {};
+    if (expr->kind == PyNodeKind::Name) {
+        const int index = ValueBinding(analyzer, expr, scope);
+        if (index < 0) return {};
+        return ExternalTypeOfBinding(analyzer, analyzer.bindings()[static_cast<size_t>(index)], depth);
+    }
+    if (expr->kind == PyNodeKind::Tuple || expr->kind == PyNodeKind::List) {
+        PythonLspExternalType type;
+        for (const PyNodePtr &item : expr->kids) {
+            if (item->kind == PyNodeKind::Starred) return {};
+            type.elements.push_back(ExternalTypeOfExpr(analyzer, item.get(), scope, depth + 1));
+        }
+        return type;
+    }
+    if (expr->kind == PyNodeKind::Call && !expr->kids.empty()) {
+        const std::string callee = QualifiedNameOfExpr(analyzer, expr->kids[0].get(), scope, depth + 1);
+        if (callee == "matplotlib.pyplot.subplots") return SubplotsType(expr);
+        if (!callee.empty() && analyzer.opts().external_return_type) {
+            return analyzer.opts().external_return_type(callee);
+        }
+    }
+    if (expr->kind == PyNodeKind::Subscript && expr->kids.size() == 2 &&
+        expr->kids[1]->kind == PyNodeKind::Number) {
+        const PythonLspExternalType owner = ExternalTypeOfExpr(analyzer, expr->kids[0].get(), scope, depth + 1);
+        for (size_t i = 0; i < owner.elements.size(); i++) {
+            if (expr->kids[1]->name == std::to_string(i)) return owner.elements[i];
+        }
+    }
+    return {};
+}
+
+/** @brief The importable path of an imported object or an inferred instance's class. */
+std::string QualifiedNameOfExpr(const Analyzer &analyzer, const PyNode *expr, int scope, int depth) {
     if (expr == nullptr || depth > 32) return std::string();
     if (expr->kind == PyNodeKind::Name) {
-        const int index = analyzer.ResolveFrom(scope, expr->name);
+        const int index = ValueBinding(analyzer, expr, scope);
         if (index < 0) return std::string();
-        return QualifiedNameOfBinding(analyzer.bindings()[static_cast<size_t>(index)]);
+        const Binding &b = analyzer.bindings()[static_cast<size_t>(index)];
+        const std::string imported = QualifiedNameOfBinding(b);
+        if (!imported.empty()) return imported;
+        if (b.value_path.empty()) return QualifiedNameOfExpr(analyzer, b.value, b.scope, depth + 1);
+        return ExternalTypeOfBinding(analyzer, b, depth + 1).qualified_name;
     }
     if (expr->kind == PyNodeKind::Attribute && !expr->kids.empty()) {
         const std::string owner = QualifiedNameOfExpr(analyzer, expr->kids[0].get(), scope, depth + 1);
         return owner.empty() ? std::string() : owner + "." + expr->name;
     }
-    return std::string();
+    return ExternalTypeOfExpr(analyzer, expr, scope, depth + 1).qualified_name;
 }
 
 // --- Completion -------------------------------------------------------
@@ -2389,9 +2506,8 @@ PythonLspHoverInfo PythonLspHover(const std::vector<std::string> &lines, int lin
     return info;
 }
 
-std::string PythonLspQualifiedName(const std::vector<std::string> &lines, int line, int col) {
-    PythonLspOptions opts;
-    opts.check_files = false;
+std::string PythonLspQualifiedName(const std::vector<std::string> &lines, int line, int col,
+                                 const PythonLspOptions &opts) {
     const Analyzer analyzer(lines, opts);
     const PyPos pos{line, col};
     if (InTextLiteral(analyzer, pos)) return std::string();
@@ -2405,7 +2521,11 @@ std::string PythonLspQualifiedName(const std::vector<std::string> &lines, int li
     }
     const int index = analyzer.ResolveFrom(scope, hit.name);
     if (index < 0) return std::string();
-    return QualifiedNameOfBinding(analyzer.bindings()[static_cast<size_t>(index)]);
+    const Binding &b = analyzer.bindings()[static_cast<size_t>(index)];
+    const std::string imported = QualifiedNameOfBinding(b);
+    if (!imported.empty()) return imported;
+    if (b.value_path.empty()) return QualifiedNameOfExpr(analyzer, b.value, b.scope);
+    return ExternalTypeOfBinding(analyzer, b, 0).qualified_name;
 }
 
 namespace {

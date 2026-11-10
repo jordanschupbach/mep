@@ -31,6 +31,11 @@ class MyClass:
 	    
 mobj = MyClass("Jordan")	    
 
+(fig, ax) = plt.subplots(1, 1)
+ax.set_title("My Plot")
+ax.plot(x, y, "o", markersize=2)
+fig.show()
+
 x = np.random.normal(0.0, 1.0, size=100)
 plt.hist(x, bins=30, density=True)
 plt.xlabel("x")

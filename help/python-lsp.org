@@ -158,6 +158,15 @@ same code running the file would -- when you press =K=, or when attribute
 completion first needs that module's members. With no
 interpreter, or the package not installed, hover answers as before.
 
+Hover and completion also follow factory results through assignments and
+fixed tuple/list unpacking. After =(fig, ax) = plt.subplots(1, 1)=, =K= on
+=ax.set_title= shows the Axes method's documentation, and =fig.savefig=
+shows the Figure method's. The server knows =subplots=' scalar-versus-array
+contract; for other imported factories it reads return annotations or
+unambiguous NumPy-style =Returns= entries. Return inference never runs the
+factory call or evaluates an annotation. Unknown return types keep the
+usual fallback.
+
 The interpreter is the first of: =pythonPath= in the server's
 =init_options=, =$MEP_PYTHON=, the active =$VIRTUAL_ENV=, the nearest
 =.venv= or =venv= directory above the file, then =python3= on =PATH=:
@@ -203,11 +212,10 @@ colour table and how to change it.
 * What it does not do
 
 - *No type checking.* See the opening section.
-- *One file is the whole world.* An imported name is known to exist and
-  nothing more, except to hover and to completion after a module path
-  (see above). Attribute completion on a /value/ from another module --
-  =a.= after =a = np.zeros(3)= -- falls back to "attribute names this
-  file already mentions".
+- *One file is the whole world.* Imports and return metadata can supply
+  hover and completion (see above), but there is no project-wide type
+  analysis. If a value's type is unknown or ambiguous, attribute completion
+  falls back to "attribute names this file already mentions".
 - *No project-wide rename or references.* Both stop at the file's edge,
   which is why a rename that cannot see the other users is refused
   rather than half-done.

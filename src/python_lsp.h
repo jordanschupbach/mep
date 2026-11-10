@@ -31,7 +31,9 @@
 //     only when it is obvious from the assignment itself -- a literal, a
 //     call to a class defined in this file, or a call to a known builtin
 //     constructor -- and only to drive attribute completion and hover.
-//     Nothing infers through function returns, containers or reassignment.
+//     Hover/completion can additionally follow assignments, fixed tuple
+//     unpacking, known library contracts and optional external return
+//     metadata. Unknown or ambiguous results remain unknown.
 //   - Diagnostics are the ones a reader could confirm from the file
 //     alone: syntax errors, scope errors ("this name is never defined in
 //     any enclosing scope"), binding hygiene (unused import, unused
@@ -58,6 +60,13 @@ struct PythonLspExternalMember {
     int kind = 0;        // a PythonLspKind value (declared below), as an int
     std::string detail;  // signature or type, may be empty
     std::string doc;     // one-line summary, may be empty
+};
+
+// A class's importable path, or the fixed elements of a tuple return.
+// Empty fields mean unknown; no callable needs to be executed to obtain this.
+struct PythonLspExternalType {
+    std::string qualified_name;
+    std::vector<PythonLspExternalType> elements;
 };
 
 struct PythonLspOptions {
@@ -89,6 +98,9 @@ struct PythonLspOptions {
     // top-level module, `import numpy.<here>` / `from numpy.<here>` with
     // "numpy" for that package's submodules. nullptr when it cannot say.
     std::function<const std::vector<PythonLspExternalMember> *(const std::string &package)> external_modules;
+    // Return metadata for an imported callable (including constructors).
+    // Queried lazily for hover/completion receivers, never for diagnostics.
+    std::function<PythonLspExternalType(const std::string &qualified)> external_return_type;
 };
 
 // --- Diagnostics ------------------------------------------------------
@@ -195,16 +207,19 @@ PythonLspHoverInfo PythonLspHover(const std::vector<std::string> &lines, int lin
  * "numpy.linalg.norm"; with `from matplotlib import pyplot as plt`,
  * `plt.plot` is "matplotlib.pyplot.plot". This is how hover reaches past
  * the baked-in stdlib table -- the server hands the path to a real
- * interpreter -- so nothing here touches the filesystem or guesses: a
- * chain rooted in anything other than an import binding (a local, a
- * call result, a relative import) yields "".
+ * interpreter. Also follows assignments, fixed tuple unpacking and call
+ * results whose class is known from a library contract or opts' return
+ * metadata. Unknown results and relative imports yield "". Calls in the
+ * document are never executed.
  *
  * @param lines the document's text, one entry per line
  * @param line 0-based cursor line
  * @param col 0-based cursor byte column
- * @return the dotted path, or "" when the cursor is not on an imported name
+ * @param opts optional external return metadata
+ * @return the dotted path, or "" when no importable object or class is known
  */
-std::string PythonLspQualifiedName(const std::vector<std::string> &lines, int line, int col);
+std::string PythonLspQualifiedName(const std::vector<std::string> &lines, int line, int col,
+                                 const PythonLspOptions &opts = PythonLspOptions{});
 
 // --- Document symbols -------------------------------------------------
 

@@ -135,6 +135,14 @@ for the session. This does run the imported module's top-level code, the
 same code running the file would -- when you press <code>K</code>, or when attribute
 completion first needs that module's members. With no
 interpreter, or the package not installed, hover answers as before.</p>
+<p>Hover and completion also follow factory results through assignments and
+fixed tuple/list unpacking. After <code>(fig, ax) = plt.subplots(1, 1)</code>, <code>K</code> on
+<code>ax.set_title</code> shows the Axes method's documentation, and <code>fig.savefig</code>
+shows the Figure method's. The server knows <code>subplots</code>' scalar-versus-array
+contract; for other imported factories it reads return annotations or
+unambiguous NumPy-style <code>Returns</code> entries. Return inference never runs the
+factory call or evaluates an annotation. Unknown return types keep the
+usual fallback.</p>
 <p>The interpreter is the first of: <code>pythonPath</code> in the server's
 <code>init_options</code>, <code>$MEP_PYTHON</code>, the active <code>$VIRTUAL_ENV</code>, the nearest
 <code>.venv</code> or <code>venv</code> directory above the file, then <code>python3</code> on <code>PATH</code>:</p>
@@ -169,7 +177,7 @@ colour table and how to change it.</p>
 <h1>What it does not do</h1>
 <ul>
 <li><b>No type checking.</b> See the opening section.</li>
-<li><b>One file is the whole world.</b> An imported name is known to exist and nothing more, except to hover and to completion after a module path (see above). Attribute completion on a <i>value</i> from another module -- <code>a.</code> after <code>a = np.zeros(3)</code> -- falls back to "attribute names this file already mentions".</li>
+<li><b>One file is the whole world.</b> Imports and return metadata can supply hover and completion (see above), but there is no project-wide type analysis. If a value's type is unknown or ambiguous, attribute completion falls back to "attribute names this file already mentions".</li>
 <li><b>No project-wide rename or references.</b> Both stop at the file's edge, which is why a rename that cannot see the other users is refused rather than half-done.</li>
 <li><b>No formatting.</b> <code>mep.lsp_format</code> falls through to the configured formatter for Python; the server does not claim the capability.</li>
 </ul>

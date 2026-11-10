@@ -158,7 +158,7 @@ Json RangeLines(int start_line, int end_line, int end_col) {
 // covers, the server asks a real interpreter: import the module, walk to
 // the object, print its signature and docstring. That does run the
 // imported module's top-level code -- the same code running the file
-// would -- and only on an explicit hover request, never while typing.
+// would. Hover and completion may introspect; diagnostics never do.
 // It is a fallback, not a dependency: with no interpreter found, or the
 // module not installed, hover answers exactly as it did before.
 //
@@ -264,6 +264,114 @@ for name in sorted(dir(obj), key=lambda n: (n.startswith('_'), n.lower())):
     detail, doc = clean(detail)[:160], clean(doc)[:200]
     rows.append(name + '\t' + str(kind) + '\t' + detail + '\t' + doc)
 out.buffer.write('\n'.join(rows).encode('utf-8', 'replace'))
+)PY";
+
+// Reads constructor/return metadata, without calling the object's code.
+// String annotations are parsed as syntax, never eval'd. For libraries
+// without annotations, accept unambiguous NumPy-style Returns entries.
+const char *const kReturnTypeScript = R"PY(
+import sys, os, importlib, inspect, ast, typing, json, re, builtins, textwrap
+os.environ.setdefault('MPLBACKEND', 'Agg')
+out = sys.stdout
+sys.stdout = sys.stderr
+parts = sys.argv[1].split('.')
+try:
+    obj = importlib.import_module(parts[0])
+    for i in range(1, len(parts)):
+        try:
+            obj = getattr(obj, parts[i])
+        except AttributeError:
+            obj = importlib.import_module('.'.join(parts[:i + 1]))
+except BaseException:
+    sys.exit(1)
+def class_type(cls):
+    if not inspect.isclass(cls):
+        return {}
+    q = cls.__module__ + '.' + cls.__qualname__
+    return {'name': q} if all(p.isidentifier() for p in q.split('.')) else {}
+def named_type(name):
+    name = name.strip().strip('`').lstrip('~.')
+    if not re.fullmatch(r'[A-Za-z_]\w*(\.[A-Za-z_]\w*)*', name):
+        return {}
+    bits = name.split('.')
+    module = inspect.getmodule(obj)
+    value = getattr(module, bits[0], getattr(builtins, bits[0], None)) if module else None
+    try:
+        for bit in bits[1:]:
+            value = getattr(value, bit)
+        result = class_type(value)
+        if result:
+            return result
+    except AttributeError:
+        pass
+    for i in range(len(bits) - 1, 0, -1):
+        try:
+            value = importlib.import_module('.'.join(bits[:i]))
+            for bit in bits[i:]:
+                value = getattr(value, bit)
+            return class_type(value)
+        except (ImportError, AttributeError):
+            pass
+    return {}
+def syntax_type(node, depth=0):
+    if depth > 16:
+        return {}
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return string_type(node.value, depth + 1)
+    if isinstance(node, ast.Subscript) and ast.unparse(node.value) in ('tuple', 'typing.Tuple', 'Tuple'):
+        items = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+        if any(isinstance(n, ast.Constant) and n.value is Ellipsis for n in items):
+            return {}
+        return {'elements': [syntax_type(n, depth + 1) for n in items]}
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        return named_type(ast.unparse(node))
+    return {}
+def string_type(text, depth=0):
+    try:
+        return syntax_type(ast.parse(text, mode='eval').body, depth)
+    except (SyntaxError, ValueError):
+        return {}
+def annotation_type(ann, depth=0):
+    if depth > 16 or ann is inspect.Signature.empty:
+        return {}
+    if isinstance(ann, str):
+        return string_type(ann)
+    if typing.get_origin(ann) is tuple:
+        args = typing.get_args(ann)
+        if not args or Ellipsis in args:
+            return {}
+        return {'elements': [annotation_type(a, depth + 1) for a in args]}
+    return class_type(ann)
+result = class_type(obj)
+if not result:
+    try:
+        if sys.version_info >= (3, 14) and (inspect.isfunction(obj) or inspect.ismethod(obj)):
+            # Even Format.STRING can execute parts of a deferred annotation.
+            # Read its source syntax instead of invoking __annotate__.
+            tree = ast.parse(textwrap.dedent(inspect.getsource(obj)))
+            node = tree.body[0]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.returns:
+                result = syntax_type(node.returns)
+        else:
+            result = annotation_type(inspect.signature(obj).return_annotation)
+    except (OSError, ValueError, TypeError, SyntaxError):
+        pass
+if not result:
+    lines = (inspect.getdoc(obj) or '').splitlines()
+    for i in range(len(lines) - 1):
+        if lines[i].strip() != 'Returns' or not re.fullmatch(r'-+', lines[i + 1].strip()):
+            continue
+        entries = []
+        for j in range(i + 2, len(lines)):
+            line = lines[j]
+            if j + 1 < len(lines) and re.fullmatch(r'-+', lines[j + 1].strip()):
+                break
+            if line and not line[0].isspace():
+                entries.append(named_type(line.split(':', 1)[-1]))
+        if entries:
+            result = entries[0] if len(entries) == 1 else {'elements': entries}
+        break
+out.write(json.dumps(result))
 )PY";
 
 // Lists importable modules in kMembersScript's row format (kind 9):
@@ -481,6 +589,33 @@ std::vector<PythonLspExternalMember> ParseMembers(const std::string &text) {
 /** @brief The top-level package of a dotted path ("numpy" for "numpy.linalg.norm"). */
 std::string RootModule(const std::string &qualified) { return qualified.substr(0, qualified.find('.')); }
 
+/** @brief Decodes the bounded type tree returned by kReturnTypeScript. */
+PythonLspExternalType ParseReturnType(const Json &value, int depth = 0) {
+    if (depth > 16) return {};
+    PythonLspExternalType type;
+    const std::string name = value.get("name").as_string();
+    // Only dotted identifiers can reach the introspector's command argument.
+    bool start = true;
+    bool valid = !name.empty();
+    for (char c : name) {
+        if (c == '.' && !start) {
+            start = true;
+            continue;
+        }
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' ||
+              (!start && c >= '0' && c <= '9'))) {
+            valid = false;
+            break;
+        }
+        start = false;
+    }
+    if (valid && !start) type.qualified_name = name;
+    for (const Json &element : value.get("elements").items()) {
+        type.elements.push_back(ParseReturnType(element, depth + 1));
+    }
+    return type;
+}
+
 // --- Server -----------------------------------------------------------
 
 class PythonLanguageServer {
@@ -527,6 +662,7 @@ public:
                 introspect_cache_.clear();
                 members_cache_.clear();
                 modules_cache_.clear();
+                return_types_cache_.clear();
             }
             return;
         }
@@ -605,6 +741,7 @@ private:
     // see MembersOf; an empty vector records a failure, so it is not retried
     mutable std::map<std::string, std::vector<PythonLspExternalMember>> members_cache_;
     mutable std::map<std::string, std::vector<PythonLspExternalMember>> modules_cache_;  // see ModulesIn
+    mutable std::map<std::string, PythonLspExternalType> return_types_cache_;
     bool running_ = true;
     bool shutting_down_ = false;
     int exit_code_ = 1;
@@ -805,6 +942,20 @@ private:
         return it->second.empty() ? nullptr : &it->second;
     }
 
+    /** @brief Cached class/return metadata; failures are cached just like hover failures. */
+    PythonLspExternalType ReturnTypeOf(const std::string &doc_dir, const std::string &qualified) const {
+        const std::string python = FindPython(python_path_, doc_dir);
+        const std::string key = python + '\n' + doc_dir + '\n' + qualified;
+        auto it = return_types_cache_.find(key);
+        if (it == return_types_cache_.end()) {
+            Json value;
+            const std::string output = Introspect(python, kReturnTypeScript, doc_dir, qualified);
+            (void)Json::Parse(output, &value);
+            it = return_types_cache_.emplace(key, ParseReturnType(value)).first;
+        }
+        return it->second;
+    }
+
     /** @brief Answers `textDocument/completion`. */
     Json Completion(const Json &params) const {
         const Request req = ReadRequest(params);
@@ -812,6 +963,9 @@ private:
         const std::string doc_dir = opts.doc_dir;
         opts.external_members = [this, doc_dir](const std::string &qualified) { return MembersOf(doc_dir, qualified); };
         opts.external_modules = [this, doc_dir](const std::string &package) { return ModulesIn(doc_dir, package); };
+        opts.external_return_type = [this, doc_dir](const std::string &qualified) {
+            return ReturnTypeOf(doc_dir, qualified);
+        };
         const std::vector<PythonLspCompletionItem> items = PythonLspCompletions(Doc(req.uri), req.line, req.col, opts);
         Json arr = Json::Array();
         for (size_t i = 0; i < items.size(); i++) {
@@ -852,9 +1006,12 @@ private:
      */
     void IntrospectHover(const Request &req, PythonLspHoverInfo *info) const {
         const std::vector<std::string> &lines = Doc(req.uri);
-        const std::string qualified = PythonLspQualifiedName(lines, req.line, req.col);
+        PythonLspOptions opts = OptionsFor(req.uri);
+        opts.external_return_type = [this, &opts](const std::string &qualified) {
+            return ReturnTypeOf(opts.doc_dir, qualified);
+        };
+        const std::string qualified = PythonLspQualifiedName(lines, req.line, req.col, opts);
         if (qualified.empty() || PythonLspModuleMembers(RootModule(qualified)) != nullptr) return;
-        const PythonLspOptions opts = OptionsFor(req.uri);
         const std::string python = FindPython(python_path_, opts.doc_dir);
         const std::string key = python + '\n' + opts.doc_dir + '\n' + qualified;
         auto it = introspect_cache_.find(key);

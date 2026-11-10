@@ -91,9 +91,26 @@ assert(color(spans, 2, 1) == 'Blue')
 raw, spans = mep.lsp_hover_content('**Bold**', 'py')
 assert(color(spans, 1, 3) == 'Yellow')
 
+-- Formatting precedes highlighting: span coordinates must follow the new rows.
+local docs = 'def example(value: str)\n\nA paragraph with enough words to wrap over several short display lines and still remain readable.\n\n- A list item that is long enough to need a hanging indent in the popup.\n\nExamples\n--------\n>>> print("hello")'
+raw, spans = mep.lsp_hover_content({kind='plaintext', value=docs}, 'py', 36)
+assert(raw ~= docs and raw:find('\n  ', 1, true))
+local row = 0
+for line in (raw .. '\n'):gmatch('(.-)\n') do
+  row = row + 1
+  assert(utf8.len(line) <= 36)
+  if line:find('>>>', 1, true) then
+    assert(color(spans, row, 5) == 'Blue', 'example highlighting used stale row numbers')
+  end
+end
+assert(color(spans, 1, 1) == 'Purple')
+local unchanged = mep.lsp_hover_content({kind='plaintext', value=docs}, 'r', 36)
+assert(unchanged == docs, 'Python formatter changed another language hover')
+
 -- Drive the real hover callback, forwarding its spans to the native binding.
 local native_show = mep.hover_show
 local shown, requests = nil, 0
+mep.opt = mep.opt or {}
 function mep.cursor() return 1, 1 end
 function mep.filename() return 'example.py' end
 function mep.lsp_client_for() return 1 end
@@ -101,9 +118,9 @@ function mep_lsp_filetype(path) return path:match('%.([^%.]+)$') end
 function mep_lsp_uri(path) return 'file://' .. path end
 function mep_lsp_position() return {line=0, character=0} end
 function mep_lsp_result(msg) return msg.result end
-function mep.hover_show(title, text, sticky, colors)
-  shown = {text=text, spans=colors}
-  native_show(title, text, sticky, colors)
+function mep.hover_show(title, text, sticky, colors, width, reflow)
+  shown = {text=text, spans=colors, width=width, reflow=reflow}
+  native_show(title, text, sticky, colors, width, reflow)
 end
 function mep.lsp_request(_, method, params, callback)
   requests = requests + 1
@@ -113,13 +130,18 @@ end
 mep.lsp_hover()
 assert(mep.hover_is_open())
 assert(color(shown.spans, 1, 1) == 'Purple')
+assert(shown.width == 72 and type(shown.reflow) == 'function')
+shown.reflow(28)
+assert(color(shown.spans, 1, 1) == 'Purple')
 mep.hover_close()
 function mep.filename() return 'example.org' end
+mep.opt.python_hover_width = 40
 function mep_polyglot_context_at_cursor()
   return {client=1, uri='file:///tmp/shadow.py', position={line=0, character=0}}
 end
 mep.lsp_hover()
 assert(color(shown.spans, 1, 1) == 'Purple', 'embedded Python must use its own filetype')
+assert(shown.width == 40)
 local focused = false
 function mep.hover_focus_enter() focused = true end
 mep.lsp_hover()

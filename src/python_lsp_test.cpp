@@ -657,6 +657,32 @@ void TestHover() {
     const PythonLspHoverInfo member = PythonLspHover(doc, 16, 11);
     CHECK(member.found);
 
+    const Lines rich = {
+        "def document(value):",
+        "    \"\"\"A summary.",
+        "",
+        "    Parameters",
+        "    ----------",
+        "    value : int",
+        "        An indented parameter description.",
+        "",
+        "    - First item.",
+        "      - Nested item.",
+        "",
+        "    Examples",
+        "    --------",
+        "    >>> document(42)",
+        "    42",
+        "    \"\"\"",
+        "    return value",
+        "document(1)",
+    };
+    const auto full_doc = PythonLspHover(rich, 17, 4);
+    CHECK(full_doc.found);
+    CHECK(full_doc.text.find("Parameters\n----------\nvalue : int\n    An indented") != std::string::npos);
+    CHECK(full_doc.text.find("- First item.\n  - Nested item.") != std::string::npos);
+    CHECK(full_doc.text.find(">>> document(42)\n42") != std::string::npos);
+
     // Nothing to say is said with silence, not with a guess.
     CHECK(!PythonLspHover({"x = 1  # comment"}, 0, 12).found);
     CHECK(!PythonLspHover({"import mystery", "mystery.thing"}, 1, 10).found);

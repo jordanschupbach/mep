@@ -1142,6 +1142,7 @@ add_library(mep_core STATIC
     src/indent.cpp
     src/r_format.cpp
     src/python_format.cpp
+    src/python_doc_format.cpp
     src/cpp_format.cpp
     src/maxima_format.cpp
     src/maxima_ast.cpp
@@ -3390,6 +3391,12 @@ target_compile_options(mep-python-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_
 target_link_options(mep-python-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-python-format-test)
 
+add_executable(mep-python-doc-format-test EXCLUDE_FROM_ALL src/python_doc_format_test.cpp src/python_doc_format.cpp)
+target_include_directories(mep-python-doc-format-test PRIVATE src)
+target_compile_options(mep-python-doc-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-python-doc-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-python-doc-format-test)
+
 # The in-house C++ formatter (cpp_format.cpp is dependency-free -- it includes
 # <string>, <vector>, <algorithm> and <cctype>, and shells out to nothing, in
 # particular not to clang-format): the lexer and the inputs it has to refuse
@@ -4263,7 +4270,7 @@ if(NOT EMSCRIPTEN)
         mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-format-test mep-mepml-style-test
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
         mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-nix-format-test mep-nix-lsp-test mep-nim-lsp-test mep-nim-format-test mep-java-lsp-test mep-java-format-test mep-kotlin-lsp-test mep-kotlin-format-test mep-zig-lsp-test mep-zig-format-test mep-rust-lsp-test mep-rust-vocab-test mep-rust-format-test mep-rust-parse-test mep-go-lsp-test mep-go-format-test mep-gap-lsp-test mep-gap-format-test mep-julia-parse-test mep-julia-lsp-test mep-julia-format-test mep-tcl-lsp-test mep-tcl-format-test mep-octave-lsp-test mep-octave-format-test mep-fish-lsp-test mep-fish-format-test mep-fortran-lsp-test mep-fortran-format-test mep-scheme-lsp-test mep-scheme-format-test mep-lua-lsp-test mep-lua-format-test mep-js-parse-test mep-js-format-test mep-js-lsp-test mep-vterm-test mep-spell-test
-        mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test
+        mep-indent-test mep-treesitter-test mep-python-format-test mep-python-doc-format-test mep-r-format-test mep-cpp-format-test
         mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test
         mep-editor-fold-test mep-editor-reload-test mep-editor-text-object-test mep-editor-block-settings-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test
         mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test

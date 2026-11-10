@@ -347,9 +347,8 @@ enum class Mode {
     HoverFocus,
 };
 
-// Shared between Editor::HandleHoverFocusInput (scroll clamping) and
-// main.cpp's DrawHoverPopup (the focused render path's visible window) so
-// both agree on how many raw lines of hover text are shown at once.
+// Maximum focused rows. The renderer passes the smaller screen-fitting
+// budget through SetHoverVisibleRows so navigation scrolls the same viewport.
 constexpr int kHoverFocusVisibleRows = 30;
 
 // Display name for the status line (main.cpp) and agent_rpc.cpp's
@@ -14201,13 +14200,20 @@ public:
     // command line, a picker: a hint anchored to a cursor nobody is
     // typing at is just clutter), and so does whoever opened it calling
     // mep.hover_close once the cursor leaves the argument list.
+    // width=0 sizes to content; otherwise it is the requested column limit.
+    // formatted_width is the budget used for the current text. Ownership of
+    // reflow_ref transfers here; it is called when that available budget changes.
     void ShowHover(const std::string &title, const std::string &text, bool sticky = false,
-                   const std::vector<PickerHlSpan> &spans = {});
-    void CloseHover() { hover_open_ = false; }
+                   const std::vector<PickerHlSpan> &spans = {}, int width = 0, int formatted_width = 0,
+                   int reflow_ref = 0);
+    void CloseHover();
     bool IsHoverOpen() const { return hover_open_; }
     bool IsHoverSticky() const { return hover_open_ && hover_sticky_; }
     const std::string &HoverTitle() const { return hover_title_; }
     const std::string &HoverText() const { return hover_text_; }
+    int HoverWidth() const { return hover_width_; }  // 0 = size to content
+    int HoverFormattedWidth() const { return hover_formatted_width_; }
+    int HoverReflowRef() const { return hover_reflow_ref_; }
     const std::vector<PickerHlSpan> &HoverLineSpans(int row) const {
         static const std::vector<PickerHlSpan> empty;
         auto it = hover_spans_.find(row);
@@ -14220,6 +14226,7 @@ public:
     int HoverFocusRow() const { return hover_focus_row_; }
     int HoverFocusCol() const { return hover_focus_col_; }
     int HoverFocusScroll() const { return hover_focus_scroll_; }
+    void SetHoverVisibleRows(int rows);
     bool HoverFocusSelecting() const { return hover_focus_selecting_; }
     bool HoverFocusSelectLinewise() const { return hover_focus_select_linewise_; }
     int HoverFocusSelectAnchorRow() const { return hover_focus_select_anchor_row_; }
@@ -16704,6 +16711,8 @@ private:
     bool hover_open_ = false;
     std::string hover_title_;
     std::string hover_text_;
+    int hover_width_ = 0, hover_formatted_width_ = 0;
+    int hover_reflow_ref_ = 0;
     std::unordered_map<int, std::vector<PickerHlSpan>> hover_spans_;
     CursorPos hover_anchor_pos_{};
     // See ShowHover's `sticky` parameter: suppresses the move/mode
@@ -16714,12 +16723,10 @@ private:
     // row_/col_ index into hover_text_ split on '\n', vim-normal-mode-caret
     // style (col clamped to the last character, not one-past-the-end).
     int hover_focus_row_ = 0, hover_focus_col_ = 0;
-    // First visible raw line when the text is taller than
-    // kHoverFocusVisibleRows; kept in sync with row_ by HandleHoverFocusInput
-    // itself (minimal-scroll, like a real viewport) since editor.cpp has no
-    // way to know the popup's actual on-screen row height to recompute it
-    // from scratch each frame the way main.cpp's rendering could.
+    // First visible display line, scrolled by keyboard navigation and
+    // clamped to the actual row budget supplied by the renderer.
     int hover_focus_scroll_ = 0;
+    int hover_visible_rows_ = kHoverFocusVisibleRows;
     bool hover_focus_pending_g_ = false, hover_focus_pending_y_ = false;
     bool hover_focus_selecting_ = false, hover_focus_select_linewise_ = false;
     int hover_focus_select_anchor_row_ = 0, hover_focus_select_anchor_col_ = 0;

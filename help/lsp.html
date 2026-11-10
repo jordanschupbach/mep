@@ -45,9 +45,17 @@ examples with the bundled Python Treesitter grammar. Docstring section headings
 and inline literals also get colors; prose stays in the normal text color.
 Markdown hovers highlight formatting and fenced code with the named language's
 grammar. No additional grammar installation is needed for Python.</p>
+<p>Python documentation uses a fixed 72-column content width in both hover views.
+Paragraphs wrap at words; bulleted and numbered lists keep hanging indents,
+and NumPy, Google and reST parameter sections retain their structure.
+Code blocks and doctest output keep their spacing. Long code lines can be
+read by moving the focused cursor horizontally with <code>h</code> / <code>l</code> or <code>$</code>.
+The popup reflows to fit a smaller window or larger font. Set
+<code>mep.opt.python_hover_width = 60</code> in <code>init.lua</code> to choose another width.</p>
 <p>Press <code>K</code> twice more while a hover is open to focus it, scroll with <code>hjkl</code>,
 select with <code>v</code> or <code>V</code>, and yank with <code>y</code>. Highlighting stays visible in this
-view, and yanked text keeps its original content.</p>
+view. Yanking copies the formatted documentation; code examples retain their
+original lines.</p>
 <h1>Parameter hints</h1>
 <p>Type an opening <code>(</code> and the signature of what you are calling appears in a
 popup by the cursor -- every parameter, its type annotation where the

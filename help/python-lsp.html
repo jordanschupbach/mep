@@ -123,9 +123,14 @@ interpreter, or the package not installed, it falls back to the attribute
 names the file already uses on that receiver.</p>
 <h1>Hover, signatures, outline, jumps</h1>
 <p><code>K</code> over a name gives its definition line: a function's full signature and
-the first line of its docstring, a class and its bases, a parameter and
+docstring, a class and its bases, a parameter and
 its annotation, a variable and what it was assigned. Over a builtin, a
 keyword or a standard-library member it answers from the built-in table.</p>
+<p>The popup formats paragraphs, nested lists and parameter sections to 72 columns
+by default, with the same width when focused. Set <code>mep.opt.python_hover_width</code>
+in <code>init.lua</code> to change it. Code examples retain their spacing, and the window
+reflows when the screen or font changes. Local docstrings retain their lists,
+sections and examples too; only completion descriptions use a short summary.</p>
 <p>Over anything else that traces back to an import -- <code>np.array</code>,
 <code>plt.plot</code>, <code>norm</code> after <code>from numpy.linalg import norm</code> -- it asks a real
 Python interpreter: it imports the module, walks to the object and shows

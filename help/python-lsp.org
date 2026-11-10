@@ -144,9 +144,15 @@ names the file already uses on that receiver.
 * Hover, signatures, outline, jumps
 
 =K= over a name gives its definition line: a function's full signature and
-the first line of its docstring, a class and its bases, a parameter and
+docstring, a class and its bases, a parameter and
 its annotation, a variable and what it was assigned. Over a builtin, a
 keyword or a standard-library member it answers from the built-in table.
+
+The popup formats paragraphs, nested lists and parameter sections to 72 columns
+by default, with the same width when focused. Set =mep.opt.python_hover_width=
+in =init.lua= to change it. Code examples retain their spacing, and the window
+reflows when the screen or font changes. Local docstrings retain their lists,
+sections and examples too; only completion descriptions use a short summary.
 
 Over anything else that traces back to an import -- =np.array=,
 =plt.plot=, =norm= after =from numpy.linalg import norm= -- it asks a real

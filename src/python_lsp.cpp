@@ -114,6 +114,35 @@ std::string DocSummary(const std::string &doc, size_t limit = 220) {
     return first;
 }
 
+// Hover needs the whole docstring: a one-line completion summary discards
+// parameter sections, lists and examples before the popup can format them.
+// Apply inspect.cleandoc's first-line/body indentation rule without running Python.
+std::string HoverDoc(const std::string &doc) {
+    std::vector<std::string> lines(1);
+    for (char c : doc) {
+        if (c == '\n') lines.emplace_back();
+        else if (c == '\t') lines.back().append(8 - lines.back().size() % 8, ' ');
+        else if (c != '\r') lines.back() += c;
+    }
+    size_t margin = std::string::npos;
+    for (size_t i = 1; i < lines.size(); i++) {
+        const size_t indent = lines[i].find_first_not_of(' ');
+        if (indent != std::string::npos) margin = std::min(margin, indent);
+    }
+    const size_t first = lines[0].find_first_not_of(' ');
+    lines[0].erase(0, first == std::string::npos ? lines[0].size() : first);
+    if (margin != std::string::npos)
+        for (size_t i = 1; i < lines.size(); i++) lines[i].erase(0, std::min(margin, lines[i].size()));
+    while (!lines.empty() && lines.back().find_first_not_of(' ') == std::string::npos) lines.pop_back();
+    size_t begin = 0;
+    while (begin < lines.size() && lines[begin].find_first_not_of(' ') == std::string::npos) begin++;
+    std::string out;
+    const size_t end = std::min(lines.size(), begin + 200);
+    for (size_t i = begin; i < end; i++) { if (i != begin) out += '\n'; out += lines[i]; }
+    if (end < lines.size()) out += "\n...";
+    return out;
+}
+
 // --- Bindings and scopes ----------------------------------------------
 
 enum class BindKind {
@@ -2391,7 +2420,7 @@ std::string HoverForBinding(const Analyzer &analyzer, const Binding &b) {
             break;
         }
     }
-    const std::string doc = DocSummary(b.doc, 400);
+    const std::string doc = HoverDoc(b.doc);
     if (!doc.empty()) head += "\n\n" + doc;
     head += "\n\nDefined on line " + std::to_string(b.pos.line + 1);
     return head;
@@ -2474,7 +2503,7 @@ PythonLspHoverInfo PythonLspHover(const std::vector<std::string> &lines, int lin
                 if (m.name != hit.name) continue;
                 info.found = true;
                 info.text = (m.kind == 6 ? "def " : "") + m.name + m.detail + "\n\nMember of " + cls->name;
-                const std::string doc = DocSummary(m.doc, 400);
+                const std::string doc = HoverDoc(m.doc);
                 if (!doc.empty()) info.text += "\n\n" + doc;
                 info.text += "\n\nDefined on line " + std::to_string(m.pos.line + 1);
                 return info;

@@ -1,10 +1,11 @@
 #pragma once
 
-// Hover text stays byte-for-byte intact for focus navigation and yanking.
+// Format Python docs before computing spans, so focus/yanking/highlighting
+// all address the same display text.
 // Only signatures and explicit examples go through a programming grammar;
 // parsing an entire docstring as Python would color ordinary prose as code.
 inline constexpr const char *kBuiltinHoverHighlight = R"LUA(
-function mep.lsp_hover_content(contents, filetype)
+function mep.lsp_hover_content(contents, filetype, width)
   local function marked(value)
     if type(value) == 'string' then return value end
     if type(value) ~= 'table' then return '' end
@@ -26,6 +27,8 @@ function mep.lsp_hover_content(contents, filetype)
     end
   end
 
+  local python = filetype == 'py' or filetype == 'python' or filetype == 'pyi'
+  if python and width and width > 0 then text = mep.python_doc_format(text, width) end
   local spans, lines = {}, {}
   for line in (text .. '\n'):gmatch('(.-)\n') do lines[#lines + 1] = line end
   local function add(row, first, last, hl)
@@ -46,7 +49,6 @@ function mep.lsp_hover_content(contents, filetype)
     end
   end
   if markdown then highlight('md', text, 1) end
-  local python = filetype == 'py' or filetype == 'python' or filetype == 'pyi'
   -- Plain Python hovers start with a keyword, declaration or signature,
   -- followed by a blank line and prose (including interpreter docstrings).
   if python and not markdown then

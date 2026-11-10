@@ -37,6 +37,7 @@
 #include "pdf_doc.h"
 #include "office_doc.h"
 #include "hover_highlight_lua.h"
+#include "python_doc_format.h"
 
 // Vestigial third-party-header warning-suppression block (raylib/raymath.h
 // are long gone from this file; nothing includes anything between the
@@ -8426,8 +8427,14 @@ const char *kBuiltinLsp =
     "  }, function(msg)\n"
     "    local result = mep_lsp_result(msg)\n"
     "    if not result then mep.notify('No hover info') return end\n"
-    "    local text, spans = mep.lsp_hover_content(result.contents, hover_ft)\n"
-    "    mep.hover_show('Hover', text, false, spans)\n"
+    "    local python = hover_ft == 'py' or hover_ft == 'pyi' or hover_ft == 'python'\n"
+    "    local limit = python and (tonumber(mep.opt.python_hover_width) or 72) or 0\n"
+    "    limit = python and math.max(8, math.min(240, math.floor(limit))) or 0\n"
+    "    local function render(width)\n"
+    "      local text, spans = mep.lsp_hover_content(result.contents, hover_ft, width)\n"
+    "      mep.hover_show('Hover', text, false, spans, limit, python and render or nil)\n"
+    "    end\n"
+    "    render(python and mep.hover_text_width(limit) or 0)\n"
     "  end)\n"
     "end\n"
     "function mep.lsp_goto_definition()\n"
@@ -45293,6 +45300,16 @@ static void DrawHoverLine(const std::string &text, int row, int byte_offset, flo
     DrawPickerColoredRun(text, colors, 0, text.size(), x, y);
 }
 
+static size_t HoverByteAtColumn(const std::string &line, int column, size_t start = 0) {
+    size_t byte = start;
+    for (int col = 0; byte < line.size() && col < column; col++) {
+        int bytes = 0;
+        gfx::GetCodepointNext(line.c_str() + byte, &bytes);
+        byte += static_cast<size_t>(std::max(1, bytes));
+    }
+    return std::min(byte, line.size());
+}
+
 /**
  * @brief Draws the focused-mode hover popup (Mode::HoverFocus): raw '\n'-split lines with a
  * navigable cursor, optional Visual-style selection highlighting, and a keybinding hint.
@@ -45305,13 +45322,21 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
     float font_size = g_font_size;
     int line_h = static_cast<int>(font_size) + 4;
     int screen_max_w = std::max(20, gfx::GetScreenWidth() - 40);
-    int max_chars_per_line = std::max(20, static_cast<int>(static_cast<float>(screen_max_w - 20) / g_char_width));
+    const bool fixed = g_editor.HoverWidth() > 0;
+    const int fixed_cols = fixed ? PythonDocColumns(g_editor.HoverWidth(), gfx::GetScreenWidth(), g_char_width) : 0;
+    int max_chars_per_line = fixed ? fixed_cols : std::max(20, static_cast<int>(static_cast<float>(screen_max_w - 20) / g_char_width));
+    int title_h = title.empty() ? 0 : static_cast<int>(MenuFontSize()) + 6;
+    float hint_size = std::max(10.0f, font_size - 4);
+    int hint_h = static_cast<int>(hint_size) + 8;
+    const int row_cap = std::min(kHoverFocusVisibleRows,
+        std::max(1, (gfx::GetScreenHeight() - title_h - hint_h - 50) / std::max(1, line_h)));
+    g_editor.SetHoverVisibleRows(row_cap);
     std::vector<std::string> lines = SplitLines(text);
     int cursor_row = std::max(0, std::min(g_editor.HoverFocusRow(), static_cast<int>(lines.size()) - 1));
     int cursor_col = g_editor.HoverFocusCol();
     int scroll = std::max(0, std::min(g_editor.HoverFocusScroll(), static_cast<int>(lines.size()) - 1));
     int total = static_cast<int>(lines.size());
-    int visible = std::max(1, std::min(total - scroll, kHoverFocusVisibleRows));
+    int visible = std::max(1, std::min(total - scroll, row_cap));
     bool selecting = g_editor.HoverFocusSelecting();
     bool sel_linewise = g_editor.HoverFocusSelectLinewise();
     int sel_r0 = g_editor.HoverFocusSelectAnchorRow(), sel_c0 = g_editor.HoverFocusSelectAnchorCol();
@@ -45326,24 +45351,24 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
      * @return The line unchanged if it already fits, otherwise its first max_chars_per_line characters.
      */
     auto display_of = [&](const std::string &line) {
-        return static_cast<int>(line.size()) > max_chars_per_line ? line.substr(0, static_cast<size_t>(max_chars_per_line)) : line;
+        return line.substr(0, HoverByteAtColumn(line, max_chars_per_line));
     };
     float max_w = title.empty() ? 0.0f : gfx::MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
     for (int i = 0; i < visible; i++) {
         max_w = std::max(max_w, gfx::MeasureTextEx(g_font, display_of(lines[static_cast<size_t>(scroll) + static_cast<size_t>(i)]).c_str(), font_size, 0).x);
     }
-    const std::string hint = "hjkl move  v/V select  y yank  Esc back, Esc Esc/q close";
-    float hint_size = std::max(10.0f, font_size - 4);
+    std::string hint = "hjkl move  v/V select  y yank  Esc back, Esc Esc/q close";
     max_w = std::max(max_w, gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x);
-    int box_w = std::min(screen_max_w, static_cast<int>(max_w) + 20);
-    int title_h = title.empty() ? 0 : static_cast<int>(MenuFontSize()) + 6;
-    int hint_h = static_cast<int>(hint_size) + 8;
+    int box_w = std::min(screen_max_w, fixed ? static_cast<int>(std::ceil(static_cast<float>(fixed_cols) * g_char_width)) + 20 : static_cast<int>(max_w) + 20);
+    if (gfx::MeasureTextEx(g_font, hint.c_str(), hint_size, 0).x > static_cast<float>(box_w - 16))
+        hint = "hjkl move  v select  y yank  q close";
     int box_h = title_h + visible * line_h + hint_h + 10;
     if (x + static_cast<float>(box_w) > static_cast<float>(gfx::GetScreenWidth())) x = static_cast<float>(gfx::GetScreenWidth() - box_w);
     if (x < 0) x = 0;
     if (y + static_cast<float>(box_h) > static_cast<float>(gfx::GetScreenHeight())) y = std::max(0.0f, y - static_cast<float>(box_h) - static_cast<float>(line_h));
     gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
     gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
+    gfx::BeginScissorMode(static_cast<int>(x) + 1, static_cast<int>(y) + 1, box_w - 2, box_h - 2);
     float ty = y + 5;
     if (!title.empty()) {
         gfx::DrawTextEx(g_font, title.c_str(), gfx::Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
@@ -45351,33 +45376,47 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
     }
     for (int i = 0; i < visible; i++) {
         int r = scroll + i;
-        std::string disp = display_of(lines[static_cast<size_t>(r)]);
+        const auto &raw = lines[static_cast<size_t>(r)];
+        // Long code stays intact in the help buffer. Pan the focused row to
+        // keep its caret visible, instead of changing an example's source.
+        size_t start = 0;
+        if (fixed && r == cursor_row) {
+            int caret_column = 0;
+            for (size_t b = 0; b < raw.size() && b < static_cast<size_t>(cursor_col); caret_column++)
+                b = HoverByteAtColumn(raw, 1, b);
+            start = HoverByteAtColumn(raw, std::max(0, caret_column - max_chars_per_line + 1));
+        }
+        const size_t end = HoverByteAtColumn(raw, max_chars_per_line, start);
+        std::string disp = raw.substr(start, end - start);
         float ry = ty + static_cast<float>(i * line_h);
         if (selecting && r >= sel_r0 && r <= sel_r1) {
             int a = 0, b = static_cast<int>(disp.size());
             if (!sel_linewise) {
-                if (r == sel_r0) a = std::min(sel_c0, b);
-                if (r == sel_r1) b = std::min(sel_c1 + 1, static_cast<int>(disp.size()));
+                if (r == sel_r0) a = std::clamp(sel_c0 - static_cast<int>(start), 0, b);
+                if (r == sel_r1) b = std::clamp(sel_c1 + 1 - static_cast<int>(start), 0, static_cast<int>(disp.size()));
             }
             if (b > a) {
-                float hx = x + 8 + static_cast<float>(a) * g_char_width;
-                gfx::DrawRectangle(static_cast<int>(hx), static_cast<int>(ry), static_cast<int>(static_cast<float>(b - a) * g_char_width),
+                float hx = x + 8 + gfx::MeasureTextEx(g_font, disp.substr(0, static_cast<size_t>(a)).c_str(), font_size, 0).x;
+                const float selected_w = gfx::MeasureTextEx(g_font, disp.substr(static_cast<size_t>(a), static_cast<size_t>(b - a)).c_str(), font_size, 0).x;
+                gfx::DrawRectangle(static_cast<int>(hx), static_cast<int>(ry), static_cast<int>(selected_w),
                               line_h, gfx::Fade(ResolveHlGroup("PickerSelected"), 0.6f));
             }
         }
-        DrawHoverLine(disp, r, 0, x + 8, ry);
+        DrawHoverLine(disp, r, static_cast<int>(start), x + 8, ry);
         if (r == cursor_row) {
-            float cx = x + 8 + static_cast<float>(std::min(cursor_col, static_cast<int>(disp.size()))) * g_char_width;
+            const size_t caret = static_cast<size_t>(std::clamp(cursor_col - static_cast<int>(start), 0, static_cast<int>(disp.size())));
+            float cx = x + 8 + gfx::MeasureTextEx(g_font, disp.substr(0, caret).c_str(), font_size, 0).x;
             gfx::Color cursor_bg = ResolveHlGroup("Normal");
             gfx::DrawRectangle(static_cast<int>(cx), static_cast<int>(ry), static_cast<int>(g_char_width), line_h,
                           gfx::Color{cursor_bg.r, cursor_bg.g, cursor_bg.b, 180});
-            if (cursor_col < static_cast<int>(disp.size())) {
-                const char ch[2] = {disp[static_cast<size_t>(cursor_col)], '\0'};
-                gfx::DrawTextEx(g_font, ch, gfx::Vector2{cx, ry}, font_size, 0, ResolveHlGroup("NormalBg"));
+            if (caret < disp.size()) {
+                const std::string ch = disp.substr(caret, HoverByteAtColumn(disp, 1, caret) - caret);
+                gfx::DrawTextEx(g_font, ch.c_str(), gfx::Vector2{cx, ry}, font_size, 0, ResolveHlGroup("NormalBg"));
             }
         }
     }
     gfx::DrawTextEx(g_font, hint.c_str(), gfx::Vector2{x + 8, ty + static_cast<float>(visible * line_h) + 4}, hint_size, 0, ResolveHlGroup("Comment"));
+    gfx::EndScissorMode();
 }
 
 /**
@@ -45391,6 +45430,11 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
  */
 void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
     if (!g_editor.IsHoverOpen()) return;
+    if (g_editor.HoverWidth() > 0 && g_editor.HoverReflowRef() != 0 && g_editor.Lua()) {
+        const int columns = PythonDocColumns(g_editor.HoverWidth(), gfx::GetScreenWidth(), g_char_width);
+        if (columns != g_editor.HoverFormattedWidth())
+            g_editor.Lua()->CallRefWithInt(g_editor.HoverReflowRef(), columns);
+    }
     const std::string &title = g_editor.HoverTitle();
     const std::string &text = g_editor.HoverText();
     if (g_editor.CurrentMode() == Mode::HoverFocus) {
@@ -45407,12 +45451,20 @@ void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
     // rewrapping lines that already fit fine.
     bool has_real_newlines = text.find('\n') != std::string::npos;
     int screen_max_w = std::max(20, gfx::GetScreenWidth() - 40);
-    int max_box_w = has_real_newlines ? screen_max_w : std::min(screen_max_w, 640);
+    const bool fixed = g_editor.HoverWidth() > 0;
+    const int fixed_cols = fixed ? PythonDocColumns(g_editor.HoverWidth(), gfx::GetScreenWidth(), g_char_width) : 0;
+    int max_box_w = fixed ? std::min(screen_max_w, static_cast<int>(std::ceil(static_cast<float>(fixed_cols) * g_char_width)) + 20)
+                          : has_real_newlines ? screen_max_w : std::min(screen_max_w, 640);
     int max_chars_per_line = std::max(20, static_cast<int>(static_cast<float>(max_box_w - 20) / g_char_width));
     std::vector<std::string> wrapped;
     std::vector<std::pair<int, int>> source_positions;
     int raw_row = 0;
     for (const std::string &raw_line : SplitLines(text)) {
+        if (fixed) {
+            wrapped.push_back(raw_line);
+            source_positions.emplace_back(raw_row++, 0);
+            continue;
+        }
         if (raw_line.empty()) {
             wrapped.emplace_back();
             source_positions.emplace_back(raw_row++, 0);
@@ -45440,14 +45492,15 @@ void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
         const int hidden = static_cast<int>(wrapped.size()) - (row_cap - 1);
         wrapped.resize(static_cast<size_t>(row_cap - 1));
         source_positions.resize(static_cast<size_t>(row_cap - 1));
-        wrapped.push_back("... " + std::to_string(hidden) + " more line" + (hidden == 1 ? "" : "s") +
-                          " (press K twice more to scroll)");
+        wrapped.push_back(fixed ? "... " + std::to_string(hidden) + " more (K K to scroll)"
+                               : "... " + std::to_string(hidden) + " more line" + (hidden == 1 ? "" : "s") +
+                                 " (press K twice more to scroll)");
         source_positions.emplace_back(-1, 0);
     }
     int max_rows = static_cast<int>(wrapped.size());
     float max_w = title.empty() ? 0.0f : gfx::MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
     for (int i = 0; i < max_rows; i++) max_w = std::max(max_w, gfx::MeasureTextEx(g_font, wrapped[static_cast<size_t>(i)].c_str(), font_size, 0).x);
-    int box_w = std::min(max_box_w, static_cast<int>(max_w) + 20);
+    int box_w = fixed ? max_box_w : std::min(max_box_w, static_cast<int>(max_w) + 20);
     int title_h = title.empty() ? 0 : static_cast<int>(MenuFontSize()) + 6;
     int box_h = title_h + max_rows * line_h + 10;
     if (x + static_cast<float>(box_w) > static_cast<float>(gfx::GetScreenWidth())) x = static_cast<float>(gfx::GetScreenWidth() - box_w);
@@ -45464,6 +45517,7 @@ void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
     }
     gfx::DrawRectangle(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("Picker"));
     gfx::DrawRectangleLines(static_cast<int>(x), static_cast<int>(y), box_w, box_h, ResolveHlGroup("PickerBorder"));
+    gfx::BeginScissorMode(static_cast<int>(x) + 1, static_cast<int>(y) + 1, box_w - 2, box_h - 2);
     float ty = y + 5;
     if (!title.empty()) {
         gfx::DrawTextEx(g_font, title.c_str(), gfx::Vector2{x + 8, ty}, MenuFontSize(), 0, ResolveHlGroup("PickerTitle"));
@@ -45473,6 +45527,7 @@ void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
         const auto [row, offset] = source_positions[static_cast<size_t>(i)];
         DrawHoverLine(wrapped[static_cast<size_t>(i)], row, offset, x + 8, ty + static_cast<float>(i * line_h));
     }
+    gfx::EndScissorMode();
 }
 
 // Command-line completion popup: same look as DrawCompletionPopup above,

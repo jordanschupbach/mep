@@ -27823,14 +27823,39 @@ void Editor::BeginPreview(const std::string &title, const std::string &text) {
 }
 
 void Editor::ShowHover(const std::string &title, const std::string &text, bool sticky,
-                       const std::vector<PickerHlSpan> &spans) {
+                       const std::vector<PickerHlSpan> &spans, int width, int formatted_width, int reflow_ref) {
+    if (hover_reflow_ref_ != 0 && lua_) lua_->UnrefFunction(hover_reflow_ref_);
+    hover_reflow_ref_ = reflow_ref;
     hover_open_ = true;
     hover_title_ = title;
+    if (mode_ == Mode::HoverFocus && hover_text_ != text) {
+        // Resizing reflows paragraphs, so a selection's old coordinates no
+        // longer describe the same text. Keep focus but start at the top.
+        hover_focus_row_ = hover_focus_col_ = hover_focus_scroll_ = 0;
+        hover_focus_selecting_ = false;
+    }
     hover_text_ = text;
+    hover_width_ = width;
+    hover_formatted_width_ = formatted_width;
     hover_spans_.clear();
     for (const PickerHlSpan &span : spans) hover_spans_[span.row].push_back(span);
     hover_sticky_ = sticky;
     hover_anchor_pos_ = Cursor();
+}
+
+void Editor::CloseHover() {
+    hover_open_ = false;
+    if (hover_reflow_ref_ != 0 && lua_) lua_->UnrefFunction(hover_reflow_ref_);
+    hover_reflow_ref_ = 0;
+}
+
+void Editor::SetHoverVisibleRows(int rows) {
+    hover_visible_rows_ = std::max(1, rows);
+    const int total = 1 + static_cast<int>(std::count(hover_text_.begin(), hover_text_.end(), '\n'));
+    hover_focus_scroll_ = std::clamp(hover_focus_scroll_, 0, std::max(0, total - hover_visible_rows_));
+    if (hover_focus_row_ < hover_focus_scroll_) hover_focus_scroll_ = hover_focus_row_;
+    if (hover_focus_row_ >= hover_focus_scroll_ + hover_visible_rows_)
+        hover_focus_scroll_ = hover_focus_row_ - hover_visible_rows_ + 1;
 }
 
 void Editor::MaybeDismissHover() {
@@ -27856,16 +27881,16 @@ void Editor::MaybeDismissHover() {
     // call's parentheses).
     if (hover_sticky_) {
         if (gfx::IsKeyPressed(gfx::Key::Escape) || (mode_ != Mode::Normal && mode_ != Mode::Insert)) {
-            hover_open_ = false;
+            CloseHover();
         }
         return;
     }
     if (mode_ != Mode::Normal || gfx::IsKeyPressed(gfx::Key::Escape)) {
-        hover_open_ = false;
+        CloseHover();
         return;
     }
     CursorPos cur = Cursor();
-    if (cur.row != hover_anchor_pos_.row || cur.col != hover_anchor_pos_.col) hover_open_ = false;
+    if (cur.row != hover_anchor_pos_.row || cur.col != hover_anchor_pos_.col) CloseHover();
 }
 
 namespace {
@@ -28084,7 +28109,7 @@ void Editor::HandleHoverFocusInput() {
                 hover_focus_pending_y_ = false;
                 hover_focus_selecting_ = false;
                 RestoreFromOverlay();
-                hover_open_ = false;
+                CloseHover();
                 return;
             default:
                 break;
@@ -28092,8 +28117,8 @@ void Editor::HandleHoverFocusInput() {
     }
 
     if (hover_focus_row_ < hover_focus_scroll_) hover_focus_scroll_ = hover_focus_row_;
-    if (hover_focus_row_ >= hover_focus_scroll_ + kHoverFocusVisibleRows)
-        hover_focus_scroll_ = hover_focus_row_ - kHoverFocusVisibleRows + 1;
+    if (hover_focus_row_ >= hover_focus_scroll_ + hover_visible_rows_)
+        hover_focus_scroll_ = hover_focus_row_ - hover_visible_rows_ + 1;
 }
 
 void Editor::RestoreFromOverlay() {

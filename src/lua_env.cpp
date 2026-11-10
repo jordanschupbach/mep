@@ -15,6 +15,7 @@
 #include "cpp_format.h"
 #include "python_format.h"
 #include "editor.h"
+#include "python_doc_format.h"
 #include "model3d_blend_import.h"
 #include "base64.h"
 #include "png_codec.h"
@@ -3937,10 +3938,12 @@ int l_float_is_open(lua_State *L) {
 std::vector<PickerHlSpan> ReadPreviewSpans(lua_State *L, int idx);
 
 /**
- * @brief Implements mep.hover_show(title, text[, sticky[, spans]]): shows a passive floating tooltip anchored near the
+ * @brief Implements mep.hover_show(title, text[, sticky[, spans[, width]]]): shows a passive floating tooltip anchored near the
  * cursor, optionally sticky so that typing and cursor movement do not dismiss it.
  * @param L Lua state; arg 1 is the title, arg 2 the text, optional arg 3 whether the popup survives typing,
  * optional arg 4 highlight spans ({row, col_start, col_end, hl}, 1-based, exclusive end).
+ * Optional arg 5 fixes the content width in columns (0 sizes to content).
+ * Optional arg 6 reflows the content when its available width changes.
  * @return Number of values pushed (0).
  */
 int l_hover_show(lua_State *L) {
@@ -3952,8 +3955,30 @@ int l_hover_show(lua_State *L) {
     // movement, for a parameter hint that is only useful mid-typing, and
     // leave closing it to the caller (mep.hover_close). See ShowHover.
     const bool sticky = lua_toboolean(L, 3) != 0;
-    GetEditor(L)->ShowHover(title, std::string(text, len), sticky, ReadPreviewSpans(L, 4));
+    const int requested = static_cast<int>(luaL_optinteger(L, 5, 0));
+    const int width = requested > 0 ? std::clamp(requested, 8, 240) : 0;
+    const int formatted = width > 0 ? PythonDocColumns(width, gfx::GetScreenWidth(), GetCharWidthPx()) : 0;
+    int reflow = 0;
+    if (lua_isfunction(L, 6)) { lua_pushvalue(L, 6); reflow = luaL_ref(L, LUA_REGISTRYINDEX); }
+    GetEditor(L)->ShowHover(title, std::string(text, len), sticky, ReadPreviewSpans(L, 4), width, formatted, reflow);
     return 0;
+}
+
+/** @brief Implements mep.python_doc_format(text[, width]): formats display documentation, never source code. */
+int l_python_doc_format(lua_State *L) {
+    size_t len = 0;
+    const char *text = luaL_checklstring(L, 1, &len);
+    const int width = static_cast<int>(luaL_optinteger(L, 2, 72));
+    const std::string formatted = FormatPythonDoc(std::string(text, len), width);
+    lua_pushlstring(L, formatted.data(), formatted.size());
+    return 1;
+}
+
+/** @brief Implements mep.hover_text_width([width]): clamps the column budget to the current screen and font. */
+int l_hover_text_width(lua_State *L) {
+    const int width = static_cast<int>(luaL_optinteger(L, 1, 72));
+    lua_pushinteger(L, PythonDocColumns(width, gfx::GetScreenWidth(), GetCharWidthPx()));
+    return 1;
 }
 
 // mep.hover_close(): dismiss an open hover tooltip early (e.g. a new
@@ -17963,6 +17988,8 @@ const luaL_Reg kMepFuncs[] = {
     {"float_close", l_float_close},
     {"float_is_open", l_float_is_open},
     {"hover_show", l_hover_show},
+    {"hover_text_width", l_hover_text_width},
+    {"python_doc_format", l_python_doc_format},
     {"hover_close", l_hover_close},
     {"hover_is_open", l_hover_is_open},
     {"hover_focus_enter", l_hover_focus_enter},

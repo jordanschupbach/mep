@@ -44,9 +44,18 @@ and inline literals also get colors; prose stays in the normal text color.
 Markdown hovers highlight formatting and fenced code with the named language's
 grammar. No additional grammar installation is needed for Python.
 
+Python documentation uses a fixed 72-column content width in both hover views.
+Paragraphs wrap at words; bulleted and numbered lists keep hanging indents,
+and NumPy, Google and reST parameter sections retain their structure.
+Code blocks and doctest output keep their spacing. Long code lines can be
+read by moving the focused cursor horizontally with =h= / =l= or =$=.
+The popup reflows to fit a smaller window or larger font. Set
+=mep.opt.python_hover_width = 60= in =init.lua= to choose another width.
+
 Press =K= twice more while a hover is open to focus it, scroll with =hjkl=,
 select with =v= or =V=, and yank with =y=. Highlighting stays visible in this
-view, and yanked text keeps its original content.
+view. Yanking copies the formatted documentation; code examples retain their
+original lines.
 
 * Parameter hints
 

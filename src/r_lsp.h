@@ -10,14 +10,15 @@
 // r_lsp_server.cpp, the `mep-r-lsp` binary; kBuiltinLsp's `r_ls` registry
 // entry in main.cpp is what spawns it).
 //
-// Entirely in-house: R itself is never started, `languageserver` is never
-// loaded, and no external linter is consulted. Everything here is a pure
+// Entirely in-house: `languageserver` is never loaded and no external
+// linter is consulted. Everything here is a pure
 // function over plain std::string lines -- parsed by r_lsp_parse.h, then
 // analyzed -- so the whole server is testable without a GL context,
 // without a client, without a process and without R installed
 // (r_lsp_test.cpp drives all of it directly). The one exception is the
 // on-disk existence check behind RLspOptions::check_files, which is why
-// that is a flag rather than unconditional.
+// that is a flag rather than unconditional. The wire server can additionally
+// read installed package help through Rscript when a hover has no bundled entry.
 //
 // Scope, named rather than silently omitted (the same convention
 // org_lsp.h uses):
@@ -141,6 +142,13 @@ struct RLspHoverInfo {
     bool found = false;
     std::string text;  // plain text, possibly multi-line
     RRange range;      // the range the hover applies to
+    // For the wire server's optional installed-help fallback, populated only
+    // for unresolved names. Dots remain part of the topic. An explicit pkg::
+    // qualifier restricts the lookup; otherwise library()/require() packages
+    // are searched in reverse attachment order before the standard R help paths.
+    std::string help_topic;
+    std::string help_package;
+    std::vector<std::string> help_packages;
 };
 
 /**

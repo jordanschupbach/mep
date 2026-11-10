@@ -9,11 +9,12 @@
 shipped with mep. Open an R file and it attaches by itself -- there is
 nothing to install and nothing to configure.
 
-It never starts R. It parses R itself, so it answers immediately, it
-answers on a machine with no R on it at all, and opening a script cannot
-run it. That is also the trade: it knows R's grammar, its scope rules and
-the base distribution's own functions, and it cannot know what an
-installed package exports or what a variable holds at run time.
+It parses R itself, so diagnostics, completion and bundled documentation
+work on a machine with no R installed. Opening a script cannot run it.
+When a hover has no bundled documentation, it can read the installed
+package's help through =Rscript=. This does not evaluate the document or
+load the documented package. Analysis still uses source scope and the
+base distribution's functions, rather than values in a running R session.
 
 R's own =languageserver= package is still registered if you prefer it --
 see [[file:lsp.html][Language servers]] for the one-line switch.
@@ -127,6 +128,19 @@ function gets its real signature, what it does and which package it comes
 from. Over an operator -- =%in%=, =|>=, =<<-=, =~= -- it explains the
 operator, including the ones people forget: =**= is R's own deprecated
 spelling of =^=.
+
+For names missing from the bundled table, =K= reads installed R help,
+including dotted names such as =spline.des= and documentation aliases.
+=pkg::name= restricts the lookup to that package. Otherwise literal
+=library()= and =require()= packages are searched first, then R's default
+help paths and other installed packages. Ambiguous results list qualified
+names to try. Local definitions keep their own source documentation.
+
+The helper uses =Rscript= from =$PATH=, or the executable named by
+=$MEP_RSCRIPT=. It inherits R library environment variables such as
+=$R_LIBS_USER= and starts with =--vanilla=. Results and misses are cached;
+each lookup has a five-second limit. Missing R or missing documentation
+leaves the usual bundled help available.
 
 =<leader>lk= shows the signature of the call the cursor is inside, with
 the argument being typed highlighted. It works for functions defined in

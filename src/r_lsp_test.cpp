@@ -826,6 +826,40 @@ void Hover() {
     CHECK(Contains(repeat_kw.text, "repeat"));
 }
 
+/** @brief Installed-help targets keep R names intact and respect source bindings and qualifiers. */
+void InstalledHelpTargets() {
+    const Lines example{"library(splines)", "xmat <- spline.des(k, x, deg, outer.ok = TRUE)$design"};
+    const int begin = static_cast<int>(example[1].find("spline.des"));
+    for (int col = begin; col < begin + 10; col++) {
+        const auto info = RLspHover(example, 1, col);
+        CHECK(!info.found);
+        CHECK(info.help_topic == "spline.des");
+        CHECK(info.help_packages == std::vector<std::string>{"splines"});
+        CHECK(info.range.col == begin && info.range.end_col == begin + 10);
+    }
+    const auto namespaced = RLspHover({"splines::spline.des(k, x)"}, 0, 17);
+    CHECK(namespaced.help_topic == "spline.des");
+    CHECK(namespaced.help_package == "splines");
+    const auto internal = RLspHover({"splines:::spline.des(k, x)"}, 0, 18);
+    CHECK(internal.help_package == "splines");
+    const auto qualified = RLspHover({"otherPackage::mean(x)"}, 0, 15);
+    CHECK(!qualified.found);
+    CHECK(qualified.help_topic == "mean" && qualified.help_package == "otherPackage");
+    CHECK(RLspHover({"base::mean(x)"}, 0, 7).found);
+
+    const Lines packages{"library(first)", "require(\"second\")", "base::library(package='third')",
+                         "library(first)", "library(computed, character.only=TRUE)", "unknown.fn(x)"};
+    const auto imports = RLspHover(packages, 5, 4);
+    CHECK((imports.help_packages == std::vector<std::string>{"first", "third", "second"}));
+    const auto local = RLspHover({"spline.des <- function(x) x", "spline.des(1)"}, 1, 4);
+    CHECK(local.found && local.help_topic.empty());
+    CHECK(RLspHover({"obj$spline.des"}, 0, 8).help_topic.empty());
+    CHECK(RLspHover({"obj@spline.des"}, 0, 8).help_topic.empty());
+    CHECK(RLspHover({"# spline.des"}, 0, 5).help_topic.empty());
+    CHECK(RLspHover({"\"spline.des\""}, 0, 5).help_topic.empty());
+    CHECK(RLspHover({"splines::spline.des"}, 0, 3).help_topic.empty());
+}
+
 /** @brief Checks signature help, for both a known function and one defined in the document. */
 void SignatureHelp() {
     Lines lines;
@@ -1074,6 +1108,7 @@ int main() {
     FalsePositives();
     Completion();
     Hover();
+    InstalledHelpTargets();
     SignatureHelp();
     DefinitionAndReferences();
     Symbols();

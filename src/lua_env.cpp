@@ -3934,10 +3934,13 @@ int l_float_is_open(lua_State *L) {
 // floating popup). A truthy third argument opts out of the
 // move/mode-change dismissal for the one consumer that cannot live with
 // it, mep.lsp_signature_help's while-you-type parameter hint.
+std::vector<PickerHlSpan> ReadPreviewSpans(lua_State *L, int idx);
+
 /**
- * @brief Implements mep.hover_show(title, text[, sticky]): shows a passive floating tooltip anchored near the
+ * @brief Implements mep.hover_show(title, text[, sticky[, spans]]): shows a passive floating tooltip anchored near the
  * cursor, optionally sticky so that typing and cursor movement do not dismiss it.
- * @param L Lua state; arg 1 is the title, arg 2 the text, optional arg 3 whether the popup survives typing.
+ * @param L Lua state; arg 1 is the title, arg 2 the text, optional arg 3 whether the popup survives typing,
+ * optional arg 4 highlight spans ({row, col_start, col_end, hl}, 1-based, exclusive end).
  * @return Number of values pushed (0).
  */
 int l_hover_show(lua_State *L) {
@@ -3949,7 +3952,7 @@ int l_hover_show(lua_State *L) {
     // movement, for a parameter hint that is only useful mid-typing, and
     // leave closing it to the caller (mep.hover_close). See ShowHover.
     const bool sticky = lua_toboolean(L, 3) != 0;
-    GetEditor(L)->ShowHover(title, std::string(text, len), sticky);
+    GetEditor(L)->ShowHover(title, std::string(text, len), sticky, ReadPreviewSpans(L, 4));
     return 0;
 }
 
@@ -4152,7 +4155,7 @@ int l_deco_add(lua_State *L) {
     return 1;
 }
 
-// mep.ts_captures(filetype, text) -> array of {row, col_start, col_end,
+// mep.ts_captures(filetype, text[, cache_key]) -> array of {row, col_start, col_end,
 // capture} (1-indexed row/col_start, col_end exclusive -- same
 // convention mep.deco_add's opts table expects), or nil if no
 // Treesitter grammar is vendored for `filetype` (see treesitter.cpp).
@@ -4160,8 +4163,8 @@ int l_deco_add(lua_State *L) {
 // each `capture` name to a highlight group and feeds it straight into
 // mep.deco_add, exactly like the hand-rolled lexer it upgrades.
 /**
- * @brief Implements mep.ts_captures(filetype, text): runs the vendored Treesitter grammar (if any) for a filetype over source text.
- * @param L Lua state; arg 1 is the filetype, arg 2 the source text.
+ * @brief Implements mep.ts_captures(filetype, text[, cache_key]): runs the vendored Treesitter grammar (if any) for a filetype over source text.
+ * @param L Lua state; arg 1 is the filetype, arg 2 the source text, optional arg 3 an independent parse cache key.
  * @return Number of values pushed (1: array of {row, col_start, col_end, capture} spans, or nil if no grammar is vendored).
  */
 int l_ts_captures(lua_State *L) {
@@ -4172,7 +4175,8 @@ int l_ts_captures(lua_State *L) {
         lua_pushnil(L);
         return 1;
     }
-    std::vector<TSHighlightSpan> spans = TreesitterHighlight(filetype, std::string(text, len));
+    const char *cache_key = luaL_optstring(L, 3, "");
+    std::vector<TSHighlightSpan> spans = TreesitterHighlight(filetype, std::string(text, len), cache_key);
     lua_createtable(L, static_cast<int>(spans.size()), 0);
     for (size_t i = 0; i < spans.size(); i++) {
         lua_createtable(L, 0, 4);

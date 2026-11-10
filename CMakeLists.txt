@@ -1788,12 +1788,12 @@ add_dependencies(tests mep-mepml-lsp-test)
 # mep-org-lsp above: no mep_core, no raylib, built by default because
 # kBuiltinLsp's `r_ls` entry spawns it out of mep's own bin directory.
 #
-# It runs without R installed -- nothing here shells out to R, and
-# r_lsp_base_names.cpp is generated ahead of time by
-# scripts/gen_r_names.R and committed, so the build needs no R either.
+# Analysis runs without R installed. The wire server optionally reads installed
+# package help through Rscript; generated base names and curated docs still work
+# without it, and the build itself needs no R.
 set(MEP_R_LSP_SOURCES src/r_lsp.cpp src/r_lsp_parse.cpp src/r_lsp_vocab.cpp src/r_lsp_base_names.cpp)
 if(NOT EMSCRIPTEN)
-    add_executable(mep-r-lsp src/r_lsp_server.cpp ${MEP_R_LSP_SOURCES})
+    add_executable(mep-r-lsp src/r_lsp_server.cpp src/r_lsp_help.cpp ${MEP_R_LSP_SOURCES})
     target_include_directories(mep-r-lsp PRIVATE src)
     target_compile_options(mep-r-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-r-lsp PRIVATE ${MEP_SANITIZE_FLAGS})

@@ -16,11 +16,12 @@
 <p><code>.R</code> files get a language server of their own, <code>mep-r-lsp</code>, built and
 shipped with mep. Open an R file and it attaches by itself -- there is
 nothing to install and nothing to configure.</p>
-<p>It never starts R. It parses R itself, so it answers immediately, it
-answers on a machine with no R on it at all, and opening a script cannot
-run it. That is also the trade: it knows R's grammar, its scope rules and
-the base distribution's own functions, and it cannot know what an
-installed package exports or what a variable holds at run time.</p>
+<p>It parses R itself, so diagnostics, completion and bundled documentation
+work on a machine with no R installed. Opening a script cannot run it.
+When a hover has no bundled documentation, it can read the installed
+package's help through <code>Rscript</code>. This does not evaluate the document or
+load the documented package. Analysis still uses source scope and the
+base distribution's functions, rather than values in a running R session.</p>
 <p>R's own <code>languageserver</code> package is still registered if you prefer it --
 see <a href="lsp.html">Language servers</a> for the one-line switch.</p>
 <h1>What it catches</h1>
@@ -100,6 +101,17 @@ function gets its real signature, what it does and which package it comes
 from. Over an operator -- <code>%in%</code>, <code>|&gt;</code>, <code>&lt;&lt;-</code>, <code>~</code> -- it explains the
 operator, including the ones people forget: <code>**</code> is R's own deprecated
 spelling of <code>^</code>.</p>
+<p>For names missing from the bundled table, <code>K</code> reads installed R help,
+including dotted names such as <code>spline.des</code> and documentation aliases.
+<code>pkg::name</code> restricts the lookup to that package. Otherwise literal
+<code>library()</code> and <code>require()</code> packages are searched first, then R's default
+help paths and other installed packages. Ambiguous results list qualified
+names to try. Local definitions keep their own source documentation.</p>
+<p>The helper uses <code>Rscript</code> from <code>$PATH</code>, or the executable named by
+<code>$MEP_RSCRIPT</code>. It inherits R library environment variables such as
+<code>$R_LIBS_USER</code> and starts with <code>--vanilla</code>. Results and misses are cached;
+each lookup has a five-second limit. Missing R or missing documentation
+leaves the usual bundled help available.</p>
 <p><code>&lt;leader&gt;lk</code> shows the signature of the call the cursor is inside, with
 the argument being typed highlighted. It works for functions defined in
 the file as well as base R ones.</p>

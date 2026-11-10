@@ -14201,12 +14201,18 @@ public:
     // command line, a picker: a hint anchored to a cursor nobody is
     // typing at is just clutter), and so does whoever opened it calling
     // mep.hover_close once the cursor leaves the argument list.
-    void ShowHover(const std::string &title, const std::string &text, bool sticky = false);
+    void ShowHover(const std::string &title, const std::string &text, bool sticky = false,
+                   const std::vector<PickerHlSpan> &spans = {});
     void CloseHover() { hover_open_ = false; }
     bool IsHoverOpen() const { return hover_open_; }
     bool IsHoverSticky() const { return hover_open_ && hover_sticky_; }
     const std::string &HoverTitle() const { return hover_title_; }
     const std::string &HoverText() const { return hover_text_; }
+    const std::vector<PickerHlSpan> &HoverLineSpans(int row) const {
+        static const std::vector<PickerHlSpan> empty;
+        auto it = hover_spans_.find(row);
+        return it == hover_spans_.end() ? empty : it->second;
+    }
 
     // --- Hover focus (see Mode::HoverFocus's own comment) ---
     // No-op if hover isn't currently open.
@@ -16698,6 +16704,7 @@ private:
     bool hover_open_ = false;
     std::string hover_title_;
     std::string hover_text_;
+    std::unordered_map<int, std::vector<PickerHlSpan>> hover_spans_;
     CursorPos hover_anchor_pos_{};
     // See ShowHover's `sticky` parameter: suppresses the move/mode
     // auto-dismiss for a popup that has to outlive typing.

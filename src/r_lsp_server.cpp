@@ -1,6 +1,6 @@
 // `mep-r-lsp`: the wire half of mep's own R language server. Speaks LSP
-// over stdio; every answer comes from r_lsp.h's pure analysis functions,
-// which is where the actual R knowledge lives.
+// over stdio; source analysis lives in r_lsp.h's pure functions, with an
+// optional installed-package documentation lookup in r_lsp_help.h.
 //
 // Standalone on purpose, rather than a set of Lua callbacks inside mep,
 // for the reasons org_lsp_server.cpp gives: it is the shape every other
@@ -10,18 +10,17 @@
 //
 // Two things make this server unusual among R tooling, and both are
 // deliberate:
-//   - It never starts R. No `languageserver`, no `lintr`, no session to
-//     keep alive, nothing to install -- which means it answers on a
-//     machine with no R at all, and answers immediately rather than
-//     after a package load.
+//   - Analysis needs no R, `languageserver`, or `lintr`. Hover additionally
+//     reads installed package help through Rscript when a name is missing
+//     from the bundled documentation. Lookups are bounded and cached.
 //   - It never evaluates the document. Every answer is a property of the
 //     source text, so opening a script cannot run it. That rules out
 //     knowing what a variable holds at run time, which is the honest
 //     trade: see r_lsp.h's scope note.
 //
-// Deliberately single-threaded and synchronous: every request is a parse
-// plus a walk over one in-memory document, microseconds for anything a
-// person edits by hand. Transport is Content-Length framing via
+// Deliberately single-threaded and synchronous: source requests parse and
+// walk one in-memory document; an uncached installed-help lookup has a
+// bounded subprocess wait. Transport is Content-Length framing via
 // rpc_framing.h, full text sync, and `positionEncoding: "utf-8"` -- byte
 // columns, which is what mep's own client reads and what the analysis
 // half produces.
@@ -46,6 +45,7 @@
 
 #include "json.h"
 #include "r_lsp.h"
+#include "r_lsp_help.h"
 #include "rpc_framing.h"
 
 namespace {
@@ -246,6 +246,7 @@ public:
 
 private:
     std::map<std::string, std::vector<std::string>> docs_;
+    std::map<std::vector<std::string>, std::string> help_cache_;
     bool running_ = true;
     bool shutting_down_ = false;
     int exit_code_ = 1;
@@ -403,8 +404,23 @@ private:
     }
 
     /** @brief Answers `textDocument/hover`. */
-    Json HoverAt(const Json &params) const {
-        const RLspHoverInfo info = RLspHover(Doc(UriOf(params)), LineOf(params), ColOf(params));
+    Json HoverAt(const Json &params) {
+        const std::string uri = UriOf(params);
+        RLspHoverInfo info = RLspHover(Doc(uri), LineOf(params), ColOf(params));
+        if (!info.found && !info.help_topic.empty()) {
+            const std::string cwd = OptionsFor(uri).doc_dir;
+            std::vector<std::string> key{cwd, info.help_topic, info.help_package};
+            key.insert(key.end(), info.help_packages.begin(), info.help_packages.end());
+            auto it = help_cache_.find(key);
+            if (it == help_cache_.end()) {
+                // Misses are cached too, so an unknown name or unavailable R
+                // does not start a new process on every press of K.
+                if (help_cache_.size() >= 256) help_cache_.clear();
+                it = help_cache_.emplace(std::move(key), RLspInstalledHelp(info, cwd)).first;
+            }
+            info.text = it->second;
+            info.found = !info.text.empty();
+        }
         if (!info.found) return Json();
         Json contents = Json::Object();
         contents["kind"] = "plaintext";

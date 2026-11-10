@@ -27822,10 +27822,13 @@ void Editor::BeginPreview(const std::string &title, const std::string &text) {
     mode_ = Mode::Preview;
 }
 
-void Editor::ShowHover(const std::string &title, const std::string &text, bool sticky) {
+void Editor::ShowHover(const std::string &title, const std::string &text, bool sticky,
+                       const std::vector<PickerHlSpan> &spans) {
     hover_open_ = true;
     hover_title_ = title;
     hover_text_ = text;
+    hover_spans_.clear();
+    for (const PickerHlSpan &span : spans) hover_spans_[span.row].push_back(span);
     hover_sticky_ = sticky;
     hover_anchor_pos_ = Cursor();
 }

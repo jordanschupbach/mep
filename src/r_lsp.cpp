@@ -1805,8 +1805,22 @@ RLspHoverInfo RLspHover(const std::vector<std::string> &lines, int line, int col
     RLspOptions opts;
     opts.check_files = false;
     const Analyzer analyzer(lines, opts);
+    // Namespace members and object fields are not ordinary variable uses.
+    // In particular pkg::mean must not silently show base::mean's docs.
+    const RParseResult &ast = analyzer.ast();
+    for (const RNode &node : ast.nodes) {
+        if (node.kind != RNodeKind::Binary || node.kids.size() != 2) continue;
+        const RNode &lhs = ast.at(node.kids[0]);
+        const RNode &rhs = ast.at(node.kids[1]);
+        if (node.text == "::" || node.text == ":::") {
+            if (RRangeContains(lhs.range, line, col)) return info;
+            if (RRangeContains(rhs.range, line, col)) info.help_package = lhs.text;
+        } else if ((node.text == "$" || node.text == "@") && RRangeContains(rhs.range, line, col)) {
+            return info;
+        }
+    }
     const int use = analyzer.UseAt(line, col);
-    if (use >= 0) {
+    if (use >= 0 && info.help_package.empty()) {
         const int binding = analyzer.uses()[static_cast<size_t>(use)].binding;
         if (binding >= 0) {
             info.found = true;
@@ -1815,15 +1829,38 @@ RLspHoverInfo RLspHover(const std::vector<std::string> &lines, int line, int col
         }
     }
     const RLspFunctionEntry *fn = RLspFindFunction(tok.text);
-    if (fn != nullptr) {
+    if (fn != nullptr && (info.help_package.empty() || info.help_package == fn->package)) {
         info.found = true;
         info.text = SignatureLabel(*fn) + "\n\n" + fn->doc + "\n\nPackage: " + fn->package;
         return info;
     }
     const RLspVocabEntry *constant = FindVocab(RLspConstantVocab(), tok.text);
-    if (constant != nullptr) {
+    if (constant != nullptr && info.help_package.empty()) {
         info.found = true;
         info.text = std::string(constant->name) + "  (" + constant->detail + ")\n\n" + constant->doc;
+        return info;
+    }
+    info.help_topic = tok.text;
+    // Read literal package names from the AST, never by evaluating the script.
+    // A character.only=TRUE computed name cannot be resolved statically.
+    for (const RNode &node : ast.nodes) {
+        if (node.kind != RNodeKind::Call || node.kids.empty()) continue;
+        const RNode *callee = &ast.at(node.kids[0]);
+        if (callee->kind == RNodeKind::Binary && callee->text == "::" && callee->kids.size() == 2 &&
+            ast.at(callee->kids[0]).text == "base") callee = &ast.at(callee->kids[1]);
+        if (callee->kind != RNodeKind::Ident || (callee->text != "library" && callee->text != "require")) continue;
+        const RArg *package = nullptr;
+        bool character_only = false;
+        for (const RArg &arg : node.args) {
+            if (arg.name == "package" || (package == nullptr && arg.name.empty())) package = &arg;
+            if (arg.name == "character.only" && ast.at(arg.value).text == "TRUE") character_only = true;
+        }
+        if (package == nullptr) continue;
+        const RNode &value = ast.at(package->value);
+        if (value.kind != RNodeKind::Str && (value.kind != RNodeKind::Ident || character_only)) continue;
+        auto &packages = info.help_packages;
+        packages.erase(std::remove(packages.begin(), packages.end(), value.text), packages.end());
+        packages.insert(packages.begin(), value.text);
     }
     return info;
 }

@@ -36,6 +36,7 @@
 #include "mov_container.h"
 #include "pdf_doc.h"
 #include "office_doc.h"
+#include "hover_highlight_lua.h"
 
 // Vestigial third-party-header warning-suppression block (raylib/raymath.h
 // are long gone from this file; nothing includes anything between the
@@ -8418,15 +8419,15 @@ const char *kBuiltinLsp =
     "  local poly = mep_polyglot_context_at_cursor and mep_polyglot_context_at_cursor()\n"
     "  local id = poly and poly.client or mep.lsp_client_for()\n"
     "  if not id then mep.notify('No LSP attached', 'warn') return end\n"
+    "  local hover_ft = mep_lsp_filetype(poly and poly.uri or mep.filename())\n"
     "  mep.lsp_request(id, 'textDocument/hover', {\n"
     "    textDocument = {uri = poly and poly.uri or mep_lsp_uri(mep.filename())},\n"
     "    position = poly and poly.position or mep_lsp_position(),\n"
     "  }, function(msg)\n"
     "    local result = mep_lsp_result(msg)\n"
     "    if not result then mep.notify('No hover info') return end\n"
-    "    local contents = result.contents\n"
-    "    local text = type(contents) == 'table' and (contents.value or table.concat(contents, '\\n')) or tostring(contents)\n"
-    "    mep.hover_show('Hover', text)\n"
+    "    local text, spans = mep.lsp_hover_content(result.contents, hover_ft)\n"
+    "    mep.hover_show('Hover', text, false, spans)\n"
     "  end)\n"
     "end\n"
     "function mep.lsp_goto_definition()\n"
@@ -45281,6 +45282,17 @@ void DrawCompletionPopup(float x, float y) {
 // A line wider than the box is simply clipped on screen; the text actually
 // yanked (HandleHoverFocusInput's own yank_selection) is never truncated,
 // only its display here.
+// Spans use raw hover byte offsets, including after a display line wraps.
+static void DrawHoverLine(const std::string &text, int row, int byte_offset, float x, float y) {
+    std::vector<PickerHlSpan> spans = g_editor.HoverLineSpans(row);
+    for (PickerHlSpan &span : spans) {
+        span.col_start -= byte_offset;
+        span.col_end -= byte_offset;
+    }
+    const auto colors = PickerLineColors(text, spans, ResolveHlGroup("Normal"));
+    DrawPickerColoredRun(text, colors, 0, text.size(), x, y);
+}
+
 /**
  * @brief Draws the focused-mode hover popup (Mode::HoverFocus): raw '\n'-split lines with a
  * navigable cursor, optional Visual-style selection highlighting, and a keybinding hint.
@@ -45353,7 +45365,7 @@ void DrawHoverPopupFocused(float x, float y, const std::string &title, const std
                               line_h, gfx::Fade(ResolveHlGroup("PickerSelected"), 0.6f));
             }
         }
-        gfx::DrawTextEx(g_font, disp.c_str(), gfx::Vector2{x + 8, ry}, font_size, 0, ResolveHlGroup("Normal"));
+        DrawHoverLine(disp, r, 0, x + 8, ry);
         if (r == cursor_row) {
             float cx = x + 8 + static_cast<float>(std::min(cursor_col, static_cast<int>(disp.size()))) * g_char_width;
             gfx::Color cursor_bg = ResolveHlGroup("Normal");
@@ -45398,14 +45410,22 @@ void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
     int max_box_w = has_real_newlines ? screen_max_w : std::min(screen_max_w, 640);
     int max_chars_per_line = std::max(20, static_cast<int>(static_cast<float>(max_box_w - 20) / g_char_width));
     std::vector<std::string> wrapped;
+    std::vector<std::pair<int, int>> source_positions;
+    int raw_row = 0;
     for (const std::string &raw_line : SplitLines(text)) {
-        if (raw_line.empty()) { wrapped.emplace_back(); continue; }
+        if (raw_line.empty()) {
+            wrapped.emplace_back();
+            source_positions.emplace_back(raw_row++, 0);
+            continue;
+        }
         size_t pos = 0;
         while (pos < raw_line.size()) {
             size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars_per_line));
             wrapped.push_back(raw_line.substr(pos, take));
+            source_positions.emplace_back(raw_row, static_cast<int>(pos));
             pos += take;
         }
+        raw_row++;
     }
     // Cap total height so a huge hover payload (e.g. a long docstring)
     // doesn't run off-screen; not scrollable -- this is a tooltip, not a
@@ -45419,8 +45439,10 @@ void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
     if (static_cast<int>(wrapped.size()) > row_cap) {
         const int hidden = static_cast<int>(wrapped.size()) - (row_cap - 1);
         wrapped.resize(static_cast<size_t>(row_cap - 1));
+        source_positions.resize(static_cast<size_t>(row_cap - 1));
         wrapped.push_back("... " + std::to_string(hidden) + " more line" + (hidden == 1 ? "" : "s") +
                           " (press K twice more to scroll)");
+        source_positions.emplace_back(-1, 0);
     }
     int max_rows = static_cast<int>(wrapped.size());
     float max_w = title.empty() ? 0.0f : gfx::MeasureTextEx(g_font, title.c_str(), MenuFontSize(), 0).x;
@@ -45448,7 +45470,8 @@ void DrawHoverPopup(float x, float y, float row_top, bool prefer_above) {
         ty += static_cast<float>(title_h);
     }
     for (int i = 0; i < max_rows; i++) {
-        gfx::DrawTextEx(g_font, wrapped[static_cast<size_t>(i)].c_str(), gfx::Vector2{x + 8, ty + static_cast<float>(i * line_h)}, font_size, 0, ResolveHlGroup("Normal"));
+        const auto [row, offset] = source_positions[static_cast<size_t>(i)];
+        DrawHoverLine(wrapped[static_cast<size_t>(i)], row, offset, x + 8, ty + static_cast<float>(i * line_h));
     }
 }
 
@@ -72219,6 +72242,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinGit);
     lua->DoString(kBuiltinDirenv);
     lua->DoString(kBuiltinTodo);
+    lua->DoString(kBuiltinHoverHighlight);
     lua->DoString(kBuiltinLsp);
     lua->DoString(kBuiltinLanguageUi);
     // After kBuiltinLsp (its fallback is mep.lsp_hover) and before every

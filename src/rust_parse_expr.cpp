@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "rust_parse_internal.h"
+#include "uint128.h"
 
 namespace rust {
 namespace detail {
@@ -280,8 +281,8 @@ bool int_lit_too_large(std::string_view sym) {
         else if (sym[1] == 'o') base = 8, i = 2;
         else if (sym[1] == 'b') base = 2, i = 2;
     }
-    unsigned __int128 v = 0;
-    unsigned __int128 max = ~static_cast<unsigned __int128>(0);
+    mep::u128 v = 0;
+    mep::u128 max = ~static_cast<mep::u128>(0);
     for (; i < sym.size(); ++i) {
         char c = sym[i];
         if (c == '_') continue;

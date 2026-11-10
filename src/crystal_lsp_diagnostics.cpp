@@ -10,6 +10,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <filesystem>
 
 #include "crystal_lsp.h"
 #include "crystal_lsp_analysis.h"
@@ -24,8 +25,8 @@ bool Exists(const std::string &p) {
 }
 
 bool IsDir(const std::string &p) {
-    struct stat st;
-    return ::stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    std::error_code ec;
+    return std::filesystem::is_directory(p, ec);
 }
 
 std::string DirName(const std::string &path) {

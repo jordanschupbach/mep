@@ -25,7 +25,8 @@
 // Returns (creating if needed) mep's per-user data directory:
 // `$XDG_DATA_HOME/mep` if set, else `$HOME/.local/share/mep` on Linux,
 // `$HOME/Library/Application Support/mep` on macOS. Empty string if no
-// home directory can be determined, or on the wasm build.
+// home directory can be determined, or on the wasm build. On Windows,
+// USERPROFILE supplies the home directory when HOME is unset.
 /** @brief Returns (creating if needed) mep's per-user data directory.
  *  @return the resolved data directory path, or an empty string if no home directory can be determined, or on the wasm build. */
 inline std::string MepDataDir() {
@@ -34,6 +35,9 @@ inline std::string MepDataDir() {
 #else
     const char *xdg = std::getenv("XDG_DATA_HOME");
     const char *home = std::getenv("HOME");
+#if defined(_WIN32)
+    if (!home || !*home) home = std::getenv("USERPROFILE");
+#endif
     std::string base;
     if (xdg && *xdg) {
         base = std::string(xdg) + "/mep";
@@ -46,20 +50,9 @@ inline std::string MepDataDir() {
     } else {
         return "";
     }
-    // mkdir -p, one path component at a time -- no dependency on a
-    // recursive-mkdir library function being available everywhere.
-    std::string partial;
-    size_t start = base[0] == '/' ? 1 : 0;
-    partial = base[0] == '/' ? "/" : "";
-    size_t pos = start;
-    while (pos <= base.size()) {
-        size_t slash = base.find('/', pos);
-        if (slash == std::string::npos) slash = base.size();
-        partial += base.substr(pos, slash - pos);
-        if (!partial.empty()) mkdir(partial.c_str(), 0755);
-        partial += "/";
-        pos = slash + 1;
-    }
+    std::error_code ec;
+    std::filesystem::create_directories(base, ec);
+    if (ec) return "";
     return base;
 #endif
 }

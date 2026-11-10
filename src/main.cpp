@@ -5105,14 +5105,14 @@ const char *kBuiltinFileTree =
     // While the tree has focus, a small box beside it shows the row under
     // the cursor (Editor::FilePreview, drawn by DrawFilePreviewFloat): a
     // text file's first lines highlighted by its filetype, a directory's
-    // entries, an image, or a PDF's first page. On by default; `P` in the
+    // entries, an image, or a PDF's first page. Off by default; `P` in the
     // tree, :MepFileTreePreview or <leader>fp toggle it, and
-    // `mep.tree_preview = false` in init.lua starts with it off. It appears
-    // once the cursor has rested on a row for mep.tree_preview_delay seconds.
-    "mep.tree_preview = true\n"
+    // `mep.tree_preview = true` in init.lua starts with it on. It appears
+    // immediately unless mep.tree_preview_delay is set in init.lua.
+    "mep.tree_preview = false\n"
     "local MEP_TREE_PREVIEW_LINES = 40\n"
     "local MEP_TREE_PREVIEW_LINE_MAX = 300\n"
-    "mep.tree_preview_delay = 2.0\n"
+    "mep.tree_preview_delay = 0\n"
     "local mep_tree_preview_key = nil\n"
     "local mep_tree_preview_want, mep_tree_preview_since = nil, 0\n"
     // Capture -> highlight group, kBuiltinSidebarPopout's resolver (chunk
@@ -5184,13 +5184,12 @@ const char *kBuiltinFileTree =
     "  if not mep_tree_buf or mep.current_buffer() ~= mep_tree_buf then return end\n"
     "  local row = not mep_tree_help_open and mep_tree_rows and mep_tree_rows[mep.cursor()]\n"
     "  local key = row and (mep_tree_buf .. ':' .. row.path) or nil\n"
-    // A new row hides the old preview at once; the new one waits until the
-    // cursor has rested there for mep.tree_preview_delay seconds, so moving
-    // through the tree doesn't flash a box at every step.
+    // A new row hides the old preview at once; show its replacement in the
+    // same frame by default. An optional tree_preview_delay still allows
+    // users to wait until the cursor rests before loading a preview.
     "  if key ~= mep_tree_preview_want then\n"
     "    mep_tree_preview_want, mep_tree_preview_since = key, mep.now()\n"
     "    if mep_tree_preview_key then mep_tree_preview_key = nil; mep.file_preview_clear() end\n"
-    "    return\n"
     "  end\n"
     "  if not row or key == mep_tree_preview_key then return end\n"
     "  if mep.now() - mep_tree_preview_since < (mep.tree_preview_delay or 0) then return end\n"
@@ -5690,7 +5689,7 @@ const char *kBuiltinFileTree =
     // Allowed before the project opens, so opening it waits for the
     // allow instead of exporting a still-blocked .envrc.
     "  if flake_on then mep.direnv_allow_and_load(path) end\n"
-    "  mep.project_add(path)\n"
+    "  if not mep.project_add(path) then return end\n"
     "  mep.project_open(path)\n"
     "  if starter then mep.open(starter) end\n"
     "  mep.notify('Created project at ' .. path)\n"
@@ -5870,7 +5869,7 @@ const char *kBuiltinFileTree =
     "          return\n"
     "        end\n"
     "        mep.project_remove(item)\n"
-    "        mep.project_add(path)\n"
+    "        if not mep.project_add(path) then return end\n"
     "        mep.notify('Re-assigned project to: ' .. path)\n"
     "        mep.project_open(path)\n"
     "      end)\n"
@@ -5896,8 +5895,14 @@ const char *kBuiltinFileTree =
     // no word-delete of its own, so C-w drops the last path component and
     // C-u clears the query.
     "function mep.projects_add_path(initial)\n"
-    "  local home = os.getenv('HOME') or ''\n"
+    "  local windows = package.config:sub(1, 1) == string.char(92)\n"
+    "  local function normalize(p)\n"
+    "    if windows then return (p:gsub(string.char(92), '/')) end\n"
+    "    return p\n"
+    "  end\n"
+    "  local home = normalize(os.getenv('HOME') or os.getenv('USERPROFILE') or '')\n"
     "  local function expand(p)\n"
+    "    p = normalize(p)\n"
     "    if p:sub(1, 1) == '~' and (#p == 1 or p:sub(2, 2) == '/') then return home .. p:sub(2) end\n"
     "    return p\n"
     "  end\n"
@@ -5907,26 +5912,29 @@ const char *kBuiltinFileTree =
     "    end\n"
     "    return p\n"
     "  end\n"
-    "  local cwd = mep.getcwd()\n"
+    "  local cwd = normalize(mep.getcwd())\n"
     "  local function absolute(p)\n"
     "    p = expand(p)\n"
-    "    if p:sub(1, 1) ~= '/' then p = cwd .. '/' .. p end\n"
+    "    if p:sub(1, 1) ~= '/' and not (windows and p:match('^%a:/')) then p = cwd .. '/' .. p end\n"
+    "    if windows and p:match('^%a:/+$') then return p:sub(1, 2) .. '/' end\n"
     "    p = p:gsub('/+$', '')\n"
     "    if p == '' then p = '/' end\n"
     "    return p\n"
     "  end\n"
     "  local function is_dir(p)\n"
     "    p = absolute(p)\n"
-    "    if p == '/' then return true end\n"
+    "    if p == '/' or (windows and (p:match('^%a:/$') or p:match('^//[^/]+/[^/]+$'))) then return mep.fs_exists(p) end\n"
     "    local parent, name = p:match('^(.*)/([^/]+)$')\n"
     "    if not parent then return false end\n"
     "    if parent == '' then parent = '/' end\n"
+    "    if windows and parent:match('^%a:$') then parent = parent .. '/' end\n"
     "    for _, e in ipairs(mep.list_dir(parent) or {}) do\n"
-    "      if e.name == name then return e.is_dir end\n"
+    "      if e.name == name or (windows and e.name:lower() == name:lower()) then return e.is_dir end\n"
     "    end\n"
     "    return false\n"
     "  end\n"
     "  local function completions(q)\n"
+    "    q = normalize(q)\n"
     "    local dir, base = q:match('^(.*/)([^/]*)$')\n"
     "    if not dir then dir, base = '', q end\n"
     "    local listing = dir == '' and cwd or expand(dir)\n"
@@ -5942,8 +5950,12 @@ const char *kBuiltinFileTree =
     "    for i, name in ipairs(out) do out[i] = dir .. name .. '/' end\n"
     "    return out, dir\n"
     "  end\n"
+    "  local function path_key(p)\n"
+    "    p = absolute(p)\n"
+    "    return windows and p:lower() or p\n"
+    "  end\n"
     "  local known = {}\n"
-    "  for _, p in ipairs(mep.project_list()) do known[p] = true end\n"
+    "  for _, p in ipairs(mep.project_list()) do known[path_key(p)] = true end\n"
     "  local query = initial or (cwd == '/' and '/' or abbrev(cwd) .. '/')\n"
     "  local highlighted = 'add'\n"
     "  local function build(q)\n"
@@ -5954,7 +5966,7 @@ const char *kBuiltinFileTree =
     "    elseif not is_dir(q) then\n"
     "      disp = '! not a folder: ' .. q\n"
     "      hl = {{col_start = 1, col_end = #disp + 1, hl = 'Warn'}}\n"
-    "    elseif known[absolute(q)] then\n"
+    "    elseif known[path_key(q)] then\n"
     "      disp = '= already a project: ' .. q\n"
     "      hl = {{col_start = 1, col_end = 2, hl = 'Accent'}}\n"
     "    else\n"
@@ -6021,16 +6033,17 @@ const char *kBuiltinFileTree =
     "      return\n"
     "    end\n"
     "    local path = absolute(query)\n"
-    "    if known[path] then\n"
+    "    if known[path_key(path)] then\n"
     "      mep.notify('Already a project: ' .. path)\n"
     "    else\n"
-    "      mep.project_add(path)\n"
+    "      if not mep.project_add(path) then return end\n"
     "      mep.notify('Added project: ' .. path)\n"
     "    end\n"
     "    mep.projects()\n"
     "  end, function(q) refresh(q) end, function(key)\n"
     "    if key == '<Tab>' then complete()\n"
     "    elseif key == 'w' or key == 'u' then\n"
+    "      local query = normalize(query)\n"
     "      local q = key == 'u' and '' or query:gsub(query:sub(-1) == '/' and '[^/]+/$' or '[^/]*$', '')\n"
     "      mep.picker_set_query(q)\n"
     "      refresh(q)\n"
@@ -6070,7 +6083,7 @@ const char *kBuiltinFileTree =
     "    about[a.data] = a.about\n"
     "  end\n"
     "  local function add_current()\n"
-    "    mep.project_add('.')\n"
+    "    if not mep.project_add('.') then return end\n"
     "    mep.notify('Added current directory as a project')\n"
     "  end\n"
     // Preview pane (project picker's own version of find_files/live_grep's
@@ -17132,7 +17145,7 @@ const char *kBuiltinMenubarBindings =
     // the choice survives a restart; elsewhere there is nothing to toggle.
     "function mep.titlebar_toggle()\n"
     "  if not mep.titlebar_supported() then\n"
-    "    mep.notify('The window title bar can only be hidden on macOS', 'warn')\n"
+    "    mep.notify('The window title bar can only be hidden on Windows and macOS', 'warn')\n"
     "    return\n"
     "  end\n"
     "  local v = mep.titlebar_visible() and 'off' or 'on'\n"
@@ -36892,11 +36905,12 @@ const char *kBuiltinRunButton =
     // c/cpp -- what a project sees before its first Setup. init.lua can
     // override these same defaults directly; Setup only ever writes the
     // per-project table below, never this one.
+    "local mep_run_button_windows = package.config:sub(1, 1) == string.char(92)\n"
     "mep.opt.run_button_defaults = mep.opt.run_button_defaults or {\n"
     "  py = {interpreter = 'python3', flags = ''},\n"
     "  r = {interpreter = 'Rscript', flags = ''},\n"
-    "  c = {compiler = 'cc', flags = ''},\n"
-    "  cpp = {compiler = 'c++', flags = ''},\n"
+    "  c = {compiler = mep_run_button_windows and 'cl' or 'cc', flags = ''},\n"
+    "  cpp = {compiler = mep_run_button_windows and 'cl' or 'c++', flags = ''},\n"
     // .NET 10+ runs a lone .cs file directly (file-based apps), so C#
     // fits the interpreter shape -- no project file or separate build.
     "  cs = {interpreter = 'dotnet run', flags = ''},\n"
@@ -37000,6 +37014,7 @@ const char *kBuiltinRunButton =
     // deliberately embeds a backtick command substitution that must
     // reach the shell unescaped).
     "local function mep_run_button_shq(s)\n"
+    "  if mep_run_button_windows then return string.char(34) .. tostring(s) .. string.char(34) end\n"
     "  return \"'\" .. tostring(s):gsub(\"'\", \"'\\\\''\") .. \"'\"\n"
     "end\n"
     // Compiled means the language's default names a compiler, so a new
@@ -37022,7 +37037,15 @@ const char *kBuiltinRunButton =
     "    local default = mep.opt.run_button_defaults[ext]\n"
     "    local out = os.tmpname()\n"
     "    os.remove(out)\n"
-    "    out = out .. (default.output_ext or '')\n"
+    "    local c_family = ext == 'c' or ext == 'cpp' or ext == 'cc' or ext == 'cxx'\n"
+    "    local compiler_name = cfg.compiler:lower():match('([^/\\\\%s]+)%s*$') or ''\n"
+    "    local msvc = c_family and (compiler_name == 'cl' or compiler_name == 'cl.exe' or compiler_name == 'clang-cl' or compiler_name == 'clang-cl.exe')\n"
+    "    out = out .. (default.output_ext or (mep_run_button_windows and c_family and '.exe' or ''))\n"
+    "    if msvc then\n"
+    "      return cfg.compiler .. ' /nologo ' .. mep_run_button_shq(fname) .. flag_part\n"
+    "        .. ' /Fo' .. mep_run_button_shq(out .. '.obj') .. ' /Fe' .. mep_run_button_shq(out)\n"
+    "        .. ' && ' .. mep_run_button_shq(out)\n"
+    "    end\n"
     // Flags go AFTER the source file, not between the compiler and it:
     // `pkg-config --cflags --libs` mixes -I/-D (order-independent) with
     // -l link flags, and GNU ld resolves -lfoo left-to-right against
@@ -37097,7 +37120,7 @@ const char *kBuiltinRunButton =
     "  local now, remaining = mep.now(), {}\n"
     "  for _, item in ipairs(mep_run_button_pending) do\n"
     "    if now >= item.at then\n"
-    "      mep.terminal_write(item.buf, item.raw and item.cmd or (item.cmd .. '\\n'))\n"
+    "      mep.terminal_write(item.buf, item.raw and item.cmd or (item.cmd .. '\\r'))\n"
     "    else\n"
     "      remaining[#remaining + 1] = item\n"
     "    end\n"
@@ -37114,7 +37137,7 @@ const char *kBuiltinRunButton =
     "  local from = mep.current_pane_id()\n"
     "  local buf, is_new = mep_run_button_ensure_terminal()\n"
     "  if not buf then mep.notify('Could not open a terminal', 'error') return end\n"
-    "  local text = opts.submit == false and cmd or (cmd .. '\\n')\n"
+    "  local text = opts.submit == false and cmd or (cmd .. '\\r')\n"
     "  if is_new then\n"
     "    mep_run_button_pending[#mep_run_button_pending + 1] = {buf = buf, cmd = cmd, at = mep.now() + 0.3, raw = opts.submit == false}\n"
     "  else\n"
@@ -37619,7 +37642,7 @@ const char *kBuiltinRunButton =
     "  if is_new then\n"
     "    mep_run_button_pending[#mep_run_button_pending + 1] = {buf = buf, cmd = cmd, at = mep.now() + 0.3}\n"
     "  else\n"
-    "    mep.terminal_write(buf, cmd .. '\\n')\n"
+    "    mep.terminal_write(buf, cmd .. '\\r')\n"
     "  end\n"
     "end\n"
     // `CMD:` override: a comment line anywhere in the file of the form
@@ -41984,7 +42007,7 @@ const char *kBuiltinSettings =
     "   set = function(v) mep.tex_rasterizer = (v ~= '' and v) or 'builtin' end},\n"
     "}\n"
     "\n"
-    "-- The window's own title bar, only where it can be hidden (macOS, where\n"
+    "-- The window's own title bar, only where it can be hidden (Windows and macOS, where\n"
     "-- it starts hidden). Last row of Appearance, ahead of Git. Persisted\n"
     "-- like any row, so mep.titlebar_toggle (the Window menu's item,\n"
     "-- :MepTitleBar) goes through mep.settings_set and is remembered too.\n"
@@ -41995,7 +42018,7 @@ const char *kBuiltinSettings =
     "  end\n"
     "  table.insert(mep.settings_schema, at, {section = '', key = 'window_title_bar', label = 'Window title bar',\n"
     "    kind = 'choice', choices = MEP_ON_OFF,\n"
-    "    hint = 'The close/minimize/zoom strip. Ctrl+Cmd+drag moves the window.',\n"
+    "    hint = 'The close/minimize/zoom strip. Windows: Alt+Space for window commands. macOS: Ctrl+Cmd+drag to move.',\n"
     "    get = function() return mep.titlebar_visible() and 'on' or 'off' end,\n"
     "    set = function(v) if v ~= '' then mep.titlebar_set_visible(v == 'on') end end})\n"
     "end\n"
@@ -68080,13 +68103,21 @@ void DrawTabBar(int y) {
 // is deliberately not consulted: it may be any project and need not carry
 // mep's own assets.
 std::string DashboardAssetPath(const char *filename) {
-#if defined(__linux__) || defined(__APPLE__)
-    std::array<char, 4096> exe_path{};
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
     std::string exe;
-#if defined(__linux__)
+#if defined(_WIN32)
+    std::wstring wide(32768, L'\0');
+    const DWORD wlen = GetModuleFileNameW(nullptr, wide.data(), static_cast<DWORD>(wide.size()));
+    if (wlen > 0 && wlen < wide.size()) {
+        wide.resize(wlen);
+        exe = std::filesystem::path(wide).string();
+    }
+#elif defined(__linux__)
+    std::array<char, 4096> exe_path{};
     ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
     if (len > 0) exe.assign(exe_path.data(), static_cast<size_t>(len));
 #else
+    std::array<char, 4096> exe_path{};
     uint32_t exe_size = static_cast<uint32_t>(exe_path.size());
     if (_NSGetExecutablePath(exe_path.data(), &exe_size) == 0) exe = exe_path.data();
 #endif

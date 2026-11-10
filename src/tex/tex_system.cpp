@@ -6,6 +6,7 @@
 
 #include "tex/gen/tex_gen.h"
 #include "tex/tex_resolver.h"
+#include "tex/tex_time.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -192,9 +193,9 @@ void Engine::system_date_and_time() {
     std::tm tmv{};
     if (epoch >= 0) {
         now = static_cast<std::time_t>(epoch);
-        gmtime_r(&now, &tmv);
+        UtcTime(now, &tmv);
     } else {
-        localtime_r(&now, &tmv);
+        LocalTime(now, &tmv);
     }
     sys_time = tmv.tm_hour * 60 + tmv.tm_min;
     sys_day = tmv.tm_mday;

@@ -10593,7 +10593,7 @@ public:
      * @brief Adds a project-root path to the persisted bookmark list.
      * @param path The project path to add.
      */
-    void AddProject(const std::string &path);
+    bool AddProject(const std::string &path);
     /**
      * @brief Removes a project-root path from the persisted bookmark list.
      * @param path The project path to remove.

@@ -11,6 +11,11 @@ window. The buffer that was showing stays in the buffer list, so =:bnext=
 brings it back. Split first with =:split= or =:vsplit= if you want the
 terminal beside the code.
 
+On Windows (Windows 10 version 1809 or newer), terminals use ConPTY and
+start =%COMSPEC%=, normally =cmd.exe=. =:term echo hello= runs a command
+with that shell; =:term powershell -NoLogo= opens Windows PowerShell, or
+=:term pwsh -NoLogo= opens PowerShell 7 if installed.
+
 *The per-tab terminal.* =<leader><CR>= toggles one shell per tab along the
 bottom, spanning the tab's full width. This is the one you want most of the
 time.

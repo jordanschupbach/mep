@@ -39,9 +39,8 @@ public:
     // (the next frame's screen size shows it). A no-op where unsupported.
     virtual void SetWindowFullscreen(bool on) { (void)on; }
     // The window manager's title bar (on macOS: the strip with the
-    // close/minimize/zoom buttons). Only the macOS backend can take it
-    // away -- it starts without one, iTerm2's "No Title Bar" style -- so
-    // everywhere else this reports unsupported and the setter is a no-op.
+    // close/minimize/zoom buttons). Windows and macOS start without one;
+    // other backends report unsupported and the setter is a no-op.
     virtual bool SupportsWindowTitleBarToggle() { return false; }
     virtual bool IsWindowTitleBarVisible() { return true; }
     virtual void SetWindowTitleBarVisible(bool visible) { (void)visible; }

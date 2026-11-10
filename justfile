@@ -672,6 +672,16 @@ install prefix=(env("HOME") / ".local"): build-native
     case ":$PATH:" in *":{{prefix}}/bin:"*) ;; *) echo "note: {{prefix}}/bin is not on your PATH" ;; esac
     if [ "$(uname)" = Darwin ]; then just install-app "{{prefix}}"; fi
 
+# Same, on Windows: default prefix %USERPROFILE%\.local, so mep.exe lands in
+# %USERPROFILE%\.localin. The work (manifest cleanup, cmake --install, a
+# Start Menu shortcut, the PATH check) is in scripts/windows-install.ps1,
+# since cmd.exe -- this justfile's Windows shell -- can't sensibly do it.
+#
+# Build and install mep natively (default prefix %USERPROFILE%\.local), replacing any previous install.
+[windows]
+install prefix=(env("USERPROFILE") / ".local"): build-native
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-install.ps1 -BuildDir {{windows_build_dir}} -Prefix "{{prefix}}"
+
 # macOS: put a mep.app launcher in ~/Applications so Spotlight/Launchpad
 # find it. The bundle holds no copy of mep -- its executable is a script
 # that execs PREFIX/bin/mep, so the binary still resolves its help pages
@@ -776,6 +786,11 @@ uninstall:
     xargs rm -fv < "$manifest"
     rm -f "$manifest"
     if [ "$(uname)" = Darwin ]; then rm -rfv "$HOME/Applications/mep.app"; fi
+
+# Remove everything the last `just install` put down, and the Start Menu shortcut.
+[windows]
+uninstall:
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-install.ps1 -BuildDir {{windows_build_dir}} -Uninstall
 
 # Remove all build output.
 [unix]

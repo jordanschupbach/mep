@@ -7,13 +7,7 @@
 #endif
 
 #if defined(_WIN32)
-// MSVC's <sys/types.h> declares dev_t/ino_t/off_t but not pid_t (verified
-// -- it is not merely hidden behind NO_OLDNAMES). Nothing on this
-// platform ever spawns a child anyway: job.cpp compiles its whole
-// fork/exec implementation out and the constructor fails gracefully, as
-// the class comment below describes. The member and Pid()'s return type
-// still have to name something, so it names what pid_t is everywhere
-// that does have it.
+// MSVC does not declare pid_t; Windows process IDs fit the public int API.
 using pid_t = int;
 #endif
 
@@ -38,10 +32,8 @@ using pid_t = int;
 // them without extra synchronization, matching how the rest of this
 // single-threaded renderer/editor is written.
 //
-// Unsupported on the wasm/emscripten build (no processes in a browser
-// sandbox) and on Windows (no fork) -- Spawn() fails gracefully there,
-// invoking on_exit(-1) synchronously, the same way the rest of the
-// codebase already degrades when an external tool (git, rg) is missing.
+// Windows terminal jobs use ConPTY; ordinary pipe jobs remain unsupported
+// there. Process jobs are unsupported in the wasm/browser sandbox.
 struct JobLine {
     bool is_stderr = false;
     std::string text;
@@ -77,7 +69,7 @@ public:
     // environment unmodified, same as before this parameter existed.
     /**
      * @brief Spawns `argv` as a child process (fork/forkpty on POSIX; fails
-     * gracefully with SpawnFailed() set on wasm/emscripten and Windows) and
+     * gracefully with SpawnFailed() set on wasm and Windows non-PTY jobs) and
      * starts a background reader thread that streams its output.
      * @param argv Command and arguments to execute (argv[0] is looked up via execvp).
      * @param cwd Working directory for the child; unchanged if empty.
@@ -261,6 +253,14 @@ public:
     bool HasPendingRaw();
 
 private:
+#if defined(_WIN32)
+    struct WindowsPty;
+    std::unique_ptr<WindowsPty> windows_;
+    void SpawnWindowsPty(const std::vector<std::string> &argv, const std::string &cwd);
+    void ReadWindowsPty();
+    void WriteWindowsPty();
+    void CloseWindowsPty();
+#endif
     pid_t pid_ = -1;
     // Set only for an in-process job (the Task constructor); pid_ stays -1.
     bool is_task_ = false;
@@ -478,6 +478,8 @@ public:
      * @return True if the job exists and hasn't finished.
      */
     bool IsRunning(int id) const;
+    /** @brief Whether a registered job failed to launch its child. */
+    bool SpawnFailed(int id) const;
     /**
      * @brief The given job's process id (the leader of its process group).
      * @param id Id of the target job, as returned by Spawn().

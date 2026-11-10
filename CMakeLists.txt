@@ -388,7 +388,8 @@ if(WIN32)
     #   _CRT_SECURE_NO_WARNINGS -- MSVC deprecates the standard C library
     #     in favour of its own _s variants. The warning fires on correct,
     #     portable code and there is nothing to fix in response to it.
-    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+    #   _USE_MATH_DEFINES -- <cmath> only defines M_PI and friends with it.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
 endif()
 # Emscripten's Clang hits the same PCH-vs-module-BMI mismatch as macOS
 # above (identical "'std::basic_string_view' from module '' is not
@@ -864,6 +865,12 @@ if(NOT DEFINED MEP_RUST_FORMAT_SOURCES)
         src/rust_format_items.cpp src/rust_format_visitor.cpp src/rust_format_missed_spans.cpp
         src/rust_format_imports.cpp src/rust_format_reorder.cpp src/rust_format_macros.cpp
         src/rust_format_stubs.cpp src/rust_format_parse_stubs.cpp ${MEP_RUST_PARSE_SOURCES})
+    # The stubs are __attribute__((weak)) placeholders, which MSVC has no
+    # equivalent of. Every one of them has a real definition by now, so
+    # MSVC builds simply go without them.
+    if(MSVC)
+        list(REMOVE_ITEM MEP_RUST_FORMAT_SOURCES src/rust_format_stubs.cpp src/rust_format_parse_stubs.cpp)
+    endif()
 endif()
 if(NOT DEFINED MEP_ZIG_FORMAT_SOURCES)
     # The formatter (a port of `zig fmt`'s Ast/Render.zig) over the port of
@@ -1610,6 +1617,17 @@ add_executable(mep
     src/main.cpp
     src/agent_ui_input.cpp
 )
+if(WIN32)
+    # Launch from Explorer/Start Menu without allocating a console window.
+    # Keep the CRT's main entry point so argument parsing and initialization
+    # still use the existing main(argc, argv), including headless commands.
+    set_target_properties(mep PROPERTIES WIN32_EXECUTABLE TRUE)
+    if(MSVC)
+        target_link_options(mep PRIVATE /ENTRY:mainCRTStartup)
+    else()
+        target_link_options(mep PRIVATE -Wl,--entry,mainCRTStartup)
+    endif()
+endif()
 target_include_directories(mep PRIVATE src)
 target_compile_definitions(mep PRIVATE MEP_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
 target_compile_options(mep PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
@@ -3908,7 +3926,11 @@ if(NOT EMSCRIPTEN)
     # Job teardown: every shape of child that used to leave a Job's
     # destructor blocked (see src/job_test.cpp's header). Windowless, so it
     # runs with the rest of `just test` rather than in test-gui.
-    add_executable(mep-job-test EXCLUDE_FROM_ALL src/job_test.cpp src/job.cpp)
+    if(WIN32)
+        add_executable(mep-job-test EXCLUDE_FROM_ALL src/job_win_test.cpp src/job.cpp src/vterm.cpp)
+    else()
+        add_executable(mep-job-test EXCLUDE_FROM_ALL src/job_test.cpp src/job.cpp)
+    endif()
     target_include_directories(mep-job-test PRIVATE src)
     target_compile_options(mep-job-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
     target_link_options(mep-job-test PRIVATE ${MEP_SANITIZE_FLAGS})
@@ -4173,8 +4195,10 @@ endif()
 # main.cpp as separate translation units. Not part of the default `all`
 # target -- opt in with `cmake --build . --target mep-amalgam` when the
 # single-file build is actually wanted; every other target already gets
-# mep_core's fast incremental-compile benefit.
-if(NOT EMSCRIPTEN)
+# mep_core's fast incremental-compile benefit. Not defined on Windows:
+# the generated file embeds the X11 backend (backend_native.cpp), which
+# has no Windows counterpart in the amalgamation.
+if(NOT EMSCRIPTEN AND NOT WIN32)
     set(MEP_AMALGAM_SRC "${CMAKE_BINARY_DIR}/generated/mep_amalgam.cpp")
     file(GLOB MEP_AMALGAM_DEPS "${CMAKE_SOURCE_DIR}/src/*.h" "${CMAKE_SOURCE_DIR}/src/*.cpp")
     add_custom_command(
@@ -4201,14 +4225,9 @@ if(NOT EMSCRIPTEN)
     else()
         target_link_libraries(mep-amalgam PRIVATE OpenGL::GL X11::X11 lua tree_sitter ${TS_GRAMMAR_LIBS} OpenSSL::SSL OpenSSL::Crypto)
     endif()
-    if(NOT WIN32)
-        target_link_libraries(mep-amalgam PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
-    endif()
-    if(NOT WIN32 AND NOT APPLE)
+    target_link_libraries(mep-amalgam PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    if(NOT APPLE)
         target_link_libraries(mep-amalgam PRIVATE ALSA::ALSA)
-    endif()
-    if(WIN32)
-        target_link_libraries(mep-amalgam PRIVATE ws2_32)
     endif()
 endif()
 

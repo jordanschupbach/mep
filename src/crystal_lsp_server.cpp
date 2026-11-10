@@ -21,8 +21,8 @@
 // Single-threaded and synchronous; Content-Length framing via
 // rpc_framing.h, full text sync, `positionEncoding: "utf-8"`.
 #include <cctype>
-#include <dirent.h>
-#include <sys/stat.h>
+#include <filesystem>
+#include <system_error>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -232,29 +232,30 @@ private:
         while (!stack.empty() && budget > 0) {
             const std::string dir = stack.back();
             stack.pop_back();
-            DIR *d = opendir(dir.c_str());
-            if (!d) continue;
-            while (dirent *e = readdir(d)) {
-                const std::string name = e->d_name;
+            std::error_code ec;
+            for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+                const std::filesystem::directory_entry &e = *it;
+                const std::string name = e.path().filename().string();
                 if (name.empty() || name[0] == '.' || name == "node_modules" || name == "bin" || name == "docs") continue;
                 const std::string path = dir + "/" + name;
-                struct stat st;
-                if (stat(path.c_str(), &st) != 0) continue;
-                if (S_ISDIR(st.st_mode)) {
+                std::error_code fec;
+                const bool is_dir = e.is_directory(fec);
+                if (fec) continue;
+                if (is_dir) {
                     stack.push_back(path);
                     continue;
                 }
                 const size_t dot = name.find_last_of('.');
                 const std::string ext = dot == std::string::npos ? "" : name.substr(dot + 1);
                 if (ext != "cr") continue;
-                if (st.st_size > 4 * 1024 * 1024 || budget == 0) continue;
+                const std::uintmax_t size = e.file_size(fec);
+                if (fec || size > 4 * 1024 * 1024 || budget == 0) continue;
                 budget--;
                 std::ifstream in(path, std::ios::binary);
                 std::ostringstream ss;
                 ss << in.rdbuf();
                 CrProjectAddFile(&project_, path, SplitLines(ss.str()));
             }
-            closedir(d);
         }
     }
     bool running_ = true;

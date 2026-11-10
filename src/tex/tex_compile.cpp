@@ -6,11 +6,14 @@
 #include "tex/tex_bundle.h"
 #include "tex/tex_resolver.h"
 
-#include <unistd.h>
-
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#if defined(_WIN32)
+// The CRT spells the POSIX pipe functions with an underscore.
+#define popen _popen
+#define pclose _pclose
+#endif
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -133,9 +136,8 @@ std::string AuxState(const std::string &base) {
 }
 
 std::string ExeIdentity() {
-    std::error_code ec;
-    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
-    if (!ec) return Stamp(exe.string());
+    const std::string exe = SelfExePath();
+    if (!exe.empty()) return Stamp(exe);
     return std::string(__DATE__) + " " + __TIME__;
 }
 
@@ -276,7 +278,7 @@ std::string EnsureFormat(const std::string &format, const std::vector<std::strin
 
     // Made in a directory of its own, then moved into place whole, so a
     // half-made format is never found and two builds do not collide.
-    const std::string tmp = dir + ".tmp" + std::to_string(::getpid());
+    const std::string tmp = dir + ".tmp" + std::to_string(ProcessId());
     fs::remove_all(tmp, ec);
     fs::create_directories(tmp, ec);
     if (ec) {

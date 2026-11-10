@@ -3,7 +3,18 @@
 #include "deflate.h"
 #include "pdf_crypt.h"
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <process.h>  // _getpid
+#include <windows.h>  // GetModuleFileNameW
+#else
 #include <unistd.h>
+#endif
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>  // _NSGetExecutablePath
 #endif
@@ -70,22 +81,40 @@ bool SafePath(const std::string &p) {
 
 std::string FindTexBundle() {
     if (const char *e = std::getenv("MEP_TEX_BUNDLE"); e && *e) return IsFile(e) ? e : "";
-    std::error_code ec;
-#if defined(__APPLE__)
-    char buf[4096];
-    uint32_t size = sizeof buf;
-    const fs::path exe = _NSGetExecutablePath(buf, &size) == 0 ? fs::path(buf) : fs::path();
-    if (exe.empty()) ec = std::make_error_code(std::errc::no_such_file_or_directory);
-#else
-    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
-#endif
-    if (!ec) {
-        const fs::path dir = exe.parent_path();
+    const std::string self = SelfExePath();
+    if (!self.empty()) {
+        const fs::path dir = fs::path(self).parent_path();
         for (const fs::path &p : {dir.parent_path() / "share/mep/tex/tex-bundle.mtb", dir / "tex-bundle.mtb"}) {
             if (IsFile(p.string())) return p.string();
         }
     }
     return "";
+}
+
+std::string SelfExePath() {
+#if defined(_WIN32)
+    std::wstring buf(32768, L'\0');
+    const DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    if (len == 0 || len >= buf.size()) return "";
+    buf.resize(len);
+    return fs::path(buf).string();
+#elif defined(__APPLE__)
+    char buf[4096];
+    uint32_t size = sizeof buf;
+    return _NSGetExecutablePath(buf, &size) == 0 ? std::string(buf) : std::string();
+#else
+    std::error_code ec;
+    const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+    return ec ? std::string() : exe.string();
+#endif
+}
+
+long ProcessId() {
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(::getpid());
+#endif
 }
 
 std::string UnpackTexBundle(const std::string &bundle, const std::string &cache_dir, bool verbose, std::string *err) {
@@ -118,7 +147,7 @@ std::string UnpackTexBundle(const std::string &bundle, const std::string &cache_
         return "";
     }
     std::error_code ec;
-    const std::string tmp = dir + ".tmp" + std::to_string(::getpid());
+    const std::string tmp = dir + ".tmp" + std::to_string(ProcessId());
     fs::remove_all(tmp, ec);
     fs::create_directories(tmp, ec);
     if (ec) {

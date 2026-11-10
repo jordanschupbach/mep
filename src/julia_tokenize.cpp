@@ -1107,7 +1107,7 @@ std::string ReprString(std::string_view s) {
                 PutHex(out, codepoint(c), full ? 8 : 4);
             }
         } else {
-            uint32_t u = __builtin_bswap32(c);
+            uint32_t u = ((c & 0xFFu) << 24) | ((c & 0xFF00u) << 8) | ((c >> 8) & 0xFF00u) | (c >> 24);
             while (true) {
                 out += "\\x";
                 PutHex(out, u & 0xff, 2);

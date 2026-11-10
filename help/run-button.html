@@ -30,6 +30,10 @@ would expect and stays there.</p>
 <tr><td><code>.c</code></td><td><code>cc &lt;file&gt; -o &lt;tmp&gt; &amp;&amp; &lt;tmp&gt;</code></td></tr>
 <tr><td><code>.cpp</code></td><td><code>c++ &lt;file&gt; -o &lt;tmp&gt; &amp;&amp; &lt;tmp&gt;</code></td></tr>
 </table>
+<p>On Windows, C and C++ default to <code>cl</code> with <code>/Fe</code> and a temporary <code>.exe</code>.
+The <code>/Fo</code> option also keeps object files outside the project. Start mep from
+a Visual Studio developer shell so the compiler and SDK are available.
+Configured GCC and Clang compilers continue to use <code>-o</code>.</p>
 <p>A compiled language gets a real two-step build-then-run. The binary lands
 outside the project tree, in a temporary file, so repeated runs never race a
 half-written executable and nothing needs cleaning up.</p>

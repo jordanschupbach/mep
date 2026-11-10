@@ -7,6 +7,7 @@
 #include "tex/gen/tex_gen.h"
 #include "pdf_crypt.h"
 #include "tex/tex_resolver.h"
+#include "tex/tex_time.h"
 
 #include <sys/stat.h>
 
@@ -43,16 +44,16 @@ std::string Hex2(unsigned v) {
 std::string PdfDate(std::time_t t, bool utc) {
     std::tm tmv{};
     if (utc) {
-        gmtime_r(&t, &tmv);
+        UtcTime(t, &tmv);
     } else {
-        localtime_r(&t, &tmv);
+        LocalTime(t, &tmv);
     }
     char buf[64];
     std::snprintf(buf, sizeof buf, "D:%04d%02d%02d%02d%02d%02d", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
                   tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
     std::string s = buf;
     if (utc) return s + "Z";
-    const long off = tmv.tm_gmtoff;
+    const long off = UtcOffset(tmv);
     if (off == 0) return s + "Z";
     const long a = off < 0 ? -off : off;
     std::snprintf(buf, sizeof buf, "%c%02ld'%02ld'", off < 0 ? '-' : '+', a / 3600, (a / 60) % 60);

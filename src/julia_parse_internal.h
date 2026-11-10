@@ -11,6 +11,7 @@
 
 #include "julia_parse.h"
 
+#include <cctype>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -49,6 +50,10 @@ int category_code(JChar c);
 bool isprint(JChar c);
 bool isspace(JChar c);
 inline bool isdigit(JChar c) { return c >= C('0') && c <= C('9'); }
+// MSVC's <ctype.h> defines isascii as a macro, which would mangle this name.
+#ifdef isascii
+#undef isascii
+#endif
 inline bool isascii(JChar c) { return c < 0x80000000u; }
 
 /** @brief `read(io, Char)` at byte @p pos of @p s (pos < size); sets @p len to the bytes read. */

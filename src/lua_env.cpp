@@ -9836,12 +9836,14 @@ int l_project_list(lua_State *L) {
 /**
  * @brief Implements mep.project_add(path): adds a path to the persisted project-root list.
  * @param L Lua state; arg 1 is the path to add.
- * @return Number of values pushed (0).
+ * @return Number of values pushed (1: whether the project list was saved).
  */
 int l_project_add(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
-    GetEditor(L)->AddProject(path);
-    return 0;
+    const bool ok = GetEditor(L)->AddProject(path);
+    if (!ok) GetEditor(L)->Notify("Could not save project list; check the data directory is writable", Editor::NotifyLevel::Error);
+    lua_pushboolean(L, ok);
+    return 1;
 }
 
 /**
@@ -9943,18 +9945,27 @@ int l_workspace_root(lua_State *L) {
     return 1;
 }
 
-#if !defined(__EMSCRIPTEN__) && (defined(__linux__) || defined(__APPLE__))
+#if !defined(__EMSCRIPTEN__) && (defined(__linux__) || defined(__APPLE__) || defined(_WIN32))
 // The running executable's own path -- /proc/self/exe on Linux,
-// _NSGetExecutablePath on macOS -- or empty if the platform couldn't say.
+// _NSGetExecutablePath on macOS, GetModuleFileNameW on Windows -- or empty
+// if the platform couldn't say.
 // Resolved from the process itself rather than the CWD for the reasons
 // documented at both call sites below (the CWD follows the active
 // workspace).
 std::string SelfExecutablePath() {
+#if defined(_WIN32)
+    std::wstring wide(32768, L'\0');
+    const DWORD wlen = GetModuleFileNameW(nullptr, wide.data(), static_cast<DWORD>(wide.size()));
+    if (wlen > 0 && wlen < wide.size()) {
+        wide.resize(wlen);
+        return std::filesystem::path(wide).string();
+    }
+#elif defined(__linux__)
     std::array<char, 4096> exe_path{};
-#if defined(__linux__)
     ssize_t len = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
     if (len > 0) return std::string(exe_path.data(), static_cast<size_t>(len));
 #else
+    std::array<char, 4096> exe_path{};
     uint32_t exe_size = static_cast<uint32_t>(exe_path.size());
     if (_NSGetExecutablePath(exe_path.data(), &exe_size) == 0) return std::string(exe_path.data());
 #endif
@@ -9973,7 +9984,7 @@ int l_bundled_help_root(lua_State *L) {
         return std::filesystem::is_regular_file(path / "intro.html", ec);
     };
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
     // A packaged native binary lives in <prefix>/bin; its data is installed
     // in <prefix>/share/mep/help. Resolve the executable's own path rather
     // than relying on the process CWD, which follows the active workspace.
@@ -10018,11 +10029,14 @@ int l_bundled_help_root(lua_State *L) {
  */
 int l_bundled_tool(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
-#if !defined(__EMSCRIPTEN__) && (defined(__linux__) || defined(__APPLE__))
+#if !defined(__EMSCRIPTEN__) && (defined(__linux__) || defined(__APPLE__) || defined(_WIN32))
     std::string exe = SelfExecutablePath();
     if (!exe.empty()) {
         std::error_code ec;
         std::filesystem::path sibling = std::filesystem::path(exe).parent_path() / name;
+#if defined(_WIN32)
+        if (!sibling.has_extension()) sibling += ".exe";
+#endif
         if (std::filesystem::is_regular_file(sibling, ec) && !ec) {
             lua_pushstring(L, sibling.string().c_str());
             return 1;

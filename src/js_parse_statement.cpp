@@ -198,7 +198,7 @@ Node* Parser::parseStatement(const char* ctx, bool topLevel, std::vector<std::st
     if (starttype == &tt::_return) return parseReturnStatement(node);
     if (starttype == &tt::_switch) return parseSwitchStatement(node);
     if (starttype == &tt::_throw) return parseThrowStatement(node);
-    if (starttype == &tt::_try) return parseTryStatement(node);
+    if (starttype == &tt::_try_) return parseTryStatement(node);
     if (starttype == &tt::_const || starttype == &tt::_var) {
         if (kind.empty()) kind = value;
         if (ctx && kind != "var") unexpected();
@@ -462,7 +462,7 @@ Node* Parser::parseTryStatement(Node* node) {
         exitScope();
         node->handler() = finishNode(clause, NodeType::CatchClause);
     }
-    node->finalizer() = eat(tt::_finally) ? parseBlock() : nullptr;
+    node->finalizer() = eat(tt::_finally_) ? parseBlock() : nullptr;
     if (!node->handler() && !node->finalizer())
         raise(static_cast<int>(node->ustart), "Missing catch or finally clause");
     return finishNode(node, NodeType::TryStatement);
@@ -1465,7 +1465,7 @@ namespace {
 bool StartsStatement(const TokenType* t, const std::string& value) {
     if (t == &tt::_var || t == &tt::_const || t == &tt::_function || t == &tt::_class || t == &tt::_if ||
         t == &tt::_for || t == &tt::_while || t == &tt::_do || t == &tt::_return || t == &tt::_switch ||
-        t == &tt::_try || t == &tt::_throw || t == &tt::_break || t == &tt::_continue || t == &tt::_import ||
+        t == &tt::_try_ || t == &tt::_throw || t == &tt::_break || t == &tt::_continue || t == &tt::_import ||
         t == &tt::_export || t == &tt::_with || t == &tt::_debugger)
         return true;
     return t == &tt::name && (value == "let" || value == "async");

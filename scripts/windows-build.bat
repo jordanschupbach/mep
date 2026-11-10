@@ -29,6 +29,8 @@ if "%VSPATH%"=="" (
     exit /b 1
 )
 
+REM vcvars64.bat itself runs a bare `vswhere.exe`, which is not on PATH by default.
+set "PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer;%PATH%"
 call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 exit /b 1
 

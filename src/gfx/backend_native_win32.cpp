@@ -191,6 +191,7 @@ struct NativeContext {
 
     // SetWindowFullscreen: the pre-fullscreen placement/style to put back.
     bool fullscreen = false;
+    bool titlebar_visible = false;
     WINDOWPLACEMENT saved_placement{};
     LONG_PTR saved_style = 0;
     LONG_PTR saved_ex_style = 0;
@@ -403,6 +404,42 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     if (ctx == nullptr) return DefWindowProcW(hwnd, msg, wparam, lparam);
 
     switch (msg) {
+        case WM_NCCALCSIZE:
+            if (!ctx->titlebar_visible) {
+                // Clearing WS_CAPTION alone leaves the themed top resize
+                // frame visible. Keep the native side/bottom borders, but
+                // let the renderer own the top edge. Maximized windows need
+                // the default inset there: their resize frame is offscreen.
+                RECT *rect = wparam ? &reinterpret_cast<NCCALCSIZE_PARAMS *>(lparam)->rgrc[0]
+                                    : reinterpret_cast<RECT *>(lparam);
+                const RECT window = *rect;
+                DefWindowProcW(hwnd, msg, wparam, lparam);
+                rect->top = window.top + (IsZoomed(hwnd) ? rect->left - window.left : 0);
+                return 0;
+            }
+            break;
+        case WM_NCHITTEST:
+            if (!ctx->titlebar_visible && !ctx->fullscreen && !IsZoomed(hwnd)) {
+                const LRESULT hit = DefWindowProcW(hwnd, msg, wparam, lparam);
+                if (hit != HTCLIENT) return hit;
+                RECT window{};
+                GetWindowRect(hwnd, &window);
+                // The side frame still has its native width. Use that for
+                // the top resize target, including the two corner targets.
+                RECT client{};
+                GetClientRect(hwnd, &client);
+                POINT origin{0, 0};
+                ClientToScreen(hwnd, &origin);
+                const LONG border = origin.x - window.left;
+                const LONG x = GET_X_LPARAM(lparam), y = GET_Y_LPARAM(lparam);
+                if (y < window.top + border) {
+                    if (x < origin.x + border) return HTTOPLEFT;
+                    if (x >= origin.x + client.right - border) return HTTOPRIGHT;
+                    return HTTOP;
+                }
+                return hit;
+            }
+            break;
         case WM_CLOSE: ctx->should_close = true; return 0;
         case WM_ERASEBKGND:
             // GL owns every pixel of the client area; letting GDI clear it
@@ -431,7 +468,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         case WM_SYSCOMMAND:
             // Tapping Alt alone opens the (nonexistent) window menu and
             // beeps; mep uses bare Alt as a modifier, so that is dropped.
-            if ((wparam & 0xFFF0) == SC_KEYMENU) return 0;
+            if ((wparam & 0xFFF0) == SC_KEYMENU && lparam != VK_SPACE) return 0;
             break;
         case WM_KILLFOCUS:
             ReleaseAllKeys(ctx);
@@ -618,10 +655,14 @@ public:
         // `width`/`height` are the client area mep wants to draw into, so
         // the frame is added on top rather than eaten out of it.
         RECT rect{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-        AdjustWindowRectEx(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        // Keep the native resize frame and system commands, but omit the
+        // caption (including its buttons) by default.
+        const DWORD style = ctx_->titlebar_visible ? WS_OVERLAPPEDWINDOW : WS_OVERLAPPEDWINDOW & ~WS_CAPTION;
+        AdjustWindowRectEx(&rect, style, FALSE, 0);
+        if (!ctx_->titlebar_visible) rect.top = 0;  // matches WM_NCCALCSIZE
 
         const std::wstring wide_title = Utf8ToWide(title != nullptr ? title : "");
-        ctx_->hwnd = CreateWindowExW(0, kWindowClassName, wide_title.c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+        ctx_->hwnd = CreateWindowExW(0, kWindowClassName, wide_title.c_str(), style, CW_USEDEFAULT,
                                      CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr,
                                      ctx_->instance, ctx_);
         if (ctx_->hwnd == nullptr) {
@@ -727,6 +768,28 @@ public:
         // maximizing by double-clicking the title bar or pressing Win+Up
         // never goes through MaximizeWindow().
         return ctx_->hwnd != nullptr && IsZoomed(ctx_->hwnd) != 0;
+    }
+
+    bool SupportsWindowTitleBarToggle() override { return true; }
+    bool IsWindowTitleBarVisible() override { return ctx_->titlebar_visible; }
+    void SetWindowTitleBarVisible(bool visible) override {
+        if (visible == ctx_->titlebar_visible) return;
+        ctx_->titlebar_visible = visible;
+        if (ctx_->hwnd == nullptr) return;
+        const auto with_caption = [visible](LONG_PTR style) {
+            return visible ? style | static_cast<LONG_PTR>(WS_CAPTION)
+                           : style & ~static_cast<LONG_PTR>(WS_CAPTION);
+        };
+        // A setting changed in fullscreen applies when returning to the
+        // saved window, without adding a caption to fullscreen itself.
+        if (ctx_->fullscreen) {
+            ctx_->saved_style = with_caption(ctx_->saved_style);
+            return;
+        }
+        SetWindowLongPtrW(ctx_->hwnd, GWL_STYLE,
+                          with_caption(GetWindowLongPtrW(ctx_->hwnd, GWL_STYLE)));
+        SetWindowPos(ctx_->hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
 
     void SetWindowFullscreen(bool on) override {

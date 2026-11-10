@@ -1,5 +1,12 @@
 #include "mail_net.h"
 
+#if defined(_WIN32)
+// Before platform_compat.h: it #undefs `far`, which the Winsock headers
+// still spell their pointer typedefs with.
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
+
 #include "json.h"
 #include "mail_crypto.h"
 #include "mail_imap.h"

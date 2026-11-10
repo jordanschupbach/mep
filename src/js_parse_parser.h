@@ -72,8 +72,8 @@ extern const TokenType bracketL, bracketR, braceL, braceR, parenL, parenR, comma
     questionDot, arrow, template_, invalidTemplate, ellipsis, backQuote, dollarBraceL;
 extern const TokenType eq, assign, incDec, prefix, logicalOR, logicalAND, bitwiseOR, bitwiseXOR, bitwiseAND,
     equality, relational, bitShift, plusMin, modulo, star, slash, starstar, coalesce;
-extern const TokenType _break, _case, _catch, _continue, _debugger, _default, _do, _else, _finally, _for,
-    _function, _if, _return, _switch, _throw, _try, _var, _const, _while, _with, _new, _this, _super, _class,
+extern const TokenType _break, _case, _catch, _continue, _debugger, _default, _do, _else, _finally_, _for,
+    _function, _if, _return, _switch, _throw, _try_, _var, _const, _while, _with, _new, _this, _super, _class,
     _extends, _export, _import, _null, _true, _false, _in, _instanceof, _typeof, _void, _delete;
 // acorn-jsx
 extern const TokenType jsxName, jsxText, jsxTagStart, jsxTagEnd;

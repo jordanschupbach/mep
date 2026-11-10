@@ -7574,6 +7574,12 @@ void Editor::SplitTabRight(int buffer_id, float share) {
 // --- Terminal panes (`:terminal`/`:term`, Part VI Phase 27+) -------------
 
 void Editor::OpenTerminalInPlace(const std::string &args) {
+#if defined(_WIN32)
+    const char *comspec = std::getenv("COMSPEC");
+    const std::string shell = comspec && *comspec ? comspec : "cmd.exe";
+    const std::vector<std::string> argv = args.empty() ? std::vector<std::string>{shell}
+        : std::vector<std::string>{shell, "/d", "/s", "/c", args};
+#else
     std::string shell;
 #if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
     // Prefer the OS-registered login shell (passwd db) over $SHELL: real
@@ -7598,6 +7604,7 @@ void Editor::OpenTerminalInPlace(const std::string &args) {
     }
     std::vector<std::string> argv = args.empty() ? std::vector<std::string>{shell}
                                                   : std::vector<std::string>{shell, "-c", args};
+#endif
     OpenTerminalInPlaceArgv(argv, args.empty() ? shell : args);
 }
 
@@ -7786,7 +7793,11 @@ void Editor::TerminalSpawn(TerminalSession &sess, const std::vector<std::string>
     // AI-agents sidebar pairs a connected agent with a jump target.
     extra_env.emplace_back("MEP_TERMINAL_BUFFER", std::to_string(sess.buffer_id));
     sess.job_id = JobManager::Instance().Spawn(argv, ActiveRoot(), std::move(cb), /*use_pty=*/true, std::move(extra_env));
-    if (sess.job_id == 0) status_message_ = "Failed to start terminal";
+    if (sess.job_id == 0 || JobManager::Instance().SpawnFailed(sess.job_id)) {
+        sess.exited = true;
+        sess.exit_code = -1;
+        status_message_ = "Failed to start terminal";
+    }
 #endif
 }
 
@@ -41438,7 +41449,10 @@ std::vector<Editor::DirEntry> Editor::ListDirectory(const std::string &path) con
 
 #if !defined(__EMSCRIPTEN__)
 namespace {
-std::string ProjectListPath() { return MepDataDir() + "/projects.json"; }
+std::string ProjectListPath() {
+    const std::string dir = MepDataDir();
+    return dir.empty() ? "" : dir + "/projects.json";
+}
 }  // namespace
 #endif
 
@@ -41470,13 +41484,15 @@ std::vector<std::string> Editor::ListProjects() const {
     return out;
 }
 
-void Editor::AddProject(const std::string &path) {
+bool Editor::AddProject(const std::string &path) {
 #if defined(__EMSCRIPTEN__)
     // Resolved server-side (launcher/serve.ts's /projects POST, via
     // Deno.realPath) -- the wasm sandbox has no real filesystem of its own
     // to resolve "." against, same reasoning as ListDirectory above.
     char *result = mep_js_project_mutate("add", path.c_str());
+    const bool ok = result && std::string(result).rfind("OK\n", 0) == 0;
     std::free(result);
+    return ok;
 #else
     // Resolved to an absolute, symlink-free path before storing -- callers
     // pass "." (mep.projects()'s "add current directory"), and a bare "."
@@ -41495,8 +41511,9 @@ void Editor::AddProject(const std::string &path) {
         Json arr = Json::Array();
         for (const std::string &p : list) arr.push_back(p);
         doc["projects"] = arr;
-        WriteJsonFile(ProjectListPath(), doc);
+        return WriteJsonFile(ProjectListPath(), doc);
     }
+    return true;
 #endif
 }
 

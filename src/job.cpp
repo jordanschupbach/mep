@@ -28,6 +28,10 @@
 #endif
 #endif
 
+#if defined(_WIN32)
+#include "job_win.inc"
+#endif
+
 Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_stdout, bool use_pty,
          std::vector<std::pair<std::string, std::string>> extra_env, bool die_with_parent)
     : raw_stdout_(raw_stdout || use_pty), use_pty_(use_pty), extra_env_(std::move(extra_env)) {
@@ -196,6 +200,9 @@ Job::Job(const std::vector<std::string> &argv, const std::string &cwd, bool raw_
     stdout_fd_ = out_pipe[0];
     stderr_fd_ = err_pipe[0];
     reader_thread_ = std::thread(&Job::ReaderLoop, this);
+#elif defined(_WIN32)
+    (void)die_with_parent;
+    SpawnWindowsPty(argv, cwd);
 #else
     (void)argv;
     (void)cwd;
@@ -297,6 +304,8 @@ Job::~Job() {
         if (fd >= 0) close(fd);
         fd = -1;
     }
+#elif defined(_WIN32)
+    CloseWindowsPty();
 #endif
 }
 
@@ -325,12 +334,20 @@ void Job::Kill() {
         if (use_pty_) SignalChild(SIGHUP);
         SignalChild(SIGTERM);
     }
+#elif defined(_WIN32)
+    if (windows_ && windows_->process && !finished_.load()) {
+        killed_ = true;
+        TerminateJobObject(windows_->tree, 1);
+        TerminateProcess(windows_->process, 1);
+    }
 #endif
 }
 
 void Job::Interrupt() {
 #if MEP_JOB_POSIX
     if (pid_ > 0 && !finished_.load()) kill(-pid_, SIGINT);
+#elif defined(_WIN32)
+    if (use_pty_) WriteStdin(std::string(1, char(3)));
 #endif
 }
 
@@ -344,6 +361,8 @@ void Job::KillHard() {
         killed_ = true;
         SignalChild(SIGKILL);
     }
+#elif defined(_WIN32)
+    Kill();
 #endif
 }
 
@@ -405,6 +424,11 @@ bool Job::WriteStdin(const std::string &data) {
         }
         return false;
     }
+    return true;
+#elif defined(_WIN32)
+    if (!windows_ || finished_.load() || stopping_.load() || windows_->writer_done.load()) return false;
+    std::lock_guard<std::mutex> lock(stdin_mu_);
+    stdin_queue_ += data;
     return true;
 #else
     (void)data;
@@ -473,6 +497,12 @@ void Job::ResizePty(int cols, int rows) {
     ws.ws_col = static_cast<unsigned short>(std::max(1, cols));
     ws.ws_row = static_cast<unsigned short>(std::max(1, rows));
     ioctl(stdout_fd_, TIOCSWINSZ, &ws);
+#elif defined(_WIN32)
+    if (!windows_) return;
+    std::unique_lock<std::mutex> lock(windows_->console_mu, std::try_to_lock);
+    if (!lock.owns_lock()) return; // console is closing; keep the UI draining its output
+    if (windows_->console) ResizePseudoConsole(windows_->console,
+        COORD{static_cast<SHORT>(std::clamp(cols, 1, 32767)), static_cast<SHORT>(std::clamp(rows, 1, 32767))});
 #endif
 }
 
@@ -730,6 +760,13 @@ bool JobManager::IsRunning(int id) const {
         if (e.id == id) return !e.job->Finished();
     }
     return false;
+}
+
+bool JobManager::SpawnFailed(int id) const {
+    for (const auto &e : jobs_) {
+        if (e.id == id) return e.job->SpawnFailed();
+    }
+    return true;
 }
 
 int JobManager::Pid(int id) const {

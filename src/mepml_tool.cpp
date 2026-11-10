@@ -41,8 +41,19 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <process.h>  // _spawnvp
+#include <windows.h>  // GetModuleFileNameW
+#else
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include "a11y_file.h"
 #include "mepml_convert.h"
@@ -58,6 +69,29 @@ struct TexChoice {
     std::string builtin_tool = "mep-tex";  // beside this binary, when it is there
 };
 TexChoice g_tex;
+
+#if defined(_WIN32)
+constexpr const char *kExeSuffix = ".exe";
+#else
+constexpr const char *kExeSuffix = "";
+#endif
+
+// This executable's own path, or an error in `ec`.
+std::filesystem::path SelfPath(std::error_code &ec) {
+#if defined(_WIN32)
+    std::wstring buf(32768, L'\0');
+    const DWORD len = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    if (len == 0 || len >= buf.size()) {
+        ec = std::make_error_code(std::errc::no_such_file_or_directory);
+        return {};
+    }
+    buf.resize(len);
+    ec.clear();
+    return std::filesystem::path(buf);
+#else
+    return std::filesystem::read_symlink("/proc/self/exe", ec);
+#endif
+}
 
 bool ReadLines(const std::string &path, std::vector<std::string> *lines) {
     std::ifstream f(path);
@@ -210,9 +244,9 @@ std::string MepExecutable() {
     if (!g_mep.empty()) return g_mep;
     if (const char *e = std::getenv("MEP_EXECUTABLE"); e && *e) return e;
     std::error_code ec;
-    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
+    const std::filesystem::path self = SelfPath(ec);
     if (!ec) {
-        const std::filesystem::path sibling = self.parent_path() / "mep";
+        const std::filesystem::path sibling = self.parent_path() / (std::string("mep") + kExeSuffix);
         if (std::filesystem::exists(sibling, ec)) return sibling.string();
     }
     return "mep";
@@ -228,6 +262,35 @@ int RunBlocks(const std::vector<std::string> &args) {
     c.push_back(nullptr);
     std::fflush(stdout);
     std::fflush(stderr);
+#if defined(_WIN32)
+    // _spawnvp joins argv into one command line, so each argument is quoted.
+    std::vector<std::string> quoted;
+    for (const std::string &a : argv) {
+        std::string q = "\"";
+        size_t slashes = 0;
+        for (const char ch : a) {
+            if (ch == '\\') {
+                slashes++;
+            } else {
+                q.append(ch == '"' ? slashes * 2 + 1 : slashes, '\\');
+                slashes = 0;
+            }
+            q += ch;
+        }
+        q.append(slashes, '\\');
+        q += '"';
+        quoted.push_back(q);
+    }
+    std::vector<const char *> qc;
+    for (const std::string &q : quoted) qc.push_back(q.c_str());
+    qc.push_back(nullptr);
+    const intptr_t rc = _spawnvp(_P_WAIT, argv[0].c_str(), qc.data());
+    if (rc < 0) {
+        std::fprintf(stderr, "mep-mepml: cannot run %s (set $MEP_EXECUTABLE or pass --mep PATH)\n", argv[0].c_str());
+        return 127;
+    }
+    return static_cast<int>(rc);
+#else
     const pid_t pid = fork();
     if (pid < 0) return 127;
     if (pid == 0) {
@@ -240,6 +303,7 @@ int RunBlocks(const std::vector<std::string> &args) {
         if (errno != EINTR) return 127;
     }
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+#endif
 }
 
 int Usage() {
@@ -459,9 +523,9 @@ int main(int argc, char **argv) {
     if (const char *c = std::getenv("MEP_TEX_COMMAND"); c && *c) g_tex.command = c;
     {
         std::error_code ec;
-        std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
+        std::filesystem::path self = SelfPath(ec);
         if (ec) self = std::filesystem::absolute(argv[0], ec);
-        const std::filesystem::path tool = self.parent_path() / "mep-tex";
+        const std::filesystem::path tool = self.parent_path() / (std::string("mep-tex") + kExeSuffix);
         if (std::filesystem::exists(tool, ec)) g_tex.builtin_tool = tool.string();
     }
     // Options anywhere; the rest are the files (and build's formats).

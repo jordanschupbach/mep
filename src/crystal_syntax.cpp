@@ -5,6 +5,7 @@
 // (Lexer::next_token's identifier branch says which).
 
 #include "crystal_syntax.h"
+#include "uint128.h"
 
 #include <cctype>
 #include <cstdio>
@@ -1354,8 +1355,8 @@ int DigitValue(char32_t c) {
 // Decimal string of an unsigned number given in `base` (underscores
 // allowed); empty if it does not fit in 128 bits.
 std::string ToBase10(const std::string &s, int base) {
-    unsigned __int128 v = 0;
-    const unsigned __int128 max = ~static_cast<unsigned __int128>(0);
+    mep::u128 v = 0;
+    const mep::u128 max = ~static_cast<mep::u128>(0);
     bool any = false;
     for (char c : s) {
         if (c == '_') continue;
@@ -1392,15 +1393,15 @@ bool DecimalFits(const std::string &raw, bool is_unsigned, int bits) {
     while (i + 1 < s.size() && s[i] == '0') i++;
     s = s.substr(i);
     // The bound.
-    unsigned __int128 lim;
+    mep::u128 lim;
     if (is_unsigned) {
-        lim = bits == 128 ? ~static_cast<unsigned __int128>(0)
-                          : ((static_cast<unsigned __int128>(1) << bits) - 1);
+        lim = bits == 128 ? ~static_cast<mep::u128>(0)
+                          : ((static_cast<mep::u128>(1) << bits) - 1);
         if (neg) return s == "0";
     } else {
-        lim = (static_cast<unsigned __int128>(1) << (bits - 1)) - (neg ? 0 : 1);
+        lim = (static_cast<mep::u128>(1) << (bits - 1)) - (neg ? 0 : 1);
     }
-    unsigned __int128 v = 0;
+    mep::u128 v = 0;
     for (char c : s) {
         const unsigned d = static_cast<unsigned>(c - '0');
         if (v > (lim - d) / 10) return false;

@@ -29,6 +29,15 @@ std::string FindTexBundle();
  */
 std::string UnpackTexBundle(const std::string &bundle, const std::string &cache_dir, bool verbose, std::string *err);
 
+/**
+ * @brief The running executable's own path, or "" if the platform
+ * cannot say (/proc/self/exe, _NSGetExecutablePath, GetModuleFileNameW).
+ */
+std::string SelfExePath();
+
+/** @brief This process's id, for unique temporary names. */
+long ProcessId();
+
 }  // namespace meptex
 
 #endif

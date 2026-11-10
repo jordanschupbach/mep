@@ -1,6 +1,11 @@
 #include "tex/tex_backend.h"
 
 #include <cstdio>
+#if defined(_WIN32)
+// The CRT spells the POSIX pipe functions with an underscore.
+#define popen _popen
+#define pclose _pclose
+#endif
 #include <filesystem>
 #include <fstream>
 #include <iterator>

@@ -4,6 +4,7 @@
 // Ported from rustfmt (rust-lang/rust 1.97.1 src/tools/rustfmt, MIT OR Apache-2.0).
 // See rust_format_internal.h for the conventions.
 #include "rust_format_internal.h"
+#include "uint128.h"
 
 namespace rustfmt {
 
@@ -66,8 +67,8 @@ struct MetaParser {
         }
         // u128::from_str_radix: non-empty, every digit valid, no overflow.
         if (start >= digits.size()) return false;
-        unsigned __int128 v = 0;
-        const unsigned __int128 max = ~static_cast<unsigned __int128>(0);
+        mep::u128 v = 0;
+        const mep::u128 max = ~static_cast<mep::u128>(0);
         for (size_t i = start; i < digits.size(); i++) {
             char c = digits[i];
             unsigned d;

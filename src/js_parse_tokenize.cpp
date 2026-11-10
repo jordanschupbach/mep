@@ -182,14 +182,14 @@ const TokenType _debugger{"debugger", "debugger", false, false, false, false, fa
 const TokenType _default{"default", "default", true, false, false, false, false, false, -1};
 const TokenType _do{"do", "do", true, false, true, false, false, false, -1};
 const TokenType _else{"else", "else", true, false, false, false, false, false, -1};
-const TokenType _finally{"finally", "finally", false, false, false, false, false, false, -1};
+const TokenType _finally_{"finally", "finally", false, false, false, false, false, false, -1};
 const TokenType _for{"for", "for", false, false, true, false, false, false, -1};
 const TokenType _function{"function", "function", false, true, false, false, false, false, -1};
 const TokenType _if{"if", "if", false, false, false, false, false, false, -1};
 const TokenType _return{"return", "return", true, false, false, false, false, false, -1};
 const TokenType _switch{"switch", "switch", false, false, false, false, false, false, -1};
 const TokenType _throw{"throw", "throw", true, false, false, false, false, false, -1};
-const TokenType _try{"try", "try", false, false, false, false, false, false, -1};
+const TokenType _try_{"try", "try", false, false, false, false, false, false, -1};
 const TokenType _var{"var", "var", false, false, false, false, false, false, -1};
 const TokenType _const{"const", "const", false, false, false, false, false, false, -1};
 const TokenType _while{"while", "while", false, false, true, false, false, false, -1};
@@ -216,8 +216,8 @@ const TokenType jsxTagEnd{"jsxTagEnd", nullptr, false, false, false, false, fals
 
 const TokenType* Keyword(std::string_view w) {
     static const TokenType* const all[] = {&_break, &_case,   &_catch, &_continue, &_debugger, &_default,
-                                           &_do,    &_else,   &_finally, &_for,    &_function, &_if,
-                                           &_return, &_switch, &_throw, &_try,     &_var,      &_const,
+                                           &_do,    &_else,   &_finally_, &_for,    &_function, &_if,
+                                           &_return, &_switch, &_throw, &_try_,     &_var,      &_const,
                                            &_while, &_with,   &_new,   &_this,     &_super,    &_class,
                                            &_extends, &_export, &_import, &_null,  &_true,     &_false,
                                            &_in,    &_instanceof, &_typeof, &_void, &_delete};
@@ -1347,8 +1347,13 @@ void Parser::readNumber(bool startsWithDot) {
         for (char16_t c : text)
             if (c != '_') a += static_cast<char>(c);
         // parseFloat: correctly rounded, independent of the process locale
+#if defined(_WIN32)
+        static _locale_t cLocale = _create_locale(LC_ALL, "C");
+        val = _strtod_l(a.c_str(), nullptr, cLocale);
+#else
         static locale_t cLocale = newlocale(LC_ALL_MASK, "C", nullptr);
         val = strtod_l(a.c_str(), nullptr, cLocale);
+#endif
     }
     finishToken(tt::num);
     numValue = val;

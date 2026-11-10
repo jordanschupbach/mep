@@ -7,6 +7,7 @@
 
 #include "tex/gen/tex_gen.h"
 #include "tex/tex_resolver.h"
+#include "tex/tex_time.h"
 
 #include "deflate.h"
 #include "gfx/type1.h"
@@ -2034,13 +2035,13 @@ void Engine::pdf_finish_file() {
                 t = std::time(nullptr);
             }
             std::tm tmv{};
-            if (utc) gmtime_r(&t, &tmv);
-            else localtime_r(&t, &tmv);
+            if (utc) UtcTime(t, &tmv);
+            else LocalTime(t, &tmv);
             char buf[64];
             std::snprintf(buf, sizeof buf, "D:%04d%02d%02d%02d%02d%02d", tmv.tm_year + 1900, tmv.tm_mon + 1,
                           tmv.tm_mday, tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
             std::string date = buf;
-            const long off = utc ? 0 : tmv.tm_gmtoff;
+            const long off = utc ? 0 : UtcOffset(tmv);
             if (off == 0) {
                 date += "Z";
             } else {

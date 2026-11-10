@@ -6,11 +6,10 @@
 #include "rust_format.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <regex>
 #include <sstream>
-
-#include <unistd.h>
 
 #include "rust_format_internal.h"
 
@@ -299,8 +298,9 @@ int CargoEdition(std::string path) {
     static const std::regex kWorkspaceEdition(
         R"re((^|\n)\s*edition(\s*\.\s*workspace\s*=\s*true|\s*=\s*\{\s*workspace\s*=\s*true))re");
     if (path.empty() || path[0] != '/') {
-        char buf[4096];
-        if (getcwd(buf, sizeof buf)) path = std::string(buf) + "/" + path;
+        std::error_code ec;
+        const std::filesystem::path cwd = std::filesystem::current_path(ec);
+        if (!ec) path = cwd.generic_string() + "/" + path;
     }
     bool want_workspace = false;
     std::string d = Dirname(path);

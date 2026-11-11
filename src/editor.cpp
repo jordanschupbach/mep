@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -7383,11 +7384,15 @@ int Editor::FindOrCreateBuffer(const std::string &path, bool *existed) {
         if (existed) *existed = false;
     }
 #else
+    errno = 0;
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        // No such file (or unreadable): start a new empty buffer named
-        // `path`, same as Vim -- this is how you create a file, not an
-        // error. Genuine write failures still surface later, at :w.
+        const int open_error = errno;
+        if (open_error != ENOENT) {
+            status_message_ = "E484: Can't open file \"" + path + "\"";
+            if (open_error != 0) status_message_ += ": " + std::generic_category().message(open_error);
+            return -1;
+        }
         if (existed) *existed = false;
         return store();
     }

@@ -24,9 +24,10 @@ no Lisp at all, without loading a system or running a line of the file.
 Reading Lisp in a real image runs every =#.= form; here nothing in the
 file can execute.
 
-The trade is named rather than hidden. The server sees one file. It does
-not macroexpand, does not know what other files of the same system define,
-and does not infer types.
+The trade is named rather than hidden. The server analyses one file. It
+does not macroexpand and does not infer types. What other files define it
+knows only for the ASDF systems of your project (see /Project libraries/
+below), read from their source.
 
 * Reading Lisp
 
@@ -186,6 +187,76 @@ that:
 - *Folding* covers multi-line forms, block comments and runs of =;=
   comment lines.
 
+* Project libraries
+
+A file that uses a system of your own project -- typically the Common Lisp
+bindings Rosetta generates for a C++ library -- gets hover, completion,
+signature help and go to definition for that system's symbols:
+
+#+begin_src lisp
+(asdf:load-system "datamunge")
+(defpackage #:demo (:use #:cl) (:local-nicknames (#:d #:datamunge)))
+(in-package #:demo)
+
+(let ((x (d:make-dual 2 1)))
+  (d:multiply x x))
+#+end_src
+
+Hovering =d:multiply= (or =K=) shows the docstring of the method for
+=dual=, signature lines in a code block, then the other classes that
+have one.
+
+*Where systems are found.* From the file's directory up to the nearest
+one holding =.git= (the project root), every =*.asd= in the project, up to
+6 directories down; hidden directories, =build*=, =result*=,
+=node_modules= and =target= are skipped. Without a =.git=, the file's own
+directory (3 deep) and the =.asd= files directly in the directories above
+it. Also:
+
+| Variable             | What it adds                                                    |
+|----------------------+-----------------------------------------------------------------|
+| =MEP_LISP_LIBRARY=   | =:=-separated directories (searched the same way), =.asd= or =.lisp= files |
+| =CL_SOURCE_REGISTRY= | =dir/= or =dir//= (recursive), only for systems or packages the file names and the project lacks |
+
+Last, and again only for what is still missing, the project root's
+=build*= directories (8 deep): CMake writes generated bindings there.
+
+*What is read.* Each =defsystem='s =:components= (=:file=, nested
+=:module=, =:pathname=) give the =.lisp= files. In them: =defpackage=
+(name, =:nicknames=, =:export=, =:documentation=), =defclass=,
+=define-condition=, =defstruct=, =defgeneric=, =defmethod= (by its first
+specialized parameter), =(setf name)= methods, =defun=, =defmacro=,
+=deftype=, =defconstant=, =defvar= and =defparameter=, whether the name is
+package-qualified (=(defun dm:add ...)=) or follows an =in-package=.
+Nothing is loaded or evaluated. A file is read once per change, and only
+its index is kept; a 47,000-line generated file takes about 30 ms the
+first time.
+
+*When.* Only when the file refers to a package other than =COMMON-LISP=:
+a =pkg:= or =pkg::= prefix (global nicknames included), a
+=(:local-nicknames (#:d #:pkg))= or =(:use #:pkg)= in its =defpackage=,
+or an =asdf:load-system= / =ql:quickload= of a system.
+
+*What it shows.*
+
+- Hover on =pkg:name=: the kind, the lambda list (unless the docstring
+  already has signature lines), the docstring as markdown. Hover on the
+  =pkg= part describes the package.
+- For a generic function, the method shown is the one for the class of
+  the first argument when the file says what it is -- bound by =let=,
+  =defparameter= or =setf= from =make-<class>=, =make-instance= or a
+  function whose docstring says =→ class= -- following superclasses;
+  otherwise the class the file mentions most. The other classes with a
+  method are listed after it.
+- A class shows its documentation, its constructor's signatures and the
+  generic functions with methods on it; a =deftype= its documentation and
+  expansion.
+- After =pkg:=, completion lists the exported symbols with their kind and
+  first line of documentation; after =pkg::=, every symbol the package
+  defines. In a package that =:use=s the library, its exports are
+  completed unqualified too.
+- Library names are never reported as =undefined-function=.
+
 * Linting from the command line
 
 #+begin_src sh
@@ -207,5 +278,5 @@ arguments, =mep-lisp-lsp= is the language server on stdio.
 
 * See also
 
-- [[file:lisp-mode.html][Common Lisp mode]] -- the Lisp buffer's own commands.
+- [[file:lisp-mode.html][Common Lisp mode]] -- the Lisp buffer's own commands, and =gh= help from a running SBCL.
 - [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.

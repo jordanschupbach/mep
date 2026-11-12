@@ -10,12 +10,14 @@
 #include <cstddef>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "lisp_format.h"
 #include "lisp_lsp_cl_names.h"
+#include "lisp_lsp_library.h"
 
 // --- The COMMON-LISP table ---------------------------------------------
 
@@ -3161,9 +3163,460 @@ int EnclosingList(const LispReadResult &r, int line, int col) {
 
 }  // namespace
 
+// --- Project libraries -------------------------------------------------
+//
+// lisp_lsp_library.h finds and indexes the ASDF systems a document
+// loads; this is the document's side: which package a `pkg:` prefix
+// means here (its package-local nicknames included), which method of a
+// generic function a call most likely reaches, and how that is shown.
+
+namespace {
+
+struct LibContext {
+    std::shared_ptr<const LispLibrary> lib;
+    std::map<std::string, std::string> local_nicknames;  // NICK -> package, from the document's defpackages
+    std::vector<std::string> uses;                       // packages the document's defpackages :use
+
+    /** @brief The primary name of the library package a prefix written in the document means, or "". */
+    std::string Resolve(const std::string &prefix) const {
+        if (!lib || prefix.empty()) return std::string();
+        const auto it = local_nicknames.find(prefix);
+        const LispLibPackage *p = lib->Package(it != local_nicknames.end() ? it->second : prefix);
+        return p != nullptr ? p->name : std::string();
+    }
+};
+
+/** @brief Adds the system names a `load-system`/`quickload`/`require` argument designates. */
+void AddSystemNames(const LispReadResult &r, int node, std::set<std::string> *out) {
+    const LispNode &n = r.at(node);
+    if (n.kind == LispNodeKind::Quote && !n.kids.empty()) {
+        AddSystemNames(r, n.kids[0], out);
+    } else if (n.kind == LispNodeKind::List) {
+        for (int k : n.kids) AddSystemNames(r, k, out);
+    } else if (n.kind == LispNodeKind::String || n.kind == LispNodeKind::Symbol) {
+        if (!n.name.empty()) out->insert(Lower(n.name));
+    }
+}
+
+/** @brief What a document refers to, and the library that provides it (null when nothing does). */
+LibContext LibraryContext(const LispReadResult &r, const std::string &path) {
+    LibContext ctx;
+    LispLibRefs refs;
+    for (int top : r.top) {
+        const LispNode &f = r.at(top);
+        if (f.kind != LispNodeKind::List || f.kids.size() < 2) continue;
+        const std::string op = r.at(f.kids[0]).name;
+        if (op != "DEFPACKAGE" && op != "DEFINE-PACKAGE") continue;
+        for (size_t i = 2; i < f.kids.size(); i++) {
+            const LispNode &opt = r.at(f.kids[i]);
+            if (opt.kind != LispNodeKind::List || opt.kids.empty()) continue;
+            const std::string o = r.at(opt.kids[0]).name;
+            for (size_t j = 1; j < opt.kids.size(); j++) {
+                if (o == "USE") {
+                    const std::string u = DesignatorName(r.at(opt.kids[j]));
+                    if (!u.empty() && !IsClPackageName(u)) {
+                        ctx.uses.push_back(u);
+                        refs.packages.insert(u);
+                    }
+                } else if (o == "LOCAL-NICKNAMES") {
+                    const LispNode &pair = r.at(opt.kids[j]);
+                    if (pair.kind != LispNodeKind::List || pair.kids.size() != 2) continue;
+                    const std::string nick = DesignatorName(r.at(pair.kids[0]));
+                    const std::string target = DesignatorName(r.at(pair.kids[1]));
+                    if (nick.empty() || target.empty()) continue;
+                    ctx.local_nicknames[nick] = target;
+                    refs.packages.insert(target);
+                }
+            }
+        }
+    }
+    for (const LispNode &n : r.nodes) {
+        if (n.kind == LispNodeKind::Symbol) {
+            if (!n.package.empty() && n.package != "KEYWORD" && !n.uninterned &&
+                ctx.local_nicknames.count(n.package) == 0) {
+                refs.packages.insert(n.package);
+            }
+            continue;
+        }
+        if (n.kind != LispNodeKind::List || n.kids.size() < 2) continue;
+        const LispNode &h = r.at(n.kids[0]);
+        if (h.kind != LispNodeKind::Symbol) continue;
+        if (h.name == "LOAD-SYSTEM" || h.name == "QUICKLOAD" || h.name == "REQUIRE-SYSTEM" ||
+            (h.name == "REQUIRE" && LispIsUnqualifiedOrCl(h))) {
+            for (size_t i = 1; i < n.kids.size() && !LispIsKeyword(r.at(n.kids[i])); i++) {
+                AddSystemNames(r, n.kids[i], &refs.systems);
+            }
+        } else if ((h.name == "OOS" || h.name == "OPERATE") && n.kids.size() > 2) {
+            AddSystemNames(r, n.kids[2], &refs.systems);
+        }
+    }
+    if (refs.packages.empty() && refs.systems.empty()) return ctx;
+    ctx.lib = LispLibraryFor(path, refs);
+    return ctx;
+}
+
+/** @brief The library package a symbol node belongs to here (primary name), or "" when it is not a library one. */
+std::string LibPackageOf(const LibContext &ctx, const LispNode &n) {
+    if (!ctx.lib || n.kind != LispNodeKind::Symbol || n.uninterned || n.package == "KEYWORD") return std::string();
+    if (!n.package.empty()) return IsClPackageName(n.package) ? std::string() : ctx.Resolve(n.package);
+    for (const std::string &u : ctx.uses) {
+        const std::string p = ctx.Resolve(u);
+        if (p.empty()) continue;
+        const LispLibPackage *pkg = ctx.lib->Package(p);
+        if (pkg != nullptr && pkg->exports.count(n.name) > 0) return p;
+    }
+    return std::string();
+}
+
+bool IsClassLike(LispLibKind k) {
+    return k == LispLibKind::Class || k == LispLibKind::Condition || k == LispLibKind::Struct;
+}
+
+/** @brief Whether a package defines a class (or condition, structure) of this name. */
+bool LibHasClass(const LispLibrary &lib, const std::string &pkg, const std::string &name) {
+    for (const LispLibDef *d : lib.Defs(pkg, name)) {
+        if (IsClassLike(d->kind)) return true;
+    }
+    return false;
+}
+
+/** @brief The init form of the nearest binding of a variable visible at a use (let, let*, defvar, setf), or -1. */
+int BindingInit(const LispReadResult &r, int use) {
+    const LispNode &u = r.at(use);
+    if (u.kind != LispNodeKind::Symbol || !u.package.empty()) return -1;
+    int best = -1;
+    int best_line = -1;
+    int best_col = -1;
+    auto consider = [&](int name_node, int init) {
+        const LispNode &nn = r.at(name_node);
+        if (nn.kind != LispNodeKind::Symbol || nn.name != u.name || !nn.package.empty()) return;
+        if (!PosLess(nn.range.line, nn.range.col, u.range.line, u.range.col)) return;
+        if (PosLess(best_line, best_col, nn.range.line, nn.range.col)) {
+            best = init;
+            best_line = nn.range.line;
+            best_col = nn.range.col;
+        }
+    };
+    for (const LispNode &f : r.nodes) {
+        if (f.kind != LispNodeKind::List || f.kids.size() < 3) continue;
+        const LispNode &h = r.at(f.kids[0]);
+        if (h.kind != LispNodeKind::Symbol || !LispIsUnqualifiedOrCl(h)) continue;
+        if (h.name == "LET" || h.name == "LET*") {
+            const LispRange &fr = f.range;
+            if (PosLess(u.range.line, u.range.col, fr.line, fr.col) ||
+                !PosLess(u.range.line, u.range.col, fr.end_line, fr.end_col)) {
+                continue;
+            }
+            const LispNode &bl = r.at(f.kids[1]);
+            if (bl.kind != LispNodeKind::List) continue;
+            for (int b : bl.kids) {
+                const LispNode &pair = r.at(b);
+                if (pair.kind == LispNodeKind::List && pair.kids.size() >= 2) consider(pair.kids[0], pair.kids[1]);
+            }
+        } else if (h.name == "DEFPARAMETER" || h.name == "DEFVAR") {
+            consider(f.kids[1], f.kids[2]);
+        } else if (h.name == "SETF" || h.name == "SETQ") {
+            for (size_t i = 1; i + 1 < f.kids.size(); i += 2) consider(f.kids[i], f.kids[i + 1]);
+        }
+    }
+    return best;
+}
+
+/** @brief The library class an expression evaluates to, as far as constructors and bindings tell, or "". */
+std::string ClassOfExpr(const LispReadResult &r, const LibContext &ctx, int node, int depth) {
+    if (node < 0 || depth > 4) return std::string();
+    const LispNode &n = r.at(node);
+    if (n.kind == LispNodeKind::Symbol) return ClassOfExpr(r, ctx, BindingInit(r, node), depth + 1);
+    if (n.kind != LispNodeKind::List || n.kids.empty()) return std::string();
+    const LispNode &h = r.at(n.kids[0]);
+    if (h.kind != LispNodeKind::Symbol) return std::string();
+    if (h.name == "MAKE-INSTANCE" && LispIsUnqualifiedOrCl(h) && n.kids.size() > 1) {
+        const LispNode &q = r.at(n.kids[1]);
+        if (q.kind == LispNodeKind::Quote && !q.kids.empty()) {
+            const LispNode &c = r.at(q.kids[0]);
+            const std::string p = LibPackageOf(ctx, c);
+            if (!p.empty() && LibHasClass(*ctx.lib, p, c.name)) return c.name;
+        }
+        return std::string();
+    }
+    const std::string p = LibPackageOf(ctx, h);
+    if (p.empty()) return std::string();
+    if (StartsWith(h.name, "MAKE-") && LibHasClass(*ctx.lib, p, h.name.substr(5))) return h.name.substr(5);
+    for (const LispLibDef *d : ctx.lib->Defs(p, h.name)) {
+        if (!d->returns.empty() && LibHasClass(*ctx.lib, p, d->returns)) return d->returns;
+    }
+    return std::string();
+}
+
+struct MethodChoice {
+    const LispLibDef *generic = nullptr;
+    const LispLibDef *method = nullptr;
+    std::vector<std::string> others;  // the other classes with a method, best first
+    std::string receiver;             // the receiver's class when it decided the choice
+};
+
+/**
+ * @brief Picks the method of a generic function a use most likely reaches: the receiver's class (or its nearest
+ *        superclass with a method) when the first argument's class is known, else the class the document mentions
+ *        most (`make-<class>`, `'pkg:<class>`), else the first method in source order.
+ */
+MethodChoice ChooseMethod(const LispReadResult &r, const LibContext &ctx, const std::string &pkg,
+                          const std::string &name, int node) {
+    MethodChoice out;
+    std::vector<const LispLibDef *> methods;
+    for (const LispLibDef *d : ctx.lib->Defs(pkg, name)) {
+        if (d->kind == LispLibKind::Generic && out.generic == nullptr) out.generic = d;
+        if ((d->kind == LispLibKind::Method || d->kind == LispLibKind::Accessor) && !d->specializer.empty()) {
+            methods.push_back(d);
+        }
+    }
+    if (methods.empty()) return out;
+    // The receiver: the call's first argument, when the symbol is the call's operator.
+    std::string receiver;
+    if (node >= 0) {
+        const LispNode &n = r.at(node);
+        const LispNode &p = r.at(n.parent);
+        if (n.parent >= 0 && p.kind == LispNodeKind::List && p.kids.size() > 1 && p.kids[0] == node) {
+            receiver = ClassOfExpr(r, ctx, p.kids[1], 0);
+        }
+    }
+    if (!receiver.empty()) {
+        std::vector<std::string> queue{receiver};
+        std::set<std::string> seen;
+        for (size_t q = 0; q < queue.size() && q < 64 && out.method == nullptr; q++) {
+            if (!seen.insert(queue[q]).second) continue;
+            for (const LispLibDef *m : methods) {
+                if (m->specializer == queue[q]) {
+                    out.method = m;
+                    break;
+                }
+            }
+            for (const LispLibDef *c : ctx.lib->Defs(pkg, queue[q])) {
+                if (IsClassLike(c->kind)) queue.insert(queue.end(), c->supers.begin(), c->supers.end());
+            }
+        }
+        if (out.method != nullptr) out.receiver = receiver;
+    }
+    std::map<std::string, int> mentions;
+    for (const LispNode &s : r.nodes) {
+        if (s.kind != LispNodeKind::Symbol) continue;
+        mentions[s.name]++;
+        if (StartsWith(s.name, "MAKE-")) mentions[s.name.substr(5)]++;
+    }
+    std::stable_sort(methods.begin(), methods.end(), [&](const LispLibDef *a, const LispLibDef *b) {
+        return mentions[a->specializer] > mentions[b->specializer];
+    });
+    if (out.method == nullptr) out.method = methods[0];
+    std::set<std::string> listed{out.method->specializer};
+    for (const LispLibDef *m : methods) {
+        if (listed.insert(m->specializer).second) out.others.push_back(m->specializer);
+    }
+    return out;
+}
+
+std::string LibName(const std::string &pkg, const std::string &name) { return Lower(pkg) + ":" + Lower(name); }
+
+/** @brief `(pkg:name lambda-list)` in a lisp block, unless the doc already shows its signature lines. */
+std::string LibSignatureBlock(const std::string &pkg, const std::string &name, const LispLibDef &d,
+                              const std::string &doc) {
+    if (!LispLibDocSignatures(doc, Lower(name)).empty()) return std::string();
+    return "```lisp\n(" + LibName(pkg, name) + (d.lambda_list.empty() ? "" : " " + d.lambda_list) + ")\n```\n\n";
+}
+
+std::string JoinCode(const std::vector<std::string> &names, size_t shown) {
+    std::string out;
+    for (size_t i = 0; i < names.size() && i < shown; i++) out += (i > 0 ? ", `" : "`") + Lower(names[i]) + "`";
+    if (names.size() > shown) out += " and " + std::to_string(names.size() - shown) + " more";
+    return out;
+}
+
+/** @brief Hover markdown for a library symbol, "" when the library says nothing about it. */
+std::string LibHover(const LispReadResult &r, const LibContext &ctx, const std::string &pkg, const LispNode &n,
+                     int node) {
+    const LispLibrary &lib = *ctx.lib;
+    const std::string &name = n.name;
+    const std::vector<const LispLibDef *> &defs = lib.Defs(pkg, name);
+    const LispLibPackage *package = lib.Package(pkg);
+    std::vector<std::string> sections;
+    const LispLibDef *fn = nullptr;
+    bool generic = false;
+    for (const LispLibDef *d : defs) {
+        if (d->kind == LispLibKind::Generic || d->kind == LispLibKind::Method || d->kind == LispLibKind::Accessor) {
+            generic = true;
+        }
+        if ((d->kind == LispLibKind::Function || d->kind == LispLibKind::Macro) && fn == nullptr) fn = d;
+    }
+    if (generic) {
+        const MethodChoice c = ChooseMethod(r, ctx, pkg, name, node);
+        std::string s = "**generic function** `" + LibName(pkg, name) + "`";
+        if (c.method != nullptr) s += " — method on `" + Lower(c.method->specializer) + "`";
+        s += "\n\n";
+        std::string doc = c.method != nullptr ? c.method->doc : std::string();
+        if (doc.empty() && c.generic != nullptr) doc = c.generic->doc;
+        const LispLibDef *shape = c.method != nullptr ? c.method : c.generic;
+        if (shape != nullptr) s += LibSignatureBlock(pkg, name, *shape, doc);
+        if (!doc.empty()) s += LispLibDocMarkdown(doc) + "\n\n";
+        if (!lib.Defs(pkg, "(SETF " + name + ")").empty()) {
+            s += "Setf-able: `(setf (" + Lower(name) + " object) value)`.\n\n";
+        }
+        if (!c.others.empty()) {
+            s += c.receiver.empty() ? "*Also a method of " : "*Chosen for the receiver's class `" + Lower(c.receiver) +
+                                                                  "`; also a method of ";
+            s += JoinCode(c.others, 8) + ".*";
+        } else if (!c.receiver.empty() && c.method != nullptr && c.receiver != c.method->specializer) {
+            s += "*Inherited by the receiver's class `" + Lower(c.receiver) + "`.*";
+        }
+        sections.push_back(s);
+    } else if (fn != nullptr) {
+        std::string s = std::string("**") + (fn->kind == LispLibKind::Macro ? "macro" : "function") + "** `" +
+                        LibName(pkg, name) + "`\n\n";
+        s += LibSignatureBlock(pkg, name, *fn, fn->doc);
+        if (!fn->doc.empty()) s += LispLibDocMarkdown(fn->doc);
+        sections.push_back(s);
+    }
+    for (const LispLibDef *d : defs) {
+        std::string s;
+        if (IsClassLike(d->kind)) {
+            s = std::string("**") + (d->kind == LispLibKind::Class ? "class" : d->kind == LispLibKind::Condition
+                                                                                    ? "condition"
+                                                                                    : "structure") +
+                "** `" + LibName(pkg, name) + "`";
+            if (!d->supers.empty()) s += " — subclass of " + JoinCode(d->supers, 6);
+            s += "\n\n";
+            if (!d->doc.empty()) s += LispLibDocMarkdown(d->doc) + "\n\n";
+            const std::string ctor = "MAKE-" + name;
+            // A docstring that already lists the constructor's signatures (Rosetta's do) needs no second list.
+            const bool documented = !LispLibDocSignatures(d->doc, Lower(ctor)).empty();
+            for (const LispLibDef *c : lib.Defs(pkg, ctor)) {
+                if (documented || c->kind != LispLibKind::Function) continue;
+                std::vector<std::string> sigs = LispLibDocSignatures(c->doc, Lower(ctor));
+                if (sigs.empty()) sigs.push_back(c->lambda_list);
+                s += "Constructor:\n```lisp\n";
+                for (const std::string &sig : sigs) s += "(" + LibName(pkg, ctor) + (sig.empty() ? "" : " " + sig) + ")\n";
+                s += "```\n\n";
+                break;
+            }
+            std::vector<std::string> methods;
+            for (const std::string &sym : lib.Symbols(pkg)) {
+                for (const LispLibDef *m : lib.Defs(pkg, sym)) {
+                    if ((m->kind == LispLibKind::Method || m->kind == LispLibKind::Accessor) && m->specializer == name &&
+                        sym.find('(') == std::string::npos) {
+                        methods.push_back(sym);
+                        break;
+                    }
+                }
+            }
+            if (!methods.empty()) s += "*Methods:* " + JoinCode(methods, 16);
+        } else if (d->kind == LispLibKind::Type) {
+            s = "**type** `" + LibName(pkg, name) + "`\n\n";
+            if (!d->doc.empty()) s += LispLibDocMarkdown(d->doc) + "\n\n";
+            std::string v = d->value;
+            if (!v.empty() && v[0] == '\'') v = v.substr(1);
+            if (!v.empty()) s += "```lisp\n" + v + "\n```";
+        } else if (d->kind == LispLibKind::Constant || d->kind == LispLibKind::Variable) {
+            s = std::string("**") + (d->kind == LispLibKind::Constant ? "constant" : "variable") + "** `" +
+                LibName(pkg, name) + "`" + (d->value.empty() ? "" : " = `" + d->value + "`") + "\n\n";
+            if (!d->doc.empty()) s += LispLibDocMarkdown(d->doc);
+        } else {
+            continue;
+        }
+        sections.push_back(s);
+    }
+    if (sections.empty()) {
+        if (package == nullptr || package->exports.count(name) == 0) return std::string();
+        sections.push_back("`" + LibName(pkg, name) + "`\n\nExported from `" + pkg +
+                           "`; its definition is not in the indexed sources.");
+    }
+    std::string out;
+    for (std::string s : sections) {
+        while (!s.empty() && (s.back() == '\n' || s.back() == ' ')) s.pop_back();
+        out += (out.empty() ? "" : "\n\n---\n\n") + s;
+    }
+    if (package != nullptr && package->exports.count(name) == 0 && !n.internal && !n.package.empty()) {
+        out += "\n\n*Not exported from `" + pkg + "`: write `" + Lower(n.package) + "::" + Lower(name) + "`.*";
+    }
+    if (!defs.empty()) {
+        const LispLibFile *file = lib.FileOfDef(defs[0]);
+        if (file != nullptr && !file->system.empty()) out += "\n\n*System `" + file->system + "`.*";
+    }
+    return out;
+}
+
+/** @brief Hover markdown for a package prefix. */
+std::string LibPackageHover(const LibContext &ctx, const std::string &pkg, const std::string &written) {
+    const LispLibPackage *p = ctx.lib->Package(pkg);
+    if (p == nullptr) return std::string();
+    std::string s = "**package** `" + p->name + "`";
+    if (written != p->name) s += " (written `" + Lower(written) + "`" +
+                                 (ctx.local_nicknames.count(written) > 0 ? ", a local nickname" : "") + ")";
+    s += "\n\n";
+    if (!p->nicknames.empty()) s += "Nicknames: " + JoinCode(p->nicknames, 8) + "\n\n";
+    if (!p->doc.empty()) s += LispLibDocMarkdown(p->doc) + "\n\n";
+    s += std::to_string(p->exports.size()) + " exported symbols.";
+    const LispLibFile *f = ctx.lib->FileOf(p);
+    if (f != nullptr && !f->system.empty()) s += " *System `" + f->system + "`.*";
+    return s;
+}
+
+/** @brief Completion kind, detail and one-line doc of a library symbol. */
+void LibSummary(const LispLibrary &lib, const std::string &pkg, const std::string &sym, LispLspKind *kind,
+                std::string *detail, std::string *doc) {
+    *kind = LispLspKind::Text;
+    *detail = "exported from " + pkg;
+    doc->clear();
+    int methods = 0;
+    const LispLibDef *generic = nullptr;
+    const LispLibDef *first_method = nullptr;
+    for (const LispLibDef *d : lib.Defs(pkg, sym)) {
+        switch (d->kind) {
+            case LispLibKind::Function:
+            case LispLibKind::Macro: {
+                *kind = d->kind == LispLibKind::Macro ? LispLspKind::Keyword : LispLspKind::Function;
+                const std::vector<std::string> sigs = LispLibDocSignatures(d->doc, Lower(sym));
+                const std::string ll = sigs.empty() ? d->lambda_list : sigs[0];
+                *detail = "(" + Lower(sym) + (ll.empty() ? "" : " " + ll) + ")";
+                *doc = FirstParagraph(d->doc);
+                return;
+            }
+            case LispLibKind::Generic: generic = d; break;
+            case LispLibKind::Method:
+            case LispLibKind::Accessor:
+                methods++;
+                if (first_method == nullptr) first_method = d;
+                break;
+            case LispLibKind::Class:
+            case LispLibKind::Condition:
+            case LispLibKind::Struct:
+                *kind = LispLspKind::Class;
+                *detail = "class";
+                *doc = FirstParagraph(d->doc);
+                return;
+            case LispLibKind::Type:
+                *kind = LispLspKind::TypeParameter;
+                *detail = "type";
+                *doc = FirstParagraph(d->doc);
+                return;
+            case LispLibKind::Constant:
+            case LispLibKind::Variable:
+                *kind = d->kind == LispLibKind::Constant ? LispLspKind::Constant : LispLspKind::Variable;
+                *detail = d->kind == LispLibKind::Constant ? "constant" : "variable";
+                *doc = FirstParagraph(d->doc);
+                return;
+        }
+    }
+    if (generic != nullptr || methods > 0) {
+        *kind = LispLspKind::Method;
+        *detail = "generic function" + (methods > 0 ? " (" + std::to_string(methods) + " methods)" : std::string());
+        *doc = FirstParagraph(first_method != nullptr && !first_method->doc.empty() ? first_method->doc
+                                                                                    : generic != nullptr ? generic->doc : "");
+    }
+}
+
+}  // namespace
+
 // --- Hover -------------------------------------------------------------
 
-LispLspHoverInfo LispLspHover(const std::vector<std::string> &lines, int line, int col) {
+LispLspHoverInfo LispLspHover(const std::vector<std::string> &lines, int line, int col, const std::string &path) {
     LispLspHoverInfo out;
     const Index ix = BuildIndex(lines);
     const LispReadResult &r = ix.read;
@@ -3195,9 +3648,28 @@ LispLspHoverInfo LispLspHover(const std::vector<std::string> &lines, int line, i
         out.text = ":" + Lower(n.name) + "\nkeyword: a symbol in the KEYWORD package, which evaluates to itself.";
         return out;
     }
+    // A symbol of a project library's package (`dm:multiply`, `f:area`), or its package prefix.
+    LibContext lib;
+    const bool other_package = !n.package.empty() && !IsClPackageName(n.package) && !n.uninterned;
+    if (other_package) {
+        lib = LibraryContext(r, path);
+        const std::string pkg = lib.Resolve(n.package);
+        if (!pkg.empty()) {
+            const std::string text = col < n.name_col && line == n.range.line ? LibPackageHover(lib, pkg, n.package)
+                                                                               : LibHover(r, lib, pkg, n, node);
+            if (!text.empty()) {
+                out.found = true;
+                out.markdown = true;
+                out.text = text;
+                return out;
+            }
+        }
+    }
     const int occ = OccAt(ix, node);
     int binding = occ >= 0 ? ix.occs[static_cast<size_t>(occ)].binding : -1;
-    if (binding < 0 && occ >= 0 && ix.occs[static_cast<size_t>(occ)].ns == Ns::Data) binding = GlobalByName(ix, n.name);
+    if (binding < 0 && occ >= 0 && ix.occs[static_cast<size_t>(occ)].ns == Ns::Data && !other_package) {
+        binding = GlobalByName(ix, n.name);
+    }
     if (binding >= 0) {
         out.found = true;
         out.text = DescribeBinding(ix.bindings[static_cast<size_t>(binding)]);
@@ -3208,6 +3680,15 @@ LispLspHoverInfo LispLspHover(const std::vector<std::string> &lines, int line, i
             out.found = true;
             out.text = DescribeCl(*d);
             return out;
+        }
+    }
+    // An unqualified name the document's package inherits from a library package it :uses.
+    if (n.package.empty() && !n.uninterned) {
+        lib = LibraryContext(r, path);
+        const std::string pkg = LibPackageOf(lib, n);
+        if (!pkg.empty()) {
+            out.text = LibHover(r, lib, pkg, n, node);
+            out.found = out.markdown = !out.text.empty();
         }
     }
     return out;
@@ -3273,8 +3754,39 @@ int EnclosingOperator(const LispReadResult &r, int line, int col, int *list_out)
 }
 
 /** @brief The lambda-list text and shape of an operator, from the file or from CL. */
-bool OperatorSignature(const Index &ix, int op_node, std::string *ll_text, std::string *doc) {
+bool OperatorSignature(const Index &ix, int op_node, std::string *ll_text, std::string *doc,
+                       const LibContext *lib = nullptr, int arg_count = 0) {
     const LispNode &op = ix.read.at(op_node);
+    if (lib != nullptr && lib->lib) {
+        const std::string pkg = LibPackageOf(*lib, op);
+        if (!pkg.empty()) {
+            // A library function: the signature lines of its docstring (the overload that takes the arguments
+            // already written), else its lambda list.
+            const LispLibDef *def = nullptr;
+            for (const LispLibDef *d : lib->lib->Defs(pkg, op.name)) {
+                if (d->kind == LispLibKind::Function || d->kind == LispLibKind::Macro) {
+                    def = d;
+                    break;
+                }
+            }
+            if (def == nullptr) {
+                const MethodChoice c = ChooseMethod(ix.read, *lib, pkg, op.name, op_node);
+                def = c.method != nullptr && !c.method->doc.empty() ? c.method : c.generic != nullptr ? c.generic : c.method;
+            }
+            if (def == nullptr) return false;
+            const std::vector<std::string> sigs = LispLibDocSignatures(def->doc, Lower(op.name));
+            *ll_text = def->lambda_list;
+            for (size_t i = 0; i < sigs.size(); i++) {
+                const LispLambdaShape sh = LispLspShapeOfLambdaList(sigs[i]);
+                if (i == 0 || sh.rest || sh.key || sh.required + sh.optional >= arg_count) {
+                    *ll_text = sigs[i];
+                    if (sh.rest || sh.key || sh.required + sh.optional >= arg_count) break;
+                }
+            }
+            *doc = FirstParagraph(def->doc);
+            return true;
+        }
+    }
     const int occ = OccAt(ix, op_node);
     const int binding = occ >= 0 ? ix.occs[static_cast<size_t>(occ)].binding : -1;
     if (binding >= 0) {
@@ -3301,7 +3813,8 @@ bool OperatorSignature(const Index &ix, int op_node, std::string *ll_text, std::
 
 }  // namespace
 
-std::vector<LispLspCompletionItem> LispLspCompletions(const std::vector<std::string> &lines, int line, int col) {
+std::vector<LispLspCompletionItem> LispLspCompletions(const std::vector<std::string> &lines, int line, int col,
+                                                      const std::string &path) {
     std::vector<LispLspCompletionItem> out;
     if (line < 0 || static_cast<size_t>(line) >= lines.size()) return out;
     const std::string &text = lines[static_cast<size_t>(line)];
@@ -3312,13 +3825,14 @@ std::vector<LispLspCompletionItem> LispLspCompletions(const std::vector<std::str
     std::string pkg;
     bool keyword = false;
     const size_t colon = word.rfind(':');
+    bool internal = false;
     if (colon != std::string::npos) {
         pkg = Upper(word.substr(0, colon));
+        internal = colon > 0 && word[colon - 1] == ':';
         while (!pkg.empty() && pkg.back() == ':') pkg.pop_back();
         keyword = pkg.empty();
         start += static_cast<int>(colon) + 1;
         word = word.substr(colon + 1);
-        if (!keyword && !IsClPackageName(pkg)) return out;  // another package's names are not known here
     }
     const std::string prefix = Upper(word);
     bool upper = false;
@@ -3330,8 +3844,32 @@ std::vector<LispLspCompletionItem> LispLspCompletions(const std::vector<std::str
         }
     }
     std::set<std::string> seen;
+    if (!pkg.empty() && !keyword && !IsClPackageName(pkg)) {
+        // Another package: only a project library's are known (its exports; `pkg::` every name it defines).
+        const LibContext lib = LibraryContext(LispRead(lines), path);
+        const std::string lpkg = lib.Resolve(pkg);
+        const LispLibPackage *p = lpkg.empty() ? nullptr : lib.lib->Package(lpkg);
+        if (p == nullptr) return out;
+        std::set<std::string> names(p->exports.begin(), p->exports.end());
+        if (internal) {
+            for (const std::string &sym : lib.lib->Symbols(lpkg)) {
+                if (sym.find('(') == std::string::npos) names.insert(sym);
+            }
+        }
+        for (const std::string &sym : names) {
+            if (!StartsWith(sym, prefix.c_str())) continue;
+            LispLspKind kind;
+            std::string detail;
+            std::string doc;
+            LibSummary(*lib.lib, lpkg, sym, &kind, &detail, &doc);
+            AddItem(&out, &seen, Lower(sym), kind, detail, doc, start, c, upper);
+        }
+        return out;
+    }
     const Index ix = BuildIndex(lines);
     const LispReadResult &r = ix.read;
+    LibContext lib;
+    if (!keyword || !path.empty()) lib = LibraryContext(r, path);
 
     if (keyword) {
         // The enclosing call's keyword parameters first: that is nearly
@@ -3339,7 +3877,7 @@ std::vector<LispLspCompletionItem> LispLspCompletions(const std::vector<std::str
         const int op = EnclosingOperator(r, line, start - 1, nullptr);
         std::string ll;
         std::string doc;
-        if (op >= 0 && OperatorSignature(ix, op, &ll, &doc)) {
+        if (op >= 0 && OperatorSignature(ix, op, &ll, &doc, &lib)) {
             const LispLambdaShape shape = LispLspShapeOfLambdaList(ll);
             for (const std::string &k : shape.keys) {
                 if (!StartsWith(k, prefix.c_str())) continue;
@@ -3376,6 +3914,22 @@ std::vector<LispLspCompletionItem> LispLspCompletions(const std::vector<std::str
             if (b.range.line == line && b.range.col <= c && c <= b.range.end_col) continue;
             AddItem(&out, &seen, Lower(b.name), KindOfBinding(b), BindingTitle(b), FirstParagraph(b.doc), start, c,
                     upper);
+        }
+        // The exports of library packages the document's package :uses.
+        if (lib.lib && !prefix.empty()) {
+            for (const std::string &u : lib.uses) {
+                const std::string lpkg = lib.Resolve(u);
+                const LispLibPackage *p = lpkg.empty() ? nullptr : lib.lib->Package(lpkg);
+                if (p == nullptr) continue;
+                for (const std::string &sym : p->exports) {
+                    if (!StartsWith(sym, prefix.c_str())) continue;
+                    LispLspKind kind;
+                    std::string detail;
+                    std::string doc;
+                    LibSummary(*lib.lib, lpkg, sym, &kind, &detail, &doc);
+                    AddItem(&out, &seen, Lower(sym), kind, detail, doc, start, c, upper);
+                }
+            }
         }
     }
     if (prefix.empty() && pkg.empty()) {
@@ -3747,10 +4301,30 @@ std::vector<LispLspReference> CollectReferences(const Index &ix, int line, int c
 
 }  // namespace
 
-LispLspLocation LispLspDefinition(const std::vector<std::string> &lines, int line, int col) {
+LispLspLocation LispLspDefinition(const std::vector<std::string> &lines, int line, int col, const std::string &path) {
     LispLspLocation out;
     const Index ix = BuildIndex(lines);
-    const int binding = BindingAtPos(ix, line, col, nullptr);
+    int node = -1;
+    const int binding = BindingAtPos(ix, line, col, &node);
+    const LispNode &n = ix.read.at(node);
+    if (node >= 0 && (binding < 0 || (!n.package.empty() && !IsClPackageName(n.package)))) {
+        // A project library's definition, in its own file: the method a call reaches, for a generic function.
+        const LibContext lib = LibraryContext(ix.read, path);
+        const std::string pkg = LibPackageOf(lib, n);
+        if (!pkg.empty()) {
+            const std::vector<const LispLibDef *> &defs = lib.lib->Defs(pkg, n.name);
+            const LispLibDef *def = defs.empty() ? nullptr : defs[0];
+            const MethodChoice c = ChooseMethod(ix.read, lib, pkg, n.name, node);
+            if (c.method != nullptr) def = c.method;
+            const LispLibFile *file = def != nullptr ? lib.lib->FileOfDef(def) : nullptr;
+            if (file != nullptr) {
+                out.found = true;
+                out.path = file->path;
+                out.range = {def->line, def->col, def->line, def->end_col};
+                return out;
+            }
+        }
+    }
     if (binding < 0) return out;
     out.found = true;
     out.range = ix.bindings[static_cast<size_t>(binding)].range;
@@ -3803,7 +4377,8 @@ std::vector<LispLspTextEdit> LispLspRename(const std::vector<std::string> &lines
 
 // --- Signature help ----------------------------------------------------
 
-LispLspSignature LispLspSignatureHelp(const std::vector<std::string> &lines, int line, int col) {
+LispLspSignature LispLspSignatureHelp(const std::vector<std::string> &lines, int line, int col,
+                                      const std::string &path) {
     LispLspSignature out;
     const Index ix = BuildIndex(lines);
     const LispReadResult &r = ix.read;
@@ -3814,8 +4389,19 @@ LispLspSignature LispLspSignatureHelp(const std::vector<std::string> &lines, int
     if (LispRangeContains(r.at(op).range, line, col)) return out;
     std::string ll;
     std::string doc;
-    if (!OperatorSignature(ix, op, &ll, &doc)) return out;
-    const std::string name = Lower(r.at(op).name);
+    const LispNode &opn = r.at(op);
+    LibContext lib;
+    if (!opn.package.empty() && !IsClPackageName(opn.package)) lib = LibraryContext(r, path);
+    int typed_args = 0;
+    for (size_t i = 1; i < r.at(list).kids.size(); i++) {
+        if (PosLess(r.at(r.at(list).kids[i]).range.line, r.at(r.at(list).kids[i]).range.col, line, col)) typed_args++;
+    }
+    if (!OperatorSignature(ix, op, &ll, &doc, &lib, typed_args + 1)) {
+        // An unqualified name inherited from a library package the document :uses.
+        if (opn.package.empty() && !lib.lib) lib = LibraryContext(r, path);
+        if (!lib.lib || !OperatorSignature(ix, op, &ll, &doc, &lib, typed_args + 1)) return out;
+    }
+    const std::string name = LibPackageOf(lib, opn).empty() ? Lower(opn.name) : Lower(opn.text);
     out.found = true;
     out.label = "(" + name + (ll.empty() ? "" : " " + ll) + ")";
     out.documentation = doc;

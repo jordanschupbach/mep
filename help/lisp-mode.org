@@ -19,7 +19,7 @@ its own.
 |--------------------------+-----------------------------------------------------------|
 | =<leader>re=             | evaluate the top-level form at the cursor, in its package |
 | =<leader>rr=             | =LOAD= the whole file, then switch the REPL to its package |
-| =gh=                     | documentation for the symbol under the cursor             |
+| =gh=                     | documentation for the symbol under the cursor, read in its package |
 | =(mep-ui:help 'x)=       | the same, from the console                                |
 | =(mep-ui:view x)=        | describe any value in the Inspect panel                   |
 
@@ -28,6 +28,12 @@ opens at column 0 above the cursor, and evaluates it in the package the
 nearest =(in-package ...)= above it names -- so redefining one function of
 a file that lives in its own package does not quietly define it in
 =CL-USER= instead. The form's values print in the console as if typed.
+=gh= reads the name in that same package, so =f:area= under a
+=(:local-nicknames (#:f #:features))=, or a function the file's package
+defines, is found whatever package the REPL is in. Without a running
+console, =K= still shows what the language server knows, including the
+documentation of the project's own ASDF systems (see
+[[file:lisp-lsp.html][the Common Lisp language server]]).
 
 Errors land in SBCL's own debugger in the console, with its restarts; pick
 one by number as usual.

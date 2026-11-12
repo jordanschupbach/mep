@@ -76,6 +76,39 @@ std::vector<std::string> SplitLines(const std::string &text) {
     return lines;
 }
 
+/** @brief The filesystem path of a `file://` URI (percent-decoded), "" for any other scheme. */
+std::string UriToPath(const std::string &uri) {
+    if (uri.rfind("file://", 0) != 0) return std::string();
+    std::string out;
+    for (size_t i = 7; i < uri.size(); i++) {
+        if (uri[i] == '%' && i + 2 < uri.size() && std::isxdigit(static_cast<unsigned char>(uri[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(uri[i + 2]))) {
+            out += static_cast<char>(std::stoi(uri.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += uri[i];
+        }
+    }
+    return out;
+}
+
+/** @brief A `file://` URI for a filesystem path, percent-encoding what a URI cannot hold. */
+std::string PathToUri(const std::string &path) {
+    static const char kHex[] = "0123456789ABCDEF";
+    std::string out = "file://";
+    for (char ch : path) {
+        const auto c = static_cast<unsigned char>(ch);
+        if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += ch;
+        } else {
+            out += '%';
+            out += kHex[c >> 4];
+            out += kHex[c & 15];
+        }
+    }
+    return out;
+}
+
 // --- JSON shorthands --------------------------------------------------
 
 /** @brief Builds an LSP Position object. */
@@ -331,7 +364,8 @@ private:
     /** @brief Answers `textDocument/completion`. */
     Json Completion(const Json &params) const {
         const int line = LineOf(params);
-        const std::vector<LispLspCompletionItem> items = LispLspCompletions(Doc(UriOf(params)), line, ColOf(params));
+        const std::vector<LispLspCompletionItem> items = LispLspCompletions(Doc(UriOf(params)), line, ColOf(params),
+                                                                            UriToPath(UriOf(params)));
         Json arr = Json::Array();
         for (size_t i = 0; i < items.size(); i++) {
             const LispLspCompletionItem &it = items[i];
@@ -365,10 +399,10 @@ private:
 
     /** @brief Answers `textDocument/hover`. */
     Json HoverAt(const Json &params) const {
-        const LispLspHoverInfo info = LispLspHover(Doc(UriOf(params)), LineOf(params), ColOf(params));
+        const LispLspHoverInfo info = LispLspHover(Doc(UriOf(params)), LineOf(params), ColOf(params), UriToPath(UriOf(params)));
         if (!info.found) return Json();
         Json contents = Json::Object();
-        contents["kind"] = "plaintext";
+        contents["kind"] = info.markdown ? "markdown" : "plaintext";
         contents["value"] = info.text;
         Json out = Json::Object();
         out["contents"] = contents;
@@ -425,10 +459,10 @@ private:
     /** @brief Answers `textDocument/definition`. */
     Json Definition(const Json &params) const {
         const std::string uri = UriOf(params);
-        const LispLspLocation loc = LispLspDefinition(Doc(uri), LineOf(params), ColOf(params));
+        const LispLspLocation loc = LispLspDefinition(Doc(uri), LineOf(params), ColOf(params), UriToPath(uri));
         if (!loc.found) return Json();
         Json j = Json::Object();
-        j["uri"] = uri;
+        j["uri"] = loc.path.empty() ? uri : PathToUri(loc.path);
         j["range"] = RangeOf(loc.range);
         return j;
     }
@@ -507,7 +541,8 @@ private:
 
     /** @brief Answers `textDocument/signatureHelp`. */
     Json SignatureHelp(const Json &params) const {
-        const LispLspSignature sig = LispLspSignatureHelp(Doc(UriOf(params)), LineOf(params), ColOf(params));
+        const LispLspSignature sig = LispLspSignatureHelp(Doc(UriOf(params)), LineOf(params), ColOf(params),
+                                                         UriToPath(UriOf(params)));
         if (!sig.found) return Json();
         Json parameters = Json::Array();
         for (const std::string &param : sig.params) {

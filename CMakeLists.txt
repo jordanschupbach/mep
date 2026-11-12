@@ -2481,8 +2481,8 @@ add_dependencies(tests mep-maxima-lsp-test)
 # reasoning as mep-maxima-lsp above: no mep_core, built by default because
 # kBuiltinLsp's `lisp_ls` entry spawns it out of mep's own bin directory,
 # skipped on Emscripten.
-set(MEP_LISP_LSP_SOURCES src/lisp_lsp.cpp src/lisp_lsp_vocab.cpp src/lisp_lsp_cl_names.cpp src/lisp_reader.cpp
-    src/lisp_indent.cpp src/lisp_format.cpp)
+set(MEP_LISP_LSP_SOURCES src/lisp_lsp.cpp src/lisp_lsp_library.cpp src/lisp_lsp_vocab.cpp src/lisp_lsp_cl_names.cpp
+    src/lisp_reader.cpp src/lisp_indent.cpp src/lisp_format.cpp)
 if(NOT EMSCRIPTEN)
     add_executable(mep-lisp-lsp src/lisp_lsp_server.cpp ${MEP_LISP_LSP_SOURCES})
     target_include_directories(mep-lisp-lsp PRIVATE src)

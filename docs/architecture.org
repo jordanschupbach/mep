@@ -284,6 +284,12 @@ ships two *servers* of its own:
   so neither the build nor the server needs a Lisp. The name checks
   calibrate themselves to the file's package context, the way the
   Maxima server's do.
+- =src/lisp_lsp_library.cpp= — project libraries: the =*.asd= files of
+  the document's project (and =$MEP_LISP_LIBRARY=, =$CL_SOURCE_REGISTRY=)
+  read with the same reader, their =.lisp= components indexed once per
+  change (packages, nicknames, exports, classes, generic functions and
+  their methods, docstrings), so a =pkg:= symbol of the user's own
+  system gets hover, completion and signature help without a Lisp.
 - =src/lisp_lsp_server.cpp= — the =mep-lisp-lsp= binary: the same stdio
   JSON-RPC shape, plus =--lint FILE...= as a command-line linter. It
   claims =lisp=, =lsp=, =cl= and =asd=.

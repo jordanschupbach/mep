@@ -24,9 +24,11 @@
 //   - This is a *source* analyzer for one file. It knows the standard's
 //     special operators and macros, its scoping rules and the 978
 //     symbols of the COMMON-LISP package (generated from SBCL into
-//     lisp_lsp_cl_names.cpp); it does not know what other files of the
-//     same system define, does not macroexpand anything, and does not
-//     infer types.
+//     lisp_lsp_cl_names.cpp); it does not macroexpand anything and does
+//     not infer types. What other files define is known only for the
+//     packages of ASDF systems found next to the document
+//     (lisp_lsp_library.h): hover, completion after `pkg:`, signature
+//     help and go-to-definition for their symbols, read from source.
 //   - Macros it does not know are walked as if their arguments were
 //     code, so a variable used inside one still counts as used -- but
 //     the name checks (undefined-function, argument counts, setq of an
@@ -130,16 +132,19 @@ struct LispLspCompletionItem {
  * @param lines the document's text, one entry per line
  * @param line 0-based cursor line
  * @param col 0-based cursor byte column
+ * @param path the document's filesystem path, for the project libraries (lisp_lsp_library.h); "" for none
  * @return the candidates for this context, already filtered against the typed prefix, in the case it was typed
  */
-std::vector<LispLspCompletionItem> LispLspCompletions(const std::vector<std::string> &lines, int line, int col);
+std::vector<LispLspCompletionItem> LispLspCompletions(const std::vector<std::string> &lines, int line, int col,
+                                                      const std::string &path = std::string());
 
 // --- Hover ------------------------------------------------------------
 
 struct LispLspHoverInfo {
     bool found = false;
-    std::string text;  // plain text, possibly multi-line
+    std::string text;  // plain text, possibly multi-line (markdown when `markdown`)
     LispRange range;   // the range the hover applies to
+    bool markdown = false;  // a project library's documentation, rendered as markdown
 };
 
 /**
@@ -147,9 +152,11 @@ struct LispLspHoverInfo {
  * @param lines the document's text, one entry per line
  * @param line 0-based cursor line
  * @param col 0-based cursor byte column
+ * @param path the document's filesystem path, for the project libraries (lisp_lsp_library.h); "" for none
  * @return the explanation and the range it covers, or a default-constructed value with `found == false`
  */
-LispLspHoverInfo LispLspHover(const std::vector<std::string> &lines, int line, int col);
+LispLspHoverInfo LispLspHover(const std::vector<std::string> &lines, int line, int col,
+                              const std::string &path = std::string());
 
 // --- Document symbols -------------------------------------------------
 
@@ -203,7 +210,8 @@ std::vector<LispLspFold> LispLspFolds(const std::vector<std::string> &lines);
 
 struct LispLspLocation {
     bool found = false;
-    LispRange range;  // always in this document
+    LispRange range;   // in this document, or in `path`
+    std::string path;  // "" for this document; a project library's source file otherwise
 };
 
 /**
@@ -211,9 +219,11 @@ struct LispLspLocation {
  * @param lines the document's text, one entry per line
  * @param line 0-based cursor line
  * @param col 0-based cursor byte column
+ * @param path the document's filesystem path, for the project libraries (lisp_lsp_library.h); "" for none
  * @return the resolved location, or a default-constructed value with `found == false`
  */
-LispLspLocation LispLspDefinition(const std::vector<std::string> &lines, int line, int col);
+LispLspLocation LispLspDefinition(const std::vector<std::string> &lines, int line, int col,
+                                  const std::string &path = std::string());
 
 struct LispLspReference {
     LispRange range;  // the symbol-name part only (no package prefix)
@@ -278,9 +288,11 @@ struct LispLspSignature {
  * @param lines the document's text, one entry per line
  * @param line 0-based cursor line
  * @param col 0-based cursor byte column
+ * @param path the document's filesystem path, for the project libraries (lisp_lsp_library.h); "" for none
  * @return the signature and active parameter, or a default-constructed value with `found == false`
  */
-LispLspSignature LispLspSignatureHelp(const std::vector<std::string> &lines, int line, int col);
+LispLspSignature LispLspSignatureHelp(const std::vector<std::string> &lines, int line, int col,
+                                      const std::string &path = std::string());
 
 // --- Formatting -------------------------------------------------------
 

@@ -9353,6 +9353,37 @@ const char *kBuiltinLanguageUi =
     "  local ext = name:match('%.([%w]+)$')\n"
     "  return ext and mep.language_ui_extensions[ext:lower()]\n"
     "end\n"
+    // `REPL:` comment override, the console-side twin of the Run button's
+    // `CMD:` (mep_run_button_cmd_override): a line `<leader> REPL: <shell
+    // command>` anywhere in the file replaces the command that starts the
+    // language UI console. Same matching rules as CMD: (any run of non-
+    // alphanumeric leader chars, case-insensitive keyword, trailing */ or
+    // --> dropped, first non-empty match wins). mep.language_ui_toggle scans
+    // the source buffer right before mode.open() and parks the result in
+    // mep.language_ui_repl_override for the duration of that open; each
+    // mode builds its console argv through mep.language_ui_cmd(default), so
+    // the override replaces only the interpreter part and the mode still
+    // appends its own init-script arguments (run via `sh -c '<cmd> "$@"'`,
+    // e.g. `nix develop .#python --command python` gets mep_init.py
+    // appended). cwd is mep's own, like CMD:.\n"
+    "function mep.language_ui_scan_repl_override()\n"
+    "  for i = 1, mep.line_count() do\n"
+    "    local cmd = (mep.get_line(i) or ''):match('^%s*[^%w%s]+%s*[Rr][Ee][Pp][Ll]:%s*(.-)%s*$')\n"
+    "    if cmd then\n"
+    "      cmd = cmd:gsub('%s*%*/$', '')\n"
+    "      cmd = cmd:gsub('%s*%-%->$', '')\n"
+    "      if cmd ~= '' then return cmd end\n"
+    "    end\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
+    "function mep.language_ui_cmd(default)\n"
+    "  local override = mep.language_ui_repl_override\n"
+    "  if override then return {'sh', '-c', override .. ' \"$@\"', 'mep-repl'} end\n"
+    "  local argv = {}\n"
+    "  for _, a in ipairs(default or {}) do argv[#argv + 1] = a end\n"
+    "  return argv\n"
+    "end\n"
     "function mep.language_ui_toggle()\n"
     "  local tid = mep.current_tab_id()\n"
     "  local active = mep.language_ui_active[tid]\n"
@@ -9370,7 +9401,12 @@ const char *kBuiltinLanguageUi =
     "    return\n"
     "  end\n"
     "  local handle\n"
-    "  if context and context.block then handle = mep.language_ui_open_block(mode, context) else handle = mode.open() end\n"
+    "  mep.language_ui_repl_override = mep.language_ui_scan_repl_override()\n"
+    "  local ok, err = pcall(function()\n"
+    "    if context and context.block then handle = mep.language_ui_open_block(mode, context) else handle = mode.open() end\n"
+    "  end)\n"
+    "  mep.language_ui_repl_override = nil\n"
+    "  if not ok then error(err, 0) end\n"
     "  if not handle then return end\n"
     "  mep.language_ui_active[tid] = {lang = lang, close = handle.close, run_source = handle.run_source, prefer_session_run = handle.prefer_session_run}\n"
     "end\n"
@@ -10102,7 +10138,7 @@ const char *kBuiltinLanguageUiR =
     "  local editor_pane = mep.current_pane_id()\n"
     "  mep.nav_pane('down')\n"
     "  mep.pane_set_share(mep.opt.r_ui_bottom_share)\n"
-    "  mep.terminal_here_argv(mep.opt.r_ui_cmd, 'R')\n"
+    "  mep.terminal_here_argv(mep.language_ui_cmd(mep.opt.r_ui_cmd), 'R')\n"
     "  local console_pane = mep.current_pane_id()\n"
     "  local console_buf = mep.current_buffer()\n"
     "  if mep.is_terminal_buffer(console_buf) then\n"
@@ -11014,8 +11050,7 @@ const char *kBuiltinLanguageUiPython =
     "  local init_path = session_dir .. '/mep_init.py'\n"
     "  mep.language_ui_write_file(init_path, 'MEP_DIR = ' .. mep_py_ui_pyquote(session_dir) .. '\\n' .. mep_py_ui_init_template)\n"
     "  mep.language_ui_write_file(session_dir .. '/mep_mplbackend.py', mep_py_ui_backend_template)\n"
-    "  local argv = {}\n"
-    "  for _, a in ipairs(mep.opt.py_ui_cmd) do argv[#argv + 1] = a end\n"
+    "  local argv = mep.language_ui_cmd(mep.opt.py_ui_cmd)\n"
     "  argv[#argv + 1] = init_path\n"
     "  local layout = mep.language_ui_layout({\n"
     "    info_share = mep.opt.py_ui_info_share, bottom_share = mep.opt.py_ui_bottom_share,\n"
@@ -11503,7 +11538,7 @@ const char *kBuiltinLanguageUiLisp =
     "  mep.language_ui_write_file(init_path, '(defvar cl-user::*mep-ui-dir* ' .. mep_lisp_ui_lispquote(session_dir) .. ')\\n' .. mep_lisp_ui_init_template)\n"
     "  local argv = {}\n"
     "  if mep.opt.lisp_ui_rlwrap and mep_org_babel_has_exe('rlwrap') then argv[1] = 'rlwrap' end\n"
-    "  for _, a in ipairs(mep.opt.lisp_ui_cmd) do argv[#argv + 1] = a end\n"
+    "  for _, a in ipairs(mep.language_ui_cmd(mep.opt.lisp_ui_cmd)) do argv[#argv + 1] = a end\n"
     "  argv[#argv + 1] = '--load'\n"
     "  argv[#argv + 1] = init_path\n"
     "  local layout = mep.language_ui_layout({\n"
@@ -11986,8 +12021,7 @@ const char *kBuiltinLanguageUiBash =
     "    '__mep_ui_bashrc=' .. (mep.opt.bash_ui_source_bashrc and '1' or '0') .. '\\n' ..\n"
     "    '__mep_ui_hide=' .. mep.language_ui_shq(mep.opt.bash_ui_hide_vars or '') .. '\\n' ..\n"
     "    mep_bash_ui_init_template)\n"
-    "  local argv = {}\n"
-    "  for _, a in ipairs(mep.opt.bash_ui_cmd) do argv[#argv + 1] = a end\n"
+    "  local argv = mep.language_ui_cmd(mep.opt.bash_ui_cmd)\n"
     "  argv[#argv + 1] = '--rcfile'\n"
     "  argv[#argv + 1] = init_path\n"
     "  argv[#argv + 1] = '-i'\n"
@@ -12391,7 +12425,7 @@ const char *kBuiltinLanguageUiClojure =
     "  mep.language_ui_write_file(init_path, '(ns mep-ui)\\n(def dir ' .. mep_clojure_ui_quote(session_dir) .. ')\\n' .. mep_clojure_ui_init_template)\n"
     "  local argv = {}\n"
     "  if mep.opt.clojure_ui_rlwrap and mep_org_babel_has_exe('rlwrap') then argv[1] = 'rlwrap' end\n"
-    "  for _, a in ipairs(mep_clojure_ui_cmd()) do argv[#argv + 1] = a end\n"
+    "  for _, a in ipairs(mep.language_ui_cmd(mep_clojure_ui_cmd())) do argv[#argv + 1] = a end\n"
     "  argv[#argv + 1] = init_path\n"
     "  local layout = mep.language_ui_layout({\n"
     "    info_share = mep.opt.clojure_ui_info_share, bottom_share = mep.opt.clojure_ui_bottom_share,\n"

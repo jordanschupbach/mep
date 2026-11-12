@@ -54,6 +54,28 @@ console, preview or panels, the toggle closes the layout.
 The programming language modes share the same shape: a console, a Help
 tab, and panels specific to the language.
 
+* Choosing the console command with a =REPL:= comment
+
+A comment line anywhere in the file of the form
+
+#+begin_example
+# REPL: nix develop .#python --command python
+#+end_example
+
+replaces the command that starts the console when =<leader>uu= opens the
+mode, just as =CMD:= replaces what the Run button does (see
+[[file:run-button.html][Run button]]). It uses the same matching rules as
+=CMD:=: any comment leader, the keyword in any case, the first non-empty
+match wins, and a trailing =*/= or =-->= is dropped. The command runs from
+mep's working directory.
+
+Only the interpreter is replaced. The mode still adds its own startup
+arguments, for example the Python mode's init script or the Bash mode's
+=--rcfile=, after your command. So the command must accept them, as
+=python= or =nix develop ... --command python= does. This works in the R,
+Python, C++, Common Lisp, Bash and Clojure modes. Crystal, C# and SQL start
+their consoles through their own launchers and ignore the comment.
+
 * =gh=, in context
 
 =gh= ("go help") opens documentation for the symbol under the cursor. What

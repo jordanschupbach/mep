@@ -126,9 +126,14 @@ function mep.cpp_ui_start_console(st)
   mep.language_ui_write_file(adapter, '#define MEP_UI_DIRECTORY ' .. cpp_dir .. '\n' .. runtime)
   local shq = mep.language_ui_shq
   local argv = {}
-  for _, arg in ipairs(mep.opt.cpp_ui_cmd) do
-    if arg == 'crepl' and mep.bundled_tool then arg = mep.bundled_tool('crepl') end
-    argv[#argv+1] = shq(arg)
+  if mep.language_ui_repl_override then
+    -- A REPL: comment replaces the crepl command itself; it is already shell text.
+    argv[#argv+1] = mep.language_ui_repl_override
+  else
+    for _, arg in ipairs(mep.opt.cpp_ui_cmd) do
+      if arg == 'crepl' and mep.bundled_tool then arg = mep.bundled_tool('crepl') end
+      argv[#argv+1] = shq(arg)
+    end
   end
   argv[#argv+1] = '--state-dir ' .. shq(dir)
   argv[#argv+1] = '--display-function mep_ui::show -include ' .. shq(adapter)

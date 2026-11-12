@@ -8592,6 +8592,12 @@ public:
     // the way the grid shows it. Quote state carries across lines, so a
     // quoted field with a newline in it keeps its column's colour.
     void SyntaxHighlightCsv(int ns);
+    // COBOL (.cob/.cbl/.cpy/...) over the *current* buffer, added into
+    // `ns`: fixed and free reference format, `*>` / column-7 comments, the
+    // sequence area, literals, level numbers, PICTURE strings, reserved
+    // words and paragraph names -- cobol_syntax.cpp's CobolHighlight, the
+    // same line reading mep-cobol-lsp does. No tree-sitter grammar.
+    void SyntaxHighlightCobol(int ns);
     // Org emphasis markup (*bold*//italic//_underline_/+strike+/=verbatim=/
     // ~code~) over the *current* buffer, added into `ns` -- ported from
     // the Lua mep_org_scan_emphasis + mep_syntax_highlight_org_emphasis

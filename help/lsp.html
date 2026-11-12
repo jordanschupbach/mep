@@ -150,7 +150,7 @@ typing, on opening a file and on switching back to one -- and on
 automatic refresh, leaving the command.</p>
 <h1>Servers mep knows about</h1>
 <p>Forty-five. Each is used when its command is on <code>$PATH</code>; the org, R,
-Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, JavaScript and Go ones ship with mep itself:</p>
+Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, JavaScript, Go and COBOL ones ship with mep itself:</p>
 <table>
 <tr><th>Language</th><th>Command</th></tr>
 <tr><td>C++</td><td><code>mep-cpp-lsp</code> (ships with mep), or <code>clangd</code></td></tr>
@@ -171,6 +171,9 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, 
 <tr><td>Bash</td><td><code>mep-bash-lsp</code> (ships with mep), or <code>bash-language-server</code></td></tr>
 <tr><td>SQL (SQLite)</td><td><code>mep-sql-lsp</code> (ships with mep), or <code>sqls</code>, <code>sql-language-server</code></td></tr>
 <tr><td>Nix</td><td><code>mep-nix-lsp</code> (ships with mep), or <code>nil</code>, <code>nixd</code></td></tr>
+<tr><td>COBOL</td><td><code>mep-cobol-lsp</code> (ships with mep): hover shows the C++ docs rosetta writes into copybooks</td></tr>
+<tr><td>Nim</td><td><code>mep-nim-lsp</code> (ships with mep)</td></tr>
+<tr><td>Java</td><td><code>mep-java-lsp</code> (ships with mep)</td></tr>
 <tr><td>Kotlin</td><td><code>mep-kotlin-lsp</code> (ships with mep)</td></tr>
 <tr><td>Zig</td><td><code>mep-zig-lsp</code> (ships with mep)</td></tr>
 <tr><td>Rust</td><td><code>mep-rust-lsp</code> (ships with mep)</td></tr>
@@ -222,6 +225,7 @@ completion with nothing to install. See
 <a href="csharp-lsp.html">The C# language server</a>,
 <a href="sql-lsp.html">The SQL language server</a>,
 <a href="nix-lsp.html">The Nix language server</a>,
+<a href="cobol-lsp.html">The COBOL language server</a>,
 <a href="fish-lsp.html">The Fish language server</a>,
 <a href="fortran-lsp.html">The Fortran language server</a>,
 <a href="tcl-lsp.html">The Tcl language server</a>,

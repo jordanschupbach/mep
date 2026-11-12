@@ -133,6 +133,7 @@
 #include "language_ui_csharp.h"
 #include "language_ui_cpp.h"
 #include "language_ui_document.h"
+#include "language_ui_cobol.h"
 #include "language_ui_lua.h"
 #include "language_ui_sql.h"
 
@@ -8095,6 +8096,10 @@ const char *kBuiltinLsp =
     // mep's own Nim server (src/nim_lsp_server.cpp), bundled the same way
     // (help/nim-lsp.org). Also `mep-nim-lsp --lint FILE...`.
     "  nim_ls = {cmd = {mep.bundled_tool('mep-nim-lsp')}, filetypes = {'nim', 'nims', 'nimble'}},\n"
+    // mep's own COBOL server (src/cobol_lsp_server.cpp), bundled the same way
+    // (help/cobol-lsp.org). Also `mep-cobol-lsp --lint FILE...`.
+    "  cobol_ls = {cmd = {mep.bundled_tool('mep-cobol-lsp')}, filetypes = {'cob', 'cbl', 'cobol', 'cpy', 'CBL', 'COB', 'CPY', 'COBOL'},\n"
+    "    init_options = function(fname) return mep.cobol_lsp_init_options and mep.cobol_lsp_init_options(fname) end},\n"
     "  nil_ls = {cmd = {'nil'}, filetypes = {}},\n"
     "  nixd = {cmd = {'nixd'}, filetypes = {}},\n"
     // mep's own Clojure server (src/clojure_lsp_server.cpp), bundled the
@@ -8196,6 +8201,18 @@ const char *kBuiltinLsp =
     "  local ft = mep_lsp_filetype(fname or mep.filename())\n"
     "  return ft and mep_lsp_clients[mep_lsp_key(ft)]\n"
     "end\n"
+    // A registry entry's init_options: a table, or a function of the file
+    // being attached that returns one (cobol_ls: the -I flags of the Run
+    // button's Setup, mep.cobol_lsp_init_options), evaluated when the
+    // server starts.
+    "function mep.lsp_init_options(server, fname)\n"
+    "  local opts = server.init_options\n"
+    "  if type(opts) == 'function' then\n"
+    "    local ok, res = pcall(opts, fname)\n"
+    "    opts = ok and res or nil\n"
+    "  end\n"
+    "  return opts\n"
+    "end\n"
     "function mep.lsp_attach()\n"
     "  local fname = mep.filename()\n"
     "  if fname == '' then return end\n"
@@ -8239,7 +8256,7 @@ const char *kBuiltinLsp =
     // (nil when the entry has none, which drops the key). This is how a
     // server that takes settings rather than command-line flags gets
     // them -- mep's own Python server reads `maxLineLength` here.
-    "    initializationOptions = server.init_options,\n"
+    "    initializationOptions = mep.lsp_init_options(server, fname),\n"
     "    capabilities = {\n"
     "      textDocument = {\n"
     "        hover = {contentFormat = {'plaintext'}},\n"
@@ -17819,6 +17836,8 @@ const char *kBuiltinSyntax =
     "    'export','extends','false','finally','for','function','if','import','in','instanceof','let',\n"
     "    'new','null','return','super','switch','this','throw','true','try','typeof','var','void','while'},\n"
     "}\n"
+    "mep.cobol_filetypes = mep.cobol_filetypes or {cob = true, cbl = true, cobol = true, cpy = true,\n"
+    "  COB = true, CBL = true, COBOL = true, CPY = true}\n"
     "mep.syntax_keywords.cpp = mep.syntax_keywords.c\n"
     "mep.syntax_keywords.hpp = mep.syntax_keywords.c\n"
     "mep.syntax_keywords.h = mep.syntax_keywords.c\n"
@@ -18093,6 +18112,14 @@ const char *kBuiltinSyntax =
     "  if not mep_syntax_ns then mep_syntax_ns = mep.ns_create('syntax') end\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
     "  if not ft then mep.ns_clear(mep_syntax_ns) return end\n"
+    // COBOL: no tree-sitter grammar; its own line reader (fixed/free
+    // reference format, column-7 and `*>` comments, level numbers,
+    // PICTURE strings), shared with mep-cobol-lsp (src/cobol_syntax.cpp).
+    "  if mep.cobol_filetypes[ft] then\n"
+    "    mep.ns_clear(mep_syntax_ns)\n"
+    "    mep.cobol_highlight(mep_syntax_ns)\n"
+    "    return\n"
+    "  end\n"
     // A .csv shown as text (:MepSheetText): one colour per column.
     "  if ft == 'csv' then\n"
     "    mep.ns_clear(mep_syntax_ns)\n"
@@ -23694,9 +23721,10 @@ const char *kBuiltinOrgPolyglot =
     // with the block's -I/-D lists (mep_polyglot_write_compile_db) added
     // after any the user configured.
     "  local init = nil\n"
-    "  if server.init_options or shadow.init_options then\n"
+    "  local server_init = mep.lsp_init_options(server, shadow.path)\n"
+    "  if server_init or shadow.init_options then\n"
     "    init = {}\n"
-    "    for k, v in pairs(server.init_options or {}) do init[k] = v end\n"
+    "    for k, v in pairs(server_init or {}) do init[k] = v end\n"
     "    for k, v in pairs(shadow.init_options or {}) do\n"
     "      if type(v) == 'table' and type(init[k]) == 'table' then\n"
     "        local both = {}\n"
@@ -37010,12 +37038,18 @@ const char *kBuiltinRunButton =
     // --script: no init files, no debugger -- an error ends the run with
     // a backtrace rather than waiting at a debugger prompt.
     "  lisp = {interpreter = 'sbcl --script', flags = ''},\n"
+    // GnuCOBOL: -x builds an executable whose entry point is the program;
+    // Setup's flags take -I/-L/-l for copybooks and bound libraries.
+    "  cob = {compiler = 'cobc -x', flags = ''},\n"
     "}\n"
     "mep.opt.run_button_defaults.R = mep.opt.run_button_defaults.r\n"
     "mep.opt.run_button_defaults.cc = mep.opt.run_button_defaults.cpp\n"
     "mep.opt.run_button_defaults.cxx = mep.opt.run_button_defaults.cpp\n"
     "for _, e in ipairs({'f', 'for', 'f95', 'f03', 'f08', 'F', 'F90'}) do\n"
     "  mep.opt.run_button_defaults[e] = mep.opt.run_button_defaults.f90\n"
+    "end\n"
+    "for _, e in ipairs({'cbl', 'cobol', 'COB', 'CBL', 'COBOL'}) do\n"
+    "  mep.opt.run_button_defaults[e] = mep.opt.run_button_defaults.cob\n"
     "end\n"
     "for alias, ext in pairs({bash = 'sh', mjs = 'js', cjs = 'js', mts = 'ts', ex = 'exs', ss = 'scm', pm = 'pl', gap = 'g', max = 'mac', lsp = 'lisp', cl = 'lisp'}) do\n"
     "  mep.opt.run_button_defaults[alias] = mep.opt.run_button_defaults[ext]\n"
@@ -72395,6 +72429,7 @@ int main(int argc, char **argv) {
     lua->DoString(BuiltinLanguageUiCsharp());
     lua->DoString(BuiltinLanguageUiSql());
     lua->DoString(BuiltinLanguageUiLua());
+    lua->DoString(BuiltinLanguageUiCobol());
     lua->DoString(kBuiltinCompletion);
     lua->DoString(kBuiltinMenubarBindings);
     // After kBuiltinLsp: reuses its mep_lsp_uri/mep_lsp_result helpers.

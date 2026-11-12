@@ -50,6 +50,7 @@ console, preview or panels, the toggle closes the layout.
 | C#          | [[file:csharp-mode.html][C# mode]]          |
 | SQL (SQLite) | [[file:sql-mode.html][SQL mode]]           |
 | Lua         | [[file:lua-mode.html][Lua mode]]            |
+| COBOL       | [[file:cobol-lsp.html][The COBOL language server]] (its /COBOL mode/ section) |
 | MEPML       | [[file:mepml.html][Document preview and navigation]] |
 
 The programming language modes share the same shape: a console, a Help

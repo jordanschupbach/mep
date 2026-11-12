@@ -1219,6 +1219,9 @@ add_library(mep_core STATIC
     # COMMON-LISP name table.
     src/lisp_indent.cpp
     src/lisp_format.cpp
+    # COBOL line structure + highlighter (mep.cobol_highlight), shared with
+    # mep-cobol-lsp.
+    src/cobol_syntax.cpp
     src/math_tex.cpp
     src/math_speech.cpp
     src/math_markup.cpp
@@ -2858,6 +2861,28 @@ target_compile_options(mep-nim-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITI
 target_link_options(mep-nim-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-nim-lsp-test)
 
+# mep's own COBOL language server and linter: the wire half
+# (src/cobol_lsp_server.cpp, also `mep-cobol-lsp --lint FILE...` and
+# `--hover FILE LINE COL`) over the analysis half (src/cobol_lsp.cpp) and
+# the line structure it shares with the editor's highlighter
+# (src/cobol_syntax.cpp). It reads the copybooks a program COPYs -- with
+# rosetta's `*>>` doc comments, hover on a `CALL "dm_x"` literal -- and
+# never runs cobc. Same reasoning as mep-nix-lsp above.
+set(MEP_COBOL_LSP_SOURCES src/cobol_lsp.cpp src/cobol_syntax.cpp)
+if(NOT EMSCRIPTEN)
+    add_executable(mep-cobol-lsp src/cobol_lsp_server.cpp ${MEP_COBOL_LSP_SOURCES})
+    target_include_directories(mep-cobol-lsp PRIVATE src)
+    target_compile_options(mep-cobol-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-cobol-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-cobol-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-cobol-lsp-test EXCLUDE_FROM_ALL src/cobol_lsp_test.cpp ${MEP_COBOL_LSP_SOURCES})
+target_include_directories(mep-cobol-lsp-test PRIVATE src)
+target_compile_options(mep-cobol-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cobol-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cobol-lsp-test)
+
 # mep's own Nix language server and linter: the wire half
 # (src/nix_lsp_server.cpp, also `mep-nix-lsp --lint FILE...` and
 # `--nix-check FILE...`) over the analysis half (src/nix_lsp.cpp) and a
@@ -4290,7 +4315,7 @@ if(NOT EMSCRIPTEN)
         mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test
         mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-format-test mep-mepml-style-test
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
-        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-nix-format-test mep-nix-lsp-test mep-nim-lsp-test mep-nim-format-test mep-java-lsp-test mep-java-format-test mep-kotlin-lsp-test mep-kotlin-format-test mep-zig-lsp-test mep-zig-format-test mep-rust-lsp-test mep-rust-vocab-test mep-rust-format-test mep-rust-parse-test mep-go-lsp-test mep-go-format-test mep-gap-lsp-test mep-gap-format-test mep-julia-parse-test mep-julia-lsp-test mep-julia-format-test mep-tcl-lsp-test mep-tcl-format-test mep-octave-lsp-test mep-octave-format-test mep-fish-lsp-test mep-fish-format-test mep-fortran-lsp-test mep-fortran-format-test mep-scheme-lsp-test mep-scheme-format-test mep-lua-lsp-test mep-lua-format-test mep-js-parse-test mep-js-format-test mep-js-lsp-test mep-vterm-test mep-spell-test
+        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-nix-format-test mep-nix-lsp-test mep-cobol-lsp-test mep-nim-lsp-test mep-nim-format-test mep-java-lsp-test mep-java-format-test mep-kotlin-lsp-test mep-kotlin-format-test mep-zig-lsp-test mep-zig-format-test mep-rust-lsp-test mep-rust-vocab-test mep-rust-format-test mep-rust-parse-test mep-go-lsp-test mep-go-format-test mep-gap-lsp-test mep-gap-format-test mep-julia-parse-test mep-julia-lsp-test mep-julia-format-test mep-tcl-lsp-test mep-tcl-format-test mep-octave-lsp-test mep-octave-format-test mep-fish-lsp-test mep-fish-format-test mep-fortran-lsp-test mep-fortran-format-test mep-scheme-lsp-test mep-scheme-format-test mep-lua-lsp-test mep-lua-format-test mep-js-parse-test mep-js-format-test mep-js-lsp-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-python-doc-format-test mep-r-format-test mep-cpp-format-test
         mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test
         mep-editor-fold-test mep-editor-reload-test mep-editor-text-object-test mep-editor-block-settings-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test

@@ -4914,6 +4914,13 @@ int l_syntax_highlight_fallback(lua_State *L) {
     return 0;
 }
 
+// mep.cobol_highlight(ns): COBOL highlighting over the current buffer --
+// see Editor::SyntaxHighlightCobol.
+int l_cobol_highlight(lua_State *L) {
+    GetEditor(L)->SyntaxHighlightCobol(static_cast<int>(luaL_checkinteger(L, 1)));
+    return 0;
+}
+
 // mep.csv_highlight(ns): per-column colours over the current .csv buffer
 // -- see Editor::SyntaxHighlightCsv.
 int l_csv_highlight(lua_State *L) {
@@ -18046,6 +18053,7 @@ const luaL_Reg kMepFuncs[] = {
     {"test_driver_path", l_test_driver_path},
     {"syntax_highlight_fallback", l_syntax_highlight_fallback},
     {"csv_highlight", l_csv_highlight},
+    {"cobol_highlight", l_cobol_highlight},
     {"org_highlight_emphasis", l_org_highlight_emphasis},
     {"md_toggle_checkbox", l_md_toggle_checkbox},
     {"md_fold", l_md_fold},

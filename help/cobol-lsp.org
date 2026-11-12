@@ -1,0 +1,165 @@
+#+TITLE: The COBOL language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+COBOL files get a language server of their own, =mep-cobol-lsp=, built
+and shipped with mep. Open a =.cob=, =.cbl=, =.cobol= or =.cpy= file (in
+either case) and it attaches by itself -- nothing to install, and it never
+runs =cobc=.
+
+It is made for programs that call C++ through the bindings rosetta
+generates: rosetta writes each function's C++ documentation into the
+copybook as =*>>= doc comments, and the server reads them back. Write
+
+#+begin_src cobol
+CALL "dm_kmeans_segment" USING DM-KMEANS-SEGMENT DM-STATUS
+#+end_src
+
+press =K= on the literal, and the popup shows the C++ signature, every
+=CALL= line of the record, the documentation and the record's fields
+with their one-line meanings.
+
+The same binary is a command-line linter and hover printer; see
+/From the command line/ below.
+
+* Both reference formats
+
+Fixed format (sequence area in columns 1-6, the indicator in column 7,
+=*>= in columns 7-8) and free format (=*>= anywhere outside a literal) are
+both read, in the program and in every copybook it COPYs.
+=>>SOURCE FORMAT [IS] FREE|FIXED= and =$SET SOURCEFORMAT"FREE"= switch
+format from the next line on; without one, a file is fixed format (cobc's
+default) unless code sits where the sequence area would be. mep's syntax
+highlighting reads lines the same way: comments, the sequence area,
+literals, level numbers, PICTURE strings, reserved words, paragraph and
+record names.
+
+* What it reads from a copybook
+
+A doc block is a run of comment lines whose text starts with =*>>=
+(plain =*>= comments are not docs). It documents the next data
+description entry -- 01, 05, 10, 77, 78 or 88 -- and ordinary =*>=
+comments in between do not break it. Rosetta wraps long lines onto
+continuation lines indented two more spaces; those are joined again
+(except inside a =```= code block).
+
+| Entry | What the block holds |
+|-------+----------------------|
+| 01 call record | the C++ signature, one or more =CALL "x" USING ...= lines, a blank =*>>= line, then the documentation |
+| 01 in a callbacks copybook | the C++ signature, =PROCEDURE DIVISION USING REC PREFIX-CALLBACK-STATUS=, then the documentation |
+| 05 and deeper | the parameter, its C++ type, what the field holds, the doc text |
+| 78 | an enum's documentation, written once above its first constant; the constants after it share it |
+| 88 | usually nothing: the hover shows the field's documentation |
+
+A record can have many =CALL= lines and each one leads to it:
+=x_get= and =x_set= on a field record, =x_base= on a director's
+non-pure method, =_new=, =_size=, =_get=, =_set=, =_push=, =_clear=,
+=_add=, =_has=, =_remove=, =_keys= and =_call= on a container record,
+=_from_table=, =_append_table= and =_to_table= on a =-TABLE= record,
+=_close=, =_handle_type= and =_handle_open= on =PREFIX-HANDLE=. A
+=CALL= literal no doc block names still finds the record rosetta would
+name after it (=cobol_demo_add= -> =COBOL-DEMO-ADD=).
+
+* Finding copybooks
+
+=COPY name= and =COPY "file.cpy"= are looked up, in order, in
+
+1. the program's own directory,
+2. each directory of =$COBCPY= (colon-separated),
+3. the =-I= directories of the Run button's Setup flags for the file's
+   extension (=.cob='s for a =.cpy=), relative ones against mep's working
+   directory -- the same flags =<leader>rr= builds with,
+4. =$COB_COPY_DIR=,
+
+trying the name as written, upper and lower case, bare and with =.cpy=,
+=.CPY=, =.cbl=, =.CBL=, =.cob=, =.COB= and =.cobol=. Copybooks that COPY
+others are followed (their own directory first). A parsed copybook is
+kept until its size or modification time changes, so a large generated
+one -- datamunge's is 2.7 MB with 2,800 records and 3,800 calls -- is read
+once (about 40 ms) and every later keystroke costs under a millisecond.
+
+The =-I= list reaches the server when it starts, as the =includeDirs=
+initialization option. To set it yourself instead:
+
+#+begin_src lua
+mep.lsp_servers.cobol_ls.init_options = {includeDirs = {'build/cobol'}}
+#+end_src
+
+* What it reports
+
+| Code | Severity | What it means |
+|------+----------+---------------|
+| =copy-not-found= | warning | a =COPY= that no search directory has; the message lists where it looked |
+
+* What else it does
+
+- *Hover* (=K=) on
+  - a =CALL= literal: the record's signature, all its =CALL= lines, its
+    documentation and a list of its fields;
+  - a record or field name anywhere -- =MOVE=, =IF=, =COMPUTE=,
+    =PROCEDURE DIVISION USING=, with subscripts (=X-ITEM(3)=) or
+    reference modification (=X(1:N)=): its declaration, its documentation,
+    the 88 values it has and the record it belongs to (and that record's
+    =CALL=);
+  - an 88 condition or a 78 constant: its value and documentation;
+  - =COPY= or its name: the resolved path and the copybook's records, or
+    where it looked when nothing was found;
+  - the program's own items and paragraphs.
+- *Go to definition* (=gd=) jumps into the copybook, to the record a =CALL=
+  literal names or to the field under the cursor; on a =COPY= it opens the
+  copybook.
+- *Completion* inside =CALL "= offers every documented program, after
+  =CALL= the quoted names, after =COPY= the =.cpy= files on the search
+  path, and elsewhere the program's own names, the copybooks' records
+  (and, once you type a prefix, every field) and the reserved words.
+- *Signature help* inside =CALL "x" USING ...= shows the =CALL= line and
+  marks the operand being typed.
+- References, document highlights and rename for the program's own names
+  (a copybook's names are shared, so they are not renamed), the outline
+  (records, fields, paragraphs, sections) and folding (divisions, records,
+  paragraphs, doc blocks).
+
+* COBOL mode
+
+=<leader>uu= (or =:MepLanguageUi=) in a COBOL file opens the language UI
+mode: the source with a shell below it, and on the right
+
+- *Build* -- =cobc -fsyntax-only= runs when the mode opens and after every
+  save (and on =<leader>re=), so syntax errors and missing copybooks show
+  up without a full build; =file:line: error= rows are clickable. A
+  free-format file that has no =>>SOURCE= directive gets =-free= (cobc
+  reads fixed format by default), unless Setup's flags choose a format.
+- *Help* -- =gh= puts the language server's hover for the name under the
+  cursor here instead of in a popup.
+- *Copybooks* -- each =COPY= of the file, resolved in the order above, with
+  its 01 records and their =CALL= names (=+N= when a record has more);
+  clicking one opens the copybook at it. A copybook is re-read only when
+  it changes; =mep.opt.cobol_ui_copybook_rows= (400) caps the rows listed.
+
+=<leader>rr= saves, builds with the Run button's compiler and flags
+(=cobc -x= unless Setup says otherwise -- put =-I DIR -L DIR -lfoo= there
+for a binding) into the session directory, and runs the program in the
+shell from the source's directory.
+
+* From the command line
+
+#+begin_src sh
+mep-cobol-lsp --lint FILE...
+mep-cobol-lsp --hover FILE LINE COL
+#+end_src
+
+=--lint= prints every diagnostic as =path:line:col: severity: message
+[code]= -- 1-based line and column -- and exits 1 if anything printed is
+an error or a warning, 2 if a file could not be read, and 0 otherwise
+(=-= reads standard input). =--hover= prints what =K= shows at a 1-based
+position, and exits 1 when there is nothing. Both find copybooks the way
+the server does, except for the Setup flags: use =$COBCPY=. With no
+arguments, =mep-cobol-lsp= is the language server on stdio.
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:language-ui.html][Language UI modes]] -- the layout every mode shares.

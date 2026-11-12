@@ -373,7 +373,7 @@
             # start (not on PATH?)" toast. Keep in sync with the
             # install(TARGETS ...) lines in CMakeLists.txt.
             for tool in mep-org-lsp mep-mepml-lsp mep-r-lsp mep-python-lsp \
-                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-lisp-lsp mep-bash-lsp mep-clojure-lsp mep-sql-lsp mep-nix-lsp mep-lua-lsp mep-js-lsp mep-scheme-lsp mep-fish-lsp mep-fortran-lsp mep-tcl-lsp mep-octave-lsp mep-julia-lsp mep-go-lsp mep-gap-lsp mep-rust-lsp mep-zig-lsp mep-kotlin-lsp mep-java-lsp mep-nim-lsp mep-mepml mep-tex; do
+                        mep-cpp-lsp mep-c-lsp mep-maxima-lsp mep-lisp-lsp mep-bash-lsp mep-clojure-lsp mep-sql-lsp mep-nix-lsp mep-lua-lsp mep-js-lsp mep-scheme-lsp mep-fish-lsp mep-fortran-lsp mep-tcl-lsp mep-octave-lsp mep-julia-lsp mep-go-lsp mep-gap-lsp mep-rust-lsp mep-zig-lsp mep-kotlin-lsp mep-java-lsp mep-nim-lsp mep-cobol-lsp mep-mepml mep-tex; do
               install -Dm755 "$tool" "$out/bin/$tool"
             done
             # :Browser's web view on Linux (gui_embed_webview_x11.cpp finds

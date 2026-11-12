@@ -178,7 +178,7 @@ automatic refresh, leaving the command.
 * Servers mep knows about
 
 Forty-five. Each is used when its command is on =$PATH=; the org, R,
-Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, JavaScript and Go ones ship with mep itself:
+Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, JavaScript, Go and COBOL ones ship with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
@@ -200,6 +200,7 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, 
 | Bash            | =mep-bash-lsp= (ships with mep), or =bash-language-server= |
 | SQL (SQLite)    | =mep-sql-lsp= (ships with mep), or =sqls=, =sql-language-server= |
 | Nix             | =mep-nix-lsp= (ships with mep), or =nil=, =nixd= |
+| COBOL           | =mep-cobol-lsp= (ships with mep): hover shows the C++ docs rosetta writes into copybooks |
 | Nim             | =mep-nim-lsp= (ships with mep) |
 | Java            | =mep-java-lsp= (ships with mep) |
 | Kotlin          | =mep-kotlin-lsp= (ships with mep) |
@@ -255,6 +256,7 @@ completion with nothing to install. See
 [[file:csharp-lsp.html][The C# language server]],
 [[file:sql-lsp.html][The SQL language server]],
 [[file:nix-lsp.html][The Nix language server]],
+[[file:cobol-lsp.html][The COBOL language server]],
 [[file:fish-lsp.html][The Fish language server]],
 [[file:fortran-lsp.html][The Fortran language server]],
 [[file:tcl-lsp.html][The Tcl language server]],

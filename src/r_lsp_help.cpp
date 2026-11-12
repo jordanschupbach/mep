@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <vector>
 
 #if defined(_WIN32)
@@ -30,6 +31,42 @@ options(useFancyQuotes = FALSE)
 args <- commandArgs(trailingOnly = TRUE)
 topic <- args[[1L]]
 explicit <- args[[2L]]
+mode <- args[[3L]]
+member <- mode == "member" || startsWith(mode, "method")
+# A `x$name` whose class is unknown: the `$name(...)` entries of the listed
+# packages' pages (R6 classes document their methods as `$name(args)` items).
+# "method:Cls" keeps only class Cls's page.
+if (startsWith(mode, "method")) {
+  only <- sub("^method:?", "", mode)
+  needle <- paste0("$", topic, "(")
+  for (pkg in args[-(1:3)]) {
+    db <- tryCatch(tools::Rd_db(pkg), error = function(e) list())
+    blocks <- character()
+    for (rd in db) {
+      name <- tools:::.Rd_get_metadata(rd, "name")
+      if (nzchar(only) && !identical(name, only)) next
+      if (!any(grepl(needle, as.character(rd), fixed = TRUE))) next
+      text <- capture.output(tools::Rd2txt(rd, options = list(width = 90, underline_titles = FALSE)))
+      stripped <- sub("^\\s*([^$[:space:]]+\\s+)?", "", text)
+      head <- which(startsWith(stripped, needle))[1L]
+      if (is.na(head)) next
+      indent <- function(line) nchar(line) - nchar(sub("^\\s+", "", line))
+      end <- head
+      while (end < length(text) && (!nzchar(trimws(text[end + 1L])) || indent(text[end + 1L]) > indent(text[head])))
+        end <- end + 1L
+      body <- if (end > head) sub(strrep(" ", indent(text[head])), "  ", text[(head + 1L):end], fixed = TRUE) else character()
+      while (length(body) && !nzchar(trimws(body[length(body)]))) body <- body[-length(body)]
+      blocks <- c(blocks, paste(c(paste0(name, stripped[head]), body), collapse = "\n"))
+    }
+    if (length(blocks)) {
+      cat(topic, "\n\nPackage: ", pkg, "\n\n", sep = "")
+      cat(blocks, sep = "\n\n")
+      cat("\n")
+      quit(status = 0L)
+    }
+  }
+  quit(status = 0L)
+}
 lookup <- function(pkg = NULL, all = FALSE) {
   tryCatch(suppressWarnings(suppressMessages(
     do.call(utils::help, list(topic = topic, package = pkg,
@@ -40,12 +77,13 @@ h <- character()
 if (nzchar(explicit)) {
   h <- lookup(explicit)
 } else {
-  for (pkg in args[-c(1L, 2L)]) {
+  for (pkg in args[-(1:3)]) {
     h <- lookup(pkg)
     if (length(h)) break
   }
-  if (!length(h)) h <- lookup()
-  if (!length(h)) h <- lookup(all = TRUE)
+  # A `x$name` member is only looked up in the script's own packages.
+  if (!length(h) && !member) h <- lookup()
+  if (!length(h) && !member) h <- lookup(all = TRUE)
 }
 if (!length(h)) quit(status = 0L)
 if (length(h) > 1L) {
@@ -78,7 +116,23 @@ std::string QuoteArgument(const std::string &arg) {
 }
 #endif
 
-std::string RunHelp(const std::vector<std::string> &args, const std::string &cwd) {
+// The nearest `.Renviron` above the document: where a project names its own
+// library (R_LIBS_USER=...), as an interactive R started there would read it.
+std::string ProjectRenviron(const std::string &cwd) {
+    if (cwd.empty()) return {};
+    std::error_code ec;
+    std::filesystem::path dir = std::filesystem::absolute(cwd, ec);
+    if (ec) return {};
+    for (;;) {
+        const std::filesystem::path file = dir / ".Renviron";
+        if (std::filesystem::is_regular_file(file, ec)) return file.string();
+        if (!dir.has_parent_path() || dir.parent_path() == dir) return {};
+        dir = dir.parent_path();
+    }
+}
+
+// `renviron`, when set, becomes R_ENVIRON_USER for the child only.
+std::string RunHelp(const std::vector<std::string> &args, const std::string &cwd, const std::string &renviron) {
     const auto deadline = std::chrono::steady_clock::now() + kHelpTimeout;
     std::string out;
 #if defined(_WIN32)
@@ -97,8 +151,10 @@ std::string RunHelp(const std::vector<std::string> &args, const std::string &cwd
     PROCESS_INFORMATION process{};
     std::string command;
     for (const auto &arg : args) command += (command.empty() ? "" : " ") + QuoteArgument(arg);
+    if (!renviron.empty()) SetEnvironmentVariableA("R_ENVIRON_USER", renviron.c_str());
     const BOOL started = CreateProcessA(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
                                        nullptr, cwd.empty() ? nullptr : cwd.c_str(), &startup, &process);
+    if (!renviron.empty()) SetEnvironmentVariableA("R_ENVIRON_USER", nullptr);
     CloseHandle(writer);
     if (null != INVALID_HANDLE_VALUE) CloseHandle(null);
     if (!started) { CloseHandle(reader); return {}; }
@@ -142,6 +198,7 @@ std::string RunHelp(const std::vector<std::string> &args, const std::string &cwd
         close(fds[0]);
         close(fds[1]);
         if (!cwd.empty() && chdir(cwd.c_str()) != 0) _exit(127);
+        if (!renviron.empty()) setenv("R_ENVIRON_USER", renviron.c_str(), 1);
         execvp(argv[0], argv.data());
         _exit(127);
     }
@@ -183,7 +240,24 @@ std::string RLspInstalledHelp(const RLspHoverInfo &info, const std::string &cwd)
     if (info.help_topic.empty()) return {};
     const char *configured = std::getenv("MEP_RSCRIPT");
     const std::string rscript = configured != nullptr && configured[0] != '\0' ? configured : "Rscript";
-    std::vector<std::string> args{rscript, "--vanilla", "-e", kHelpScript, info.help_topic, info.help_package};
-    args.insert(args.end(), info.help_packages.begin(), info.help_packages.end());
-    return RunHelp(args, cwd);
+    // --vanilla without --no-environ when the project has a .Renviron: environment
+    // files only set variables, while profiles (which run code) stay disabled.
+    const std::string renviron = ProjectRenviron(cwd);
+    const auto lookup = [&](const std::string &topic, const char *mode) {
+        std::vector<std::string> args{rscript, "--no-save", "--no-restore", "--no-site-file", "--no-init-file"};
+        if (renviron.empty()) args.push_back("--no-environ");
+        args.insert(args.end(), {"-e", kHelpScript, topic, info.help_package, mode});
+        args.insert(args.end(), info.help_packages.begin(), info.help_packages.end());
+        return RunHelp(args, cwd, renviron);
+    };
+    if (!info.help_member) return lookup(info.help_topic, "");
+    // `x$name`: a page of its own, else the entry for `$name(...)` on the receiver's
+    // class page, else that whole page; with the class unknown, every documented
+    // `$name(...)` method in the script's packages.
+    std::string text = lookup(info.help_topic, "member");
+    const std::string &cls = info.help_fallback_topic;
+    if (text.empty() && !cls.empty()) text = lookup(info.help_topic, ("method:" + cls).c_str());
+    if (text.empty() && !cls.empty()) text = lookup(cls, "member");
+    if (text.empty() && cls.empty()) text = lookup(info.help_topic, "method");
+    return text;
 }

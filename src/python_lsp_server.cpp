@@ -295,7 +295,8 @@ def named_type(name):
     if not re.fullmatch(r'[A-Za-z_]\w*(\.[A-Za-z_]\w*)*', name):
         return {}
     bits = name.split('.')
-    module = inspect.getmodule(obj)
+    # Extension methods (method_descriptor) have no __module__: use their class's.
+    module = inspect.getmodule(obj) or inspect.getmodule(getattr(obj, '__objclass__', None))
     value = getattr(module, bits[0], getattr(builtins, bits[0], None)) if module else None
     try:
         for bit in bits[1:]:

@@ -149,6 +149,11 @@ struct RLspHoverInfo {
     std::string help_topic;
     std::string help_package;
     std::vector<std::string> help_packages;
+    // `x$name` (a list or R6 generator member, as in nn$AlexNet or Circle$new): the topic is
+    // `name`, then `help_fallback_topic` (`x`), searched only in the library()'d packages --
+    // never base R, so df$mean does not show base::mean. Unset without library() packages.
+    bool help_member = false;
+    std::string help_fallback_topic;
 };
 
 /**

@@ -854,6 +854,20 @@ void InstalledHelpTargets() {
     const auto local = RLspHover({"spline.des <- function(x) x", "spline.des(1)"}, 1, 4);
     CHECK(local.found && local.help_topic.empty());
     CHECK(RLspHover({"obj$spline.des"}, 0, 8).help_topic.empty());
+    // With a library() package, `x$name` looks `name` (then `x`) up there only.
+    const RLspHoverInfo member = RLspHover({"library(datamungerNN)", "y <- nn$AlexNet(p)"}, 1, 10);
+    CHECK(!member.found && member.help_member && member.help_topic == "AlexNet");
+    CHECK(member.help_fallback_topic == "nn");
+    CHECK((member.help_packages == std::vector<std::string>{"datamungerNN"}));
+    const RLspHoverInfo generator = RLspHover({"library(datamunger)", "c <- Circle$new(2)"}, 1, 14);
+    CHECK(generator.help_topic == "new" && generator.help_fallback_topic == "Circle");
+    CHECK(RLspHover({"library(datamunger)", "x <- obj@slot"}, 1, 11).help_topic.empty());
+    // A variable built by Cls$new() shows Cls's page for its methods; other receivers have no fallback.
+    const RLspHoverInfo method = RLspHover({"library(datamunger)", "x0 <- Dual$new(2, 1)", "f <- x0$multiply(x0)"}, 2, 10);
+    CHECK(method.help_topic == "multiply" && method.help_fallback_topic == "Dual");
+    CHECK(RLspHover({"library(datamunger)", "x0 <- 1", "x0 <- Dual$new(2)", "x0$value()"}, 3, 4)
+              .help_fallback_topic.empty());
+    CHECK(RLspHover({"library(datamunger)", "f <- function(x0) x0$value()"}, 1, 23).help_fallback_topic.empty());
     CHECK(RLspHover({"obj@spline.des"}, 0, 8).help_topic.empty());
     CHECK(RLspHover({"# spline.des"}, 0, 5).help_topic.empty());
     CHECK(RLspHover({"\"spline.des\""}, 0, 5).help_topic.empty());

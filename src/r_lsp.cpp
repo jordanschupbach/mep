@@ -1745,6 +1745,32 @@ std::string DescribeBinding(const Analyzer &analyzer, const std::vector<std::str
 
 }  // namespace
 
+/**
+ * @brief The class whose help page documents `receiver$member`: `Cls` for
+ * `Cls$member`, and for a variable assigned once from `Cls$new(...)`, `Cls`.
+ * Empty when the receiver's class is not evident from the source.
+ */
+static std::string ReceiverClass(const Analyzer &analyzer, int receiver, int scope, int depth = 0) {
+    const RParseResult &ast = analyzer.ast();
+    if (receiver < 0 || depth > 4) return {};
+    const RNode &node = ast.at(receiver);
+    if (node.kind == RNodeKind::Ident) {
+        const int binding = analyzer.Lookup(node.text, scope);
+        if (binding < 0) return node.text;  // not a local: a class (or other help topic) by name
+        const Binding &bound = analyzer.bindings()[static_cast<size_t>(binding)];
+        if (bound.kind != BindKind::Variable || bound.reassigned) return {};
+        return ReceiverClass(analyzer, bound.value_node, bound.scope, depth + 1);
+    }
+    // Cls$new(...): an R6 constructor call.
+    if (node.kind != RNodeKind::Call || node.kids.empty()) return {};
+    const RNode &callee = ast.at(node.kids[0]);
+    if (callee.kind != RNodeKind::Binary || callee.text != "$" || callee.kids.size() != 2) return {};
+    const RNode &cls = ast.at(callee.kids[0]);
+    const RNode &method = ast.at(callee.kids[1]);
+    if (cls.kind != RNodeKind::Ident || method.text != "new") return {};
+    return analyzer.Lookup(cls.text, scope) < 0 ? cls.text : std::string();
+}
+
 RLspHoverInfo RLspHover(const std::vector<std::string> &lines, int line, int col) {
     RLspHoverInfo info;
     std::vector<RComment> comments;
@@ -1816,10 +1842,12 @@ RLspHoverInfo RLspHover(const std::vector<std::string> &lines, int line, int col
             if (RRangeContains(lhs.range, line, col)) return info;
             if (RRangeContains(rhs.range, line, col)) info.help_package = lhs.text;
         } else if ((node.text == "$" || node.text == "@") && RRangeContains(rhs.range, line, col)) {
-            return info;
+            if (node.text == "@") return info;
+            info.help_member = true;
+            info.help_fallback_topic = ReceiverClass(analyzer, node.kids[0], analyzer.ScopeAt(line, col));
         }
     }
-    const int use = analyzer.UseAt(line, col);
+    const int use = info.help_member ? -1 : analyzer.UseAt(line, col);
     if (use >= 0 && info.help_package.empty()) {
         const int binding = analyzer.uses()[static_cast<size_t>(use)].binding;
         if (binding >= 0) {
@@ -1828,13 +1856,13 @@ RLspHoverInfo RLspHover(const std::vector<std::string> &lines, int line, int col
             return info;
         }
     }
-    const RLspFunctionEntry *fn = RLspFindFunction(tok.text);
+    const RLspFunctionEntry *fn = info.help_member ? nullptr : RLspFindFunction(tok.text);
     if (fn != nullptr && (info.help_package.empty() || info.help_package == fn->package)) {
         info.found = true;
         info.text = SignatureLabel(*fn) + "\n\n" + fn->doc + "\n\nPackage: " + fn->package;
         return info;
     }
-    const RLspVocabEntry *constant = FindVocab(RLspConstantVocab(), tok.text);
+    const RLspVocabEntry *constant = info.help_member ? nullptr : FindVocab(RLspConstantVocab(), tok.text);
     if (constant != nullptr && info.help_package.empty()) {
         info.found = true;
         info.text = std::string(constant->name) + "  (" + constant->detail + ")\n\n" + constant->doc;
@@ -1861,6 +1889,11 @@ RLspHoverInfo RLspHover(const std::vector<std::string> &lines, int line, int col
         auto &packages = info.help_packages;
         packages.erase(std::remove(packages.begin(), packages.end(), value.text), packages.end());
         packages.insert(packages.begin(), value.text);
+    }
+    if (info.help_member && info.help_packages.empty()) {
+        info.help_member = false;
+        info.help_topic.clear();
+        info.help_fallback_topic.clear();
     }
     return info;
 }

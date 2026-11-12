@@ -409,7 +409,8 @@ private:
         RLspHoverInfo info = RLspHover(Doc(uri), LineOf(params), ColOf(params));
         if (!info.found && !info.help_topic.empty()) {
             const std::string cwd = OptionsFor(uri).doc_dir;
-            std::vector<std::string> key{cwd, info.help_topic, info.help_package};
+            std::vector<std::string> key{cwd, info.help_topic, info.help_package,
+                                         info.help_member ? "member" : "", info.help_fallback_topic};
             key.insert(key.end(), info.help_packages.begin(), info.help_packages.end());
             auto it = help_cache_.find(key);
             if (it == help_cache_.end()) {

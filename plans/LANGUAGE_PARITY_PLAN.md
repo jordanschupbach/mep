@@ -49,7 +49,7 @@ formatters = `builtin = 'format_<x>'` entries in `mep.format_languages`.
 | orgmode | [x] | [x] | [x] | [-] | [-] | done | a document, not a language with a console |
 | notebook | [-] | [-] | [-] | [-] | [-] | -- | `.ipynb` is a view over Python cells |
 | nix | [x] | [x] | [x] | [ ] | [x] | done |  |
-| lua | [x] | [x] | [x] | [ ] | [x] | done |  |
+| lua | [x] | [x] | [x] | [x] | [x] | done |  |
 | maxima | [x] | [x] | [x] | [ ] | [x] | done |  |
 | javascript | [x] | [x] | [x] | [ ] | [x] | done |  |
 | typescript | [x] | [x] | [x] | [ ] | [x] | done |  |
@@ -598,6 +598,16 @@ Each language below lists its references:
   there); 15 non-idempotent, exactly as StyLua is. Depth cap 400 + a work
   budget (StyLua blows up exponentially on deep calls). 33 checks.
 - oracle: `luac -p` (shell; Lua 5.4, the version mep embeds).
+- UI `[x]` (2026-11-11): `src/language_ui_lua.h` (help/lua-mode.org).
+  Console is the stock `lua -i` (mep.opt.lua_ui_cmd, REPL: override) with
+  an init script that hooks `_PROMPT`'s `__tostring` (5.4) to refresh
+  Globals/Modules; Inspect and Help (signature + doc comment + source, or a
+  module's fields; LSP hover alongside from a .lua buffer). `<leader>re` /
+  `<leader>rr` send through a file as one chunk (`mep_eval`/`mep_run`)
+  named after the source and padded to its line numbers, with column-0
+  `local`s made global so definitions persist. Check:
+  `tools/lua_ui_check.py` (editor side against stubs, console side in a
+  real interpreter and under a pty).
 - fmt: StyLua (nix shell).
 - LSP: must know the `mep.*` API (generated from the builtin chunks and
   `help/`) -- mep's own config language is the biggest Lua user here.

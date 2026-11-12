@@ -1161,6 +1161,16 @@ lint: lint-tidy lint-cppcheck lint-iwyu
 test-cpp-ui:
     python3 tools/cpp_ui_check.py
 
+# Lua language UI: editor-side logic against a stubbed mep, and the console's
+# init script in a real `lua` (also under a pty). Uses lua from PATH.
+test-lua-ui:
+    python3 tools/lua_ui_check.py
+
+# The Lua UI in the actual editor on a private X11 display: <leader>re, Run
+# (with a LUA_PATH-only module), gh, teardown.
+test-lua-ui-live: build-native
+    python3 tools/lua_ui_live_check.py --build-dir {{native_build_dir}}
+
 # Actual editor, PTY, object panels, figures, and teardown on a private X11 display.
 test-cpp-ui-live: build-native
     python3 tools/cpp_ui_live_check.py --build-dir {{native_build_dir}}

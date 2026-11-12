@@ -2553,7 +2553,7 @@ add_dependencies(tests mep-sql-lsp-test)
 # mep's own Lua language server and linter: the wire half
 # (src/lua_lsp_server.cpp, also `mep-lua-lsp --lint FILE...`) over the
 # analysis half (src/lua_lsp.cpp). Same reasoning as mep-nix-lsp above.
-set(MEP_LUA_LSP_SOURCES src/lua_parse.cpp src/lua_lsp.cpp src/lua_lsp_vocab.cpp ${MEP_LUA_FORMAT_SOURCES})
+set(MEP_LUA_LSP_SOURCES src/lua_parse.cpp src/lua_lsp.cpp src/lua_lsp_meta.cpp src/lua_lsp_vocab.cpp ${MEP_LUA_FORMAT_SOURCES})
 if(NOT EMSCRIPTEN)
     add_executable(mep-lua-lsp src/lua_lsp_server.cpp ${MEP_LUA_LSP_SOURCES})
     target_include_directories(mep-lua-lsp PRIVATE src)

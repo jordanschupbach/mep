@@ -33,6 +33,25 @@
 
 namespace {
 
+/** @brief The filesystem path of a `file://` URI (percent-decoded), "" for any other scheme. */
+std::string UriToPath(const std::string &uri) {
+    if (uri.rfind("file://", 0) != 0) return std::string();
+    std::string out;
+    for (size_t i = 7; i < uri.size(); i++) {
+        if (uri[i] == '%' && i + 2 < uri.size() && std::isxdigit(static_cast<unsigned char>(uri[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(uri[i + 2]))) {
+            out += static_cast<char>(std::stoi(uri.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += uri[i];
+        }
+    }
+#if defined(_WIN32)
+    if (out.size() > 2 && out[0] == '/' && out[2] == ':') out.erase(0, 1);  // file:///C:/x
+#endif
+    return out;
+}
+
 std::vector<std::string> SplitLines(const std::string &text) {
     std::vector<std::string> lines;
     std::string cur;
@@ -270,7 +289,7 @@ private:
     void Set(const std::string &uri, const std::string &text) {
         OpenDoc &d = docs_[uri];
         d.lines = SplitLines(text);
-        d.analysis = LuaLspAnalyze(d.lines);
+        d.analysis = LuaLspAnalyze(d.lines, UriToPath(uri));
     }
 
     const OpenDoc &Doc(const std::string &uri) {
@@ -497,7 +516,7 @@ int Lint(const std::vector<std::string> &paths) {
                 continue;
             }
         }
-        const auto doc = LuaLspAnalyze(SplitLines(text));
+        const auto doc = LuaLspAnalyze(SplitLines(text), path == "-" ? std::string() : path);
         for (const LuaLspDiagnostic &d : LuaLspDiagnostics(*doc)) {
             std::printf("%s\n", LuaLspFormatDiagnostic(path, d).c_str());
             if (LuaLspDiagnosticFails(d)) failed = true;

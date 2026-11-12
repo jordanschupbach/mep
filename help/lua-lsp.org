@@ -10,7 +10,9 @@ shipped with mep. Open a =.lua= file and it attaches by itself -- nothing
 to install, and nothing in the file is ever run. It knows Lua 5.4, the
 version mep embeds, and mep's own =mep.*= API, so your =init.lua= and
 plugins get hover and completion for the editor as well as for the
-standard library.
+standard library. Native modules documented by LuaCATS meta stubs
+(=.luarc.json='s =workspace.library=) get them too; see /Native modules/
+below.
 
 The same binary is a command-line linter; see /Linting from the command line/ below.
 
@@ -115,6 +117,83 @@ is never looked at, a format string missing its arguments.
 - *Formatting* is mep's own Lua formatter, the one =gf= runs: StyLua's
   layout, byte for byte, with no =stylua= installed. Only the lines that
   change are edited. See [[file:formatting.html][Formatting]].
+
+* Native modules: LuaCATS meta stubs
+
+A module written in C or C++ (a =.so= loaded by =require=) has no Lua
+source to read. Such modules can ship a LuaCATS /meta stub/ instead -- the
+annotated declaration file lua-language-server reads, beginning with
+=---@meta=:
+
+#+begin_src lua
+---@meta datamunge
+---@class datamunge
+local datamunge = {}
+
+---Adds three integers.
+---@param a integer first term
+---@param b? integer second term
+---@return integer # the sum
+function datamunge.add(a, b) end
+
+---A dual number.
+---@class datamunge.Dual: datamunge.Base
+---@field value number
+---@overload fun(value: number, derivative?: number): datamunge.Dual
+datamunge.Dual = {}
+
+---@param other datamunge.Dual
+---@return datamunge.Dual
+function datamunge.Dual:multiply(other) end
+
+---@enum datamunge.Alternative
+datamunge.Alternative = { TwoSided = 0, Less = 1 }
+
+return datamunge
+#+end_src
+
+(Rosetta generates one for every module it binds.) mep-lua-lsp finds the
+stubs where lua-language-server does: the =workspace.library= directories
+of the nearest =.luarc.json= (or =.luarc.jsonc=) above the file, relative
+to that file's directory or absolute; the flat and nested forms are both
+read:
+
+#+begin_src json
+{"workspace.library": ["build/lua/prefix/share/lua/library"]}
+{"workspace": {"library": ["build/lua/prefix/share/lua/library"]}}
+#+end_src
+
+=$MEP_LUA_LIBRARY= (directories separated by =:=) is searched first, for
+a project without a =.luarc.json=. For =require("a.b")= the stub is
+=LIB/a/b.lua= or =LIB/a/b/init.lua=, and only a file that says =---@meta=
+in its first lines counts: an ordinary module is code, not documentation.
+A stub is never run; it is parsed once and read again only when it
+changes, so one of several megabytes costs nothing per keystroke.
+
+With =local dm = require("datamunge")= in the file:
+
+- *Hover* on =dm.add=, =dm.Dual=, =dm.Alternative= or =dm.Alternative.Less=
+  shows the declaration (=function datamunge.add(a: integer, b?: integer) -> integer=,
+  the class with its base, constructors, fields and methods, the enum and
+  its values), the stub's markdown documentation, and the parameters and
+  return values with theirs.
+- *Types* follow simple locals: =local x = dm.Dual(2, 1)= is a
+  =datamunge.Dual= (calling a class with =---@overload= constructs one), and
+  a function or method call has the type of its first =---@return=, so
+  =x:multiply(x)= and =x:multiply(y):add(x)= are typed too. Hover on =x=
+  says =local x: datamunge.Dual=; hover on =x:multiply= shows that method.
+  Inherited methods are found through =---@class C: Base=. Parameters and
+  reassigned variables stay untyped.
+- *Completion* after =dm.= lists the module's functions, classes and enums
+  with their documentation; after =dm.Dual.= the class's functions;
+  after =dm.Alternative.= the enum members; after =x:= the methods of
+  =x='s class (inherited ones included) and after =x.= its fields.
+- *Signature help* for module functions, methods (=x:multiply(= or
+  =dm.Dual.multiply(x, =, which counts =self=) and constructors
+  (=dm.Vec2(=, choosing the overload with room for the argument typed).
+
+Members of a stub-documented module are never reported as undefined. With
+no stub found, the file is analysed exactly as before.
 
 * Linting from the command line
 

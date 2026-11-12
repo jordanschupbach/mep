@@ -13,6 +13,9 @@
 //   - hover, completion and signature help from the reference manual and
 //     mep's own API (lua_lsp_vocab.cpp, generated), plus the file's own
 //     functions and the members it assigns to its tables;
+//   - the same for native modules documented by LuaCATS meta stubs
+//     (lua_lsp_meta.h, found through `.luarc.json`), with the types of
+//     locals built from them (`local x = m.Dual(1)`, `x:multiply(x)`);
 //   - definition, references and rename by real scope, document symbols and
 //     folding ranges.
 #include "lua_lsp.h"
@@ -27,6 +30,7 @@
 #include <utility>
 
 #include "lua_format.h"
+#include "lua_lsp_meta.h"
 #include "lua_lsp_vocab.h"
 #include "lua_parse.h"
 
@@ -243,6 +247,13 @@ void ForEachBlock(const Block &root, const std::function<void(const Block &, Nod
     });
 }
 
+std::string Trim(const std::string &s) {
+    size_t a = 0, b = s.size();
+    while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) a++;
+    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) b--;
+    return s.substr(a, b - a);
+}
+
 std::string OneLine(const std::string &s, size_t max = 80) {
     std::string out;
     bool space = false;
@@ -292,6 +303,25 @@ public:
     std::set<std::string> luacheck_globals;      // -- luacheck: globals a b
     std::set<int> ignored_lines;                 // -- luacheck: ignore (on that line)
     bool ignore_all = false;
+    // LuaCATS stubs (lua_lsp_meta.h) for the modules this file requires, by
+    // module name; null when there is none. Filled by LuaLspAnalyze, and
+    // lazily for a require typed since (completion on a half-typed line).
+    std::string path;
+    mutable std::map<std::string, std::shared_ptr<const LuaMetaModule>> modules;
+    mutable bool lib_dirs_ready = false;
+    mutable std::vector<std::string> lib_dirs;
+
+    const LuaMetaModule *Module(const std::string &name) const {
+        auto it = modules.find(name);
+        if (it != modules.end()) return it->second.get();
+        if (!lib_dirs_ready) {
+            lib_dirs = LuaMetaLibraryDirs(path);
+            lib_dirs_ready = true;
+        }
+        auto mod = lib_dirs.empty() ? nullptr : LuaMetaFind(lib_dirs, name);
+        modules[name] = mod;
+        return mod.get();
+    }
 
     void Pos(int off, int *line, int *col) const {
         off = std::max(0, std::min(off, static_cast<int>(text.size())));
@@ -505,8 +535,9 @@ void Index(LuaLspDocument &doc) {
 
 }  // namespace
 
-std::shared_ptr<const LuaLspDocument> LuaLspAnalyze(const std::vector<std::string> &lines) {
+std::shared_ptr<const LuaLspDocument> LuaLspAnalyze(const std::vector<std::string> &lines, const std::string &path) {
     auto doc = std::make_shared<LuaLspDocument>();
+    doc->path = path;
     doc->lines = lines;
     if (doc->lines.empty()) doc->lines.push_back(std::string());
     for (size_t i = 0; i < doc->lines.size(); i++) {
@@ -519,6 +550,12 @@ std::shared_ptr<const LuaLspDocument> LuaLspAnalyze(const std::vector<std::strin
     }
     doc->parse = luaparse::Parse(doc->text);
     Index(*doc);
+    // Load (or take from the cache) the stub of every module required by name.
+    WalkBlock(doc->parse->chunk, Ctx(), [&](Node *n, const Ctx &) {
+        if (n->kind == Kind::Call && !n->method && n->a && n->a->kind == Kind::Name && !n->a->var &&
+            n->a->text == "require" && !n->list.empty() && n->list[0]->kind == Kind::String)
+            doc->Module(n->list[0]->value);
+    });
     return doc;
 }
 
@@ -1079,6 +1116,374 @@ std::string DocCommentAbove(const LuaLspDocument &doc, int line) {
     return out;
 }
 
+// ---- types from LuaCATS stubs ------------------------------------------------------------------------------------
+//
+// Just enough inference for a native module: `require` gives the stub's
+// module table, `m.Class(...)` an instance of the class, a function or
+// method call what its first `---@return` names, `.field` its `---@field`
+// type. A local takes the type of its initializer; nothing else is tracked
+// (parameters, reassignments, loops stay unknown).
+
+struct LuaType {
+    enum K { None, Value, ClassTable, EnumTable, EnumValue, Func } k = None;
+    const LuaMetaModule *mod = nullptr;
+    std::string name;    // Value: its type; ClassTable / EnumTable / EnumValue: the class or enum
+    std::string member;  // EnumValue: the member's name
+    const LuaMetaFunc *fn = nullptr;
+};
+
+// The loaded stub that defines `type`, `hint`'s first.
+const LuaMetaModule *StubDefining(const LuaLspDocument &doc, const LuaMetaModule *hint, const std::string &type) {
+    auto defines = [&](const LuaMetaModule *m) {
+        return m && (m->members.count(type) || m->Class(type) || m->Enum(type));
+    };
+    if (defines(hint)) return hint;
+    for (const auto &kv : doc.modules) {
+        if (defines(kv.second.get())) return kv.second.get();
+    }
+    return nullptr;
+}
+
+LuaType ValueOfType(const LuaLspDocument &doc, const LuaMetaModule *hint, const std::string &type) {
+    LuaType t;
+    const std::string cls = LuaMetaClassOfType(type);
+    if (cls.empty()) return t;
+    t.mod = StubDefining(doc, hint, cls);
+    if (!t.mod) return t;
+    t.k = LuaType::Value;
+    t.name = cls;
+    return t;
+}
+
+LuaType ModuleType(const LuaLspDocument &doc, const std::string &name) {
+    LuaType t;
+    const LuaMetaModule *m = doc.Module(name);
+    if (!m || m->root_type.empty()) return t;
+    t.k = LuaType::Value;
+    t.mod = m;
+    t.name = m->root_type;
+    return t;
+}
+
+const LuaMetaMember *MetaMember(const LuaType &base, const std::string &name) {
+    if ((base.k != LuaType::Value && base.k != LuaType::ClassTable) || !base.mod) return nullptr;
+    return base.mod->Member(base.name, name);
+}
+
+LuaType MemberOf(const LuaLspDocument &doc, const LuaType &base, const std::string &name) {
+    LuaType t;
+    if (base.k == LuaType::EnumTable) {
+        const LuaMetaEnum *e = base.mod->Enum(base.name);
+        if (!e) return t;
+        for (const auto &kv : e->members) {
+            if (kv.first != name) continue;
+            t.k = LuaType::EnumValue;
+            t.mod = base.mod;
+            t.name = base.name;
+            t.member = name;
+            return t;
+        }
+        return t;
+    }
+    const LuaMetaMember *m = MetaMember(base, name);
+    if (!m) return t;
+    t.mod = base.mod;
+    switch (m->kind) {
+        case LuaMetaMember::Function:
+            t.k = LuaType::Func;
+            t.fn = m->func;
+            t.name = name;
+            return t;
+        case LuaMetaMember::Field:
+            return ValueOfType(doc, base.mod, m->type);
+        case LuaMetaMember::Class:
+            t.k = LuaType::ClassTable;
+            t.mod = StubDefining(doc, base.mod, m->type);
+            t.name = m->type;
+            return t.mod ? t : LuaType();
+        case LuaMetaMember::Enum:
+            t.k = LuaType::EnumTable;
+            t.mod = StubDefining(doc, base.mod, m->type);
+            t.name = m->type;
+            return t.mod && t.mod->Enum(m->type) ? t : LuaType();
+    }
+    return LuaType();
+}
+
+// What calling a value of type `callee` gives.
+LuaType ReturnOf(const LuaLspDocument &doc, const LuaType &callee) {
+    if (callee.k == LuaType::Func && callee.fn) {
+        if (callee.fn->returns.empty()) return LuaType();
+        return ValueOfType(doc, callee.mod, callee.fn->returns[0].type);
+    }
+    if (callee.k == LuaType::ClassTable) {
+        if (const LuaMetaClass *c = callee.mod->Class(callee.name)) {
+            if (!c->overloads.empty()) {
+                const std::string r = LuaMetaFunReturn(c->overloads[0]);
+                if (!r.empty()) return ValueOfType(doc, callee.mod, r);
+            }
+        }
+        LuaType t = callee;
+        t.k = LuaType::Value;
+        return t;
+    }
+    return LuaType();
+}
+
+LuaType ExprType(const LuaLspDocument &doc, const Node *e, int depth);
+
+LuaType VarType(const LuaLspDocument &doc, const Var *v, int depth) {
+    if (!v || depth > 32) return LuaType();
+    return ExprType(doc, InitializerOf(v), depth + 1);
+}
+
+LuaType GlobalType(const LuaLspDocument &doc, const std::string &name, int depth) {
+    auto def = doc.global_defs.find(name);
+    if (def == doc.global_defs.end() || depth > 32) return LuaType();
+    auto it = doc.ctx.find(def->second);
+    const Node *stat = it == doc.ctx.end() ? nullptr : it->second.parent;
+    if (!stat || stat->kind != Kind::Assign) return LuaType();
+    for (size_t i = 0; i < stat->targets.size() && i < stat->list.size(); i++) {
+        if (stat->targets[i] == def->second) return ExprType(doc, stat->list[i], depth + 1);
+    }
+    return LuaType();
+}
+
+LuaType ExprType(const LuaLspDocument &doc, const Node *e, int depth) {
+    if (!e || depth > 32 || doc.modules.empty()) return LuaType();
+    switch (e->kind) {
+        case Kind::Paren:
+            return ExprType(doc, e->a, depth + 1);
+        case Kind::Name:
+            return e->var ? VarType(doc, e->var, depth + 1) : e->custom_env ? LuaType() : GlobalType(doc, e->text, depth + 1);
+        case Kind::Field:
+            return MemberOf(doc, ExprType(doc, e->a, depth + 1), e->text);
+        case Kind::Index:
+            if (e->b && e->b->kind == Kind::String) return MemberOf(doc, ExprType(doc, e->a, depth + 1), e->b->value);
+            return LuaType();
+        case Kind::Call:
+            if (e->method) return ReturnOf(doc, MemberOf(doc, ExprType(doc, e->a, depth + 1), e->text));
+            if (e->a && e->a->kind == Kind::Name && !e->a->var && e->a->text == "require" && !e->list.empty() &&
+                e->list[0]->kind == Kind::String)
+                return ModuleType(doc, e->list[0]->value);
+            return ReturnOf(doc, ExprType(doc, e->a, depth + 1));
+        default:
+            return LuaType();
+    }
+}
+
+std::string TypeLabel(const LuaType &t) {
+    switch (t.k) {
+        case LuaType::Value:
+            return t.name;
+        case LuaType::ClassTable:
+            return "class " + t.name;
+        case LuaType::EnumTable:
+            return "enum " + t.name;
+        case LuaType::EnumValue:
+            return t.name;
+        case LuaType::Func:
+            return t.fn ? "function " + LuaMetaSignature(*t.fn, std::string()) : "function";
+        default:
+            return std::string();
+    }
+}
+
+// Hover markdown for what `t` is, "" when the stubs say nothing.
+std::string TypeHover(const LuaType &t) {
+    switch (t.k) {
+        case LuaType::Func:
+            return LuaMetaFuncHover(*t.mod, *t.fn, std::string());
+        case LuaType::ClassTable:
+            if (const LuaMetaClass *c = t.mod->Class(t.name)) return LuaMetaClassHover(*t.mod, *c);
+            return "```lua\nclass " + t.name + "\n```";
+        case LuaType::EnumTable:
+            if (const LuaMetaEnum *e = t.mod->Enum(t.name)) return LuaMetaEnumHover(*t.mod, *e);
+            return std::string();
+        case LuaType::EnumValue:
+            if (const LuaMetaEnum *e = t.mod->Enum(t.name)) {
+                std::string value;
+                for (const auto &kv : e->members) {
+                    if (kv.first == t.member) value = kv.second;
+                }
+                std::string out = "```lua\n" + t.name + "." + t.member + (value.empty() ? "" : " = " + value) + "\n```";
+                if (!e->doc.empty()) out += "\n\n" + e->doc;
+                return out + "\n\n*member of enum `" + t.name + "`*";
+            }
+            return std::string();
+        default:
+            return std::string();
+    }
+}
+
+// Hover markdown for `base.name` / `base:name`, "" when the stubs say nothing.
+std::string MemberTypeHover(const LuaLspDocument &doc, const LuaType &base, const std::string &name) {
+    if (const LuaMetaMember *m = MetaMember(base, name)) {
+        if (m->kind == LuaMetaMember::Field) {
+            std::string out = "```lua\n(field) " + base.name + "." + name + (m->type.empty() ? "" : ": " + m->type) + "\n```";
+            if (!m->doc.empty()) out += "\n\n" + m->doc;
+            return out;
+        }
+    }
+    return TypeHover(MemberOf(doc, base, name));
+}
+
+// Hover markdown for `x:name` when x's type is unknown (a parameter, a function's result): the stubs' methods
+// named `name`. The one of the class this file mentions most is shown in full (an autodiff script calling
+// `m.Dual(...)` means Dual:multiply, not Expr:multiply); the other classes defining it are listed.
+std::string StubMethodByName(const LuaLspDocument &doc, const std::string &name) {
+    struct Candidate {
+        const LuaMetaModule *mod;
+        const LuaMetaFunc *func;
+        int uses;
+    };
+    std::vector<Candidate> found;
+    // How often the file names the class: `.Dual` (a constructor or static call through the module table).
+    const auto uses = [&](const std::string &owner) {
+        const std::string tail = "." + owner.substr(owner.rfind('.') == std::string::npos ? 0 : owner.rfind('.') + 1);
+        int n = 0;
+        for (size_t at = doc.text.find(tail); at != std::string::npos; at = doc.text.find(tail, at + 1)) {
+            const size_t end = at + tail.size();
+            if (end >= doc.text.size() || !(std::isalnum(static_cast<unsigned char>(doc.text[end])) || doc.text[end] == '_')) n++;
+        }
+        return n;
+    };
+    for (const auto &entry : doc.modules) {
+        const LuaMetaModule *m = entry.second.get();
+        if (!m) continue;
+        for (const auto &f : m->funcs) {
+            if (!f->method || f->name != name) continue;
+            if (std::any_of(found.begin(), found.end(), [&](const Candidate &c) { return c.func->owner == f->owner; })) continue;
+            found.push_back({m, f.get(), uses(f->owner)});
+        }
+    }
+    if (found.empty()) return std::string();
+    std::stable_sort(found.begin(), found.end(), [](const Candidate &a, const Candidate &b) { return a.uses > b.uses; });
+    std::string out = LuaMetaFuncHover(*found[0].mod, *found[0].func, std::string());
+    if (found.size() > 1) {
+        out += "\n\n*The receiver's type is unknown here; `" + name + "` is also a method of ";
+        const size_t shown = std::min<size_t>(found.size(), 9);
+        for (size_t i = 1; i < shown; i++) out += (i > 1 ? ", `" : "`") + found[i].func->owner + "`";
+        if (found.size() > shown) out += " and " + std::to_string(found.size() - shown) + " more";
+        out += ".*";
+    }
+    return out;
+}
+
+// ---- receiver chains in text (completion and signature help on a half-typed line) ----------------------------
+
+// The start of the expression `a.b:c(x)(y).d` that ends at offset `end` (exclusive), or -1. No spaces between
+// links; the arguments of calls may hold anything but unbalanced parentheses.
+int ChainStart(const std::string &t, int end, int floor) {
+    int i = end;
+    while (i > floor) {
+        if (t[static_cast<size_t>(i - 1)] == ')') {
+            int depth = 0, j = i - 1;
+            for (; j >= floor; j--) {
+                const char c = t[static_cast<size_t>(j)];
+                if (c == ')') depth++;
+                else if (c == '(' && --depth == 0) break;
+            }
+            if (j < floor) return -1;
+            i = j;
+            if (i > floor && (t[static_cast<size_t>(i - 1)] == ')' || IsWordChar(t[static_cast<size_t>(i - 1)]))) continue;
+            return -1;  // a parenthesised expression
+        }
+        int s = i;
+        while (s > floor && IsWordChar(t[static_cast<size_t>(s - 1)])) s--;
+        if (s == i || !IsIdentStart(t[static_cast<size_t>(s)])) return -1;
+        i = s;
+        if (i - 1 > floor && (t[static_cast<size_t>(i - 1)] == '.' || t[static_cast<size_t>(i - 1)] == ':') &&
+            t[static_cast<size_t>(i - 2)] != '.')
+        {
+            i--;
+            continue;
+        }
+        return i;
+    }
+    return -1;
+}
+
+// Past the parenthesised arguments starting at `open` ('('), or -1.
+int SkipArgs(const std::string &t, int open, int end) {
+    int depth = 0;
+    for (int i = open; i < end; i++) {
+        const char c = t[static_cast<size_t>(i)];
+        if (c == '"' || c == '\'') {
+            for (i++; i < end && t[static_cast<size_t>(i)] != c; i++) {
+                if (t[static_cast<size_t>(i)] == '\\') i++;
+            }
+            continue;
+        }
+        if (c == '(') depth++;
+        else if (c == ')' && --depth == 0) return i + 1;
+    }
+    return -1;
+}
+
+const Var *VisibleVar(const LuaLspDocument &doc, const std::string &name, int off) {
+    const Var *best = nullptr;
+    for (const Var *v : doc.parse->vars) {
+        if (v->name == name && v->scope_start <= off && off <= doc.ScopeEnd(v) && (!best || v->start > best->start))
+            best = v;
+    }
+    return best;
+}
+
+// The type of the chain text[a, b) as seen at offset `at`. `last_colon` (optional): whether its last link is `:`.
+LuaType ChainType(const LuaLspDocument &doc, int a, int b, int at, bool *last_colon = nullptr) {
+    const std::string &t = doc.text;
+    if (last_colon) *last_colon = false;
+    int i = a;
+    while (i < b && IsWordChar(t[static_cast<size_t>(i)])) i++;
+    const std::string root = t.substr(static_cast<size_t>(a), static_cast<size_t>(i - a));
+    LuaType cur;
+    if (root == "require" && i < b && t[static_cast<size_t>(i)] == '(') {
+        const int close = SkipArgs(t, i, b);
+        if (close < 0) return LuaType();
+        std::string arg = Trim(t.substr(static_cast<size_t>(i + 1), static_cast<size_t>(close - i - 2)));
+        if (arg.size() < 2 || (arg[0] != '"' && arg[0] != '\'') || arg.back() != arg[0]) return LuaType();
+        cur = ModuleType(doc, arg.substr(1, arg.size() - 2));
+        i = close;
+    } else if (const Var *v = VisibleVar(doc, root, at)) {
+        cur = VarType(doc, v, 0);
+    } else {
+        cur = GlobalType(doc, root, 0);
+    }
+    while (i < b && cur.k != LuaType::None) {
+        const char c = t[static_cast<size_t>(i)];
+        if (c == '.' || c == ':') {
+            int s = ++i;
+            while (i < b && IsWordChar(t[static_cast<size_t>(i)])) i++;
+            const std::string name = t.substr(static_cast<size_t>(s), static_cast<size_t>(i - s));
+            if (c == ':') {
+                LuaType m = MemberOf(doc, cur, name);
+                if (i < b && t[static_cast<size_t>(i)] == '(') {
+                    const int close = SkipArgs(t, i, b);
+                    if (close < 0) return LuaType();
+                    i = close;
+                    cur = ReturnOf(doc, m);
+                } else {
+                    cur = m;
+                    if (last_colon) *last_colon = true;
+                }
+            } else {
+                cur = MemberOf(doc, cur, name);
+                if (last_colon) *last_colon = false;
+            }
+        } else if (c == '(') {
+            const int close = SkipArgs(t, i, b);
+            if (close < 0) return LuaType();
+            i = close;
+            cur = ReturnOf(doc, cur);
+        } else {
+            return LuaType();
+        }
+    }
+    return cur;
+}
+
+
 const FuncBody *FunctionOfVar(const Var *v) {
     if (v->kind == Var::LocalFunction && v->decl) return v->decl->func;
     const Node *init = InitializerOf(v);
@@ -1104,6 +1509,8 @@ std::string VarHover(const LuaLspDocument &doc, const Var *v) {
                 head = "local function " + v->name + ParamList(fn);
             } else {
                 head = "local " + v->name + attrib;
+                const std::string type = TypeLabel(VarType(doc, v, 0));
+                if (!type.empty()) head += ": " + type;
                 const Node *init = InitializerOf(v);
                 if (init) {
                     const std::string s = OneLine(doc.Slice(init->start, init->end), 60);
@@ -1227,12 +1634,22 @@ LuaLspHoverInfo LuaLspHover(const LuaLspDocument &doc, int line, int col) {
     }
     if (n->kind == Kind::Field) {
         std::string key;
-        if (ChainKey(doc, n, &key)) {
+        const bool chain = ChainKey(doc, n, &key);
+        if (chain) {
             if (const LuaMemberDef *m = FindMember(doc, key)) {
                 info.found = true;
                 info.text = MemberHover(doc, *m, ChainText(n));
                 return info;
             }
+        }
+        // A member of a module documented by a LuaCATS stub, or of a value built from one.
+        const std::string meta = MemberTypeHover(doc, ExprType(doc, n->a, 0), n->text);
+        if (!meta.empty()) {
+            info.found = true;
+            info.text = meta;
+            return info;
+        }
+        if (chain) {
             if (key[0] != '#') {
                 if (const LuaLspApi *a = FindApi(key)) {
                     info.found = true;
@@ -1252,12 +1669,26 @@ LuaLspHoverInfo LuaLspHover(const LuaLspDocument &doc, int line, int col) {
                 return info;
             }
         }
+        const std::string meta = MemberTypeHover(doc, ExprType(doc, n->a, 0), n->text);
+        if (!meta.empty()) {
+            info.found = true;
+            info.text = meta;
+            return info;
+        }
         const bool str = n->a && (n->a->kind == Kind::String ||
                                   (n->a->kind == Kind::Paren && n->a->a && n->a->a->kind == Kind::String));
         if (const LuaMemberDef *m = str ? nullptr : FindMemberByName(doc, n->text, true)) {
             info.found = true;
             info.text = MemberHover(doc, *m, "?:" + n->text);
             return info;
+        }
+        if (!str) {
+            const std::string stub = StubMethodByName(doc, n->text);
+            if (!stub.empty()) {
+                info.found = true;
+                info.text = stub;
+                return info;
+            }
         }
         if (const LuaLspApi *a = MethodApi(n->text, str)) {
             info.found = true;
@@ -1368,6 +1799,57 @@ std::vector<LuaLspCompletionItem> LuaLspCompletions(const LuaLspDocument &doc, i
             key = best ? doc.VarKey(best) : parts[0];
             for (size_t i = 1; i < parts.size(); i++) key += "." + parts[i];
         }
+        // Members from a LuaCATS stub: of the module, a class or enum in it, or a value built from one.
+        bool typed = false;
+        {
+            const int ls = doc.line_starts[static_cast<size_t>(line)];
+            const int recv_end = ls + start - 1;
+            const int recv_start = ChainStart(doc.text, recv_end, ls);
+            const LuaType rt = recv_start < 0 ? LuaType() : ChainType(doc, recv_start, recv_end, off);
+            if (rt.k == LuaType::EnumTable && !colon) {
+                typed = true;
+                if (const LuaMetaEnum *e = rt.mod->Enum(rt.name)) {
+                    for (const auto &kv : e->members)
+                        push(kv.first, LuaLspKind::EnumMember, rt.name + "." + kv.first + (kv.second.empty() ? "" : " = " + kv.second),
+                             e->doc);
+                }
+            } else if (rt.k == LuaType::Value || rt.k == LuaType::ClassTable) {
+                typed = true;
+                const auto members = rt.mod->Members(rt.name);
+                // A module of thousands of functions: the doc text alone, not the whole hover, per item.
+                const bool brief = members.size() > 300;
+                for (const LuaMetaMember *m : members) {
+                    if (colon && (m->kind != LuaMetaMember::Function || !m->func->method)) continue;
+                    switch (m->kind) {
+                        case LuaMetaMember::Function: {
+                            const LuaMetaFunc &f = *m->func;
+                            std::string detail = LuaMetaSignature(f, std::string());
+                            if (!f.returns.empty()) {
+                                detail += " -> ";
+                                for (size_t r = 0; r < f.returns.size(); r++)
+                                    detail += (r ? ", " : "") + (f.returns[r].type.empty() ? std::string("any") : f.returns[r].type);
+                            }
+                            push(m->name, f.method ? LuaLspKind::Method : LuaLspKind::Function, detail,
+                                 brief ? f.doc : LuaMetaFuncHover(*rt.mod, f, std::string()));
+                            break;
+                        }
+                        case LuaMetaMember::Field:
+                            push(m->name, LuaLspKind::Field, m->type, m->doc);
+                            break;
+                        case LuaMetaMember::Class: {
+                            const LuaMetaClass *c = rt.mod->Class(m->type);
+                            push(m->name, LuaLspKind::Class, "class " + m->type, c ? c->doc : std::string());
+                            break;
+                        }
+                        case LuaMetaMember::Enum: {
+                            const LuaMetaEnum *e = rt.mod->Enum(m->type);
+                            push(m->name, LuaLspKind::Enum, "enum " + m->type, e ? e->doc : std::string());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         // Members this file assigns.
         if (!key.empty()) {
             for (const LuaMemberDef &m : doc.members) {
@@ -1395,7 +1877,7 @@ std::vector<LuaLspCompletionItem> LuaLspCompletions(const LuaLspDocument &doc, i
             }
         };
         if (!key.empty() && key[0] != '#') add_lib(key, ".");
-        if (colon) {
+        if (colon && !typed) {
             // Methods of a string (any value could be one) and, unless a literal, a file.
             add_lib("string", ".");
             add_lib("file", ":");
@@ -1519,6 +2001,73 @@ LuaLspSignatureHelp LuaLspSignatureAt(const LuaLspDocument &doc, int line, int c
     // The callee: a chain like a.b:c right before '('.
     int e = o.pos;
     while (e > 0 && (t[static_cast<size_t>(e - 1)] == ' ' || t[static_cast<size_t>(e - 1)] == '\t')) e--;
+    // A function, method or class constructor from a LuaCATS stub.
+    {
+        bool colon_call = false;
+        const int chain = ChainStart(t, e, from);
+        const LuaType ct = chain < 0 ? LuaType() : ChainType(doc, chain, e, off, &colon_call);
+        if (ct.k == LuaType::Func && ct.fn) {
+            const LuaMetaFunc &f = *ct.fn;
+            std::vector<LuaMetaParam> ps = f.params;
+            if (f.method && !colon_call) {
+                LuaMetaParam self;
+                self.name = "self";
+                self.type = f.owner;
+                ps.insert(ps.begin(), self);
+            } else if (!f.method && colon_call && !ps.empty()) {
+                ps.erase(ps.begin());
+            }
+            sh.found = true;
+            sh.label = (f.owner.empty() ? f.name : f.owner + (colon_call ? ":" : ".") + f.name) + "(";
+            for (size_t i = 0; i < ps.size(); i++) {
+                const std::string p = LuaMetaParamText(ps[i]);
+                sh.label += (i ? ", " : "") + p;
+                sh.params.push_back(p);
+            }
+            sh.label += ")";
+            if (!f.returns.empty()) {
+                sh.label += " -> ";
+                for (size_t r = 0; r < f.returns.size(); r++)
+                    sh.label += (r ? ", " : "") + (f.returns[r].type.empty() ? std::string("any") : f.returns[r].type);
+            }
+            sh.documentation = f.doc;
+            for (const LuaMetaParam &p : ps) {
+                if (!p.doc.empty()) sh.documentation += (sh.documentation.empty() ? "" : "\n\n") + std::string("`") + p.name + "`: " + p.doc;
+            }
+            sh.active_param = o.commas;
+            return sh;
+        }
+        if (ct.k == LuaType::ClassTable) {
+            const LuaMetaClass *c = ct.mod->Class(ct.name);
+            if (c && !c->overloads.empty()) {
+                // The first constructor with room for the argument being typed.
+                size_t pick = 0;
+                for (size_t k = 0; k < c->overloads.size(); k++) {
+                    if (static_cast<int>(LuaMetaFunParams(c->overloads[k]).size()) > o.commas) {
+                        pick = k;
+                        break;
+                    }
+                }
+                sh.found = true;
+                sh.label = c->name + "(";
+                const auto ps = LuaMetaFunParams(c->overloads[pick]);
+                for (size_t i = 0; i < ps.size(); i++) {
+                    const std::string p = LuaMetaParamText(ps[i]);
+                    sh.label += (i ? ", " : "") + p;
+                    sh.params.push_back(p);
+                }
+                sh.label += ")";
+                sh.documentation = c->doc;
+                if (c->overloads.size() > 1) {
+                    sh.documentation += "\n\n**Constructors**\n\n```lua";
+                    for (const std::string &ov : c->overloads) sh.documentation += "\n" + ov;
+                    sh.documentation += "\n```";
+                }
+                sh.active_param = o.commas;
+                return sh;
+            }
+        }
+    }
     int s = e;
     while (s > 0 && (IsWordChar(t[static_cast<size_t>(s - 1)]) || t[static_cast<size_t>(s - 1)] == '.' ||
                      t[static_cast<size_t>(s - 1)] == ':'))

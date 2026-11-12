@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lua mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="42">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Lua mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.lua</code> file.
+The tab becomes a Lua workspace: your file, an interactive <code>lua</code> below it,
+and panels showing what that interpreter holds.</p>
+<p>The console is the stock interpreter, <code>lua -i</code>, so line editing, history
+and the printing of an expression's value are its own. It starts with
+mep's environment: the <code>lua</code> on <code>PATH</code> and <code>LUA_PATH</code>, <code>LUA_CPATH</code> and
+<code>LUA_INIT</code>, as a project's dev shell or direnv set them, so <code>require</code>
+finds the same modules it would in a terminal in that project.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>run the whole file in the console</td></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the top-level statement at the cursor in the console</td></tr>
+<tr><td><code>gh</code></td><td>help for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>mep_help('name')</code></td><td>the same, from the console</td></tr>
+<tr><td><code>mep_view('name')</code></td><td>a value, key by key, in the Inspect panel</td></tr>
+<tr><td><code>mep_run(file)</code></td><td>run a file the way <code>&lt;leader&gt;rr</code> does</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> finds the statement around the cursor -- from the nearest line
+above that starts one at column 0 to just before the next: a whole
+function, an <code>if</code> or loop, a table constructor, or a single line.</p>
+<p>Neither key pastes your code into the prompt. The stock interpreter reads
+a paste one line at a time, and each line is its own chunk, so a <code>local</code>
+from one line is gone by the next. Instead the code is written to a file
+and run as one chunk with a single <code>mep_eval(...)</code> or <code>mep_run(...)</code> line.
+It runs under your file's name with its own line numbers, so an error
+names the right line, and so does <code>gh</code> on a function it defined.</p>
+<p>Top-level <code>local</code> declarations -- the ones at column 0, outside long
+strings -- become global assignments first, so what a block or a file
+defines stays reachable from the console and shows up under Globals:
+<code>local M = {}</code> runs as <code>M = {}</code>, <code>local function f</code> as <code>function f</code>.
+Locals inside functions and <code>do</code> blocks are left alone. An expression's
+values are printed, as at the prompt; so is what a file returns.</p>
+<p><code>&lt;leader&gt;rr</code> runs the buffer as it is in the editor, unsaved changes
+included. mod1+Enter still pastes the current line or the selection
+straight into the prompt (see <a href="repl.html">REPL and send-to-terminal</a>).</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Globals</td><td>the globals the session has set, with type and value</td></tr>
+<tr><td>Modules</td><td>the modules =require=d this session, then the preloaded ones</td></tr>
+<tr><td>Inspect</td><td><code>mep_view</code> of a value: its keys, two levels deep</td></tr>
+<tr><td>Help</td><td>a function's signature, doc comment and source; a module's or object's functions and fields; the manual link for the standard library</td></tr>
+</table>
+<p>Clicking a Globals row inspects it; clicking a Modules row shows the
+module's functions and fields in Help. What existed when the console
+started -- the standard library, <code>LUA_INIT</code>'s globals -- is left out.</p>
+<p>The panels refresh after every command: the init script hooks <code>_PROMPT</code>,
+which Lua 5.4 converts with <code>__tostring</code> before each prompt. Under 5.1 to
+5.3 or LuaJIT (picked with a <code>REPL:</code> comment) they refresh only after the
+<code>mep_*</code> calls.</p>
+<h1><code>gh</code> and the language server</h1>
+<p>For a function written in Lua, Help shows its signature and its source
+with the comment block above it. A C function -- the standard library's,
+or a native module's -- has no source the console can show, so in a <code>.lua</code>
+buffer <code>gh</code> also opens the language server's hover, which has the
+documentation from the module's annotations. Without the mode open, <code>gh</code>
+is that hover alone.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.lua_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'luajit'</span><span class="tok-blue">}</span>            <span class="tok-comment">-- the console's interpreter</span>
+<span class="tok-cyan">mep</span>.opt.lua_ui_globalize_locals = <span class="tok-cyan">false</span>    <span class="tok-comment">-- keep top-level locals local</span></code></pre></div>
+<p>A <code>-- REPL: nix develop --command lua</code> line in the file overrides
+<code>lua_ui_cmd</code> for that file. The mode appends <code>-i</code> and its init script, so
+the command must accept them, as <code>lua</code> and <code>luajit</code> do.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="lua-lsp.html">The Lua language server</a>.</li>
+</ul>
+</body>
+</html>

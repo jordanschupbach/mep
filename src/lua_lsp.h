@@ -4,7 +4,8 @@
 // The analysis half of mep's own Lua language server (the wire half is
 // lua_lsp_server.cpp, the `mep-lua-lsp` binary; the `lua_ls` entry
 // in main.cpp's kBuiltinLsp spawns it). Everything here is a pure function
-// of the document text, so the whole server is testable without a client
+// of the document text (plus the LuaCATS stubs its requires name, see
+// LuaLspAnalyze), so the whole server is testable without a client
 // (lua_lsp_test.cpp). Positions are 0-based lines and 0-based byte
 // columns (`positionEncoding: "utf-8"`).
 //
@@ -21,8 +22,17 @@ struct LuaLspRange {
 
 class LuaLspDocument;
 
-/** @brief Parses and analyses a document; every query below runs on the result. */
-std::shared_ptr<const LuaLspDocument> LuaLspAnalyze(const std::vector<std::string> &lines);
+/**
+ * @brief Parses and analyses a document; every query below runs on the result.
+ *
+ * `path` (the document's file, "" for none) is where `require("name")` looks
+ * for LuaCATS meta stubs (lua_lsp_meta.h): the nearest `.luarc.json`'s
+ * `workspace.library`, and `$MEP_LUA_LIBRARY`. Those stubs give hover,
+ * completion and signature help for the modules they document (native C
+ * modules, typically) and simple types to the locals built from them.
+ */
+std::shared_ptr<const LuaLspDocument> LuaLspAnalyze(const std::vector<std::string> &lines,
+                                                    const std::string &path = std::string());
 
 // --- Diagnostics ------------------------------------------------------------------
 
@@ -47,7 +57,7 @@ bool LuaLspDiagnosticFails(const LuaLspDiagnostic &d);
 
 enum class LuaLspKind {
     Text = 1, Method = 2, Function = 3, Field = 5, Variable = 6, Class = 7, Module = 9, Property = 10,
-    Value = 12, Keyword = 14, Snippet = 15, Constant = 21, Struct = 22,
+    Value = 12, Enum = 13, Keyword = 14, Snippet = 15, EnumMember = 20, Constant = 21, Struct = 22,
 };
 
 struct LuaLspCompletionItem {

@@ -188,7 +188,8 @@ try:
 except BaseException:
     sys.exit(1)
 try:
-    sig = str(inspect.signature(obj))
+    # `...` stands for a default with no literal spelling (native text signatures use it).
+    sig = str(inspect.signature(obj)).replace('=Ellipsis', '=...')
 except BaseException:
     sig = ''
 if inspect.ismodule(obj):
@@ -250,7 +251,7 @@ for name in sorted(dir(obj), key=lambda n: (n.startswith('_'), n.lower())):
     elif callable(val):
         kind = 2 if inspect.isclass(obj) else 3
         try:
-            detail = str(inspect.signature(val))
+            detail = str(inspect.signature(val)).replace('=Ellipsis', '=...')
         except BaseException:
             detail = '(...)'
     else:

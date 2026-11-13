@@ -30869,11 +30869,10 @@ const char *kBuiltinOrgSnippets =
 // own language's snippets apply instead (mep_snippet_filetype).
 //
 // Every code-block snippet ties the block to a dev shell of the flake in
-// the document's directory (nix-shell=".#name", which mep runs with `nix
+// the document's directory (nix-shell=".#", which mep runs with `nix
 // develop`; see mep_org_babel_nix_argv), so a block names its environment
-// from the start. The shell defaults to the language's name, the usual
-// devShells.<lang> convention, with `default` (what the nix set's flake
-// snippets create) one Ctrl-J away; typing replaces either.
+// from the start: `.#`, the flake's default dev shell, which is what the
+// nix set's flake snippets create. Add a name after the # for another.
 //
 // The parser reads `\$` as a literal dollar, so a backslash must never
 // come right before a field (`\${1}`): box kinds are separate triggers
@@ -30945,46 +30944,195 @@ M.bib = {'\\bibliography'}
 M.bibent = {'\\citation(${1:key},', '  author = ${2:Author},', '  title = {${3:Title}},',
             '  year = ${4:' .. os.date('%Y') .. '}', ')', '$0'}
 
--- Code blocks, each run in a dev shell of the flake in this directory.
--- The shell is a choice of the language's own name and `default` (what the
--- nix set's flake/pyflake/rflake snippets create); typing replaces it.
-local function block(lang, shell)
-  local field = shell == 'default' and '${1:default}' or ('${1|' .. shell .. ',default|}')
-  return {'```{' .. lang .. ', nix-shell=".#' .. field .. '"}', '$0', '```'}
+-- Code blocks, each run in the default dev shell of the flake in this
+-- directory (`.#`, what the nix set's flake/pyflake/rflake snippets create).
+local function block(lang)
+  return {'```{' .. lang .. ', nix-shell=".#"}', '$0', '```'}
 end
-M.src = {'```{${1|python,r,bash,cpp,julia,lua,javascript|}, nix-shell=".#${2:default}"}', '$0', '```'}
-M.pysrc = block('python', 'python')
-M.rsrc = block('r', 'r')
-M.shsrc = block('bash', 'default')
-M.cppsrc = block('cpp', 'cpp')
-M.jlsrc = block('julia', 'julia')
-M.luasrc = block('lua', 'lua')
-M.jssrc = block('javascript', 'javascript')
+M.src = {'```{${1|python,r,bash,cpp,julia,lua,javascript|}, nix-shell=".#"}', '$0', '```'}
+M.pysrc = block('python')
+M.rsrc = block('r')
+M.shsrc = block('bash')
+M.cppsrc = block('cpp')
+M.jlsrc = block('julia')
+M.luasrc = block('lua')
+M.jssrc = block('javascript')
 -- A figure drawn by a block, and a block whose code comes from a file.
-M.figsrc = {'```{${1|python,r|}, nix-shell=".#${2|python,r,default|}", file="${3:figures/plot.png}"}', '$0', '```',
-            '\\caption(${4:Caption})', '\\alttext(${5:What the figure shows})'}
+M.figsrc = {'```{${1|python,r|}, nix-shell=".#", file="${2:figures/plot.png}"}', '$0', '```',
+            '\\caption(${3:Caption})', '\\alttext(${4:What the figure shows})'}
 -- Complete figures: mep points matplotlib (Python) or a plot device (R)
 -- at file=, so the code only plots -- no savefig, no png().
-M.pyfig = {'```{python, nix-shell=".#${1|python,default|}", file="${2:figures/plot.png}"}',
+M.pyfig = {'```{python, nix-shell=".#", file="${1:figures/plot.png}"}',
            'import matplotlib.pyplot as plt',
            'import numpy as np',
            '',
            'x = np.linspace(0, 10, 200)',
            'plt.plot(x, np.sin(x))',
-           'plt.xlabel("${3:x}")',
-           'plt.ylabel("${4:sin(x)}")',
+           'plt.xlabel("${2:x}")',
+           'plt.ylabel("${3:sin(x)}")',
            '```',
-           '\\caption(${5:Caption})',
-           '\\alttext(${6:What the figure shows})',
+           '\\caption(${4:Caption})',
+           '\\alttext(${5:What the figure shows})',
            '$0'}
-M.rfig = {'```{r, nix-shell=".#${1|r,default|}", file="${2:figures/plot.png}"}',
+M.rfig = {'```{r, nix-shell=".#", file="${1:figures/plot.png}"}',
           'x <- seq(0, 10, length.out = 200)',
-          'plot(x, sin(x), type = "l", xlab = "${3:x}", ylab = "${4:sin(x)}")',
+          'plot(x, sin(x), type = "l", xlab = "${2:x}", ylab = "${3:sin(x)}")',
           '```',
-          '\\caption(${5:Caption})',
-          '\\alttext(${6:What the figure shows})',
+          '\\caption(${4:Caption})',
+          '\\alttext(${5:What the figure shows})',
           '$0'}
-M.incsrc = {'```{${1|python,r,bash,cpp,julia,lua|}, nix-shell=".#${2:default}", include="${3:src/file.py}"}', '```', '$0'}
+M.incsrc = {'```{${1|python,r,bash,cpp,julia,lua|}, nix-shell=".#", include="${2:src/file.py}"}', '```', '$0'}
+)LUA";
+
+// Basic analyses (help/snippets.org, "Analyses"): one small, complete
+// analysis per trigger, the same `an*` name in R and Python, each on a
+// dataset that ships with the language's own tools (R's datasets and
+// recommended packages; scikit-learn's bundled sets and statsmodels' co2)
+// so nothing downloads, and each ending in one plot. Every default
+// expansion runs as is -- keep it that way when editing (the R set's own
+// rules apply: 2-space indents, no field reference inside another field's
+// default; a plain `$1` mirror is fine). mep.snippets.r is also .R's table.
+const char *kBuiltinAnalysisSnippets = R"LUA(
+local R = mep.snippets.r
+local P = mep.snippets.py
+
+-- Regression
+R.anlm = {'fit <- lm(Petal.Width ~ Petal.Length, data = iris)', 'summary(fit)',
+          'plot(Petal.Width ~ Petal.Length, data = iris, col = Species)', 'abline(fit)', '$0'}
+P.anlm = {'import matplotlib.pyplot as plt, statsmodels.api as sm', 'from sklearn.datasets import load_iris',
+          'X, y = load_iris(return_X_y=True)', 'fit = sm.OLS(X[:, 3], sm.add_constant(X[:, 2])).fit()',
+          'print(fit.summary())', 'plt.scatter(X[:, 2], X[:, 3], c=y)', 'plt.plot(X[:, 2], fit.fittedvalues, "k")',
+          'plt.show()', '$0'}
+R.anlogit = {'fit <- glm(am ~ wt, family = binomial, data = mtcars)', 'summary(fit)', 'plot(am ~ wt, data = mtcars)',
+             'curve(predict(fit, data.frame(wt = x), type = "response"), add = TRUE)', '$0'}
+P.anlogit = {'import matplotlib.pyplot as plt, numpy as np, statsmodels.api as sm',
+             'from sklearn.datasets import load_iris', 'X, y = load_iris(return_X_y=True)',
+             'x, virginica = X[50:, 0], (y[50:] == 2).astype(int)', 'fit = sm.Logit(virginica, sm.add_constant(x)).fit()',
+             'print(fit.summary())', 'xs = np.linspace(x.min(), x.max())',
+             'plt.scatter(x, virginica)', 'plt.plot(xs, fit.predict(sm.add_constant(xs)), "k")', 'plt.show()', '$0'}
+R.anloess = {'fit <- loess(dist ~ speed, data = cars)', 'plot(dist ~ speed, data = cars)',
+             'lines(cars$speed, predict(fit))', '$0'}
+P.anloess = {'import matplotlib.pyplot as plt', 'from sklearn.datasets import load_diabetes',
+             'from statsmodels.nonparametric.smoothers_lowess import lowess', 'X, y = load_diabetes(return_X_y=True)',
+             'fit = lowess(y, X[:, 2])', 'plt.scatter(X[:, 2], y, s=5)', 'plt.plot(fit[:, 0], fit[:, 1], "k")',
+             'plt.show()', '$0'}
+
+-- Group comparisons and tests
+R.anaov = {'fit <- aov(Sepal.Length ~ Species, data = iris)', 'summary(fit)', 'TukeyHSD(fit)',
+           'boxplot(Sepal.Length ~ Species, data = iris)', '$0'}
+P.anaov = {'import matplotlib.pyplot as plt', 'from scipy import stats', 'from sklearn.datasets import load_iris',
+           'X, y = load_iris(return_X_y=True)', 'groups = [X[y == k, 0] for k in range(3)]',
+           'print(stats.f_oneway(*groups))', 'print(stats.tukey_hsd(*groups))', 'plt.boxplot(groups)', 'plt.show()', '$0'}
+R.antt = {'t.test(mpg ~ am, data = mtcars)', 'boxplot(mpg ~ am, data = mtcars)', '$0'}
+P.antt = {'import matplotlib.pyplot as plt', 'from scipy import stats', 'from sklearn.datasets import load_iris',
+          'X, y = load_iris(return_X_y=True)', 'a, b = X[y == 0, 0], X[y == 1, 0]',
+          'print(stats.ttest_ind(a, b, equal_var=False))', 'plt.boxplot([a, b])', 'plt.show()', '$0'}
+R.anwil = {'wilcox.test(Ozone ~ Month, data = airquality, subset = Month %in% c(5, 8), exact = FALSE)',
+           'boxplot(Ozone ~ Month, data = airquality)', '$0'}
+P.anwil = {'import matplotlib.pyplot as plt', 'from scipy import stats', 'from sklearn.datasets import load_iris',
+           'X, y = load_iris(return_X_y=True)', 'a, b = X[y == 1, 1], X[y == 2, 1]',
+           'print(stats.mannwhitneyu(a, b))', 'plt.boxplot([a, b])', 'plt.show()', '$0'}
+R.anchi = {'tab <- margin.table(HairEyeColor, c(1, 2))', 'chisq.test(tab)', 'mosaicplot(tab, shade = TRUE)', '$0'}
+P.anchi = {'import matplotlib.pyplot as plt, numpy as np', 'from scipy import stats',
+           '# hair (black, brown, red, blond) by eye colour (brown, blue, hazel, green)',
+           'tab = np.array([[68, 20, 15, 5], [119, 84, 54, 29], [26, 17, 14, 14], [7, 94, 10, 16]])',
+           'print(stats.chi2_contingency(tab))', 'plt.imshow(tab)', 'plt.colorbar()', 'plt.show()', '$0'}
+R.ancor = {'cor.test(~ Sepal.Length + Petal.Length, data = iris)', 'pairs(iris[1:4], col = iris$Species)', '$0'}
+P.ancor = {'import matplotlib.pyplot as plt, numpy as np', 'from scipy import stats',
+           'from sklearn.datasets import load_iris', 'X, y = load_iris(return_X_y=True)',
+           'print(stats.pearsonr(X[:, 0], X[:, 2]))', 'plt.imshow(np.corrcoef(X.T), vmin=-1, vmax=1, cmap="RdBu")',
+           'plt.colorbar()', 'plt.show()', '$0'}
+R.anks = {'x <- split(iris$Sepal.Length, iris$Species)', 'ks.test(x$setosa, x$versicolor)',
+          'plot(ecdf(x$setosa), xlim = range(iris$Sepal.Length), main = "")', 'lines(ecdf(x$versicolor), col = 2)', '$0'}
+P.anks = {'import matplotlib.pyplot as plt', 'from scipy import stats', 'from sklearn.datasets import load_iris',
+          'X, y = load_iris(return_X_y=True)', 'a, b = X[y == 0, 0], X[y == 1, 0]', 'print(stats.ks_2samp(a, b))',
+          'stats.ecdf(a).cdf.plot(plt.gca())', 'stats.ecdf(b).cdf.plot(plt.gca())', 'plt.show()', '$0'}
+R.annorm = {'x <- iris$Sepal.Width', 'shapiro.test(x)', 'qqnorm(x)', 'qqline(x)', '$0'}
+P.annorm = {'import matplotlib.pyplot as plt', 'from scipy import stats', 'from sklearn.datasets import load_iris',
+            'x = load_iris().data[:, 1]', 'print(stats.shapiro(x))', 'stats.probplot(x, plot=plt)', 'plt.show()', '$0'}
+R.anboot = {'b <- replicate(2000, median(sample(iris$Sepal.Length, replace = TRUE)))',
+            'quantile(b, c(0.025, 0.975))', 'hist(b)', '$0'}
+P.anboot = {'import matplotlib.pyplot as plt, numpy as np', 'from scipy import stats',
+            'from sklearn.datasets import load_iris', 'x = load_iris().data[:, 0]',
+            'res = stats.bootstrap((x,), np.median, n_resamples=2000)', 'print(res.confidence_interval)',
+            'plt.hist(res.bootstrap_distribution)', 'plt.show()', '$0'}
+
+-- Density
+R.ankde = {'d <- density(iris$Petal.Length, bw = "SJ")', 'plot(d)', 'rug(iris$Petal.Length)', '$0'}
+P.ankde = {'import matplotlib.pyplot as plt, numpy as np', 'from scipy import stats',
+           'from sklearn.datasets import load_iris', 'x = load_iris().data[:, 2]', 'kde = stats.gaussian_kde(x)',
+           'xs = np.linspace(x.min() - 1, x.max() + 1, 200)', 'plt.plot(xs, kde(xs))', 'plt.plot(x, 0 * x, "|k")',
+           'plt.show()', '$0'}
+
+-- Clustering and dimension reduction
+R.ankm = {'km <- kmeans(iris[1:4], centers = ${1:3}, nstart = 10)', 'table(km$cluster, iris$Species)',
+          'plot(iris[3:4], col = km$cluster)', 'points(km$centers[, 3:4], pch = 8, cex = 2)', '$0'}
+P.ankm = {'import matplotlib.pyplot as plt', 'from sklearn.cluster import KMeans',
+          'from sklearn.datasets import load_iris', 'X = load_iris().data',
+          'km = KMeans(n_clusters=${1:3}, n_init=10, random_state=0).fit(X)',
+          'plt.scatter(X[:, 2], X[:, 3], c=km.labels_)',
+          'plt.scatter(km.cluster_centers_[:, 2], km.cluster_centers_[:, 3], marker="*", s=200, c="k")',
+          'plt.show()', '$0'}
+R.anelbow = {'wss <- sapply(1:8, \\(k) kmeans(iris[1:4], k, nstart = 10)$tot.withinss)',
+             'plot(1:8, wss, type = "b", xlab = "k", ylab = "within-cluster sum of squares")', '$0'}
+P.anelbow = {'import matplotlib.pyplot as plt', 'from sklearn.cluster import KMeans',
+             'from sklearn.datasets import load_iris', 'X = load_iris().data',
+             'wss = [KMeans(k, n_init=10, random_state=0).fit(X).inertia_ for k in range(1, 9)]',
+             'plt.plot(range(1, 9), wss, "o-")', 'plt.xlabel("k")', 'plt.show()', '$0'}
+R.anhc = {'hc <- hclust(dist(scale(USArrests)), method = "ward.D2")', 'plot(hc)', 'rect.hclust(hc, k = ${1:4})',
+          'cutree(hc, k = $1)', '$0'}
+P.anhc = {'import matplotlib.pyplot as plt', 'from scipy.cluster import hierarchy',
+          'from sklearn.datasets import load_iris', 'X = load_iris().data', 'Z = hierarchy.linkage(X, "ward")',
+          'print(hierarchy.fcluster(Z, ${1:3}, "maxclust"))', 'hierarchy.dendrogram(Z, no_labels=True)',
+          'plt.show()', '$0'}
+R.anpca = {'pca <- prcomp(iris[1:4], scale. = TRUE)', 'summary(pca)', 'plot(pca$x[, 1:2], col = iris$Species)', '$0'}
+P.anpca = {'import matplotlib.pyplot as plt', 'from sklearn.datasets import load_iris',
+           'from sklearn.decomposition import PCA', 'from sklearn.preprocessing import scale',
+           'X, y = load_iris(return_X_y=True)', 'pca = PCA(2).fit(scale(X))', 'print(pca.explained_variance_ratio_)',
+           'Z = pca.transform(scale(X))', 'plt.scatter(Z[:, 0], Z[:, 1], c=y)', 'plt.show()', '$0'}
+R.anmds = {'mds <- cmdscale(eurodist)', 'plot(mds, type = "n", asp = 1)', 'text(mds, labels = labels(eurodist))', '$0'}
+P.anmds = {'import matplotlib.pyplot as plt', 'from sklearn.datasets import load_iris',
+           'from sklearn.manifold import MDS', 'X, y = load_iris(return_X_y=True)',
+           'Z = MDS(2, n_init=1, init="classical_mds").fit_transform(X)', 'plt.scatter(Z[:, 0], Z[:, 1], c=y)', 'plt.show()', '$0'}
+
+-- Classification
+R.anlda = {'fit <- MASS::lda(Species ~ ., data = iris)', 'fit', 'plot(predict(fit)$x, col = iris$Species)', '$0'}
+P.anlda = {'import matplotlib.pyplot as plt', 'from sklearn.datasets import load_iris',
+           'from sklearn.discriminant_analysis import LinearDiscriminantAnalysis',
+           'X, y = load_iris(return_X_y=True)', 'lda = LinearDiscriminantAnalysis().fit(X, y)',
+           'print(lda.score(X, y))', 'Z = lda.transform(X)', 'plt.scatter(Z[:, 0], Z[:, 1], c=y)', 'plt.show()', '$0'}
+R.antree = {'fit <- rpart::rpart(Species ~ ., data = iris)', 'fit', 'plot(fit, margin = 0.1)', 'text(fit)', '$0'}
+P.antree = {'import matplotlib.pyplot as plt', 'from sklearn.datasets import load_iris',
+            'from sklearn.tree import DecisionTreeClassifier, plot_tree', 'iris = load_iris()',
+            'tree = DecisionTreeClassifier(max_depth=${1:3}).fit(iris.data, iris.target)',
+            'plot_tree(tree, feature_names=iris.feature_names, class_names=iris.target_names, filled=True)',
+            'plt.show()', '$0'}
+R.anknn = {'test <- sample(nrow(iris), 50)',
+           'pred <- class::knn(iris[-test, 1:4], iris[test, 1:4], iris$Species[-test], k = ${1:5})',
+           'table(pred, iris$Species[test])', 'plot(iris[test, 3:4], col = pred)', '$0'}
+P.anknn = {'import matplotlib.pyplot as plt', 'from sklearn.datasets import load_iris',
+           'from sklearn.model_selection import train_test_split', 'from sklearn.neighbors import KNeighborsClassifier',
+           'X, y = load_iris(return_X_y=True)', 'Xtr, Xte, ytr, yte = train_test_split(X, y, random_state=0)',
+           'knn = KNeighborsClassifier(${1:5}).fit(Xtr, ytr)', 'print(knn.score(Xte, yte))',
+           'plt.scatter(Xte[:, 2], Xte[:, 3], c=knn.predict(Xte))', 'plt.show()', '$0'}
+
+-- Time series and survival
+R.ants = {'plot(decompose(AirPassengers, type = "multiplicative"))', '$0'}
+P.ants = {'import matplotlib.pyplot as plt, statsmodels.api as sm',
+          'co2 = sm.datasets.co2.load_pandas().data.co2.resample("MS").mean().ffill()',
+          'sm.tsa.seasonal_decompose(co2).plot()', 'plt.show()', '$0'}
+R.anarima = {'fit <- arima(log(AirPassengers), order = c(0, 1, 1), seasonal = c(0, 1, 1))',
+             'fc <- predict(fit, n.ahead = ${1:24})', 'ts.plot(AirPassengers, exp(fc$pred), lty = 1:2)', '$0'}
+P.anarima = {'import matplotlib.pyplot as plt, statsmodels.api as sm',
+             'co2 = sm.datasets.co2.load_pandas().data.co2.resample("MS").mean().ffill()',
+             'fit = sm.tsa.SARIMAX(co2, order=(0, 1, 1), seasonal_order=(0, 1, 1, 12)).fit(disp=False)',
+             'co2.plot()', 'fit.forecast(${1:24}).plot()', 'plt.show()', '$0'}
+R.ansurv = {'library(survival)', 'fit <- survfit(Surv(time, status) ~ sex, data = lung)', 'fit',
+            'plot(fit, col = 1:2)', '$0'}
+P.ansurv = {'import matplotlib.pyplot as plt, numpy as np, statsmodels.api as sm',
+            '# simulated: exponential lifetimes, about 30% censored',
+            'rng = np.random.default_rng(0)', 'time, died = rng.exponential(10, 100), rng.random(100) < 0.7',
+            'sm.SurvfuncRight(time, died).plot()', 'plt.show()', '$0'}
 )LUA";
 
 // Math delimiter-balance linter for org and tex buffers (:MepMathLint).
@@ -31696,7 +31844,11 @@ const char *kBuiltinMepml =
     "  if fig_path then\n"
     "    modes.graphics = not video\n"
     "    if lang == 'python' and not lang_def.graphics_wrap and not video then\n"
-    "      table.insert(body, 1, \"import matplotlib; matplotlib.use('Agg')\")\n"
+    // plt.show() under Agg only warns that it cannot show anything; the
+    // figure is saved below anyway, so that warning would just be noise in
+    // the block's results (a script that ends in plt.show() runs as is).
+    "      table.insert(body, 1, \"import matplotlib, warnings; matplotlib.use('Agg'); \"\n"
+    "        .. \"warnings.filterwarnings('ignore', 'FigureCanvasAgg is non-interactive')\")\n"
     "      body[#body + 1] = 'import matplotlib.pyplot as _mep_plt'\n"
     // Only when the block drew a matplotlib figure: one that writes its own
     // picture (and opens no figure) would otherwise get a blank page saved
@@ -72616,6 +72768,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinOrgNotes);
     lua->DoString(kBuiltinMepml);
     lua->DoString(kBuiltinMepmlSnippets);
+    lua->DoString(kBuiltinAnalysisSnippets);
     lua->DoString(kBuiltinA11y);
     lua->DoString(kBuiltinSnippetHelp);
     lua->DoString(kBuiltinActivityBar);

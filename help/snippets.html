@@ -254,6 +254,47 @@ unqualified (<code>tidyimp</code> loads the core tidyverse).</p>
 <tr><td><code>shiny</code></td><td>a complete Shiny app: slider, plot, server</td></tr>
 </table>
 <p>For R and these packages in a Nix shell, see <code>rpkgs</code> under Nix below.</p>
+<h1>Analyses in R and Python</h1>
+<p>A small, complete analysis for each common method, under the same trigger
+in R and in Python. Every one starts with <code>an</code>, so typing <code>an</code> in either
+language lists them all. Each runs as it expands, on a dataset that ships
+with the language's tools -- R's own datasets and the packages R comes
+with; scikit-learn's bundled datasets and statsmodels' <code>co2</code> in Python --
+so nothing is downloaded, and each ends in one plot.</p>
+<table>
+<tr><th>Trigger</th><th>Analysis</th><th>R</th><th>Python</th></tr>
+<tr><td><code>anlm</code></td><td>linear regression</td><td><code>lm</code>, iris</td><td>statsmodels <code>OLS</code>, iris</td></tr>
+<tr><td><code>anlogit</code></td><td>logistic regression</td><td><code>glm</code>, mtcars</td><td>statsmodels <code>Logit</code>, iris</td></tr>
+<tr><td><code>anloess</code></td><td>local regression smoother</td><td><code>loess</code>, cars</td><td>statsmodels <code>lowess</code>, diabetes</td></tr>
+<tr><td><code>anaov</code></td><td>one-way ANOVA and Tukey HSD</td><td><code>aov</code>, iris</td><td><code>f_oneway</code>, <code>tukey_hsd</code>, iris</td></tr>
+<tr><td><code>antt</code></td><td>two-sample t-test</td><td><code>t.test</code>, mtcars</td><td><code>ttest_ind</code>, iris</td></tr>
+<tr><td><code>anwil</code></td><td>Wilcoxon / Mann-Whitney test</td><td><code>wilcox.test</code>, airquality</td><td><code>mannwhitneyu</code>, iris</td></tr>
+<tr><td><code>anchi</code></td><td>chi-squared test of independence</td><td><code>chisq.test</code>, HairEyeColor</td><td><code>chi2_contingency</code>, the same table</td></tr>
+<tr><td><code>ancor</code></td><td>correlation test</td><td><code>cor.test</code>, <code>pairs</code></td><td><code>pearsonr</code>, a correlation heat map</td></tr>
+<tr><td><code>anks</code></td><td>Kolmogorov-Smirnov test</td><td><code>ks.test</code>, two ECDFs</td><td><code>ks_2samp</code>, two ECDFs</td></tr>
+<tr><td><code>annorm</code></td><td>normality test and Q-Q plot</td><td><code>shapiro.test</code></td><td><code>shapiro</code>, <code>probplot</code></td></tr>
+<tr><td><code>anboot</code></td><td>bootstrap interval of a median</td><td><code>replicate</code></td><td><code>scipy.stats.bootstrap</code></td></tr>
+<tr><td><code>ankde</code></td><td>kernel density estimate</td><td><code>density</code></td><td><code>gaussian_kde</code></td></tr>
+<tr><td><code>ankm</code></td><td>k-means clustering</td><td><code>kmeans</code></td><td><code>KMeans</code></td></tr>
+<tr><td><code>anelbow</code></td><td>choosing k for k-means</td><td>within-cluster SS by k</td><td>inertia by k</td></tr>
+<tr><td><code>anhc</code></td><td>hierarchical clustering</td><td><code>hclust</code>, USArrests</td><td><code>linkage</code>, a dendrogram</td></tr>
+<tr><td><code>anpca</code></td><td>principal components</td><td><code>prcomp</code></td><td><code>PCA</code></td></tr>
+<tr><td><code>anmds</code></td><td>multidimensional scaling</td><td><code>cmdscale</code>, eurodist</td><td><code>MDS</code>, iris</td></tr>
+<tr><td><code>anlda</code></td><td>linear discriminant analysis</td><td><code>MASS::lda</code></td><td><code>LinearDiscriminantAnalysis</code></td></tr>
+<tr><td><code>antree</code></td><td>classification tree</td><td><code>rpart</code></td><td><code>DecisionTreeClassifier</code></td></tr>
+<tr><td><code>anknn</code></td><td>k-nearest neighbours</td><td><code>class::knn</code></td><td><code>KNeighborsClassifier</code></td></tr>
+<tr><td><code>ants</code></td><td>seasonal decomposition</td><td><code>decompose</code>, AirPassengers</td><td><code>seasonal_decompose</code>, co2</td></tr>
+<tr><td><code>anarima</code></td><td>seasonal ARIMA forecast</td><td><code>arima</code>, AirPassengers</td><td><code>SARIMAX</code>, co2</td></tr>
+<tr><td><code>ansurv</code></td><td>Kaplan-Meier survival curves</td><td><code>survfit</code>, lung</td><td><code>SurvfuncRight</code>, simulated lifetimes</td></tr>
+</table>
+<p>Where there is a number worth changing -- the k of <code>ankm</code>, <code>anhc</code> and
+<code>anknn</code>, a tree's depth, a forecast's horizon -- it is the snippet's one
+field. Otherwise the cursor lands after the analysis, ready for the next
+line.</p>
+<p>The Python set needs numpy, SciPy, matplotlib, scikit-learn and
+statsmodels; the R set only R itself. Inside a mepml or org code block they
+expand as they do in a <code>.R</code> or <code>.py</code> file, so <code>pyfig</code> or <code>rfig</code> followed by
+an analysis is a figure of it.</p>
 <h1>C++</h1>
 <p>The C++ set works in <code>.cpp</code>, <code>.cc</code>, <code>.cxx</code>, <code>.hpp</code>, <code>.hh</code>, <code>.hxx</code>, <code>.ipp</code>,
 <code>.tpp</code> and <code>.inl</code> files and in Org's <code>C++</code> blocks (<code>.h</code> is left alone,
@@ -420,33 +461,32 @@ Inside a <code>```</code> block, the block's own language's snippets apply inste
 <tr><td><code>bibent</code></td><td>a <code>\citation(key, ...)</code> entry</td></tr>
 </table>
 <h2>Code blocks tied to a nix flake</h2>
-<p>Every code-block snippet runs its block in a dev shell of the flake in the
-document's directory: <code>nix-shell</code>".#name"=, which mep enters with =nix
-develop= (see "Choosing the command and the environment" in <a href="mepml.html">MEPML</a>). A block
+<p>Every code-block snippet runs its block in the default dev shell of the
+flake in the document's directory: <code>nix-shell</code>".#"=, which mep enters with
+<code>nix develop</code> (see "Choosing the command and the environment" in <a href="mepml.html">MEPML</a>). A block
 names its environment from the moment it is written, so it runs the same
 way on any machine that has the flake.</p>
 <table>
 <tr><th>Trigger</th><th>Inserts</th></tr>
-<tr><td><code>src</code></td><td>a block, the language a choice, the shell <code>default</code></td></tr>
+<tr><td><code>src</code></td><td>a block, the language a choice</td></tr>
 <tr><td><code>pysrc</code> <code>rsrc</code> <code>cppsrc</code> <code>jlsrc</code> <code>luasrc</code> <code>jssrc</code></td><td>a Python, R, C++, Julia, Lua or JavaScript block</td></tr>
-<tr><td><code>shsrc</code></td><td>a bash block, the shell <code>default</code></td></tr>
+<tr><td><code>shsrc</code></td><td>a bash block</td></tr>
 <tr><td><code>pyfig</code></td><td>a complete matplotlib figure: the block, caption and alt text</td></tr>
 <tr><td><code>rfig</code></td><td>the same in R, with base graphics</td></tr>
 <tr><td><code>figsrc</code></td><td>an empty Python or R figure block, with its caption</td></tr>
 <tr><td><code>incsrc</code></td><td>a block whose code comes from a file (<code>include=</code>)</td></tr>
 </table>
-<pre>```{python, nix-shell=".#python"}
+<pre>```{python, nix-shell=".#"}
 
 ```</pre>
 <p><code>pyfig</code> and <code>rfig</code> run as they are: mep points matplotlib (or an R plot
 device) at the block's <code>file</code>, so the code only plots, with no <code>savefig</code>
 or <code>png()</code>. Tab through them to set the file, the axis labels, the caption
 and the alt text.</p>
-<p>The shell name is the first field. It starts as the language's own name
-(<code>.#python</code>, the <code>devShells.python</code> convention), and <code>Ctrl-J</code> switches it
-to <code>default</code>, the shell the <code>nix</code> set's <code>flake</code>, <code>pyflake</code> and <code>rflake</code>
-snippets create. Type over it to name any other shell (<code>.#analysis</code>). <code>Tab</code>
-then moves into the block's body.</p>
+<p><code>.#</code> is the flake's <code>devShells.default</code>, the shell the <code>nix</code> set's <code>flake</code>,
+<code>pyflake</code> and <code>rflake</code> snippets create, so one flake serves every block in
+the document. To use another shell, add its name after the <code>#</code>
+(<code>.#analysis</code>).</p>
 <h1>Adding your own</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.snippets.py = <span class="tok-cyan">mep</span>.snippets.py <span class="tok-purple">or</span> <span class="tok-blue">{</span><span class="tok-blue">}</span>
 <span class="tok-cyan">mep</span>.snippets.py[<span class="tok-green">'main'</span>] = <span class="tok-blue">{</span>

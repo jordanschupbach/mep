@@ -268,6 +268,51 @@ Tidyverse and other common packages; each family shares a prefix:
 
 For R and these packages in a Nix shell, see =rpkgs= under Nix below.
 
+* Analyses in R and Python
+
+A small, complete analysis for each common method, under the same trigger
+in R and in Python. Every one starts with =an=, so typing =an= in either
+language lists them all. Each runs as it expands, on a dataset that ships
+with the language's tools -- R's own datasets and the packages R comes
+with; scikit-learn's bundled datasets and statsmodels' =co2= in Python --
+so nothing is downloaded, and each ends in one plot.
+
+| Trigger   | Analysis                         | R                         | Python                               |
+|-----------+----------------------------------+---------------------------+--------------------------------------|
+| =anlm=    | linear regression                | =lm=, iris                | statsmodels =OLS=, iris              |
+| =anlogit= | logistic regression              | =glm=, mtcars             | statsmodels =Logit=, iris            |
+| =anloess= | local regression smoother        | =loess=, cars             | statsmodels =lowess=, diabetes       |
+| =anaov=   | one-way ANOVA and Tukey HSD      | =aov=, iris               | =f_oneway=, =tukey_hsd=, iris        |
+| =antt=    | two-sample t-test                | =t.test=, mtcars          | =ttest_ind=, iris                    |
+| =anwil=   | Wilcoxon / Mann-Whitney test     | =wilcox.test=, airquality | =mannwhitneyu=, iris                 |
+| =anchi=   | chi-squared test of independence | =chisq.test=, HairEyeColor | =chi2_contingency=, the same table  |
+| =ancor=   | correlation test                 | =cor.test=, =pairs=       | =pearsonr=, a correlation heat map   |
+| =anks=    | Kolmogorov-Smirnov test          | =ks.test=, two ECDFs      | =ks_2samp=, two ECDFs                |
+| =annorm=  | normality test and Q-Q plot      | =shapiro.test=            | =shapiro=, =probplot=                |
+| =anboot=  | bootstrap interval of a median   | =replicate=               | =scipy.stats.bootstrap=              |
+| =ankde=   | kernel density estimate          | =density=                 | =gaussian_kde=                       |
+| =ankm=    | k-means clustering               | =kmeans=                  | =KMeans=                             |
+| =anelbow= | choosing k for k-means           | within-cluster SS by k    | inertia by k                         |
+| =anhc=    | hierarchical clustering          | =hclust=, USArrests       | =linkage=, a dendrogram              |
+| =anpca=   | principal components             | =prcomp=                  | =PCA=                                |
+| =anmds=   | multidimensional scaling         | =cmdscale=, eurodist      | =MDS=, iris                          |
+| =anlda=   | linear discriminant analysis     | =MASS::lda=               | =LinearDiscriminantAnalysis=         |
+| =antree=  | classification tree              | =rpart=                   | =DecisionTreeClassifier=             |
+| =anknn=   | k-nearest neighbours             | =class::knn=              | =KNeighborsClassifier=               |
+| =ants=    | seasonal decomposition           | =decompose=, AirPassengers | =seasonal_decompose=, co2           |
+| =anarima= | seasonal ARIMA forecast          | =arima=, AirPassengers    | =SARIMAX=, co2                       |
+| =ansurv=  | Kaplan-Meier survival curves     | =survfit=, lung           | =SurvfuncRight=, simulated lifetimes |
+
+Where there is a number worth changing -- the k of =ankm=, =anhc= and
+=anknn=, a tree's depth, a forecast's horizon -- it is the snippet's one
+field. Otherwise the cursor lands after the analysis, ready for the next
+line.
+
+The Python set needs numpy, SciPy, matplotlib, scikit-learn and
+statsmodels; the R set only R itself. Inside a mepml or org code block they
+expand as they do in a =.R= or =.py= file, so =pyfig= or =rfig= followed by
+an analysis is a figure of it.
+
 * C++
 
 The C++ set works in =.cpp=, =.cc=, =.cxx=, =.hpp=, =.hh=, =.hxx=, =.ipp=,
@@ -449,24 +494,24 @@ Inside a =```= block, the block's own language's snippets apply instead.
 
 ** Code blocks tied to a nix flake
 
-Every code-block snippet runs its block in a dev shell of the flake in the
-document's directory: =nix-shell=".#name"=, which mep enters with =nix
-develop= (see "Choosing the command and the environment" in [[file:mepml.html][MEPML]]). A block
+Every code-block snippet runs its block in the default dev shell of the
+flake in the document's directory: =nix-shell=".#"=, which mep enters with
+=nix develop= (see "Choosing the command and the environment" in [[file:mepml.html][MEPML]]). A block
 names its environment from the moment it is written, so it runs the same
 way on any machine that has the flake.
 
 | Trigger   | Inserts                                                         |
 |-----------+-----------------------------------------------------------------|
-| =src=     | a block, the language a choice, the shell =default=             |
+| =src=     | a block, the language a choice                                  |
 | =pysrc= =rsrc= =cppsrc= =jlsrc= =luasrc= =jssrc= | a Python, R, C++, Julia, Lua or JavaScript block |
-| =shsrc=   | a bash block, the shell =default=                               |
+| =shsrc=   | a bash block                                                    |
 | =pyfig=   | a complete matplotlib figure: the block, caption and alt text   |
 | =rfig=    | the same in R, with base graphics                               |
 | =figsrc=  | an empty Python or R figure block, with its caption             |
 | =incsrc=  | a block whose code comes from a file (=include==)               |
 
 #+begin_example
-```{python, nix-shell=".#python"}
+```{python, nix-shell=".#"}
 
 ```
 #+end_example
@@ -476,11 +521,10 @@ device) at the block's =file=, so the code only plots, with no =savefig=
 or =png()=. Tab through them to set the file, the axis labels, the caption
 and the alt text.
 
-The shell name is the first field. It starts as the language's own name
-(=.#python=, the =devShells.python= convention), and =Ctrl-J= switches it
-to =default=, the shell the =nix= set's =flake=, =pyflake= and =rflake=
-snippets create. Type over it to name any other shell (=.#analysis=). =Tab=
-then moves into the block's body.
+=.#= is the flake's =devShells.default=, the shell the =nix= set's =flake=,
+=pyflake= and =rflake= snippets create, so one flake serves every block in
+the document. To use another shell, add its name after the =#=
+(=.#analysis=).
 
 * Adding your own
 

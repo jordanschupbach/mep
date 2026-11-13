@@ -165,6 +165,25 @@ int main() {
     ed.SetCursorForLua(3, 4);
     keyboard.Keys(ed, "vip");
     Selection(ed, 2, 3, "A *styled* paragraph.\nIts second line.\n", "rendered MEPML preserves source paragraph endpoints");
+    // r{char}: replaces the character under the cursor, including chars the
+    // dispatcher would otherwise read as a count or a register prefix.
+    keyboard.Keys(ed, "\x1b");
+    ed.SetBufferFilenameForLua(buf, scratch + "/replace.txt");
+    for (const std::string &ch : {std::string("x"), std::string("5"), std::string("0"), std::string("\""),
+                                  std::string("j"), std::string("r")}) {
+        ed.SetBufferLinesForLua(buf, {"abcdef"});
+        ed.SetCursorForLua(0, 2);
+        keyboard.Keys(ed, "r" + ch);
+        const std::string want = "ab" + ch + "def";
+        const bool ok = ed.GetBuffer(buf).lines == std::vector<std::string>({want}) && ed.CurrentMode() == Mode::Normal;
+        Expect(ok, ("r" + ch + " replaces the character under the cursor").c_str());
+        if (!ok) std::printf("  line=[%s]\n", ed.GetBuffer(buf).lines[0].c_str());
+        keyboard.Keys(ed, "\x1b");
+    }
+    ed.SetBufferLinesForLua(buf, {"abcdef"});
+    ed.SetCursorForLua(0, 1);
+    keyboard.Keys(ed, "3rz");
+    Expect(ed.GetBuffer(buf).lines == std::vector<std::string>({"azzzef"}), "3rz replaces three characters");
     std::printf("%d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

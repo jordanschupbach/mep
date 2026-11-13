@@ -25351,7 +25351,7 @@ bool Editor::DispatchNormalKey(int cp) {
     // their closing '"' swallowed here as a fresh register-name prefix
     // instead of ever reaching ResolveTextObject below -- `ci'` never hit
     // this because '\'' has no such collision with register-prefix syntax.
-    if (pending_find_ == 0 && !pending_g_ && !pending_ctrl_w_ && pending_textobj_scope_ == 0) {
+    if (pending_find_ == 0 && !pending_g_ && !pending_ctrl_w_ && pending_textobj_scope_ == 0 && !pending_replace_) {
         if (awaiting_register_name_) {
             awaiting_register_name_ = false;
             if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '%' || c == '+' ||
@@ -25386,9 +25386,9 @@ bool Editor::DispatchNormalKey(int cp) {
     // both before an operator (2dw) and between the operator and its
     // motion (d3w), multiplying the two (see the pending_op_ branch
     // below). Not while pending_find_/pending_g_ are set: those consume
-    // the very next key literally (the target char for f/F/t/T, or the
-    // second half of a g-prefixed motion).
-    if (pending_find_ == 0 && !pending_g_) {
+    // the very next key literally (the target char for f/F/t/T, the
+    // second half of a g-prefixed motion, or r's replacement char).
+    if (pending_find_ == 0 && !pending_g_ && !pending_replace_) {
         if (c >= '1' && c <= '9') {
             pending_count_ = pending_count_ * 10 + (c - '0');
             return true;

@@ -620,12 +620,6 @@ help-check *ARGS: build-native
     cmake --build {{native_build_dir}} --target mep-check-help
     ./{{native_build_dir}}/mep-check-help {{native_build_dir}}/mep {{ARGS}}
 
-# Bump the devShell's datamunge input (and so its language bindings) to the
-# latest commit on github:jordanschupbach/datamunge (main). Takes effect on the
-# next `nix develop` (or direnv reload).
-update-shell:
-    nix flake update datamunge
-
 # Build the Release binaries and install them natively under PREFIX
 # (default ~/.local: no sudo, and ~/.local/bin is the usual user PATH
 # entry). Installs mep, its LSP/mepml helper binaries, and the help pages

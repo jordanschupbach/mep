@@ -38,6 +38,25 @@
 
 namespace {
 
+/** @brief The filesystem path of a `file://` URI (percent-decoded), "" for any other scheme. */
+std::string UriToPath(const std::string &uri) {
+    if (uri.rfind("file://", 0) != 0) return std::string();
+    std::string out;
+    for (size_t i = 7; i < uri.size(); i++) {
+        if (uri[i] == '%' && i + 2 < uri.size() && std::isxdigit(static_cast<unsigned char>(uri[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(uri[i + 2]))) {
+            out += static_cast<char>(std::stoi(uri.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += uri[i];
+        }
+    }
+#if defined(_WIN32)
+    if (out.size() > 2 && out[0] == '/' && out[2] == ':') out.erase(0, 1);  // file:///C:/x
+#endif
+    return out;
+}
+
 std::vector<std::string> SplitLines(const std::string &text) {
     std::vector<std::string> lines;
     std::string cur;
@@ -394,7 +413,7 @@ private:
     void Set(const std::string &uri, const std::string &text) {
         OpenDoc &d = docs_[uri];
         d.lines = SplitLines(text);
-        d.analysis = JsLspAnalyze(d.lines, JsLspDialectForPath(uri));
+        d.analysis = JsLspAnalyze(d.lines, JsLspDialectForPath(uri), UriToPath(uri));
     }
 
     const OpenDoc &Doc(const std::string &uri) {
@@ -582,26 +601,36 @@ private:
     Json SignatureHelp(const Json &params) {
         const JsLspSignatureHelp sh = JsLspSignatureAt(Analysis(params), LineOf(params), ColOf(params));
         if (!sh.found) return Json();
-        Json parameters = Json::Array();
-        for (const std::string &param : sh.params) {
-            Json p = Json::Object();
-            p["label"] = param;
-            parameters.push_back(p);
-        }
-        Json signature = Json::Object();
-        signature["label"] = sh.label;
-        if (!sh.documentation.empty()) {
-            Json doc = Json::Object();
-            doc["kind"] = "markdown";
-            doc["value"] = sh.documentation;
-            signature["documentation"] = doc;
-        }
-        signature["parameters"] = parameters;
+        auto signature_json = [](const std::string &label, const std::vector<std::string> &param_labels,
+                                 const std::string &documentation) {
+            Json parameters = Json::Array();
+            for (const std::string &param : param_labels) {
+                Json p = Json::Object();
+                p["label"] = param;
+                parameters.push_back(p);
+            }
+            Json signature = Json::Object();
+            signature["label"] = label;
+            if (!documentation.empty()) {
+                Json doc = Json::Object();
+                doc["kind"] = "markdown";
+                doc["value"] = documentation;
+                signature["documentation"] = doc;
+            }
+            signature["parameters"] = parameters;
+            return signature;
+        };
         Json signatures = Json::Array();
-        signatures.push_back(signature);
+        if (sh.overloads.empty()) {
+            signatures.push_back(signature_json(sh.label, sh.params, sh.documentation));
+        } else {
+            // Every overload a declaration file gives, the one that fits the arguments so far active.
+            for (const JsLspSignatureHelp::Overload &o : sh.overloads)
+                signatures.push_back(signature_json(o.label, o.params, o.documentation));
+        }
         Json out = Json::Object();
         out["signatures"] = signatures;
-        out["activeSignature"] = 0;
+        out["activeSignature"] = sh.overloads.empty() ? 0 : sh.active_signature;
         out["activeParameter"] = sh.active_param;
         return out;
     }
@@ -623,7 +652,7 @@ int Lint(const std::vector<std::string> &paths) {
                 continue;
             }
         }
-        const auto doc = JsLspAnalyze(SplitLines(text), JsLspDialectForPath(path));
+        const auto doc = JsLspAnalyze(SplitLines(text), JsLspDialectForPath(path), path == "-" ? std::string() : path);
         for (const JsLspDiagnostic &d : JsLspDiagnostics(*doc)) {
             std::printf("%s\n", JsLspFormatDiagnostic(path, d).c_str());
             if (JsLspDiagnosticFails(d)) failed = true;

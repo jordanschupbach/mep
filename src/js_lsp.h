@@ -4,7 +4,8 @@
 // The analysis half of mep's own JavaScript language server (the wire half
 // is js_lsp_server.cpp, the `mep-js-lsp` binary; the `js_ls` entry in
 // main.cpp's `mep.lsp_servers` spawns it). Everything here is a pure
-// function of the document text, so the whole server is testable without a
+// function of the document text (plus the declaration files of the modules
+// it loads, see JsLspAnalyze), so the whole server is testable without a
 // client (js_lsp_test.cpp). Positions are 0-based lines and 0-based byte
 // columns (`positionEncoding: "utf-8"`); the server converts when a client
 // only speaks UTF-16.
@@ -22,6 +23,15 @@
 // trees): syntax errors are tsc's parser's, the scope analysis knows the
 // type namespace, and the lints are the ones typescript-eslint's
 // recommended config keeps (no-undef is off: tsc checks names).
+//
+// Declaration files. A module a document loads by `require("x")` or
+// `import ... from "x"` is typed from its TypeScript declaration file when
+// one can be found (js_lsp_dts.h has the lookup and the reading, which
+// js_parse's TypeScript dialect does): `x.d.ts` beside a relative module,
+// the package's `types` in node_modules, `$MEP_JS_TYPES`. Hover, completion
+// and signature help (js_lsp_features.cpp) then follow what it declares --
+// the module's exports, `new` of its classes, methods by `extends`, the
+// declared return types of calls -- with each declaration's JSDoc.
 
 #include <memory>
 #include <string>
@@ -46,9 +56,20 @@ JsLspDialect JsLspDialectForPath(const std::string &path);
 
 class JsLspDocument;
 
-/** @brief Parses and analyses a document; every query below runs on the result. */
+/**
+ * @brief Parses and analyses a document; every query below runs on the result.
+ *
+ * `path` (the document's file, "" for none) is where `require("x")` and
+ * `import ... from "x"` look for the module's TypeScript declaration file
+ * (js_lsp_dts.h): beside a relative module, in `node_modules`, in the
+ * package itself, and in `$MEP_JS_TYPES`. Those declarations give hover,
+ * completion and signature help for what the module exports (a native
+ * addon's classes and functions, typically) and simple types to the
+ * variables built from them. A module without one is what it always was.
+ */
 std::shared_ptr<const JsLspDocument> JsLspAnalyze(const std::vector<std::string> &lines,
-                                                  JsLspDialect dialect = JsLspDialect::Auto);
+                                                  JsLspDialect dialect = JsLspDialect::Auto,
+                                                  const std::string &path = std::string());
 
 // --- Diagnostics ------------------------------------------------------------------
 
@@ -73,7 +94,8 @@ bool JsLspDiagnosticFails(const JsLspDiagnostic &d);
 
 enum class JsLspKind {
     Text = 1, Method = 2, Function = 3, Constructor = 4, Field = 5, Variable = 6, Class = 7, Interface = 8,
-    Module = 9, Property = 10, Value = 12, Keyword = 14, Snippet = 15, Constant = 21, Struct = 22,
+    Module = 9, Property = 10, Value = 12, Enum = 13, Keyword = 14, Snippet = 15,
+    EnumMember = 20, Constant = 21, Struct = 22,
 };
 
 struct JsLspCompletionItem {
@@ -101,6 +123,15 @@ struct JsLspSignatureHelp {
     std::vector<std::string> params;  // substrings of label
     std::string documentation;
     int active_param = 0;
+    // Every overload, when a declaration file gives several (label/params/documentation above
+    // are overloads[active_signature]'s); empty otherwise.
+    struct Overload {
+        std::string label;
+        std::vector<std::string> params;
+        std::string documentation;
+    };
+    std::vector<Overload> overloads;
+    int active_signature = 0;
 };
 
 JsLspSignatureHelp JsLspSignatureAt(const JsLspDocument &doc, int line, int col);

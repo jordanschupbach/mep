@@ -2574,9 +2574,10 @@ add_dependencies(tests mep-lua-lsp-test)
 # mep's own JavaScript language server and linter: the wire half
 # (src/js_lsp_server.cpp, also `mep-js-lsp --lint FILE...`) over the
 # analysis half (src/js_lsp.cpp diagnostics, js_lsp_scope.cpp scopes,
-# js_lsp_features.cpp hover/completion/navigation) on js_parse.h. Same
+# js_lsp_features.cpp hover/completion/navigation, js_lsp_dts.cpp the
+# declaration files of the modules a document loads) on js_parse.h. Same
 # reasoning as mep-nix-lsp above.
-set(MEP_JS_LSP_SOURCES src/js_lsp.cpp src/js_lsp_scope.cpp src/js_lsp_features.cpp src/js_lsp_vocab.cpp
+set(MEP_JS_LSP_SOURCES src/js_lsp.cpp src/js_lsp_scope.cpp src/js_lsp_features.cpp src/js_lsp_dts.cpp src/js_lsp_vocab.cpp
     ${MEP_JS_FORMAT_SOURCES} ${MEP_JS_PARSE_SOURCES})
 if(NOT EMSCRIPTEN)
     add_executable(mep-js-lsp src/js_lsp_server.cpp ${MEP_JS_LSP_SOURCES})

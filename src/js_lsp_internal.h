@@ -33,6 +33,7 @@
 // function-like (ScopeKind::TsModule).
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -41,6 +42,7 @@
 #include <vector>
 
 #include "js_lsp.h"
+#include "js_lsp_dts.h"
 #include "js_lsp_vocab.h"
 #include "js_parse.h"
 
@@ -191,6 +193,12 @@ public:
     bool has_jsx = false;
     bool commonjs = false;  // require()/module.exports/exports.x: a node script
     bool uses_with_or_eval = false;
+    // The declaration files (js_lsp_dts.h) of the modules this file requires or imports, by
+    // specifier; null when there is none. Filled by JsLspAnalyze, and lazily for a specifier
+    // typed since (completion on a half-typed line).
+    std::string path;
+    mutable std::map<std::string, std::shared_ptr<const JsDtsModule>> dts_modules;
+    const JsDtsModule *DtsModule(const std::string &specifier) const;
 
     // -- positions --
     void Pos(uint32_t off, int *line, int *col) const;
@@ -215,6 +223,8 @@ namespace jslsp {
 
 // js_lsp_scope.cpp
 void Analyze(JsLspDocument &doc);
+// A JSDoc block's text (between `/**` and `*/`) as markdown: `@param` and friends set out.
+std::string JsDocMarkdown(std::string_view body);
 bool IsReservedWord(std::string_view s);
 bool IsIdentifierName(std::string_view s);
 // True when the text at the identifier's range is the name itself (not an escaped `a`).

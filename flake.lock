@@ -18,33 +18,6 @@
         "type": "github"
       }
     },
-    "datamunge": {
-      "inputs": {
-        "flake-utils": [
-          "flake-utils"
-        ],
-        "nixpkgs": [
-          "nixpkgs"
-        ],
-        "php-from-source": "php-from-source",
-        "systems": [
-          "systems"
-        ]
-      },
-      "locked": {
-        "lastModified": 1785885389,
-        "narHash": "sha256-wF0kLDnKLM5ToQneT0/LJYEwoxBm3Z/hj50XOljwvU8=",
-        "owner": "jordanschupbach",
-        "repo": "datamunge",
-        "rev": "db97e4edcad75edcc50283462af98551b6a744de",
-        "type": "github"
-      },
-      "original": {
-        "owner": "jordanschupbach",
-        "repo": "datamunge",
-        "type": "github"
-      }
-    },
     "flake-utils": {
       "inputs": {
         "systems": [
@@ -83,22 +56,6 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1791366222,
-        "narHash": "sha256-o0N4g6uSOIppU7CGToNvGlMf5vC+B6O6ukFHKY/TKOY=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "39ad350a0602fa0a58a544344e3e9187526ea45c",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "nixpkgs-unstable",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
-    "nixpkgs_3": {
-      "locked": {
         "lastModified": 1786993761,
         "narHash": "sha256-1LU+eVzo7NRDq41O60TWWuSfE9nziXuN1AcU0STCR9k=",
         "owner": "NixOS",
@@ -113,28 +70,11 @@
         "type": "github"
       }
     },
-    "php-from-source": {
-      "inputs": {
-        "nixpkgs": "nixpkgs_2"
-      },
-      "locked": {
-        "path": "./nix/flakes/php",
-        "type": "path"
-      },
-      "original": {
-        "path": "./nix/flakes/php",
-        "type": "path"
-      },
-      "parent": [
-        "datamunge"
-      ]
-    },
     "root": {
       "inputs": {
         "crepl": "crepl",
-        "datamunge": "datamunge",
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs_3",
+        "nixpkgs": "nixpkgs_2",
         "systems": "systems"
       }
     },

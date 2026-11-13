@@ -158,6 +158,47 @@ in one function), one empty block, one <code>x ==</code> x=.</p>
 <li>The outline lists interfaces and type literals with their members, enums with theirs, namespaces with their contents, a class's parameter properties as fields, and each overloaded function once.</li>
 </ul>
 <p>Formatting reads TypeScript too: see <i>Formatting</i> under <i>What else it does</i>.</p>
+<h1>Native modules / declaration files</h1>
+<p>A native Node.js addon (a compiled <code>.node</code> file) is opaque: nothing in it
+says what it exports. What does is the TypeScript declaration file
+generated beside it -- Rosetta writes one with each binding, the C++
+Doxygen comments turned into JSDoc -- and the server reads it, in a <code>.js</code>
+file as in a <code>.ts</code> one, when the file loads the module:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">js</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="js"><span class="tok-purple">const</span> dm = <span class="tok-blue">require</span>(<span class="tok-green">"datamunge"</span>);           <span class="tok-comment">// or "../../index.js", "./build/Release/datamunge.node"</span>
+<span class="tok-purple">const</span> { Circle, add: plus } = <span class="tok-blue">require</span>(<span class="tok-green">"datamunge"</span>);
+<span class="tok-purple">import</span> * <span class="tok-purple">as</span> dm2 <span class="tok-purple">from</span> <span class="tok-green">"datamunge"</span>;          <span class="tok-comment">// also: import dm3 from ..., import { Circle } from ...</span>
+
+<span class="tok-purple">const</span> c = <span class="tok-purple">new</span> dm.Circle(<span class="tok-cyan">2</span>);
+c.<span class="tok-blue">area</span>();                                  <span class="tok-comment">// declared on the base class Shape</span>
+<span class="tok-purple">const</span> v = <span class="tok-purple">new</span> dm.Vec2().<span class="tok-blue">set_x</span>(<span class="tok-cyan">1</span>).<span class="tok-blue">set_y</span>(<span class="tok-cyan">2</span>); <span class="tok-comment">// chains: each method's declared return type</span>
+dm.Circle.<span class="tok-blue">unit</span>();                          <span class="tok-comment">// a static method</span>
+dm.Kind.circle;                            <span class="tok-comment">// an enum member</span></code></pre></div>
+<ul>
+<li><b>Hover</b> (<code>K</code>) shows the declaration as the <code>.d.ts</code> writes it -- every overload of a function, a class with <code>extends</code> and its constructors, a method as <code>(method) Shape.area(): number</code>, a property, an enum and its members -- with its JSDoc set out (<code>@param</code>, <code>@returns</code>, <code>@throws</code>, code blocks), and the file it comes from. On a variable it adds the type the declarations give it (<code>const c = new dm.Circle(2)</code> is a <code>Circle</code>); on the module's own variable, what the module exports.</li>
+<li><b>Completion</b> after <code>dm.</code> offers the module's exports (functions, classes, enums, constants, with their signatures and documentation); after <code>c.</code> an instance's methods and properties, inherited ones included; after <code>dm.Circle.</code> the static members, after <code>dm.Kind.</code> the enum's members.</li>
+<li><b>Signature help</b> for the module's functions, methods and constructors (<code>new dm.Circle(</code>), with every overload listed and the first one that can take the arguments typed so far active.</li>
+</ul>
+<p>What the server knows of a value is simple: <code>require</code> or <code>import</code> gives the
+module, <code>new C(...)</code> an instance of <code>C</code>, a call what its signature says it
+returns (<code>Shape | null</code> counts as <code>Shape</code>), a property its declared type,
+and a <code>const</code>, <code>let</code> or <code>var</code> the value of its initializer or of the module it
+destructures. Parameters, reassignments and values that pass through
+arrays or callbacks are not followed. Names the declarations give are never
+reported undefined, and a module whose declaration file cannot be found
+is treated exactly as before.</p>
+<h2>Where the declaration file is found</h2>
+<p>TypeScript's own lookup, from the document's path:</p>
+<ol>
+<li><code>$MEP_JS_TYPES</code> first, for a bare name: directories separated by <code>:</code> (<code>;</code> on Windows), each searched for <code>&lt;dir&gt;/&lt;name&gt;.d.ts</code> and <code>&lt;dir&gt;/&lt;name&gt;/index.d.ts</code>.</li>
+<li>A relative module (<code>./lib</code>, <code>../../index.js</code>): <code>lib.d.ts</code> beside <code>lib.js</code> (<code>.d.mts</code> for <code>.mjs</code>, <code>.d.cts</code> for <code>.cjs</code>, and <code>x.d.ts</code> beside a native <code>x.node</code>), <code>lib.d.ts</code> for an extensionless <code>lib</code>, then the directory <code>lib/</code>: its <code>package.json</code>'s <code>types</code> / <code>typings</code> (or <code>exports["."].types</code>), else <code>lib/index.d.ts</code>.</li>
+<li>A package name (<code>datamunge</code>, <code>@scope/pkg</code>, <code>pkg/sub</code>): the package itself when the nearest <code>package.json</code> above the document has that <code>name</code> (a package's own examples and tests), then <code>node_modules/&lt;name&gt;</code> and <code>node_modules/@types/&lt;name&gt;</code> in each directory up from the document, read as a directory as above (a subpath relative to the package).</li>
+</ol>
+<p>A declaration file is read once and kept until it changes on disk, so a
+generated one of several megabytes costs nothing per keystroke. It may
+<code>export</code> declarations, rename them (<code>export { A as B }</code>), <code>export default</code>
+one, or <code>export = X</code> a namespace (the <code>@types</code> style); blocks of
+<code>declare module "name" { ... }</code> are read too. Re-exports of another
+file's declarations (<code>export {...} from</code>, <code>export * from</code>) are not followed.</p>
 <h1>Linting from the command line</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-js-lsp</span> <span class="tok-red">--lint</span> src/*.js
 <span class="tok-blue">cat</span> app.js | <span class="tok-blue">mep-js-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>

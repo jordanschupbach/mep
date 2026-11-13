@@ -6,18 +6,6 @@
     url = "github:numtide/flake-utils";
     inputs.systems.follows = "systems";
   };
-  # datamunge and its language bindings (pydatamunge, datamunger, ...),
-  # pulled into the default devShell below and tracking its main branch
-  # on GitHub (`just update-shell` bumps the lock to the latest commit).
-  # Follows our nixpkgs so the bindings are built against the same
-  # python3/R the shell's python3.withPackages/rWrapper use -- otherwise
-  # pydatamunge would land in a second, mismatched Python's site-packages.
-  inputs.datamunge = {
-    url = "github:jordanschupbach/datamunge";
-    inputs.nixpkgs.follows = "nixpkgs";
-    inputs.systems.follows = "systems";
-    inputs.flake-utils.follows = "flake-utils";
-  };
 
   # crepl (stateful C++ REPL used by the C++ UI), tracking its main branch on
   # GitHub. Bump with `nix flake update crepl`. To test an uncommitted local
@@ -25,79 +13,12 @@
   inputs.crepl.url = "github:jordanschupbach/crepl";
 
   outputs =
-    { nixpkgs, flake-utils, datamunge, crepl, ... }:
+    { nixpkgs, flake-utils, crepl, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
         creplPkg = crepl.packages.${system}.default;
-        # The locked datamunge commit doesn't build on Linux as checked in:
-        #  * nix/datamunge{lua,guile,octave}.nix interpolate
-        #    `${pkgs.darwin.cctools}/bin/install_name_tool` inside a
-        #    *runtime* `uname = Darwin` branch of installPhase. Nix string
-        #    interpolation isn't lazy about that -- the derivation is
-        #    forced at eval time on every host -- and this nixpkgs
-        #    revision marks cctools as aarch64-darwin-only, so merely
-        #    evaluating the devShell on Linux threw "Refusing to evaluate
-        #    package 'cctools'" (nix-direnv then fell back to its stale
-        #    cached environment on every `direnv reload`).
-        #  * src/datamunge/algorithms/phonetic.cpp calls std::strchr
-        #    without including <cstring>; libc++ on macOS happens to pull
-        #    it in transitively, libstdc++ 15 here does not, so
-        #    libdatamunge itself (and hence every binding) fails to
-        #    compile.
-        # nix/datamunge-linux.patch is the upstream fix for both, applied
-        # to the locked input's source; the datamunge flake is then
-        # re-evaluated from that patched tree with the very same inputs
-        # it would get via `follows` above (nixpkgs/flake-utils are ours,
-        # php-from-source is its own locked subflake), so the package set
-        # is identical to datamunge.packages apart from the patch. This
-        # is import-from-derivation (applyPatches builds at eval time),
-        # which `nix develop`/nix-direnv allow by default. Drop all of it
-        # -- dmSrc, dmFlake, the patch file -- once datamunge carries the
-        # fix itself and the lock is bumped past it.
-        dmSrc = pkgs.applyPatches {
-          name = "datamunge-source-patched";
-          src = datamunge.outPath;
-          patches = [ ./nix/datamunge-linux.patch ];
-        };
-        dmFlake =
-          let
-            outputs = (import "${dmSrc}/flake.nix").outputs {
-              self = outputs // { outPath = dmSrc; };
-              inherit nixpkgs flake-utils;
-              inherit (datamunge.inputs) php-from-source;
-            };
-          in
-          outputs;
-        dm = dmFlake.packages.${system} // {
-          # datamunge checks in a SWIG 4.3.1-generated R wrapper that no
-          # longer compiles against our nixpkgs' R 4.6: SET_S4_OBJECT was
-          # removed from the API and CHARACTER_POINTER became read-only
-          # (regenerating with nixpkgs' SWIG 4.4.1 emits the same code).
-          # Shim the former via Rf_asS4 -- every call site is on a fresh,
-          # unshared object, so it sets the S4 bit in place -- and turn the
-          # latter's two assignments into SET_STRING_ELT, until datamunge
-          # ships a wrapper that builds against R 4.6 itself.
-          datamunger = dmFlake.packages.${system}.datamunger.overrideAttrs (old: {
-            postPatch = (old.postPatch or "") + ''
-              sed -i -E \
-                -e '1i #ifndef SET_S4_OBJECT\n#define SET_S4_OBJECT(x) ((void) Rf_asS4((x), TRUE, 0))\n#endif' \
-                -e 's/^(\s*)CHARACTER_POINTER\((.*)\)\[(\w+)\] = (.*);/\1SET_STRING_ELT(\2, \3, \4);/' \
-                src/datamunge_r_wrap.cpp
-            '';
-          });
-          # octruby's bundle links @rpath/libdatamunge.dylib but carries no
-          # LC_RPATH on Darwin, so `require "octruby"` can't load it.
-          octruby = dmFlake.packages.${system}.octruby.overrideAttrs (old: {
-            postFixup = (old.postFixup or "") + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
-              for f in $out/lib/octruby/*.bundle; do
-                install_name_tool -add_rpath ${dmFlake.packages.${system}.datamunge}/lib/datamunge-0.0.1 "$f"
-              done
-            '';
-          });
-        };
-
         # BUILD_PERFORMANCE_PLAN.md Round 2 Phase D: the project's default
         # compiler, switched from the implicit default (GCC) to Clang --
         # required for real C++20 modules (GCC 15's own module support was
@@ -497,7 +418,7 @@
             # nixpkgs package (python3 alone has no _tkinter): a
             # results=exec-gui Python block opening a Tk window (test.mepml,
             # help/mepml.org) imports it.
-            (pkgs.python3.withPackages (ps: [ ps.numpy ps.debugpy ps.matplotlib ps.tkinter dm.pydatamunge ])) # Python
+            (pkgs.python3.withPackages (ps: [ ps.numpy ps.debugpy ps.matplotlib ps.tkinter ])) # Python
             pkgs.nodejs # JavaScript
             pkgs.ruby
             # perl.withPackages, not bare pkgs.perl -- Perl::LanguageServer
@@ -538,7 +459,7 @@
                 knitr
                 fda
                 shiny
-              ] ++ [ vscDebuggerR dm.datamunger ]; # mep.dap_adapters.r (see vscDebuggerR above)
+              ] ++ [ vscDebuggerR ]; # mep.dap_adapters.r (see vscDebuggerR above)
             })
             # air is gf's R formatter (mep.format_languages.R, kBuiltinFormat
             # in src/main.cpp). Not an rPackages entry and deliberately not
@@ -699,26 +620,7 @@
             #   julia -e 'using Pkg; Pkg.add("LanguageServer")'
             # mep.lsp_servers.julials's own invocation is verified
             # correct once that's done.
-
-            # datamunge (~/projects/datamunge) and its language bindings.
-            # pydatamunge and datamunger live inside the python3.withPackages
-            # and rWrapper above; the rest only need to be on the shell's
-            # inputs, with their interpreter search paths exported in
-            # shellHook below (none of them carry a setup hook of their
-            # own). Left out for now: datamungeocaml (its SWIG wrapper is
-            # stale against the current library -- missing datamunge::
-            # stats::Greater/Bonferroni/... -- and fails to build) and
-            # datamungejs (builds, but its derivation never runs node-gyp,
-            # so build/Release/datamungejs.node is missing and require()
-            # fails).
-            dm.datamunge
-            dm.datamungelua
-            dm.datamungetcl
-            dm.octruby
-            dm.datamungeguile
-            dm.datamungeoctave
-            dm.datamunged
-            # Interpreters for the bindings above not otherwise in this shell.
+            # Tcl, Guile and Octave interpreters.
             pkgs.tcl
             pkgs.guile
             pkgs.octave
@@ -813,21 +715,6 @@
             # every invocation anyway, just against a stale generator
             # until that one-time wipe).
             export CMAKE_GENERATOR=Ninja
-
-            # datamunge bindings -- same paths datamunge's own per-language
-            # devShells export. The Tcl package's install dir is found by
-            # its pkgIndex.tcl rather than assumed: its CMake install
-            # currently nests it under lib/nix/store/<tcl>/lib/tcl8.6.
-            export DATAMUNGE_PREFIX="${dm.datamunge}"
-            export LUA_PATH="${dm.datamungelua}/share/lua/5.4/?.lua;''${LUA_PATH:-;;}"
-            export LUA_CPATH="${dm.datamungelua}/lib/lua/5.4/?.so;''${LUA_CPATH:-;;}"
-            dmTclIndex="$(find ${dm.datamungetcl}/lib -name pkgIndex.tcl -print -quit)"
-            [ -n "$dmTclIndex" ] && export TCLLIBPATH="$(dirname "$dmTclIndex")''${TCLLIBPATH:+ $TCLLIBPATH}"
-            unset dmTclIndex
-            export RUBYLIB="${dm.octruby}/lib''${RUBYLIB:+:$RUBYLIB}"
-            export GUILE_LOAD_PATH="${dm.datamungeguile}/share/guile/site/3.0''${GUILE_LOAD_PATH:+:$GUILE_LOAD_PATH}"
-            export GUILE_EXTENSIONS_PATH="${dm.datamungeguile}/lib/guile/3.0/extensions''${GUILE_EXTENSIONS_PATH:+:$GUILE_EXTENSIONS_PATH}"
-            export OCTAVE_PATH="${dm.datamungeoctave}/share/octave/site/m''${OCTAVE_PATH:+:$OCTAVE_PATH}"
           '';
         };
       }

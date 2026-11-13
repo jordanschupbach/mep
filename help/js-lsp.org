@@ -262,6 +262,77 @@ in one function), one empty block, one =x === x=.
 
 Formatting reads TypeScript too: see /Formatting/ under /What else it does/.
 
+* Native modules / declaration files
+
+A native Node.js addon (a compiled =.node= file) is opaque: nothing in it
+says what it exports. What does is the TypeScript declaration file
+generated beside it -- Rosetta writes one with each binding, the C++
+Doxygen comments turned into JSDoc -- and the server reads it, in a =.js=
+file as in a =.ts= one, when the file loads the module:
+
+#+begin_src js
+const dm = require("datamunge");           // or "../../index.js", "./build/Release/datamunge.node"
+const { Circle, add: plus } = require("datamunge");
+import * as dm2 from "datamunge";          // also: import dm3 from ..., import { Circle } from ...
+
+const c = new dm.Circle(2);
+c.area();                                  // declared on the base class Shape
+const v = new dm.Vec2().set_x(1).set_y(2); // chains: each method's declared return type
+dm.Circle.unit();                          // a static method
+dm.Kind.circle;                            // an enum member
+#+end_src
+
+- *Hover* (=K=) shows the declaration as the =.d.ts= writes it -- every
+  overload of a function, a class with =extends= and its constructors, a
+  method as =(method) Shape.area(): number=, a property, an enum and its
+  members -- with its JSDoc set out (=@param=, =@returns=, =@throws=, code
+  blocks), and the file it comes from. On a variable it adds the type the
+  declarations give it (=const c = new dm.Circle(2)= is a =Circle=); on the
+  module's own variable, what the module exports.
+- *Completion* after =dm.= offers the module's exports (functions,
+  classes, enums, constants, with their signatures and documentation);
+  after =c.= an instance's methods and properties, inherited ones
+  included; after =dm.Circle.= the static members, after =dm.Kind.= the
+  enum's members.
+- *Signature help* for the module's functions, methods and constructors
+  (=new dm.Circle(=), with every overload listed and the first one that
+  can take the arguments typed so far active.
+
+What the server knows of a value is simple: =require= or =import= gives the
+module, =new C(...)= an instance of =C=, a call what its signature says it
+returns (=Shape | null= counts as =Shape=), a property its declared type,
+and a =const=, =let= or =var= the value of its initializer or of the module it
+destructures. Parameters, reassignments and values that pass through
+arrays or callbacks are not followed. Names the declarations give are never
+reported undefined, and a module whose declaration file cannot be found
+is treated exactly as before.
+
+** Where the declaration file is found
+
+TypeScript's own lookup, from the document's path:
+
+1. =$MEP_JS_TYPES= first, for a bare name: directories separated by =:=
+   (=;= on Windows), each searched for =<dir>/<name>.d.ts= and
+   =<dir>/<name>/index.d.ts=.
+2. A relative module (=./lib=, =../../index.js=): =lib.d.ts= beside
+   =lib.js= (=.d.mts= for =.mjs=, =.d.cts= for =.cjs=, and =x.d.ts= beside
+   a native =x.node=), =lib.d.ts= for an extensionless =lib=, then the
+   directory =lib/=: its =package.json='s =types= / =typings= (or
+   =exports["."].types=), else =lib/index.d.ts=.
+3. A package name (=datamunge=, =@scope/pkg=, =pkg/sub=): the package
+   itself when the nearest =package.json= above the document has that
+   =name= (a package's own examples and tests), then =node_modules/<name>=
+   and =node_modules/@types/<name>= in each directory up from the
+   document, read as a directory as above (a subpath relative to the
+   package).
+
+A declaration file is read once and kept until it changes on disk, so a
+generated one of several megabytes costs nothing per keystroke. It may
+=export= declarations, rename them (=export { A as B }=), =export default=
+one, or ~export = X~ a namespace (the =@types= style); blocks of
+~declare module "name" { ... }~ are read too. Re-exports of another
+file's declarations (=export {...} from=, =export * from=) are not followed.
+
 * Linting from the command line
 
 #+begin_src sh

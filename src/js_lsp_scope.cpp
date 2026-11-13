@@ -87,6 +87,10 @@ std::string Trim(std::string s) {
     return s.substr(a, b - a);
 }
 
+}  // namespace
+
+namespace jslsp {
+
 // A JSDoc block's text (between `/**` and `*/`) as markdown.
 std::string JsDocMarkdown(std::string_view body) {
     std::vector<std::string> lines;
@@ -158,6 +162,10 @@ std::string JsDocMarkdown(std::string_view body) {
     }
     return out;
 }
+
+}  // namespace jslsp
+
+namespace {
 
 bool IsDirectiveComment(std::string_view v) {
     size_t i = 0;
@@ -1725,8 +1733,18 @@ JsLspDialect JsLspDialectForPath(const std::string &path) {
     return JsLspDialect::Auto;
 }
 
-std::shared_ptr<const JsLspDocument> JsLspAnalyze(const std::vector<std::string> &lines, JsLspDialect dialect) {
+const JsDtsModule *JsLspDocument::DtsModule(const std::string &specifier) const {
+    auto it = dts_modules.find(specifier);
+    if (it != dts_modules.end()) return it->second.get();
+    auto mod = JsDtsLoad(JsDtsResolve(path, specifier));
+    dts_modules[specifier] = mod;
+    return mod.get();
+}
+
+std::shared_ptr<const JsLspDocument> JsLspAnalyze(const std::vector<std::string> &lines, JsLspDialect dialect,
+                                                  const std::string &path) {
     auto doc = std::make_shared<JsLspDocument>();
+    doc->path = path;
     doc->lines = lines;
     doc->dialect = dialect;
     if (doc->lines.empty()) doc->lines.emplace_back();
@@ -1778,6 +1796,31 @@ std::shared_ptr<const JsLspDocument> JsLspAnalyze(const std::vector<std::string>
             break;
     }
     jslsp::Analyze(*doc);
+    // Load (or take from the cache) the declaration file of every module loaded by name:
+    // `require("x")` (node's own `require`, not a local one) and `import ... from "x"`.
+    if (doc->parse.program && !doc->dts) {
+        std::vector<const Node *> stack{doc->parse.program};
+        std::vector<Node *> kids;
+        while (!stack.empty()) {
+            const Node *n = stack.back();
+            stack.pop_back();
+            const Node *src = nullptr;
+            if (n->type == NodeType::ImportDeclaration) {
+                src = n->source();
+            } else if (n->type == NodeType::CallExpression && n->callee() &&
+                       n->callee()->type == NodeType::Identifier && n->callee()->str == "require" &&
+                       n->arguments().size() == 1) {
+                auto it = doc->id_ref.find(n->callee());
+                if (it == doc->id_ref.end() || !it->second->var) src = n->arguments()[0];
+            }
+            if (src && src->type == NodeType::Literal && src->lit == jsparse::LitKind::String) {
+                doc->DtsModule(std::string(src->str2));
+                continue;
+            }
+            jsparse::CollectChildren(n, kids);
+            for (const Node *k : kids) stack.push_back(k);
+        }
+    }
     return doc;
 }
 

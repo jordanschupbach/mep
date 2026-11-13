@@ -477,7 +477,8 @@ const char *KindWord(VarKind k) {
     }
 }
 
-std::string VarHover(const JsLspDocument &doc, const Var *v) {
+// `type_note`: what the declaration files say the value is (`Circle`), "" for the file's own inference.
+std::string VarHover(const JsLspDocument &doc, const Var *v, const std::string &type_note = std::string()) {
     const std::string name(v->name);
     std::string head;
     switch (v->kind) {
@@ -603,7 +604,9 @@ std::string VarHover(const JsLspDocument &doc, const Var *v) {
     }
     std::string out = Fence(doc) + head + "\n```";
     if (v->kind == VarKind::Arguments) out += "\n\nThe arguments the function was called with (array-like).";
-    if (v->init && !IsFunction(v->init) && v->init->type != NodeType::Literal) {
+    if (!type_note.empty()) {
+        out += "\n\n*Type:* `" + type_note + "`";
+    } else if (v->init && !IsFunction(v->init) && v->init->type != NodeType::Literal) {
         const std::string t = InferType(doc, v->init);
         if (!t.empty() && t != "Object" && t != "Function") out += "\n\n*Type:* `" + t + "`";
     }
@@ -880,6 +883,414 @@ bool InTypePosition(const JsLspDocument &doc, uint32_t ps) {
     return false;
 }
 
+// ---- declaration files (js_lsp_dts.h) ----
+//
+// Just enough inference for a module a declaration file types: `require("x")` and `import`
+// give its exports, `new C(...)` an instance of the class, a call what its (first) signature
+// declares it returns, `.p` the declared type of a property. A variable takes the value of its
+// initializer, or of the module it destructures; nothing else is tracked (parameters,
+// reassignments and loops stay unknown).
+
+struct DtsVal {
+    enum K { None, Namespace, Class, Instance, Function, Enum, EnumMember, Method, Property, Variable } k = None;
+    const JsDtsModule *mod = nullptr;
+    const JsDtsScope *scope = nullptr;    // Namespace: whose exports
+    const JsDtsDecl *decl = nullptr;      // the declaration; Method / Property / EnumMember: the owner
+    const JsDtsMember *member = nullptr;  // Method / Property / EnumMember
+    const JsDtsDecl *self = nullptr;      // Method / Property: the instance's class (what `this` returns)
+};
+
+DtsVal DeclVal(const JsDtsModule *m, const JsDtsDecl *d) {
+    DtsVal v;
+    if (!m || !d) return v;
+    v.mod = m;
+    v.decl = d;
+    switch (d->kind) {
+        case JsDtsDecl::Function:
+            v.k = DtsVal::Function;
+            break;
+        case JsDtsDecl::Class:
+            v.k = DtsVal::Class;
+            break;
+        case JsDtsDecl::Enum:
+            v.k = DtsVal::Enum;
+            break;
+        case JsDtsDecl::Variable:
+            v.k = DtsVal::Variable;
+            break;
+        case JsDtsDecl::Namespace:
+            v.k = DtsVal::Namespace;
+            v.scope = d->ns.get();
+            break;
+        default:  // an interface or a type alias: no value
+            return DtsVal();
+    }
+    return v;
+}
+
+// A value of the declared type `type` (written in `scope`): an instance of the class it names.
+DtsVal ValueOfType(const JsDtsModule *m, const JsDtsScope *scope, const std::string &type, const JsDtsDecl *self) {
+    DtsVal v;
+    if (!m) return v;
+    std::string t = type;
+    while (!t.empty() && t.back() == ' ') t.pop_back();
+    if (t == "this" && self) {
+        v.k = DtsVal::Instance;
+        v.mod = m;
+        v.decl = self;
+        return v;
+    }
+    if (t.rfind("typeof ", 0) == 0) return DeclVal(m, scope ? scope->Find(t.substr(7)) : nullptr);
+    if (const JsDtsDecl *c = m->ClassOfType(scope, t)) {
+        v.k = DtsVal::Instance;
+        v.mod = m;
+        v.decl = c;
+    }
+    return v;
+}
+
+// A variable or property stands for a value of its declared type.
+DtsVal Resolved(const DtsVal &v) {
+    if (v.k == DtsVal::Variable) return ValueOfType(v.mod, v.decl->scope, v.decl->type, nullptr);
+    if (v.k == DtsVal::Property) return ValueOfType(v.mod, v.decl->scope, v.member->type, v.self);
+    return v;
+}
+
+// What `import`/`require` of `spec` gives: its exports, or what `export =` names (`deflt`: the
+// default import, which is the whole module for one with no default export, as node gives a
+// CommonJS module).
+DtsVal ModuleVal(const JsLspDocument &doc, const std::string &spec, bool deflt) {
+    DtsVal v;
+    const JsDtsModule *m = doc.DtsModule(spec);
+    if (!m) return v;
+    const JsDtsScope *sc = &m->root;
+    auto amb = m->ambient.find(spec);
+    if (amb != m->ambient.end()) sc = amb->second.get();
+    if (deflt) {
+        if (const JsDtsDecl *d = sc->Export("default")) return DeclVal(m, d);
+    }
+    if (const JsDtsDecl *eq = sc->ExportEquals()) {
+        const DtsVal e = DeclVal(m, eq);
+        if (e.k != DtsVal::None) return e;
+    }
+    v.k = DtsVal::Namespace;
+    v.mod = m;
+    v.scope = sc;
+    return v;
+}
+
+DtsVal MemberOf(const DtsVal &base0, const std::string &name) {
+    const DtsVal base = Resolved(base0);
+    DtsVal v;
+    if (base.k == DtsVal::None || name.empty()) return v;
+    const JsDtsModule *m = base.mod;
+    auto from_ns = [&](const JsDtsDecl *d) {
+        return d && d->ns ? DeclVal(m, d->ns->Export(name)) : DtsVal();
+    };
+    auto member = [&](const JsDtsDecl *cls, bool statics) {
+        const JsDtsDecl *owner = nullptr;
+        const JsDtsMember *mm = m->Member(cls, name, statics, &owner);
+        DtsVal r;
+        if (!mm) return r;
+        r.k = mm->kind == JsDtsMember::Method ? DtsVal::Method : DtsVal::Property;
+        r.mod = m;
+        r.decl = owner;
+        r.member = mm;
+        r.self = statics ? nullptr : cls;
+        return r;
+    };
+    switch (base.k) {
+        case DtsVal::Namespace:
+            return DeclVal(m, base.scope ? base.scope->Export(name) : nullptr);
+        case DtsVal::Class:
+            v = member(base.decl, true);
+            return v.k != DtsVal::None ? v : from_ns(base.decl);
+        case DtsVal::Instance:
+            return member(base.decl, false);
+        case DtsVal::Function:
+            return from_ns(base.decl);
+        case DtsVal::Enum:
+            for (const JsDtsMember &mm : base.decl->members) {
+                if (mm.kind != JsDtsMember::EnumMember || mm.name != name) continue;
+                v.k = DtsVal::EnumMember;
+                v.mod = m;
+                v.decl = base.decl;
+                v.member = &mm;
+                return v;
+            }
+            return from_ns(base.decl);
+        default:
+            return v;
+    }
+}
+
+// What calling (`new`: constructing) a value gives.
+DtsVal CallOf(const DtsVal &callee0, bool is_new) {
+    const DtsVal callee = Resolved(callee0);
+    DtsVal v;
+    if (is_new) {
+        if (callee.k != DtsVal::Class) return v;
+        v.k = DtsVal::Instance;
+        v.mod = callee.mod;
+        v.decl = callee.decl;
+        return v;
+    }
+    if (callee.k == DtsVal::Function && !callee.decl->sigs.empty())
+        return ValueOfType(callee.mod, callee.decl->scope, callee.decl->sigs[0].ret, nullptr);
+    if (callee.k == DtsVal::Method && !callee.member->sigs.empty())
+        return ValueOfType(callee.mod, callee.decl->scope, callee.member->sigs[0].ret, callee.self);
+    return v;
+}
+
+DtsVal ExprVal(const JsLspDocument &doc, const Node *e, int depth);
+
+std::string KeyName(const Node *k) {
+    if (!k) return std::string();
+    if (k->type == NodeType::Identifier) return std::string(k->str);
+    if (k->type == NodeType::Literal && k->lit == jsparse::LitKind::String) return std::string(k->str2);
+    return std::string();
+}
+
+std::string StringLiteral(const Node *n) {
+    return n && n->type == NodeType::Literal && n->lit == jsparse::LitKind::String ? std::string(n->str2)
+                                                                                  : std::string();
+}
+
+DtsVal VarVal(const JsLspDocument &doc, const Var *var, int depth) {
+    if (!var || depth > 32) return DtsVal();
+    if (var->kind == VarKind::Import && var->decl) {
+        const Node *spec = var->decl;
+        if (spec->type == NodeType::TSImportEqualsDeclaration) {
+            // import x = require("y")
+            const Node *ref = spec->moduleReference();
+            if (ref && ref->type == NodeType::TSExternalModuleReference) {
+                const std::string s = StringLiteral(ref->expression());
+                if (!s.empty()) return ModuleVal(doc, s, false);
+            }
+            return DtsVal();
+        }
+        const Node *decl = doc.Parent(spec);
+        const std::string src = decl && decl->type == NodeType::ImportDeclaration ? StringLiteral(decl->source()) : "";
+        if (src.empty()) return DtsVal();
+        if (spec->type == NodeType::ImportNamespaceSpecifier) return ModuleVal(doc, src, false);
+        if (spec->type == NodeType::ImportDefaultSpecifier) return ModuleVal(doc, src, true);
+        const std::string name = KeyName(spec->imported());
+        if (name == "default") return ModuleVal(doc, src, true);
+        return MemberOf(ModuleVal(doc, src, false), name);
+    }
+    if (var->kind != VarKind::Const && var->kind != VarKind::Let && var->kind != VarKind::Var) return DtsVal();
+    if (var->in_pattern && !var->ids.empty() && var->decl && var->decl->type == NodeType::VariableDeclarator) {
+        // const { Circle, add: plus } = require("x"): the source's member of the key's name.
+        const Node *id = var->ids[0];
+        const Node *p = doc.Parent(id);
+        if (p && p->type == NodeType::AssignmentPattern) p = doc.Parent(p);
+        const Node *pat = p ? doc.Parent(p) : nullptr;
+        if (!p || p->type != NodeType::Property || p->Has(jsparse::kFlagComputed) || pat != var->decl->id())
+            return DtsVal();
+        return MemberOf(ExprVal(doc, var->decl->init(), depth + 1), KeyName(p->key()));
+    }
+    return ExprVal(doc, var->init, depth + 1);
+}
+
+DtsVal ExprVal(const JsLspDocument &doc, const Node *e, int depth) {
+    if (!e || depth > 32) return DtsVal();
+    switch (e->type) {
+        case NodeType::Identifier:
+            return VarVal(doc, VarOfExpr(doc, e), depth + 1);
+        case NodeType::ParenthesizedExpression:
+        case NodeType::ChainExpression:
+        case NodeType::TSNonNullExpression:
+        case NodeType::TSAsExpression:
+        case NodeType::TSSatisfiesExpression:
+            return ExprVal(doc, e->expression(), depth + 1);
+        case NodeType::CallExpression: {
+            const Node *c = e->callee();
+            if (c && c->type == NodeType::Identifier && c->str == "require" && !VarOfExpr(doc, c) &&
+                e->arguments().size() == 1) {
+                const std::string s = StringLiteral(e->arguments()[0]);
+                return s.empty() ? DtsVal() : ModuleVal(doc, s, false);
+            }
+            return CallOf(ExprVal(doc, c, depth + 1), false);
+        }
+        case NodeType::NewExpression:
+            return CallOf(ExprVal(doc, e->callee(), depth + 1), true);
+        case NodeType::MemberExpression: {
+            const std::string name = e->Has(jsparse::kFlagComputed) ? StringLiteral(e->property())
+                                                                    : KeyName(e->property());
+            return MemberOf(ExprVal(doc, e->object(), depth + 1), name);
+        }
+        default:
+            return DtsVal();
+    }
+}
+
+// A receiver written as text (`dm`, `dm.Circle.unit()`, `v.set_x(1)`, `require("x")`), when a
+// half-typed line kept it out of the tree: the root by the scope at `off`, then member by member.
+// `is_new`: the text follows `new`, which applies to its first call (`new dm.Vec2(1, 2).`).
+DtsVal DtsValOfText(const JsLspDocument &doc, uint32_t off, const std::string &recv, bool is_new = false) {
+    std::vector<std::string> parts{std::string()}, args{std::string()};
+    std::vector<bool> called{false};
+    for (size_t i = 0; i < recv.size(); i++) {
+        const char ch = recv[i];
+        if (ch == '(' || ch == '[') {
+            const char close = ch == '(' ? ')' : ']';
+            int depth = 0;
+            const size_t from = i;
+            for (; i < recv.size(); i++) {
+                if (recv[i] == ch) depth++;
+                if (recv[i] == close && --depth == 0) break;
+            }
+            if (ch == '[') return DtsVal();  // an index: unknown
+            called.back() = true;
+            args.back() = recv.substr(from + 1, i > from ? i - from - 1 : 0);
+            continue;
+        }
+        if (ch == '?') continue;
+        if (ch == '.') {
+            parts.emplace_back();
+            args.emplace_back();
+            called.push_back(false);
+            continue;
+        }
+        if (ch == ' ' || ch == '\t' || ch == '\n') continue;
+        parts.back() += ch;
+    }
+    const std::string &root = parts[0];
+    if (!IsIdentifierName(root)) return DtsVal();
+    const Var *var = nullptr;
+    for (const Scope *s = doc.ScopeAt(off); s && !var; s = s->parent) var = s->Find(root);
+    DtsVal v;
+    if (!var && root == "require" && called[0]) {
+        std::string a = args[0];
+        while (!a.empty() && (a.back() == ' ' || a.back() == ',')) a.pop_back();
+        while (!a.empty() && a[0] == ' ') a.erase(0, 1);
+        if (a.size() < 2 || (a[0] != '"' && a[0] != '\'') || a.back() != a[0]) return DtsVal();
+        v = ModuleVal(doc, a.substr(1, a.size() - 2), false);
+    } else {
+        v = VarVal(doc, var, 0);
+        if (called[0]) {
+            v = CallOf(v, is_new);
+            is_new = false;
+        }
+    }
+    for (size_t k = 1; k < parts.size() && v.k != DtsVal::None; k++) {
+        v = MemberOf(v, parts[k]);
+        if (called[k]) {
+            v = CallOf(v, is_new);
+            is_new = false;
+        }
+    }
+    if (is_new) return DtsVal();  // `new dm.Circle.` is not an instance of anything
+    return v;
+}
+
+std::string DtsHover(const DtsVal &v) {
+    switch (v.k) {
+        case DtsVal::Namespace:
+            if (v.decl) return JsDtsDeclHover(*v.mod, *v.decl);
+            return "```ts\nmodule\n```\n\n" + JsDtsModuleNote(*v.mod, *v.scope);
+        case DtsVal::Class:
+        case DtsVal::Instance:
+        case DtsVal::Function:
+        case DtsVal::Enum:
+        case DtsVal::Variable:
+            return JsDtsDeclHover(*v.mod, *v.decl);
+        case DtsVal::Method:
+        case DtsVal::Property:
+        case DtsVal::EnumMember:
+            return JsDtsMemberHover(*v.mod, *v.decl, *v.member);
+        default:
+            return std::string();
+    }
+}
+
+using CompletionSink = std::function<void(const std::string &label, JsLspKind kind, const std::string &detail,
+                                          const std::string &docs)>;
+
+JsLspKind DtsDeclKind(const JsDtsDecl &d) {
+    switch (d.kind) {
+        case JsDtsDecl::Function:
+            return JsLspKind::Function;
+        case JsDtsDecl::Class:
+            return JsLspKind::Class;
+        case JsDtsDecl::Enum:
+            return JsLspKind::Enum;
+        case JsDtsDecl::Namespace:
+            return JsLspKind::Module;
+        case JsDtsDecl::Variable:
+            return d.var_kind == "const" ? JsLspKind::Constant : JsLspKind::Variable;
+        default:
+            return JsLspKind::Interface;
+    }
+}
+
+std::string DtsDeclDetail(const JsDtsDecl &d) {
+    switch (d.kind) {
+        case JsDtsDecl::Function:
+            return d.sigs.empty() ? "function" : JsDtsSignatureLabel(d.sigs[0], d.name);
+        case JsDtsDecl::Class:
+            return std::string(d.abstract_ ? "abstract class " : "class ") + d.name +
+                   (d.bases.empty() ? "" : " extends " + d.bases[0]);
+        case JsDtsDecl::Enum:
+            return "enum " + d.name;
+        case JsDtsDecl::Namespace:
+            return "namespace " + d.name;
+        case JsDtsDecl::Variable:
+            return d.type;
+        default:
+            return std::string();
+    }
+}
+
+// The members a value has by its declarations, for completion after `.`.
+void DtsMembers(const DtsVal &v0, const CompletionSink &add) {
+    const DtsVal v = Resolved(v0);
+    auto exports = [&](const JsDtsScope *sc) {
+        if (!sc) return;
+        for (const auto &kv : sc->Exports()) {
+            const JsDtsDecl &d = *kv.second;
+            if (d.kind == JsDtsDecl::Interface || d.kind == JsDtsDecl::TypeAlias) continue;  // types only
+            add(kv.first, DtsDeclKind(d), DtsDeclDetail(d), d.doc);
+        }
+    };
+    auto members = [&](const JsDtsDecl *cls, bool statics) {
+        for (const auto &om : v.mod->Members(cls, statics)) {
+            const JsDtsMember &mm = *om.second;
+            if (mm.kind == JsDtsMember::Method) {
+                std::string docs;
+                for (const JsDtsSignature &s : mm.sigs) {
+                    if (docs.empty()) docs = s.doc;
+                }
+                add(mm.name, JsLspKind::Method,
+                    mm.sigs.empty() ? std::string() : JsDtsSignatureLabel(mm.sigs[0], mm.name), docs);
+            } else {
+                add(mm.name, JsLspKind::Property, mm.type, mm.doc);
+            }
+        }
+    };
+    switch (v.k) {
+        case DtsVal::Namespace:
+            exports(v.scope);
+            break;
+        case DtsVal::Class:
+            members(v.decl, true);
+            if (v.decl->ns) exports(v.decl->ns.get());
+            break;
+        case DtsVal::Instance:
+            members(v.decl, false);
+            break;
+        case DtsVal::Function:
+            if (v.decl->ns) exports(v.decl->ns.get());
+            break;
+        case DtsVal::Enum:
+            for (const JsDtsMember &mm : v.decl->members) add(mm.name, JsLspKind::EnumMember, mm.type, mm.doc);
+            if (v.decl->ns) exports(v.decl->ns.get());
+            break;
+        default:
+            break;
+    }
+}
+
 }  // namespace
 
 // ---- hover -----------------------------------------------------------------------------------------------------
@@ -892,7 +1303,19 @@ JsLspHoverInfo JsLspHover(const JsLspDocument &doc, int line, int col) {
     info.range = doc.Range(h->start, h->end);
     if (h->var) {
         info.found = true;
-        info.text = VarHover(doc, h->var);
+        // A value a declaration file types: what it declares, with the file's own view.
+        const DtsVal dv = VarVal(doc, h->var, 0);
+        if (dv.k == DtsVal::None) {
+            info.text = VarHover(doc, h->var);
+        } else if (dv.k == DtsVal::Namespace && !dv.decl) {
+            info.text = VarHover(doc, h->var) + "\n\n" + JsDtsModuleNote(*dv.mod, *dv.scope);
+        } else if (dv.k == DtsVal::Instance) {
+            info.text = VarHover(doc, h->var, dv.decl->name);
+        } else if (h->var->kind == VarKind::Import || h->var->in_pattern) {
+            info.text = DtsHover(dv);  // `import { add }`, `const { add } = require(...)`: the declaration itself
+        } else {
+            info.text = VarHover(doc, h->var) + "\n\n---\n\n" + DtsHover(dv);
+        }
         return info;
     }
     if (h->ref) {
@@ -925,6 +1348,12 @@ JsLspHoverInfo JsLspHover(const JsLspDocument &doc, int line, int col) {
                     return info;
                 }
             }
+            const DtsVal dv = MemberOf(ExprVal(doc, p->object(), 0), name);
+            if (dv.k != DtsVal::None) {
+                info.found = true;
+                info.text = DtsHover(dv);
+                return info;
+            }
             const std::vector<std::string> owners = OwnersOf(doc, p->object());
             const Api *a = owners.empty() ? GuessMemberApi(name) : FindInOwners(owners, name);
             if (a) {
@@ -932,6 +1361,19 @@ JsLspHoverInfo JsLspHover(const JsLspDocument &doc, int line, int col) {
                 info.text = ApiHover(*a);
             }
             return info;
+        }
+        // `const { Circle: C } = require("x")`: the key is the module's export.
+        if (p && p->type == NodeType::Property && !p->Has(jsparse::kFlagComputed) && p->key() == h->node) {
+            const Node *pat = doc.Parent(p);
+            const Node *vd = pat && pat->type == NodeType::ObjectPattern ? doc.Parent(pat) : nullptr;
+            if (vd && vd->type == NodeType::VariableDeclarator && vd->id() == pat) {
+                const DtsVal dv = MemberOf(ExprVal(doc, vd->init(), 0), name);
+                if (dv.k != DtsVal::None) {
+                    info.found = true;
+                    info.text = DtsHover(dv);
+                    return info;
+                }
+            }
         }
         if (p && (p->type == NodeType::Property || p->type == NodeType::MethodDefinition ||
                   p->type == NodeType::PropertyDefinition || p->type == NodeType::TSAbstractMethodDefinition ||
@@ -989,10 +1431,16 @@ std::vector<JsLspCompletionItem> JsLspCompletions(const JsLspDocument &doc, int 
         std::vector<MemberDef> mems;
         std::vector<std::string> owners;
         const Node *obj = rs < re ? ExprAt(doc, rs, re) : nullptr;
+        DtsVal dts;  // what the declaration files say the receiver is
         if (obj) {
             mems = FileMembers(doc, obj);
             owners = OwnersOf(doc, obj);
+            dts = ExprVal(doc, obj, 0);
         } else if (rs < re) {
+            uint32_t nk = rs;
+            while (nk > 0 && (t[nk - 1] == ' ' || t[nk - 1] == '\t')) nk--;
+            const bool after_new = nk >= 3 && t.compare(nk - 3, 3, "new") == 0 && (nk < 4 || !IsWordByte(t[nk - 4]));
+            dts = DtsValOfText(doc, off, t.substr(rs, re - rs), after_new);
             // A half-typed `foo.` usually broke its statement out of the tree: go by the text.
             const std::string recv = t.substr(rs, re - rs);
             const char c0 = recv[0];
@@ -1128,6 +1576,7 @@ std::vector<JsLspCompletionItem> JsLspCompletions(const JsLspDocument &doc, int 
         }
         for (const MemberDef &m : mems)
             add(m.name, IsFunction(m.value) ? JsLspKind::Method : JsLspKind::Property, "", "");
+        DtsMembers(dts, add);
         for (const std::string &o : owners) {
             for (const Api *a : ApiMembers(o))
                 add(ApiShortName(*a), CompletionKindOfApi(*a), FirstSigLine(a->signature), a->doc);
@@ -1378,6 +1827,72 @@ JsLspSignatureHelp JsLspSignatureAt(const JsLspDocument &doc, int line, int col)
         }
         return !lines.empty() && fill_from_api(a, lines[0]);
     };
+
+    // What a declaration file declares: a module's function, a class's constructors, a method --
+    // every overload, the first that can take the argument at the cursor active.
+    {
+        DtsVal target;
+        if (dotp == std::string::npos) {
+            const Var *v = nullptr;
+            for (const Scope *s = scope; s && !v; s = s->parent) v = s->Find(callee);
+            target = VarVal(doc, v, 0);
+        } else {
+            const std::string recv = callee.substr(0, dotp);
+            const Node *obj = ExprAt(doc, cs, cs + static_cast<uint32_t>(recv.size()));
+            target = MemberOf(obj ? ExprVal(doc, obj, 0) : DtsValOfText(doc, open, recv), last);
+        }
+        target = Resolved(target);
+        const std::vector<JsDtsSignature> *sigs = nullptr;
+        std::string name, fallback_doc;
+        if (target.k == DtsVal::Function) {
+            sigs = &target.decl->sigs;
+            name = target.decl->name;
+            fallback_doc = target.decl->doc;
+        } else if (target.k == DtsVal::Method) {
+            sigs = &target.member->sigs;
+            name = target.member->name;
+            for (const JsDtsSignature &sg : *sigs) {
+                if (fallback_doc.empty()) fallback_doc = sg.doc;
+            }
+        } else if (target.k == DtsVal::Class) {
+            sigs = &target.decl->sigs;
+            name = target.decl->name;
+            fallback_doc = target.decl->doc;
+        }
+        if (sigs) {
+            static const std::vector<JsDtsSignature> kNoArgs{JsDtsSignature{"", "()", "", ""}};
+            if (sigs->empty()) sigs = &kNoArgs;
+            sh.found = true;
+            int active = -1;
+            for (size_t k = 0; k < sigs->size(); k++) {
+                const JsDtsSignature &sg = (*sigs)[k];
+                JsLspSignatureHelp::Overload o;
+                o.label = JsDtsSignatureLabel(sg, name);
+                const size_t po = ParamsOpen(o.label, name.size());
+                if (po != std::string::npos) SplitParams(o.label, po, &o.params);
+                o.documentation = sg.doc;
+                if (target.k == DtsVal::Class && !target.decl->doc.empty())
+                    o.documentation = target.decl->doc + (sg.doc.empty() ? "" : "\n\n" + sg.doc);
+                else if (o.documentation.empty())
+                    o.documentation = fallback_doc;
+                const bool rest = !o.params.empty() && o.params.back().rfind("...", 0) == 0;
+                if (active < 0 && (static_cast<int>(o.params.size()) > commas || rest || (commas == 0 && o.params.empty())))
+                    active = static_cast<int>(k);
+                sh.overloads.push_back(o);
+            }
+            if (active < 0) active = 0;
+            sh.active_signature = active;
+            const JsLspSignatureHelp::Overload &a = sh.overloads[static_cast<size_t>(active)];
+            sh.label = a.label;
+            sh.params = a.params;
+            sh.documentation = a.documentation;
+            const int n = static_cast<int>(sh.params.size());
+            sh.active_param = commas;
+            if (n > 0 && sh.params.back().rfind("...", 0) == 0 && sh.active_param >= n) sh.active_param = n - 1;
+            if (sh.overloads.size() == 1) sh.overloads.clear();
+            return sh;
+        }
+    }
 
     if (dotp == std::string::npos) {
         // A plain name: local function, local class, else the vocabulary.

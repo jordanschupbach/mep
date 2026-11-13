@@ -266,6 +266,10 @@ so nothing is downloaded, and each ends in one plot.</p>
 <tr><td><code>anlm</code></td><td>linear regression</td><td><code>lm</code>, iris</td><td>statsmodels <code>OLS</code>, iris</td></tr>
 <tr><td><code>anlogit</code></td><td>logistic regression</td><td><code>glm</code>, mtcars</td><td>statsmodels <code>Logit</code>, iris</td></tr>
 <tr><td><code>anloess</code></td><td>local regression smoother</td><td><code>loess</code>, cars</td><td>statsmodels <code>lowess</code>, diabetes</td></tr>
+<tr><td><code>anbs</code></td><td>cubic B-spline regression</td><td><code>lm</code> + <code>splines::bs</code></td><td><code>SplineTransformer</code> + <code>LinearRegression</code></td></tr>
+<tr><td><code>anps</code></td><td>P-spline (penalized B-spline)</td><td><code>mgcv::gam</code>, =bs = "ps"=</td><td>B-spline basis + difference penalty</td></tr>
+<tr><td><code>anbsdm</code></td><td>B-spline regression, datamunge</td><td><code>BSplineRegression</code></td><td><code>dm.BSplineRegression</code></td></tr>
+<tr><td><code>anpsdm</code></td><td>P-spline, datamunge, GCV λ</td><td><code>PSplineRegression</code></td><td><code>dm.PSplineRegression</code></td></tr>
 <tr><td><code>anaov</code></td><td>one-way ANOVA and Tukey HSD</td><td><code>aov</code>, iris</td><td><code>f_oneway</code>, <code>tukey_hsd</code>, iris</td></tr>
 <tr><td><code>antt</code></td><td>two-sample t-test</td><td><code>t.test</code>, mtcars</td><td><code>ttest_ind</code>, iris</td></tr>
 <tr><td><code>anwil</code></td><td>Wilcoxon / Mann-Whitney test</td><td><code>wilcox.test</code>, airquality</td><td><code>mannwhitneyu</code>, iris</td></tr>
@@ -287,6 +291,17 @@ so nothing is downloaded, and each ends in one plot.</p>
 <tr><td><code>anarima</code></td><td>seasonal ARIMA forecast</td><td><code>arima</code>, AirPassengers</td><td><code>SARIMAX</code>, co2</td></tr>
 <tr><td><code>ansurv</code></td><td>Kaplan-Meier survival curves</td><td><code>survfit</code>, lung</td><td><code>SurvfuncRight</code>, simulated lifetimes</td></tr>
 </table>
+<p>The four spline snippets share one simulated curve,
+<code>y = sin(20/(x + 0.25))</code> plus normal noise with sd 0.2 on [0, 1], and plot
+the data, the true curve (dashed) and the fit. The curve wiggles fast near
+0 and slowly near 1, so 30 plain B-splines miss its left end while 100
+P-splines follow it, at the price of a little wiggle on the right. The
+<code>*dm</code> pair fit the same curve with datamunge's own <code>BSplineRegression</code> and
+<code>PSplineRegression</code> (whose generalized cross-validation picks λ), so they
+need the binding: run them in a <code>dmpyflake</code> or <code>dmrflake</code> shell (see
+"datamunge flakes" below). The Python <code>anps</code> solves the P-spline directly
+with λ as a field; its default, 0.003, is about what datamunge's GCV picks
+here.</p>
 <p>Where there is a number worth changing -- the k of <code>ankm</code>, <code>anhc</code> and
 <code>anknn</code>, a tree's depth, a forecast's horizon -- it is the snippet's one
 field. Otherwise the cursor lands after the analysis, ready for the next
@@ -432,6 +447,46 @@ and <code>unfree</code> the <code>import nixpkgs</code> line that allows unfree 
 <p>Inside a fragment's library list, a library is its nixpkgs name without the
 set's prefix: what <code>nix search nixpkgs python3Packages.scipy</code> finds is
 written <code>scipy</code>, and <code>rPackages.tidyr</code> is written <code>tidyr</code>.</p>
+<h2>datamunge flakes</h2>
+<p>The <code>dm*flake</code> snippets write a whole <code>flake.nix</code> whose default dev shell
+has the <a href="https://github.com/jordanschupbach/datamunge">datamunge</a> binding for one language, built by nix, so code in
+that language can load datamunge with no build step of its own. <code>dmflake</code>
+does every language at once.</p>
+<table>
+<tr><th>Trigger</th><th>The dev shell has</th></tr>
+<tr><td><code>dmpyflake</code></td><td>Python with <code>pydatamunge</code>, numpy and matplotlib</td></tr>
+<tr><td><code>dmrflake</code></td><td>R with <code>datamunger</code>, ggplot2 and dplyr</td></tr>
+<tr><td><code>dmcppflake</code></td><td>a C++ compiler and the library, found by <code>pkg-config</code></td></tr>
+<tr><td><code>dmcsflake</code></td><td>the .NET SDK, restoring <code>datamungedotnet</code> from the store</td></tr>
+<tr><td><code>dmdflake</code></td><td>LDC and dub, with the generated D module</td></tr>
+<tr><td><code>dmgoflake</code></td><td>Go, with the <code>datamunge</code> module in a workspace</td></tr>
+<tr><td><code>dmguileflake</code></td><td>Guile, <code>(use-modules (datamunge))</code></td></tr>
+<tr><td><code>dmjavaflake</code></td><td>a JDK, with <code>jdatamunge.jar</code> on the class path</td></tr>
+<tr><td><code>dmjsflake</code></td><td>Node, <code>require("@datamunge/datamungejs")</code></td></tr>
+<tr><td><code>dmluaflake</code></td><td>Lua, <code>require("datamunge")</code></td></tr>
+<tr><td><code>dmocamlflake</code></td><td>OCaml and findlib, =#require "datamungeocaml"=</td></tr>
+<tr><td><code>dmoctflake</code></td><td>Octave, <code>datamunge</code> on the load path</td></tr>
+<tr><td><code>dmplflake</code></td><td>Perl, <code>use Datamunge;</code></td></tr>
+<tr><td><code>dmphpflake</code></td><td>PHP with the extension loaded</td></tr>
+<tr><td><code>dmrbflake</code></td><td>Ruby, =require "octruby"=</td></tr>
+<tr><td><code>dmtclflake</code></td><td>Tcl, <code>package require Datamunge</code></td></tr>
+<tr><td><code>dmflake</code></td><td>all of the above in one shell</td></tr>
+</table>
+<p>datamunge comes from GitHub, and the flake's nixpkgs follows datamunge's
+own, so the binding and the interpreter it is added to always come from
+the same nixpkgs. The first <code>nix develop</code> builds datamunge and the
+bindings it needs, which takes a few minutes; after that they come from the
+store.</p>
+<p>In <code>dmpyflake</code> and <code>dmrflake</code> (and the Python and R lines of <code>dmflake</code>)
+the binding sits in the interpreter's own package list, and the libraries
+beside it are a field you type over. Every other language takes
+datamunge's <code>report-&lt;lang&gt;</code> shell through <code>inputsFrom</code>, which brings the
+environment variables that find the binding (<code>LUA_PATH</code>, <code>CLASSPATH</code> and
+so on); add any other tools to <code>packages</code>. In <code>dmflake</code>, deleting a
+language from the <code>inputsFrom</code> list leaves its runtime, and the build of
+its binding, out of the shell.</p>
+<p>A mepml document next to such a flake runs its blocks in it, since every
+code-block snippet writes <code>nix-shell</code>".#"= (see below).</p>
 <h1>MEPML</h1>
 <p>The <code>mepml</code> set covers the document's markup (see <a href="mepml.html">MEPML</a>). In a <code>.mepml</code> file
 <code>Tab</code> expands a trigger as it does in a code file; none of the triggers is an

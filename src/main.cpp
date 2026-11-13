@@ -30984,6 +30984,86 @@ M.rfig = {'```{r, nix-shell=".#", file="${1:figures/plot.png}"}',
 M.incsrc = {'```{${1|python,r,bash,cpp,julia,lua|}, nix-shell=".#", include="${2:src/file.py}"}', '```', '$0'}
 )LUA";
 
+// datamunge flakes (help/snippets.org, "Nix: datamunge"): a whole
+// flake.nix whose dev shell has datamunge's nix-built binding for one
+// language (dm<lang>flake), or for every language (dmflake). datamunge
+// comes from GitHub, and nixpkgs follows datamunge's own pin, so the
+// binding and the interpreter it is added to are built from the same
+// nixpkgs. Python and R put the binding straight into withPackages /
+// rWrapper beside the user's own libraries; the other languages take
+// datamunge's report-<lang> shell through inputsFrom, which brings the
+// environment (LUA_PATH, CLASSPATH, ...) that finds the binding.
+const char *kBuiltinDatamungeSnippets = R"LUA(
+mep.snippets.nix = mep.snippets.nix or {}
+local N = mep.snippets.nix
+
+local function flake(desc, lets, shell)
+  local lines = {
+    '{',
+    '  description = "${1:' .. desc .. '}";',
+    '  inputs.datamunge.url = "github:jordanschupbach/datamunge";',
+    '  inputs.nixpkgs.follows = "datamunge/nixpkgs";',
+    '  inputs.flake-utils.follows = "datamunge/flake-utils";',
+    '',
+    '  outputs =',
+    '    { nixpkgs, flake-utils, datamunge, ... }:',
+    '    flake-utils.lib.eachDefaultSystem (',
+    '      system:',
+    '      let',
+    '        pkgs = nixpkgs.legacyPackages.${system};',
+  }
+  for _, l in ipairs(lets) do lines[#lines + 1] = '        ' .. l end
+  lines[#lines + 1] = '      in'
+  lines[#lines + 1] = '      {'
+  lines[#lines + 1] = '        devShells.default = pkgs.mkShell {'
+  for _, l in ipairs(shell) do lines[#lines + 1] = '          ' .. l end
+  for _, l in ipairs({'        };', '      }', '    );', '}'}) do lines[#lines + 1] = l end
+  return lines
+end
+
+local PY = '(python3.withPackages (ps: with ps; [ dm.pydatamunge ${2:numpy matplotlib} ]))'
+local RW = '(rWrapper.override { packages = with rPackages; [ dm.datamunger ${%d:ggplot2 dplyr} ]; })'
+
+N.dmpyflake = flake('Python with datamunge', {'dm = datamunge.packages.${system};'},
+  {'packages = with pkgs; [', '  ' .. PY .. '${0}', '];'})
+N.dmrflake = flake('R with datamunge', {'dm = datamunge.packages.${system};'},
+  {'packages = with pkgs; [', '  ' .. RW:format(2) .. '${0}', '];'})
+
+-- The rest: trigger, report shell, the language's name.
+local others = {
+  {'dmcppflake', 'cpp', 'C++'}, {'dmcsflake', 'csharp', 'C#'}, {'dmdflake', 'd', 'D'},
+  {'dmgoflake', 'go', 'Go'}, {'dmguileflake', 'guile', 'Guile'}, {'dmjavaflake', 'java', 'Java'},
+  {'dmjsflake', 'javascript', 'JavaScript'}, {'dmluaflake', 'lua', 'Lua'},
+  {'dmocamlflake', 'ocaml', 'OCaml'}, {'dmoctflake', 'octave', 'Octave'},
+  {'dmplflake', 'perl', 'Perl'}, {'dmphpflake', 'php', 'PHP'}, {'dmrbflake', 'ruby', 'Ruby'},
+  {'dmtclflake', 'tcl', 'Tcl'},
+}
+local names = {}
+for _, o in ipairs(others) do
+  names[#names + 1] = '"' .. o[2] .. '"'
+  N[o[1]] = flake(o[3] .. ' with datamunge', {},
+    {'# The ' .. o[3] .. ' runtime and the datamunge binding, with the environment that finds it.',
+     'inputsFrom = [ datamunge.devShells.${system}.report-' .. o[2] .. ' ];',
+     'packages = with pkgs; [', '  ${0}', '];'})
+end
+
+-- Every language: Python and R as above, the rest from their report shells.
+N.dmflake = flake('datamunge in every language', {
+    'dm = datamunge.packages.${system};',
+    'dmShells = datamunge.devShells.${system};',
+  }, {
+    '# Delete a language to leave its runtime (and binding build) out.',
+    'inputsFrom = map (lang: dmShells."report-${lang}") [',
+    '  ' .. table.concat(names, ' ', 1, 7),
+    '  ' .. table.concat(names, ' ', 8),
+    '];',
+    'packages = with pkgs; [',
+    '  ' .. PY,
+    '  ' .. RW:format(3) .. '${0}',
+    '];',
+  })
+)LUA";
+
 // Basic analyses (help/snippets.org, "Analyses"): one small, complete
 // analysis per trigger, the same `an*` name in R and Python, each on a
 // dataset that ships with the language's own tools (R's datasets and
@@ -31016,6 +31096,51 @@ P.anloess = {'import matplotlib.pyplot as plt', 'from sklearn.datasets import lo
              'from statsmodels.nonparametric.smoothers_lowess import lowess', 'X, y = load_diabetes(return_X_y=True)',
              'fit = lowess(y, X[:, 2])', 'plt.scatter(X[:, 2], y, s=5)', 'plt.plot(fit[:, 0], fit[:, 1], "k")',
              'plt.show()', '$0'}
+
+-- Regression splines on one simulated curve, y = sin(20 / (x + 0.25)) + N(0, 0.2^2)
+-- on [0, 1]: fast near 0, slow near 1. 30 unpenalized B-splines are smooth on
+-- the right but miss the left; 100 P-splines, smoothed by one global penalty,
+-- follow the left and wiggle a little on the right. Each plots the data, the
+-- true curve (dashed) and the fit (red). The *dm pair fits with datamunge's
+-- BSplineRegression / PSplineRegression (the dm*flake shells); its GCV picks
+-- lambda ~ 0.003 here, the hand-rolled Python anps's default.
+local function cat(...)
+  local out = {}
+  for _, t in ipairs({...}) do for _, l in ipairs(t) do out[#out + 1] = l end end
+  return out
+end
+local Rsim = {'set.seed(1)', 'f <- function(x) sin(20 / (x + 0.25))', 'x <- sort(runif(500))',
+              'y <- f(x) + rnorm(500, sd = 0.2)'}
+local Rplot = {'plot(x, y, col = "grey")', 'curve(f, add = TRUE, n = 1000, lty = 2)',
+               'lines(x, yhat, col = 2, lwd = 2)', '$0'}
+R.anbs = cat(Rsim, {'fit <- lm(y ~ splines::bs(x, df = ${1:30}))', 'yhat <- fitted(fit)'}, Rplot)
+R.anps = cat(Rsim, {'fit <- mgcv::gam(y ~ s(x, bs = "ps", k = ${1:100}))', 'yhat <- fitted(fit)'}, Rplot)
+R.anbsdm = cat({'library(datamunger)'}, Rsim,
+               {'fit <- BSplineRegression$new(x, y, ${1:30})', 'yhat <- fit$predict(x)'}, Rplot)
+R.anpsdm = cat({'library(datamunger)'}, Rsim,
+               {'fit <- PSplineRegression$new(x, y, ${1:100})  # lambda by GCV', 'yhat <- fit$predict(x)'}, Rplot)
+local Psim = {'rng = np.random.default_rng(1)', 'f = lambda x: np.sin(20 / (x + 0.25))',
+              'x = np.sort(rng.uniform(0, 1, 500))', 'y = f(x) + rng.normal(0, 0.2, 500)',
+              'grid = np.linspace(0, 1, 1000)'}
+local Pplot = {'plt.scatter(x, y, s=5, c="grey")', 'plt.plot(grid, f(grid), "k--")',
+               'plt.plot(grid, yhat, "r", lw=2)', 'plt.show()', '$0'}
+local Pimp = {'import matplotlib.pyplot as plt, numpy as np'}
+P.anbs = cat(Pimp, {'from sklearn.linear_model import LinearRegression', 'from sklearn.pipeline import make_pipeline',
+                    'from sklearn.preprocessing import SplineTransformer'}, Psim,
+             {'fit = make_pipeline(SplineTransformer(n_knots=${1:28}), LinearRegression()).fit(x[:, None], y)',
+              'yhat = fit.predict(grid[:, None])'}, Pplot)
+-- The P-spline itself (Eilers and Marx): a B-spline basis, a second-order
+-- difference penalty on its coefficients, one linear solve.
+P.anps = cat(Pimp, {'from scipy.interpolate import BSpline'}, Psim,
+             {'k, n, lam = 3, ${1:100}, ${2:0.003}', 't = np.r_[[0] * k, np.linspace(0, 1, n - k + 1), [1] * k]',
+              'B = BSpline.design_matrix(x, t, k).toarray()', 'D = np.diff(np.eye(n), 2, axis=0)',
+              'coef = np.linalg.solve(B.T @ B + lam * D.T @ D, B.T @ y)', 'yhat = BSpline(t, coef, k)(grid)'}, Pplot)
+P.anbsdm = cat(Pimp, {'from pydatamunge import datamunge as dm'}, Psim,
+               {'fit = dm.BSplineRegression(x.tolist(), y.tolist(), ${1:30})', 'yhat = list(fit.predict(grid.tolist()))'},
+               Pplot)
+P.anpsdm = cat(Pimp, {'from pydatamunge import datamunge as dm'}, Psim,
+               {'fit = dm.PSplineRegression(x.tolist(), y.tolist(), ${1:100})  # lambda by GCV',
+                'yhat = list(fit.predict(grid.tolist()))'}, Pplot)
 
 -- Group comparisons and tests
 R.anaov = {'fit <- aov(Sepal.Length ~ Species, data = iris)', 'summary(fit)', 'TukeyHSD(fit)',
@@ -72769,6 +72894,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinMepml);
     lua->DoString(kBuiltinMepmlSnippets);
     lua->DoString(kBuiltinAnalysisSnippets);
+    lua->DoString(kBuiltinDatamungeSnippets);
     lua->DoString(kBuiltinA11y);
     lua->DoString(kBuiltinSnippetHelp);
     lua->DoString(kBuiltinActivityBar);

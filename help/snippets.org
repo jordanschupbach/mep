@@ -282,6 +282,10 @@ so nothing is downloaded, and each ends in one plot.
 | =anlm=    | linear regression                | =lm=, iris                | statsmodels =OLS=, iris              |
 | =anlogit= | logistic regression              | =glm=, mtcars             | statsmodels =Logit=, iris            |
 | =anloess= | local regression smoother        | =loess=, cars             | statsmodels =lowess=, diabetes       |
+| =anbs=    | cubic B-spline regression        | =lm= + =splines::bs=      | =SplineTransformer= + =LinearRegression= |
+| =anps=    | P-spline (penalized B-spline)    | =mgcv::gam=, =bs = "ps"=  | B-spline basis + difference penalty  |
+| =anbsdm=  | B-spline regression, datamunge   | =BSplineRegression=       | =dm.BSplineRegression=               |
+| =anpsdm=  | P-spline, datamunge, GCV λ       | =PSplineRegression=       | =dm.PSplineRegression=               |
 | =anaov=   | one-way ANOVA and Tukey HSD      | =aov=, iris               | =f_oneway=, =tukey_hsd=, iris        |
 | =antt=    | two-sample t-test                | =t.test=, mtcars          | =ttest_ind=, iris                    |
 | =anwil=   | Wilcoxon / Mann-Whitney test     | =wilcox.test=, airquality | =mannwhitneyu=, iris                 |
@@ -302,6 +306,18 @@ so nothing is downloaded, and each ends in one plot.
 | =ants=    | seasonal decomposition           | =decompose=, AirPassengers | =seasonal_decompose=, co2           |
 | =anarima= | seasonal ARIMA forecast          | =arima=, AirPassengers    | =SARIMAX=, co2                       |
 | =ansurv=  | Kaplan-Meier survival curves     | =survfit=, lung           | =SurvfuncRight=, simulated lifetimes |
+
+The four spline snippets share one simulated curve,
+=y = sin(20/(x + 0.25))= plus normal noise with sd 0.2 on [0, 1], and plot
+the data, the true curve (dashed) and the fit. The curve wiggles fast near
+0 and slowly near 1, so 30 plain B-splines miss its left end while 100
+P-splines follow it, at the price of a little wiggle on the right. The
+=*dm= pair fit the same curve with datamunge's own =BSplineRegression= and
+=PSplineRegression= (whose generalized cross-validation picks λ), so they
+need the binding: run them in a =dmpyflake= or =dmrflake= shell (see
+"datamunge flakes" below). The Python =anps= solves the P-spline directly
+with λ as a field; its default, 0.003, is about what datamunge's GCV picks
+here.
 
 Where there is a number worth changing -- the k of =ankm=, =anhc= and
 =anknn=, a tree's depth, a forecast's horizon -- it is the snippet's one
@@ -461,6 +477,51 @@ and =unfree= the =import nixpkgs= line that allows unfree packages.
 Inside a fragment's library list, a library is its nixpkgs name without the
 set's prefix: what =nix search nixpkgs python3Packages.scipy= finds is
 written =scipy=, and =rPackages.tidyr= is written =tidyr=.
+
+** datamunge flakes
+
+The =dm*flake= snippets write a whole =flake.nix= whose default dev shell
+has the [[https://github.com/jordanschupbach/datamunge][datamunge]] binding for one language, built by nix, so code in
+that language can load datamunge with no build step of its own. =dmflake=
+does every language at once.
+
+| Trigger        | The dev shell has                                        |
+|----------------+----------------------------------------------------------|
+| =dmpyflake=    | Python with =pydatamunge=, numpy and matplotlib          |
+| =dmrflake=     | R with =datamunger=, ggplot2 and dplyr                   |
+| =dmcppflake=   | a C++ compiler and the library, found by =pkg-config=    |
+| =dmcsflake=    | the .NET SDK, restoring =datamungedotnet= from the store |
+| =dmdflake=     | LDC and dub, with the generated D module                 |
+| =dmgoflake=    | Go, with the =datamunge= module in a workspace           |
+| =dmguileflake= | Guile, =(use-modules (datamunge))=                       |
+| =dmjavaflake=  | a JDK, with =jdatamunge.jar= on the class path           |
+| =dmjsflake=    | Node, =require("@datamunge/datamungejs")=                |
+| =dmluaflake=   | Lua, =require("datamunge")=                              |
+| =dmocamlflake= | OCaml and findlib, =#require "datamungeocaml"=           |
+| =dmoctflake=   | Octave, =datamunge= on the load path                     |
+| =dmplflake=    | Perl, =use Datamunge;=                                   |
+| =dmphpflake=   | PHP with the extension loaded                            |
+| =dmrbflake=    | Ruby, =require "octruby"=                                |
+| =dmtclflake=   | Tcl, =package require Datamunge=                         |
+| =dmflake=      | all of the above in one shell                            |
+
+datamunge comes from GitHub, and the flake's nixpkgs follows datamunge's
+own, so the binding and the interpreter it is added to always come from
+the same nixpkgs. The first =nix develop= builds datamunge and the
+bindings it needs, which takes a few minutes; after that they come from the
+store.
+
+In =dmpyflake= and =dmrflake= (and the Python and R lines of =dmflake=)
+the binding sits in the interpreter's own package list, and the libraries
+beside it are a field you type over. Every other language takes
+datamunge's =report-<lang>= shell through =inputsFrom=, which brings the
+environment variables that find the binding (=LUA_PATH=, =CLASSPATH= and
+so on); add any other tools to =packages=. In =dmflake=, deleting a
+language from the =inputsFrom= list leaves its runtime, and the build of
+its binding, out of the shell.
+
+A mepml document next to such a flake runs its blocks in it, since every
+code-block snippet writes =nix-shell=".#"= (see below).
 
 * MEPML
 

@@ -84,6 +84,7 @@ There is no sentence (=is=) or tag (=it=) object.
 | =p= =P=   | put the last yank or delete after / before the cursor |
 | =J= =gJ=  | join the next line on, with / without a space    |
 | =~=       | toggle the case of the character under the cursor, and advance |
+| =Ctrl-J= =Ctrl-K= | move the line down / up, the cursor staying on it (in Visual mode, the selected lines) |
 
 These all take counts -- =5~= toggles five characters, =3p= puts three
 copies. Text that ends in a newline is put linewise, on its own lines;

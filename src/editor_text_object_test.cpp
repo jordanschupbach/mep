@@ -26,11 +26,21 @@ class Keyboard final : public gfx::IInputBackend {
 public:
     int character = 0;
     bool escape = false;
-    bool IsKeyPressed(gfx::Key key) override { return escape && key == gfx::Key::Escape; }
+    gfx::Key chord = gfx::Key::None;  // a Ctrl-<key> press this frame
+    bool chord_queued = false;
+    bool IsKeyPressed(gfx::Key key) override {
+        return (escape && key == gfx::Key::Escape) || (chord != gfx::Key::None && key == chord);
+    }
     bool IsKeyPressedRepeat(gfx::Key) override { return false; }
-    bool IsKeyDown(gfx::Key) override { return false; }
+    bool IsKeyDown(gfx::Key key) override {
+        return chord != gfx::Key::None && (key == gfx::Key::LeftControl || key == chord);
+    }
     bool IsKeyReleased(gfx::Key) override { return false; }
-    gfx::Key GetKeyPressed() override { return gfx::Key::None; }
+    gfx::Key GetKeyPressed() override {
+        if (!chord_queued) return gfx::Key::None;
+        chord_queued = false;
+        return chord;
+    }
     int GetCharPressed() override { int c = character; character = 0; return c; }
     bool WindowFocusLostThisFrame() override { return false; }
     bool IsMouseButtonPressed(gfx::MouseButton) override { return false; }
@@ -38,6 +48,14 @@ public:
     bool IsMouseButtonReleased(gfx::MouseButton) override { return false; }
     gfx::Vector2 GetMousePosition() override { return {}; }
     gfx::Vector2 GetMouseWheelMoveV() override { return {}; }
+
+    void Ctrl(Editor &ed, gfx::Key key) {
+        chord = key;
+        chord_queued = true;
+        ed.HandleInput();
+        chord = gfx::Key::None;
+        chord_queued = false;
+    }
 
     void Keys(Editor &ed, const std::string &keys) {
         for (char raw : keys) {
@@ -184,6 +202,39 @@ int main() {
     ed.SetCursorForLua(0, 1);
     keyboard.Keys(ed, "3rz");
     Expect(ed.GetBuffer(buf).lines == std::vector<std::string>({"azzzef"}), "3rz replaces three characters");
+
+    // Ctrl-J/Ctrl-K move the cursor's line (or the selected lines) and the cursor with it.
+    using L = std::vector<std::string>;
+    auto at = [&](int row, int col) { return ed.Cursor().row == row && ed.Cursor().col == col; };
+    keyboard.Keys(ed, "\x1b");
+    ed.SetBufferLinesForLua(buf, {"one", "two", "three", "four"});
+    ed.SetCursorForLua(1, 2);
+    keyboard.Ctrl(ed, gfx::Key::J);
+    Expect(ed.GetBuffer(buf).lines == L({"one", "three", "two", "four"}) && at(2, 2), "Ctrl-J moves the line down");
+    keyboard.Ctrl(ed, gfx::Key::K);
+    keyboard.Ctrl(ed, gfx::Key::K);
+    Expect(ed.GetBuffer(buf).lines == L({"two", "one", "three", "four"}) && at(0, 2), "Ctrl-K moves it up, cursor along");
+    keyboard.Ctrl(ed, gfx::Key::K);
+    Expect(ed.GetBuffer(buf).lines == L({"two", "one", "three", "four"}) && at(0, 2), "Ctrl-K at the top does nothing");
+    keyboard.Keys(ed, "2");
+    keyboard.Ctrl(ed, gfx::Key::J);
+    Expect(ed.GetBuffer(buf).lines == L({"one", "three", "two", "four"}) && at(2, 2), "2 Ctrl-J moves two rows");
+    keyboard.Keys(ed, "9");
+    keyboard.Ctrl(ed, gfx::Key::J);
+    Expect(ed.GetBuffer(buf).lines == L({"one", "three", "four", "two"}) && at(3, 2), "a count past the end stops at the bottom");
+    keyboard.Keys(ed, "u");
+    Expect(ed.GetBuffer(buf).lines == L({"one", "three", "two", "four"}), "u undoes one move");
+    ed.SetBufferLinesForLua(buf, {"one", "two", "three", "four", "five"});
+    ed.SetCursorForLua(1, 0);
+    keyboard.Keys(ed, "Vj");
+    keyboard.Ctrl(ed, gfx::Key::J);
+    Expect(ed.GetBuffer(buf).lines == L({"one", "four", "two", "three", "five"}), "Visual Ctrl-J moves the selected lines");
+    Expect(ed.CurrentMode() == Mode::VisualLine && ed.CurrentVisualSelectionText() == "two\nthree\n",
+           "the selection moves with them");
+    keyboard.Ctrl(ed, gfx::Key::K);
+    keyboard.Ctrl(ed, gfx::Key::K);
+    Expect(ed.GetBuffer(buf).lines == L({"two", "three", "one", "four", "five"}) &&
+           ed.CurrentVisualSelectionText() == "two\nthree\n", "Visual Ctrl-K moves them back up");
     std::printf("%d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

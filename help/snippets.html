@@ -52,7 +52,8 @@ while the cursor is inside a snippet; elsewhere it indents as usual.</p>
 <code>Ctrl-K</code> cycle it. Lines after the first are indented like the line the
 trigger was on.</p>
 <h1>What ships</h1>
-<p>Curated sets for <code>c</code>, <code>cpp</code>, <code>go</code>, <code>lua</code>, <code>py</code>, <code>r</code>, <code>rs</code>, <code>sql</code>, <code>nix</code> and <code>envrc</code>.</p>
+<p>Curated sets for <code>c</code>, <code>cpp</code>, <code>go</code>, <code>lua</code>, <code>py</code>, <code>r</code>, <code>rs</code>, <code>sql</code>, <code>nix</code>, <code>envrc</code>
+and <code>mepml</code>.</p>
 <p>The <code>py</code> set includes <code>print</code>, which expands to <code>print()</code> with the cursor
 between the parentheses.</p>
 <h1>Python: numpy and matplotlib</h1>
@@ -390,6 +391,62 @@ and <code>unfree</code> the <code>import nixpkgs</code> line that allows unfree 
 <p>Inside a fragment's library list, a library is its nixpkgs name without the
 set's prefix: what <code>nix search nixpkgs python3Packages.scipy</code> finds is
 written <code>scipy</code>, and <code>rPackages.tidyr</code> is written <code>tidyr</code>.</p>
+<h1>MEPML</h1>
+<p>The <code>mepml</code> set covers the document's markup (see <a href="mepml.html">MEPML</a>). In a <code>.mepml</code> file
+<code>Tab</code> expands a trigger as it does in a code file; none of the triggers is an
+English word, so a word typed in prose and followed by <code>Tab</code> stays a word.
+Inside a <code>```</code> block, the block's own language's snippets apply instead.</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>hdr</code></td><td>a <code>//?</code> header: title, subtitle, author and today's date</td></tr>
+<tr><td><code>opt</code> <code>imp</code></td><td>a <code>//? Option:</code> / <code>//? Import:</code> line</td></tr>
+<tr><td><code>todo</code></td><td>a <code>// TODO:</code> callout, the keyword a choice</td></tr>
+<tr><td><code>h1</code> ... <code>h4</code></td><td>a heading, <code>&gt;</code> to <code>&gt;&gt;&gt;&gt;</code></td></tr>
+<tr><td><code>hr</code></td><td>a dividing rule</td></tr>
+<tr><td><code>bf</code> <code>itl</code> <code>vb</code></td><td>bold, italic, verbatim</td></tr>
+<tr><td><code>lnk</code></td><td><code>[text\vert https://...]</code></td></tr>
+<tr><td><code>fn</code> <code>cite</code> <code>citep</code></td><td>a footnote, a citation</td></tr>
+<tr><td><code>clr</code></td><td><code>\color(red, text)</code>, the colour a choice</td></tr>
+<tr><td><code>mm</code> <code>dm</code></td><td>inline maths, and display maths with its <code>\alttext</code></td></tr>
+<tr><td><code>task</code> <code>ol</code></td><td>a task item, a three-item numbered list</td></tr>
+<tr><td><code>tbl</code></td><td>a three-column table with alignments and a <code>\caption</code></td></tr>
+<tr><td><code>img</code> <code>vid</code></td><td>an image or video with its <code>\caption</code> and <code>\alttext</code></td></tr>
+<tr><td><code>bdef</code> <code>bthm</code> <code>blem</code> <code>bprf</code> <code>bex</code></td><td>definition, theorem, lemma, proof and example boxes</td></tr>
+<tr><td><code>bnote</code> <code>btip</code> <code>bwarn</code> <code>bimp</code></td><td>note, tip, warning and important boxes</td></tr>
+<tr><td><code>bbox</code></td><td>=\boxed(kind, Title,= -- a box of a kind of your own</td></tr>
+<tr><td><code>sld</code></td><td>a slide with a title and a bullet</td></tr>
+<tr><td><code>cols</code> <code>tabset</code></td><td>two columns, two tabs</td></tr>
+<tr><td><code>toc</code> <code>bib</code></td><td>the table of contents, the bibliography</td></tr>
+<tr><td><code>bibent</code></td><td>a <code>\citation(key, ...)</code> entry</td></tr>
+</table>
+<h2>Code blocks tied to a nix flake</h2>
+<p>Every code-block snippet runs its block in a dev shell of the flake in the
+document's directory: <code>nix-shell</code>".#name"=, which mep enters with =nix
+develop= (see "Choosing the command and the environment" in <a href="mepml.html">MEPML</a>). A block
+names its environment from the moment it is written, so it runs the same
+way on any machine that has the flake.</p>
+<table>
+<tr><th>Trigger</th><th>Inserts</th></tr>
+<tr><td><code>src</code></td><td>a block, the language a choice, the shell <code>default</code></td></tr>
+<tr><td><code>pysrc</code> <code>rsrc</code> <code>cppsrc</code> <code>jlsrc</code> <code>luasrc</code> <code>jssrc</code></td><td>a Python, R, C++, Julia, Lua or JavaScript block</td></tr>
+<tr><td><code>shsrc</code></td><td>a bash block, the shell <code>default</code></td></tr>
+<tr><td><code>pyfig</code></td><td>a complete matplotlib figure: the block, caption and alt text</td></tr>
+<tr><td><code>rfig</code></td><td>the same in R, with base graphics</td></tr>
+<tr><td><code>figsrc</code></td><td>an empty Python or R figure block, with its caption</td></tr>
+<tr><td><code>incsrc</code></td><td>a block whose code comes from a file (<code>include=</code>)</td></tr>
+</table>
+<pre>```{python, nix-shell=".#python"}
+
+```</pre>
+<p><code>pyfig</code> and <code>rfig</code> run as they are: mep points matplotlib (or an R plot
+device) at the block's <code>file</code>, so the code only plots, with no <code>savefig</code>
+or <code>png()</code>. Tab through them to set the file, the axis labels, the caption
+and the alt text.</p>
+<p>The shell name is the first field. It starts as the language's own name
+(<code>.#python</code>, the <code>devShells.python</code> convention), and <code>Ctrl-J</code> switches it
+to <code>default</code>, the shell the <code>nix</code> set's <code>flake</code>, <code>pyflake</code> and <code>rflake</code>
+snippets create. Type over it to name any other shell (<code>.#analysis</code>). <code>Tab</code>
+then moves into the block's body.</p>
 <h1>Adding your own</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.snippets.py = <span class="tok-cyan">mep</span>.snippets.py <span class="tok-purple">or</span> <span class="tok-blue">{</span><span class="tok-blue">}</span>
 <span class="tok-cyan">mep</span>.snippets.py[<span class="tok-green">'main'</span>] = <span class="tok-blue">{</span>

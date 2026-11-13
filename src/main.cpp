@@ -30861,6 +30861,132 @@ const char *kBuiltinOrgSnippets =
     "  return false\n"
     "end)\n";
 
+// MEPML snippets (help/snippets.org, "MEPML"). mepml is not a note
+// filetype, so Tab expands these like a code file's -- which is why no
+// trigger is an English word (lnk, not link): a word typed in prose and
+// followed by Tab must stay a word. Names follow the org set where they
+// can (h1, tbl, img, src, pysrc, mm, dm). Inside a ``` fence the block's
+// own language's snippets apply instead (mep_snippet_filetype).
+//
+// Every code-block snippet ties the block to a dev shell of the flake in
+// the document's directory (nix-shell=".#name", which mep runs with `nix
+// develop`; see mep_org_babel_nix_argv), so a block names its environment
+// from the start. The shell defaults to the language's name, the usual
+// devShells.<lang> convention, with `default` (what the nix set's flake
+// snippets create) one Ctrl-J away; typing replaces either.
+//
+// The parser reads `\$` as a literal dollar, so a backslash must never
+// come right before a field (`\${1}`): box kinds are separate triggers
+// rather than one `\${1|definition,...|}(` choice.
+const char *kBuiltinMepmlSnippets = R"LUA(
+mep.snippets.mepml = mep.snippets.mepml or {}
+local M = mep.snippets.mepml
+
+-- The document header.
+M.hdr = function()
+  return {'//? Title: ${1:Title}', '//? Subtitle: ${2:Subtitle}', '//? Author: ${3:Author}',
+          '//? Date: ' .. os.date('%Y-%m-%d'), '', '$0'}
+end
+M.opt = {'//? Option: ${1:name}=${2:value}'}
+M.imp = {'//? Import: ${1:other.mepml}'}
+M.todo = {'// ${1|TODO,FIXME,NOTE,QUESTION|}: $0'}
+
+-- Headings and rules.
+M.h1 = {'> $0'}
+M.h2 = {'>> $0'}
+M.h3 = {'>>> $0'}
+M.h4 = {'>>>> $0'}
+M.hr = {'---', '$0'}
+
+-- Inline markup.
+M.bf = {'*${1:bold}*$0'}
+M.itl = {'~${1:italic}~$0'}
+M.vb = {'`${1:code}`$0'}
+M.lnk = {'[${1:text}|${2:https://}]$0'}
+M.fn = {'\\fn(${1:footnote})$0'}
+M.cite = {'\\cite(${1:key})$0'}
+M.citep = {'\\citep(${1:key})$0'}
+M.clr = {'\\color(${1|red,blue,green,orange,purple,#rrggbb|}, ${2:text})$0'}
+
+-- Maths.
+M.mm = {'\\$${1:x}\\$$0'}
+M.dm = {'\\$\\$', '  ${1:e^{i\\pi} + 1 = 0}', '\\$\\$', '\\alttext(${2:What the formula says})', '$0'}
+
+-- Lists.
+M.task = {'- [ ] $0'}
+M.ol = {'1. $1', '2. $2', '3. $0'}
+
+-- Tables, images and video: each with its caption and alt text.
+M.tbl = {'| ${1:Header} | ${2:Header} | ${3:Header} |', '| :--- | :---: | ---: |', '| $4 | $5 | $6 |',
+         '\\caption(${7:Caption})', '$0'}
+M.img = {'\\image(${1:./figures/plot.png})', '\\caption(${2:Caption})', '\\alttext(${3:What the image shows})', '$0'}
+M.vid = {'\\video(${1:./figures/clip.mp4})', '\\caption(${2:Caption})', '\\alttext(${3:What the video shows})', '$0'}
+
+-- Boxes.
+M.bdef = {'\\definition(${1:Title},', '$0', ')'}
+M.bthm = {'\\theorem(${1:Title},', '$0', ')'}
+M.blem = {'\\lemma(${1:Title},', '$0', ')'}
+M.bprf = {'\\proof(', '$0', ')'}
+M.bex = {'\\example(${1:Title},', '$0', ')'}
+M.bnote = {'\\note(${1:Title},', '$0', ')'}
+M.btip = {'\\tip(${1:Title},', '$0', ')'}
+M.bwarn = {'\\warning(${1:Title},', '$0', ')'}
+M.bimp = {'\\important(${1:Title},', '$0', ')'}
+M.bbox = {'\\boxed(${1:kind}, ${2:Title},', '$0', ')'}
+
+-- Slides and layout.
+M.sld = {'\\slide(', '> ${1:Title}', '- $0', ')'}
+M.cols = {'\\columns(', '\\column(', '$1', ')', '\\column(', '$2', ')', ')', '$0'}
+M.tabset = {'\\tabs(', '\\tab(${1:First},', '$2', ')', '\\tab(${3:Second},', '$4', ')', ')', '$0'}
+
+-- Contents and references.
+M.toc = {'\\toc'}
+M.bib = {'\\bibliography'}
+M.bibent = {'\\citation(${1:key},', '  author = ${2:Author},', '  title = {${3:Title}},',
+            '  year = ${4:' .. os.date('%Y') .. '}', ')', '$0'}
+
+-- Code blocks, each run in a dev shell of the flake in this directory.
+-- The shell is a choice of the language's own name and `default` (what the
+-- nix set's flake/pyflake/rflake snippets create); typing replaces it.
+local function block(lang, shell)
+  local field = shell == 'default' and '${1:default}' or ('${1|' .. shell .. ',default|}')
+  return {'```{' .. lang .. ', nix-shell=".#' .. field .. '"}', '$0', '```'}
+end
+M.src = {'```{${1|python,r,bash,cpp,julia,lua,javascript|}, nix-shell=".#${2:default}"}', '$0', '```'}
+M.pysrc = block('python', 'python')
+M.rsrc = block('r', 'r')
+M.shsrc = block('bash', 'default')
+M.cppsrc = block('cpp', 'cpp')
+M.jlsrc = block('julia', 'julia')
+M.luasrc = block('lua', 'lua')
+M.jssrc = block('javascript', 'javascript')
+-- A figure drawn by a block, and a block whose code comes from a file.
+M.figsrc = {'```{${1|python,r|}, nix-shell=".#${2|python,r,default|}", file="${3:figures/plot.png}"}', '$0', '```',
+            '\\caption(${4:Caption})', '\\alttext(${5:What the figure shows})'}
+-- Complete figures: mep points matplotlib (Python) or a plot device (R)
+-- at file=, so the code only plots -- no savefig, no png().
+M.pyfig = {'```{python, nix-shell=".#${1|python,default|}", file="${2:figures/plot.png}"}',
+           'import matplotlib.pyplot as plt',
+           'import numpy as np',
+           '',
+           'x = np.linspace(0, 10, 200)',
+           'plt.plot(x, np.sin(x))',
+           'plt.xlabel("${3:x}")',
+           'plt.ylabel("${4:sin(x)}")',
+           '```',
+           '\\caption(${5:Caption})',
+           '\\alttext(${6:What the figure shows})',
+           '$0'}
+M.rfig = {'```{r, nix-shell=".#${1|r,default|}", file="${2:figures/plot.png}"}',
+          'x <- seq(0, 10, length.out = 200)',
+          'plot(x, sin(x), type = "l", xlab = "${3:x}", ylab = "${4:sin(x)}")',
+          '```',
+          '\\caption(${5:Caption})',
+          '\\alttext(${6:What the figure shows})',
+          '$0'}
+M.incsrc = {'```{${1|python,r,bash,cpp,julia,lua|}, nix-shell=".#${2:default}", include="${3:src/file.py}"}', '```', '$0'}
+)LUA";
+
 // Math delimiter-balance linter for org and tex buffers (:MepMathLint).
 // The autosnippet math-zone scan (mep_in_mathzone, kBuiltinMathSnippets)
 // heals itself at every paragraph so a stray '$' can't swallow the rest
@@ -72489,6 +72615,7 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinMathLint);
     lua->DoString(kBuiltinOrgNotes);
     lua->DoString(kBuiltinMepml);
+    lua->DoString(kBuiltinMepmlSnippets);
     lua->DoString(kBuiltinA11y);
     lua->DoString(kBuiltinSnippetHelp);
     lua->DoString(kBuiltinActivityBar);

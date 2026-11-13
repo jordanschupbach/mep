@@ -52,7 +52,8 @@ trigger was on.
 
 * What ships
 
-Curated sets for =c=, =cpp=, =go=, =lua=, =py=, =r=, =rs=, =sql=, =nix= and =envrc=.
+Curated sets for =c=, =cpp=, =go=, =lua=, =py=, =r=, =rs=, =sql=, =nix=, =envrc=
+and =mepml=.
 
 The =py= set includes =print=, which expands to =print()= with the cursor
 between the parentheses.
@@ -415,6 +416,71 @@ and =unfree= the =import nixpkgs= line that allows unfree packages.
 Inside a fragment's library list, a library is its nixpkgs name without the
 set's prefix: what =nix search nixpkgs python3Packages.scipy= finds is
 written =scipy=, and =rPackages.tidyr= is written =tidyr=.
+
+* MEPML
+
+The =mepml= set covers the document's markup (see [[file:mepml.html][MEPML]]). In a =.mepml= file
+=Tab= expands a trigger as it does in a code file; none of the triggers is an
+English word, so a word typed in prose and followed by =Tab= stays a word.
+Inside a =```= block, the block's own language's snippets apply instead.
+
+| Trigger   | Inserts                                                         |
+|-----------+-----------------------------------------------------------------|
+| =hdr=     | a =//?= header: title, subtitle, author and today's date        |
+| =opt= =imp= | a =//? Option:= / =//? Import:= line                          |
+| =todo=    | a =// TODO:= callout, the keyword a choice                      |
+| =h1= ... =h4= | a heading, =>= to =>>>>=                                    |
+| =hr=      | a dividing rule                                                 |
+| =bf= =itl= =vb= | bold, italic, verbatim                                    |
+| =lnk=     | =[text\vert https://...]=                                      |
+| =fn= =cite= =citep= | a footnote, a citation                                |
+| =clr=     | =\color(red, text)=, the colour a choice                        |
+| =mm= =dm= | inline maths, and display maths with its =\alttext=             |
+| =task= =ol= | a task item, a three-item numbered list                       |
+| =tbl=     | a three-column table with alignments and a =\caption=           |
+| =img= =vid= | an image or video with its =\caption= and =\alttext=          |
+| =bdef= =bthm= =blem= =bprf= =bex= | definition, theorem, lemma, proof and example boxes |
+| =bnote= =btip= =bwarn= =bimp= | note, tip, warning and important boxes      |
+| =bbox=    | =\boxed(kind, Title,= -- a box of a kind of your own            |
+| =sld=     | a slide with a title and a bullet                               |
+| =cols= =tabset= | two columns, two tabs                                     |
+| =toc= =bib= | the table of contents, the bibliography                       |
+| =bibent=  | a =\citation(key, ...)= entry                                   |
+
+** Code blocks tied to a nix flake
+
+Every code-block snippet runs its block in a dev shell of the flake in the
+document's directory: =nix-shell=".#name"=, which mep enters with =nix
+develop= (see "Choosing the command and the environment" in [[file:mepml.html][MEPML]]). A block
+names its environment from the moment it is written, so it runs the same
+way on any machine that has the flake.
+
+| Trigger   | Inserts                                                         |
+|-----------+-----------------------------------------------------------------|
+| =src=     | a block, the language a choice, the shell =default=             |
+| =pysrc= =rsrc= =cppsrc= =jlsrc= =luasrc= =jssrc= | a Python, R, C++, Julia, Lua or JavaScript block |
+| =shsrc=   | a bash block, the shell =default=                               |
+| =pyfig=   | a complete matplotlib figure: the block, caption and alt text   |
+| =rfig=    | the same in R, with base graphics                               |
+| =figsrc=  | an empty Python or R figure block, with its caption             |
+| =incsrc=  | a block whose code comes from a file (=include==)               |
+
+#+begin_example
+```{python, nix-shell=".#python"}
+
+```
+#+end_example
+
+=pyfig= and =rfig= run as they are: mep points matplotlib (or an R plot
+device) at the block's =file=, so the code only plots, with no =savefig=
+or =png()=. Tab through them to set the file, the axis labels, the caption
+and the alt text.
+
+The shell name is the first field. It starts as the language's own name
+(=.#python=, the =devShells.python= convention), and =Ctrl-J= switches it
+to =default=, the shell the =nix= set's =flake=, =pyflake= and =rflake=
+snippets create. Type over it to name any other shell (=.#analysis=). =Tab=
+then moves into the block's body.
 
 * Adding your own
 

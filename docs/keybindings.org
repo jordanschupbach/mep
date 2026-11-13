@@ -97,7 +97,9 @@ Scrolling: =Ctrl-D=/=Ctrl-U= half a screen, =Ctrl-F=/=Ctrl-B= a full
 screen (cursor moves with the view); =zz=/=zt=/=zb= recenter/top/bottom
 the view on the cursor's line without moving it. =Ctrl-A=/=Ctrl-X=
 increment/decrement the next number on the line, with a count
-(=5<C-a>=), preserving leading-zero padding.
+(=5<C-a>=), preserving leading-zero padding. =Ctrl-J=/=Ctrl-K= move the
+cursor's line down/up (=3<C-j>= three rows), the cursor staying on it; in
+Visual mode they move the selected lines and keep them selected.
 
 * The command line
 

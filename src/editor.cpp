@@ -24528,7 +24528,8 @@ void Editor::HandleNormalInput() {
     // Ctrl-W above predate that finding and were left as-is (out of scope
     // here), worth remembering if either is ever reported flaky too.
     bool ctrl_v = false, ctrl_d = false, ctrl_u = false, ctrl_f = false, ctrl_b = false, ctrl_a = false,
-         ctrl_x = false, ctrl_o = false, ctrl_i = false, ctrl_c = false, ctrl_e = false, ctrl_k = false;
+         ctrl_x = false, ctrl_o = false, ctrl_i = false, ctrl_c = false, ctrl_e = false, ctrl_k = false,
+         ctrl_j = false;
     int ctrl_np = 0;  // Ctrl-N (+1) / Ctrl-P (-1): only a presented mepml slide binds them (below)
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (!ctrl) continue;
@@ -24546,6 +24547,7 @@ void Editor::HandleNormalInput() {
         else if (key == gfx::Key::C) ctrl_c = true;
         else if (key == gfx::Key::E) ctrl_e = true;
         else if (key == gfx::Key::K) ctrl_k = true;
+        else if (key == gfx::Key::J) ctrl_j = true;
     }
     // A presented mepml slide with its cursor showing (caret mode): Ctrl-N /
     // Ctrl-P change slide, as they do without the cursor
@@ -24680,6 +24682,17 @@ void Editor::HandleNormalInput() {
         const int run = MepmlTerminalRunAt(CurPane().cursor.row);
         if (run >= 0) MepmlTerminalStop(run);
         else status_message_ = "No running block here";
+        return;
+    }
+    // Ctrl-J/Ctrl-K: move the line down/up ([count] rows), the cursor
+    // going with it; held, it keeps moving. After the C-c C-k chord above,
+    // which keeps its Ctrl-K.
+    if (ctrl && !ctrl_j && !ctrl_k) {
+        ctrl_j = gfx::IsKeyPressedRepeat(gfx::Key::J);
+        ctrl_k = gfx::IsKeyPressedRepeat(gfx::Key::K);
+    }
+    if (ctrl_j || ctrl_k) {
+        MoveLinesAtCursor((ctrl_j ? 1 : -1) * std::max(1, TakeRawCount()));
         return;
     }
     if (gfx::IsKeyPressed(gfx::Key::Escape)) {
@@ -27047,6 +27060,15 @@ void Editor::HandleVisualInput() {
     }
     if (ctrl && (gfx::IsKeyPressed(gfx::Key::U) || gfx::IsKeyPressedRepeat(gfx::Key::U))) {
         ScrollHalfPage(false);
+        return;
+    }
+    // Ctrl-J/Ctrl-K: move the selected lines, the selection going with them.
+    if (ctrl && (gfx::IsKeyPressed(gfx::Key::J) || gfx::IsKeyPressedRepeat(gfx::Key::J))) {
+        MoveLinesAtCursor(1);
+        return;
+    }
+    if (ctrl && (gfx::IsKeyPressed(gfx::Key::K) || gfx::IsKeyPressedRepeat(gfx::Key::K))) {
+        MoveLinesAtCursor(-1);
         return;
     }
 
@@ -34669,6 +34691,48 @@ void Editor::JoinLines(int count, bool with_space) {
     }
     cursor = {row, join_col};
     Buf().modified = true;
+    ClampCursor();
+}
+
+int Editor::MoveLines(int first, int last, int delta) {
+    const int count = Buf().LineCount();
+    first = std::max(0, first);
+    last = std::min(last, count - 1);
+    if (first > last || delta == 0) return 0;
+    const int n = last - first + 1;
+    const int dest = std::max(0, std::min(first + delta, count - n));
+    if (dest == first) return 0;  // already against the top or bottom
+    PushUndo();
+    std::vector<std::string> &lines = Buf().lines;
+    std::vector<std::string> block(std::make_move_iterator(lines.begin() + first),
+                                   std::make_move_iterator(lines.begin() + last + 1));
+    // As a delete followed by an insert, so the marks, folds and
+    // decorations of every line around the block follow it the same way
+    // they would for `ddp`.
+    lines.erase(lines.begin() + first, lines.begin() + last + 1);
+    ShiftMarksForLineEdit(first, -n);
+    ShiftFoldsForLineEdit(first, -n);
+    ShiftDecorationsForLineEdit(first, -n);
+    lines.insert(lines.begin() + dest, std::make_move_iterator(block.begin()), std::make_move_iterator(block.end()));
+    ShiftMarksForLineEdit(dest, n);
+    ShiftFoldsForLineEdit(dest, n);
+    ShiftDecorationsForLineEdit(dest, n);
+    Buf().modified = true;
+    return dest - first;
+}
+
+void Editor::MoveLinesAtCursor(int delta) {
+    const int id = CurPane().buffer_id;
+    if (IsTerminalBuffer(id) || IsImageBuffer(id) || IsMailBuffer(id)) return;
+    Pane &pane = CurPane();
+    const bool visual = mode_ == Mode::Visual || mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock;
+    const int first = visual ? std::min(pane.cursor.row, pane.visual_anchor.row) : pane.cursor.row;
+    const int last = visual ? std::max(pane.cursor.row, pane.visual_anchor.row) : pane.cursor.row;
+    const int moved = MoveLines(first, last, delta);
+    if (moved == 0) return;
+    // The cursor stays on the line it was on, now `moved` rows away.
+    pane.cursor.row += moved;
+    if (visual) pane.visual_anchor.row += moved;
     ClampCursor();
 }
 

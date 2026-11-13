@@ -15465,6 +15465,12 @@ private:
     // point (J) or not (gJ); leading whitespace on each joined-in line is
     // stripped either way.
     void JoinLines(int count, bool with_space);
+    // Ctrl-J/Ctrl-K: moves rows [first, last] by `delta` rows (down when
+    // positive), as far as the buffer allows, carrying the cursor (and a
+    // Visual selection) with the moved lines. Returns how far they moved.
+    int MoveLines(int first, int last, int delta);
+    // The Normal/Visual entry point: the cursor's line, or the selected rows.
+    void MoveLinesAtCursor(int delta);
     // Splices possibly-multi-line `text` into the buffer at `pos`; returns
     // the position just past the inserted text. Shared by PasteAfter/
     // PasteBefore's charwise branch.

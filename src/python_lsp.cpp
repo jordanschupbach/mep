@@ -1751,9 +1751,9 @@ struct NameHit {
 
 /** @brief Updates `best` if this node's own name span contains the position (deepest match wins). */
 void ConsiderName(const PyNode *n, PyPos pos, PyPos name_pos, const std::string &name, bool is_attribute,
-                  bool is_definition, NameHit *best) {
+                  bool is_definition, NameHit *best, int span = -1) {
     if (name.empty()) return;
-    const PyPos end{name_pos.line, name_pos.col + static_cast<int>(name.size())};
+    const PyPos end{name_pos.line, name_pos.col + (span < 0 ? static_cast<int>(name.size()) : span)};
     if (!PosInSpanInclusive(pos, name_pos, end)) return;
     best->found = true;
     best->node = n;
@@ -1775,7 +1775,15 @@ void FindNameAt(const PyNode *n, PyPos pos, NameHit *best) {
         case PyNodeKind::ClassDef: ConsiderName(n, pos, n->name_pos, n->name, false, true, best); break;
         case PyNodeKind::Param: ConsiderName(n, pos, n->name_pos, n->name, false, true, best); break;
         case PyNodeKind::Alias:
-            ConsiderName(n, pos, n->name_pos, n->str_value.empty() ? n->name : n->str_value, false, true, best);
+            // `import a.b as c` / `from m import a as c`: both the imported
+            // name's span and the `as` name's own span stand for the bound name.
+            if (n->str_value.empty()) {
+                ConsiderName(n, pos, n->name_pos, n->name, false, true, best);
+            } else {
+                ConsiderName(n, pos, n->name_pos, n->str_value, false, true, best, static_cast<int>(n->name.size()));
+                const PyPos as_pos{n->end.line, n->end.col - static_cast<int>(n->str_value.size())};
+                ConsiderName(n, pos, as_pos, n->str_value, false, true, best);
+            }
             break;
         default: break;
     }
@@ -2860,6 +2868,76 @@ PythonLspLocation PythonLspDefinition(const std::vector<std::string> &lines, int
     loc.line = b.pos.line;
     loc.col = b.pos.col;
     return loc;
+}
+
+namespace {
+
+/** @brief The dotted prefix of `path` (starting at `start`) through the segment covering `col`, or "". */
+std::string DottedPrefixAt(const std::string &path, PyPos start, PyPos pos) {
+    if (pos.line != start.line || pos.col < start.col || pos.col > start.col + static_cast<int>(path.size())) {
+        return std::string();
+    }
+    const size_t dot = path.find('.', static_cast<size_t>(pos.col - start.col));
+    return dot == std::string::npos ? path : path.substr(0, dot);
+}
+
+/** @brief Searches import statements for the module or name under the cursor. */
+void FindImportTarget(const PyNode *n, const std::vector<std::string> &lines, PyPos pos, std::string *out) {
+    if (n == nullptr || !out->empty()) return;
+    if (n->kind == PyNodeKind::Import) {
+        for (const PyNodePtr &alias : n->kids) {
+            std::string hit = DottedPrefixAt(alias->name, alias->name_pos, pos);
+            if (hit.empty() && !alias->str_value.empty()) {
+                const PyPos as_pos{alias->end.line, alias->end.col - static_cast<int>(alias->str_value.size())};
+                if (!DottedPrefixAt(alias->str_value, as_pos, pos).empty()) hit = alias->name;
+            }
+            if (!hit.empty()) {
+                *out = hit;
+                return;
+            }
+        }
+        return;
+    }
+    if (n->kind == PyNodeKind::ImportFrom) {
+        if (n->name.empty() || n->name[0] == '.') return;  // relative: a sibling, PythonLspDefinition's job
+        // The module path follows `from` on the statement's first line.
+        if (n->start.line >= 0 && n->start.line < static_cast<int>(lines.size())) {
+            const std::string &text = lines[static_cast<size_t>(n->start.line)];
+            const size_t at = text.find(n->name, static_cast<size_t>(n->start.col) + 4);
+            if (at != std::string::npos) {
+                const std::string hit = DottedPrefixAt(n->name, PyPos{n->start.line, static_cast<int>(at)}, pos);
+                if (!hit.empty()) {
+                    *out = hit;
+                    return;
+                }
+            }
+        }
+        for (const PyNodePtr &alias : n->kids) {
+            if (alias->name == "*") continue;
+            bool on = !DottedPrefixAt(alias->name, alias->name_pos, pos).empty();
+            if (!on && !alias->str_value.empty()) {
+                const PyPos as_pos{alias->end.line, alias->end.col - static_cast<int>(alias->str_value.size())};
+                on = !DottedPrefixAt(alias->str_value, as_pos, pos).empty();
+            }
+            if (on) {
+                *out = n->name + "." + alias->name;
+                return;
+            }
+        }
+        return;
+    }
+    for (const std::vector<PyNodePtr> *vec : {&n->body, &n->orelse, &n->finalbody, &n->handlers}) {
+        for (const PyNodePtr &kid : *vec) FindImportTarget(kid.get(), lines, pos, out);
+    }
+}
+
+}  // namespace
+
+std::string PythonLspImportTarget(const std::vector<std::string> &lines, int line, int col) {
+    const PyParseResult parse = ParsePython(lines);
+    std::string out;
+    FindImportTarget(parse.module.get(), lines, PyPos{line, col}, &out);
+    return out;
 }
 
 PythonLspReferenceSet PythonLspReferences(const std::vector<std::string> &lines, int line, int col) {

@@ -710,6 +710,28 @@ void TestQualifiedName() {
     CHECK(PythonLspQualifiedName(doc, 5, 2) == std::string("matplotlib"));
     CHECK(PythonLspQualifiedName(doc, 6, 4) == std::string("scipy.stats.norm"));
     CHECK(PythonLspQualifiedName(doc, 0, 8) == std::string("numpy"));
+    CHECK(PythonLspQualifiedName(doc, 0, 16) == std::string("numpy"));  // the `as` name has its own span
+    CHECK(PythonLspQualifiedName(doc, 2, 28) == std::string("scipy.stats"));
+
+    // What an import statement names under the cursor, for go-to-definition.
+    const Lines imports = {"from pydatamunge.sub import datamunge as dm",  // 0
+                           "import os.path as osp, sys",                    // 1
+                           "from . import sibling",                         // 2
+                           "x = 1",                                         // 3
+                           "if x:",                                         // 4
+                           "    import json"};                              // 5
+    CHECK(PythonLspImportTarget(imports, 0, 7) == "pydatamunge");
+    CHECK(PythonLspImportTarget(imports, 0, 18) == "pydatamunge.sub");
+    CHECK(PythonLspImportTarget(imports, 0, 30) == "pydatamunge.sub.datamunge");
+    CHECK(PythonLspImportTarget(imports, 0, 41) == "pydatamunge.sub.datamunge");
+    CHECK(PythonLspImportTarget(imports, 0, 23).empty());  // the `import` keyword
+    CHECK(PythonLspImportTarget(imports, 1, 7) == "os");
+    CHECK(PythonLspImportTarget(imports, 1, 11) == "os.path");
+    CHECK(PythonLspImportTarget(imports, 1, 19) == "os.path");
+    CHECK(PythonLspImportTarget(imports, 1, 24) == "sys");
+    CHECK(PythonLspImportTarget(imports, 2, 15).empty());  // relative
+    CHECK(PythonLspImportTarget(imports, 3, 0).empty());
+    CHECK(PythonLspImportTarget(imports, 5, 12) == "json");
     // Relative imports, locals, call results and string text name nothing.
     CHECK(PythonLspQualifiedName(doc, 7, 2) == std::string());
     CHECK(PythonLspQualifiedName(doc, 9, 3) == std::string());

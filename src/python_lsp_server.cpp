@@ -380,6 +380,155 @@ out.write(json.dumps(result))
 // with argv[1] empty, every top-level module on sys.path -- found by
 // pkgutil scanning directories, so nothing is imported -- and otherwise
 // the submodules of that package, which does import the package itself.
+// Locates where an imported name is defined, for go-to-definition (argv[1]:
+// a dotted path; cwd: the document's directory). Python-level objects report
+// their own source file and line. An object from a compiled extension has no
+// Python source, so the project's C/C++ headers are searched for the class
+// (and the member inside its body) instead -- preferring the declaration
+// whose doc comment matches the docstring, which binding generators copy
+// over, so a wrapper class wins over a same-named class it wraps. Prints
+// {"path": ..., "line": 0-based} or nothing.
+const char *const kDefinitionScript = R"PY(
+import sys, os, importlib, inspect, json, re
+os.environ.setdefault('MPLBACKEND', 'Agg')
+out = sys.stdout
+sys.stdout = sys.stderr
+parts = sys.argv[1].split('.')
+owner = None
+try:
+    obj = importlib.import_module(parts[0])
+    for i in range(1, len(parts)):
+        owner = obj
+        try:
+            obj = getattr(obj, parts[i])
+        except AttributeError:
+            obj = importlib.import_module('.'.join(parts[:i + 1]))
+except BaseException:
+    sys.exit(1)
+def emit(path, line):
+    out.write(json.dumps({'path': os.path.abspath(path), 'line': max(0, line)}))
+    sys.exit(0)
+def python_source(o):
+    if isinstance(o, (property, staticmethod, classmethod)):
+        o = getattr(o, 'fget', None) or getattr(o, '__func__', None)
+    try:
+        o = inspect.unwrap(o)
+    except (TypeError, ValueError):
+        pass
+    try:
+        path = inspect.getsourcefile(o)
+        if not path or not os.path.isfile(path):
+            return
+        if inspect.ismodule(o):
+            emit(path, 0)
+        emit(path, inspect.getsourcelines(o)[1] - 1)
+    except (TypeError, OSError):
+        return
+if inspect.ismodule(obj) or inspect.isclass(obj) or callable(obj) or isinstance(obj, property):
+    python_source(obj)
+# Native: which class (if any) and which member to look for.
+if inspect.isclass(obj):
+    cls, member = obj, None
+elif inspect.isclass(owner):
+    cls, member = owner, parts[-1]
+else:
+    cls, member = None, parts[-1]
+module = sys.modules.get(getattr(cls if cls is not None else obj, '__module__', '') or '')
+if not (getattr(module, '__file__', '') or '').endswith(('.so', '.pyd')):
+    sys.exit(1)
+root = os.getcwd()
+while not os.path.exists(os.path.join(root, '.git')):
+    parent = os.path.dirname(root)
+    if parent == root:
+        sys.exit(1)  # no project to search: never scan the whole disk
+    root = parent
+def words(text):
+    return ' '.join(re.findall(r'[a-z0-9]+', text.lower()))
+def doc_key(o):
+    for line in (inspect.getdoc(o) or '').splitlines():
+        line = line.strip()
+        if line and not re.match(r'^[\w.]+\(.*\)(\s*->.*)?$', line):  # skip a signature line
+            return ' '.join(words(line).split()[:8])
+    return ''
+SKIP = ('node_modules', '__pycache__', 'site-packages', 'venv', 'target', 'dist', 'third_party')
+headers = []
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = sorted(d for d in dirnames if not d.startswith(('.', 'build', 'cmake-build')) and d not in SKIP)
+    for f in sorted(filenames):
+        if f.endswith(('.h', '.hh', '.hpp', '.hxx', '.ipp', '.inl')):
+            headers.append(os.path.join(dirpath, f))
+    if len(headers) > 20000:
+        break
+def doc_above(lines, i):
+    text = []
+    j = i - 1
+    while j >= 0 and re.match(r'\s*template\s*<', lines[j]):
+        j -= 1
+    while j >= 0:
+        s = lines[j].strip()
+        if not (s.startswith('//') or s.startswith('/*') or s.startswith('*')):
+            break
+        text.append(s)
+        j -= 1
+    return words(' '.join(reversed(text)))
+def best(candidates, key):
+    # (path, lines, index): a doc-comment match wins, then the first found.
+    for c in candidates:
+        if key and key in doc_above(c[1], c[2]):
+            return c
+    return candidates[0] if candidates else None
+def read(path, token):
+    try:
+        with open(path, 'rb') as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    if token.encode() not in data:
+        return None
+    return data.decode('utf-8', 'replace').splitlines()
+def body_end(lines, start):
+    depth, opened = 0, False
+    for i in range(start, len(lines)):
+        code = re.sub(r'//.*', '', lines[i])
+        depth += code.count('{') - code.count('}')
+        opened = opened or '{' in code
+        if opened and depth <= 0:
+            return i
+    return len(lines) - 1
+found_cls = None
+if cls is not None:
+    name = re.escape(cls.__name__)
+    decl = re.compile(r'\b(?:class|struct)\s+(?:\[\[[^\]]*\]\]\s*)?(?:[A-Z_][A-Z0-9_]*\s+)?' + name +
+                      r'\b(?:\s+final)?\s*(?:[:{]|$)')
+    candidates = []
+    for path in headers:
+        lines = read(path, cls.__name__)
+        for i, line in enumerate(lines or []):
+            if decl.search(line):
+                candidates.append((path, lines, i))
+    found_cls = best(candidates, doc_key(cls))
+    if found_cls and member is None:
+        emit(found_cls[0], found_cls[2])
+if member is not None:
+    call = re.compile(r'(?<![\w.:>~])' + re.escape(member) + r'\s*\(')
+    key = doc_key(obj)
+    if found_cls:
+        path, lines, start = found_cls
+        hits = [(path, lines, i) for i in range(start + 1, body_end(lines, start) + 1) if call.search(lines[i])]
+        hit = best(hits, key)
+        if hit:
+            emit(hit[0], hit[2])
+        emit(path, start)  # declared out of line or inherited: the class is the nearest answer
+    if key:
+        # A free function: only a declaration documented with the same text, never a mere call.
+        for path in headers:
+            lines = read(path, member)
+            for i, line in enumerate(lines or []):
+                if call.search(line) and key in doc_above(lines, i):
+                    emit(path, i)
+sys.exit(1)
+)PY";
+
 const char *const kModulesScript = R"PY(
 import sys, pkgutil, importlib, warnings
 warnings.simplefilter('ignore')
@@ -744,6 +893,7 @@ private:
     mutable std::map<std::string, std::vector<PythonLspExternalMember>> members_cache_;
     mutable std::map<std::string, std::vector<PythonLspExternalMember>> modules_cache_;  // see ModulesIn
     mutable std::map<std::string, PythonLspExternalType> return_types_cache_;
+    mutable std::map<std::string, std::string> definitions_cache_;  // see ExternalDefinition
     bool running_ = true;
     bool shutting_down_ = false;
     int exit_code_ = 1;
@@ -1099,10 +1249,49 @@ private:
         return arr;
     }
 
+    /**
+     * @brief Follows a name this file cannot see into whatever installed it (kDefinitionScript).
+     *
+     * Cached per interpreter and name, failures included, like hover.
+     */
+    PythonLspLocation ExternalDefinition(const Request &req, std::string qualified = std::string()) const {
+        PythonLspLocation loc;
+        PythonLspOptions opts = OptionsFor(req.uri);
+        opts.external_return_type = [this, &opts](const std::string &name) {
+            return ReturnTypeOf(opts.doc_dir, name);
+        };
+        if (qualified.empty()) qualified = PythonLspQualifiedName(Doc(req.uri), req.line, req.col, opts);
+        if (qualified.empty()) return loc;
+        const std::string python = FindPython(python_path_, opts.doc_dir);
+        const std::string key = python + '\n' + opts.doc_dir + '\n' + qualified;
+        auto it = definitions_cache_.find(key);
+        if (it == definitions_cache_.end()) {
+            it = definitions_cache_.emplace(key, Introspect(python, kDefinitionScript, opts.doc_dir, qualified)).first;
+        }
+        Json value;
+        if (it->second.empty() || !Json::Parse(it->second, &value) || !value.is_object()) return loc;
+        const std::string path = value.get("path").as_string();
+        if (path.empty()) return loc;
+        loc.found = true;
+        loc.path = path;
+        loc.line = value.get("line").as_int();
+        return loc;
+    }
+
     /** @brief Answers `textDocument/definition` (and the declaration/type/implementation aliases). */
     Json Definition(const Json &params) const {
         const Request req = ReadRequest(params);
-        const PythonLspLocation loc = PythonLspDefinition(Doc(req.uri), req.line, req.col, OptionsFor(req.uri));
+        PythonLspLocation loc = PythonLspDefinition(Doc(req.uri), req.line, req.col, OptionsFor(req.uri));
+        // On an import statement itself the local answer is that same line;
+        // the module (or name) it imports is where the cursor is pointing.
+        // A sibling module this server already found by path stays as is.
+        const std::string imported = PythonLspImportTarget(Doc(req.uri), req.line, req.col);
+        if (!imported.empty() && loc.path.empty()) {
+            const PythonLspLocation outside = ExternalDefinition(req, imported);
+            if (outside.found) loc = outside;
+        } else if (!loc.found) {
+            loc = ExternalDefinition(req);
+        }
         if (!loc.found) return Json();
         Json j = Json::Object();
         j["uri"] = loc.path.empty() ? req.uri : PathToUri(loc.path);

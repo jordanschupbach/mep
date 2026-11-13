@@ -278,6 +278,15 @@ struct PythonLspLocation {
 PythonLspLocation PythonLspDefinition(const std::vector<std::string> &lines, int line, int col,
                                       const PythonLspOptions &opts);
 
+/**
+ * @brief The absolute module (or `module.name`) an import statement names under the cursor.
+ *
+ * `from a.b import c as d`: on `a` gives "a", on `b` "a.b", on `c` or `d`
+ * "a.b.c"; `import a.b as e` likewise. Relative imports and positions
+ * outside an import statement give "".
+ */
+std::string PythonLspImportTarget(const std::vector<std::string> &lines, int line, int col);
+
 // --- References, highlight and rename ---------------------------------
 
 struct PythonLspReference {

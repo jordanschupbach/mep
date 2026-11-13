@@ -785,6 +785,98 @@ void TestFactoryResults() {
                                      2, 3, opts), "set_title"));
     CHECK(Offers(PythonLspCompletions({"import library as lib", "fig, ax = lib.make()", "ax."},
                                      2, 3, opts), "set_title"));
+
+    // Method chains on an extension class: the interpreter reports the
+    // class under its implementation module (pkg._ext.HyperDual), and a
+    // local assigned from a chained call must still resolve.
+    PythonLspOptions chain = NoFiles();
+    chain.external_return_type = [](const std::string &qualified) -> PythonLspExternalType {
+        if (qualified == "pkg.ext.HyperDual" || qualified.rfind("pkg._ext.HyperDual.", 0) == 0) {
+            return {"pkg._ext.HyperDual", {}};
+        }
+        return {};
+    };
+    const Lines hyper = {"from pkg import ext as dm",                                        // 0
+                         "def f(x0, x1):",                                                   // 1
+                         "    a = dm.HyperDual(1.0, 0.0, 0.0, 0.0).subtract(x0)",            // 2
+                         "    b = a.subtract(x0)",                                           // 3
+                         "    return a.multiply(a).add(b.multiply(b).multiply_scalar(100.0))"};  // 4
+    CHECK(PythonLspQualifiedName(hyper, 2, 45, chain) == "pkg._ext.HyperDual.subtract");
+    CHECK(PythonLspQualifiedName(hyper, 3, 11, chain) == "pkg._ext.HyperDual.subtract");
+    CHECK(PythonLspQualifiedName(hyper, 4, 15, chain) == "pkg._ext.HyperDual.multiply");
+    CHECK(PythonLspQualifiedName(hyper, 4, 26, chain) == "pkg._ext.HyperDual.add");
+    CHECK(PythonLspQualifiedName(hyper, 4, 32, chain) == "pkg._ext.HyperDual.multiply");
+    CHECK(PythonLspQualifiedName(hyper, 4, 47, chain) == "pkg._ext.HyperDual.multiply_scalar");
+
+    // Unannotated parameters take the type every call in the file agrees on.
+    chain.external_return_type = [](const std::string &qualified) -> PythonLspExternalType {
+        if (qualified == "pkg.ext.HyperDual" || qualified.rfind("pkg._ext.HyperDual.", 0) == 0) {
+            return {"pkg._ext.HyperDual", {}};
+        }
+        if (qualified == "pkg.ext.Dual") return {"pkg._ext.Dual", {}};
+        return {};
+    };
+    const Lines params = {"from pkg import ext as dm",                      // 0
+                          "def f(x0, x1):",                                 // 1
+                          "    b = x1.subtract(x0.multiply(x0))",           // 2
+                          "    return b.multiply(b)",                       // 3
+                          "hx = dm.HyperDual(1.0, 1.0, 0.0, 0.0)",          // 4
+                          "f(hx, x1=dm.HyperDual(2.0, 0.0, 1.0, 0.0))"};    // 5
+    CHECK(PythonLspQualifiedName(params, 2, 12, chain) == "pkg._ext.HyperDual.subtract");
+    CHECK(PythonLspQualifiedName(params, 2, 24, chain) == "pkg._ext.HyperDual.multiply");
+    CHECK(PythonLspQualifiedName(params, 3, 14, chain) == "pkg._ext.HyperDual.multiply");
+    auto param_type = [&](const std::string &calls) {
+        return PythonLspQualifiedName({"from pkg import ext as dm", "def f(x0):", "    x0.add(x0)", calls}, 2, 8,
+                                      chain);
+    };
+    CHECK(param_type("f(dm.Dual(1.0))") == "pkg._ext.Dual.add");
+    CHECK(param_type("f(dm.Dual(1.0)); f(dm.HyperDual(1.0))").empty());  // calls disagree
+    CHECK(param_type("f(dm.Dual(1.0)); f(unknown)").empty());            // one call unresolved
+    CHECK(param_type("f(*[dm.Dual(1.0)])").empty());                     // unpacked argument
+    CHECK(param_type("pass").empty());                                   // never called
+    CHECK(PythonLspQualifiedName({"from pkg import ext as dm", "def f(x0: int):", "    x0.add(x0)",
+                                  "f(dm.Dual(1.0))"}, 2, 8, chain).empty());  // the annotation wins
+    CHECK(PythonLspQualifiedName({"from pkg import ext as dm", "class C:", "    def m(self, x0):",
+                                  "        x0.add(x0)", "C().m(dm.Dual(1.0))"}, 3, 12, chain).empty());
+    CHECK(PythonLspQualifiedName({"from pkg import ext as dm", "def f(x0):", "    f(x0)", "    x0.add(x0)",
+                                  "f(dm.Dual(1.0))"}, 3, 8, chain).empty());  // recursion: no answer, no hang
+
+    // A call to a function this file defines takes the type its returns agree on.
+    const Lines returns = {"from pkg import ext as dm",                                    // 0
+                           "def rosen(x0, x1):",                                         // 1
+                           "    a = dm.HyperDual(1.0).subtract(x0)",                     // 2
+                           "    return a.multiply(a)",                                   // 3
+                           "def vec(x, y):",                                             // 4
+                           "    return [x.multiply(x), x.multiply(y)]",                  // 5
+                           "h = rosen(dm.HyperDual(1.0), dm.HyperDual(2.0)).eps1eps2()",  // 6
+                           "for row, out in enumerate(vec(dm.HyperDual(1.0), dm.HyperDual(2.0))):",  // 7
+                           "    out.eps1eps2()",                                         // 8
+                           "for p, q in zip(vec(dm.HyperDual(1.0), dm.HyperDual(2.0)), [1, 2]):",    // 9
+                           "    p.eps1eps2()",                                           // 10
+                           "for e in vec(dm.HyperDual(1.0), dm.HyperDual(2.0)):",        // 11
+                           "    e.eps1eps2()"};                                          // 12
+    CHECK(PythonLspQualifiedName(returns, 6, 50, chain) == "pkg._ext.HyperDual.eps1eps2");
+    CHECK(PythonLspQualifiedName(returns, 8, 8, chain) == "pkg._ext.HyperDual.eps1eps2");
+    CHECK(PythonLspQualifiedName(returns, 10, 6, chain) == "pkg._ext.HyperDual.eps1eps2");
+    CHECK(PythonLspQualifiedName(returns, 12, 6, chain) == "pkg._ext.HyperDual.eps1eps2");
+    auto returned = [&](const Lines &body) {
+        Lines doc = {"from pkg import ext as dm", "def g(c):"};
+        doc.insert(doc.end(), body.begin(), body.end());
+        doc.push_back("g(1).add(1)");
+        return PythonLspQualifiedName(doc, static_cast<int>(doc.size()) - 1, 6, chain);
+    };
+    CHECK(returned({"    return dm.Dual(1.0)"}) == "pkg._ext.Dual.add");
+    CHECK(returned({"    if c:", "        return dm.Dual(1.0)", "    else:", "        return dm.Dual(2.0)"}) ==
+          "pkg._ext.Dual.add");
+    CHECK(returned({"    if c:", "        return dm.Dual(1.0)"}).empty());                  // can fall off the end
+    CHECK(returned({"    if c:", "        return", "    return dm.Dual(1.0)"}).empty());    // bare return
+    CHECK(returned({"    if c:", "        return dm.HyperDual(1.0)", "    return dm.Dual(1.0)"}).empty());
+    CHECK(returned({"    yield dm.Dual(1.0)", "    return dm.Dual(1.0)"}).empty());       // generator
+    CHECK(returned({"    return g(c)"}).empty());                                          // recursion
+    CHECK(PythonLspQualifiedName({"from pkg import ext as dm", "def g() -> int:", "    return dm.Dual(1.0)",
+                                  "g().add(1)"}, 3, 5, chain).empty());  // the annotation wins
+    CHECK(PythonLspQualifiedName({"from pkg import ext as dm", "for e in [dm.Dual(1.0), dm.HyperDual(1.0)]:",
+                                  "    e.add(1)"}, 2, 6, chain).empty());  // mixed elements
 }
 
 // --- Symbols and folding ----------------------------------------------

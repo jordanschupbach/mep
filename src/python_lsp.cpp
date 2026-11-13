@@ -183,6 +183,7 @@ struct Binding {
     std::string import_module;     // the module an Import/ImportFrom binding came from
     std::string import_symbol;     // the name inside that module, for `from x import y`
     const PyNode *value = nullptr;  // assignment provenance, resolved only when requested
+    const PyNode *iterable = nullptr;  // a `for` target's iterable (value_path then indexes one element)
     std::vector<UnpackStep> value_path;
 };
 
@@ -574,7 +575,8 @@ private:
             }
             case PyNodeKind::For: {
                 for (const PyNodePtr &it : n->kids) CollectExpr(it.get(), scope);
-                for (const PyNodePtr &t : n->targets) BindTarget(t.get(), scope, BindKind::ForTarget, nullptr);
+                const PyNode *iterable = n->kids.empty() ? nullptr : n->kids[0].get();
+                for (const PyNodePtr &t : n->targets) BindTarget(t.get(), scope, BindKind::ForTarget, iterable);
                 CollectBranch(n->body, scope);
                 CollectBranch(n->orelse, scope);
                 return;
@@ -714,7 +716,12 @@ private:
             case PyNodeKind::Name: {
                 const int index = Bind(target->name, kind, target->start,
                                        target->start.col + static_cast<int>(target->name.size()), scope, target);
-                if (index >= 0 && value != nullptr) {
+                if (index >= 0 && value != nullptr && kind == BindKind::ForTarget) {
+                    // Not the value itself: one element of it, worked out on request.
+                    Binding &b = bindings_[static_cast<size_t>(index)];
+                    b.iterable = value;
+                    b.value_path = path;
+                } else if (index >= 0 && value != nullptr) {
                     Binding &b = bindings_[static_cast<size_t>(index)];
                     b.value = value;
                     b.value_path = path;
@@ -1928,9 +1935,191 @@ int ValueBinding(const Analyzer &analyzer, const PyNode *expr, int scope) {
     return found;
 }
 
+/** @brief Visits every Call node in a subtree. */
+template <typename Fn>
+void ForEachCall(const PyNode *n, const Fn &fn) {
+    if (n == nullptr) return;
+    if (n->kind == PyNodeKind::Call) fn(n);
+    for (const std::vector<PyNodePtr> *group : {&n->kids, &n->targets, &n->body, &n->orelse, &n->finalbody,
+                                                 &n->handlers, &n->decorators, &n->params}) {
+        for (const PyNodePtr &k : *group) ForEachCall(k.get(), fn);
+    }
+}
+
+/**
+ * @brief Infers an unannotated plain-function parameter's type from this file's own calls.
+ *
+ * Only when every call that passes the parameter passes something whose
+ * type resolves, and all of them agree; any unpacked argument, unresolved
+ * value or disagreement leaves the parameter untyped rather than guessed.
+ */
+PythonLspExternalType ParamTypeFromCalls(const Analyzer &analyzer, const Binding &b, int depth) {
+    const PyNode *param = b.node;
+    if (param == nullptr || param->kind != PyNodeKind::Param || !param->str_value.empty()) return {};
+    if (!param->kids.empty() && param->kids[0]->kind != PyNodeKind::Placeholder) return {};  // annotated
+    const Scope &owner = analyzer.scopes()[static_cast<size_t>(b.scope)];
+    const PyNode *fn = owner.node;
+    if (fn == nullptr || fn->kind != PyNodeKind::FunctionDef || owner.parent < 0) return {};
+    // A method's positional slots shift by the receiver; leave those alone.
+    if (analyzer.scopes()[static_cast<size_t>(owner.parent)].kind == ScopeKind::Class) return {};
+    int position = -1;
+    for (int i = 0, count = 0; i < static_cast<int>(fn->params.size()); i++) {
+        const PyNode *p = fn->params[static_cast<size_t>(i)].get();
+        if (p->str_value == "/") continue;
+        if (!p->str_value.empty()) break;  // `*`, `*args`, `**kw`: keyword-only from here on
+        if (p == param) position = count;
+        count++;
+    }
+    // A recursive call passing the parameter back into itself must not loop.
+    static thread_local std::vector<const PyNode *> active;
+    if (std::find(active.begin(), active.end(), param) != active.end()) return {};
+    active.push_back(param);
+    std::string agreed;
+    bool ok = true;
+    ForEachCall(analyzer.parse().module.get(), [&](const PyNode *call) {
+        if (!ok || call->kids.empty() || call->kids[0]->kind != PyNodeKind::Name) return;
+        const int scope = analyzer.ScopeAt(call->start);
+        const int callee = analyzer.ResolveFrom(scope, call->kids[0]->name);
+        if (callee < 0 || analyzer.bindings()[static_cast<size_t>(callee)].node != fn) return;
+        const PyNode *arg = nullptr;
+        int seen = 0;
+        for (size_t i = 1; i < call->kids.size(); i++) {
+            const PyNode *k = call->kids[i].get();
+            if (k->kind == PyNodeKind::Starred || (k->kind == PyNodeKind::Keyword && k->name.empty())) {
+                ok = false;  // `*xs` / `**kw`: which value lands here is unknowable
+                return;
+            }
+            if (k->kind == PyNodeKind::Keyword) {
+                if (k->name == param->name && !k->kids.empty()) arg = k->kids[0].get();
+            } else if (seen++ == position) {
+                arg = k;
+            }
+        }
+        if (arg == nullptr) return;  // left to its default
+        const std::string type = ExternalTypeOfExpr(analyzer, arg, scope, depth + 1).qualified_name;
+        if (type.empty() || (!agreed.empty() && type != agreed)) {
+            ok = false;
+            return;
+        }
+        agreed = type;
+    });
+    active.pop_back();
+    if (!ok || agreed.empty()) return {};
+    return {agreed, {}};
+}
+
+/** @brief Structural equality of two inferred types. */
+bool SameType(const PythonLspExternalType &a, const PythonLspExternalType &b) {
+    if (a.qualified_name != b.qualified_name || a.elements.size() != b.elements.size()) return false;
+    for (size_t i = 0; i < a.elements.size(); i++) {
+        if (!SameType(a.elements[i], b.elements[i])) return false;
+    }
+    return true;
+}
+
+/** @brief Whether an inferred type says anything at all. */
+bool KnownType(const PythonLspExternalType &t) {
+    if (!t.qualified_name.empty()) return true;
+    return std::any_of(t.elements.begin(), t.elements.end(), KnownType);
+}
+
+/** @brief What one step of `for x in expr` yields: a literal's shared element type, through enumerate/zip. */
+PythonLspExternalType ElementTypeOf(const Analyzer &analyzer, const PyNode *expr, int scope, int depth) {
+    if (expr == nullptr || depth > 32) return {};
+    if (expr->kind == PyNodeKind::Call && !expr->kids.empty() && expr->kids[0]->kind == PyNodeKind::Name &&
+        analyzer.ResolveFrom(scope, expr->kids[0]->name) < 0) {
+        const std::string &fn = expr->kids[0]->name;
+        if (fn == "enumerate" || fn == "zip") {
+            PythonLspExternalType step;
+            if (fn == "enumerate") step.elements.push_back({});  // the index
+            for (size_t i = 1; i < expr->kids.size(); i++) {
+                const PyNode *arg = expr->kids[i].get();
+                if (arg->kind == PyNodeKind::Keyword) continue;  // enumerate(start=), zip(strict=)
+                if (arg->kind == PyNodeKind::Starred) return {};
+                step.elements.push_back(ElementTypeOf(analyzer, arg, scope, depth + 1));
+                if (fn == "enumerate") break;
+            }
+            return step;
+        }
+    }
+    const PythonLspExternalType whole = ExternalTypeOfExpr(analyzer, expr, scope, depth + 1);
+    if (whole.elements.empty()) return {};
+    for (const PythonLspExternalType &e : whole.elements) {
+        if (!SameType(e, whole.elements[0])) return {};
+    }
+    return whole.elements[0];
+}
+
+/** @brief Gathers a function's own return statements (not nested defs'); false if it is a generator. */
+bool CollectReturns(const PyNode *n, std::vector<const PyNode *> *out) {
+    if (n == nullptr) return true;
+    if (n->kind == PyNodeKind::Yield || n->kind == PyNodeKind::YieldFrom) return false;
+    if (n->kind == PyNodeKind::FunctionDef || n->kind == PyNodeKind::ClassDef || n->kind == PyNodeKind::Lambda) {
+        return true;
+    }
+    if (n->kind == PyNodeKind::Return) out->push_back(n);
+    for (const std::vector<PyNodePtr> *group : {&n->kids, &n->targets, &n->body, &n->orelse, &n->finalbody,
+                                                 &n->handlers}) {
+        for (const PyNodePtr &k : *group) {
+            if (!CollectReturns(k.get(), out)) return false;
+        }
+    }
+    return true;
+}
+
+/** @brief Whether running off the end of a suite is impossible (so no implicit `return None`). */
+bool AlwaysReturns(const std::vector<PyNodePtr> &suite) {
+    if (suite.empty()) return false;
+    const PyNode *last = suite.back().get();
+    if (last->kind == PyNodeKind::Return || last->kind == PyNodeKind::Raise) return true;
+    if (last->kind == PyNodeKind::If) return AlwaysReturns(last->body) && AlwaysReturns(last->orelse);
+    return false;
+}
+
+/**
+ * @brief Infers what a plain function in this file returns from its return statements.
+ *
+ * Every return must carry a value whose type resolves, all of them must
+ * agree, and the function must not be able to fall off its end; an
+ * annotated, generator or recursive function is left alone.
+ */
+PythonLspExternalType LocalReturnType(const Analyzer &analyzer, const PyNode *fn, int depth) {
+    if (fn == nullptr || fn->kind != PyNodeKind::FunctionDef || fn->is_async || !fn->kids.empty()) return {};
+    int inner = -1;
+    for (size_t i = 0; i < analyzer.scopes().size(); i++) {
+        if (analyzer.scopes()[i].node == fn && analyzer.scopes()[i].kind == ScopeKind::Function) {
+            inner = static_cast<int>(i);
+        }
+    }
+    if (inner < 0 || !AlwaysReturns(fn->body)) return {};
+    std::vector<const PyNode *> returns;
+    for (const PyNodePtr &stmt : fn->body) {
+        if (!CollectReturns(stmt.get(), &returns)) return {};
+    }
+    static thread_local std::vector<const PyNode *> active;
+    if (std::find(active.begin(), active.end(), fn) != active.end()) return {};
+    active.push_back(fn);
+    PythonLspExternalType agreed;
+    bool ok = !returns.empty();
+    for (size_t i = 0; ok && i < returns.size(); i++) {
+        if (returns[i]->kids.empty()) {
+            ok = false;  // bare `return`: None
+            break;
+        }
+        PythonLspExternalType type = ExternalTypeOfExpr(analyzer, returns[i]->kids[0].get(), inner, depth + 1);
+        if (!KnownType(type) || (i > 0 && !SameType(type, agreed))) ok = false;
+        agreed = std::move(type);
+    }
+    active.pop_back();
+    return ok ? agreed : PythonLspExternalType{};
+}
+
 /** @brief Follows a stored assignment value and its fixed unpacking positions. */
 PythonLspExternalType ExternalTypeOfBinding(const Analyzer &analyzer, const Binding &b, int depth) {
-    PythonLspExternalType type = ExternalTypeOfExpr(analyzer, b.value, b.scope, depth + 1);
+    if (b.kind == BindKind::Param) return ParamTypeFromCalls(analyzer, b, depth);
+    PythonLspExternalType type = b.kind == BindKind::ForTarget
+                                     ? ElementTypeOf(analyzer, b.iterable, b.scope, depth + 1)
+                                     : ExternalTypeOfExpr(analyzer, b.value, b.scope, depth + 1);
     for (const UnpackStep &step : b.value_path) {
         if (type.elements.size() != step.count) return {};
         // Copy before assigning: the selected element belongs to type itself.
@@ -1987,6 +2176,12 @@ PythonLspExternalType ExternalTypeOfExpr(const Analyzer &analyzer, const PyNode 
         return type;
     }
     if (expr->kind == PyNodeKind::Call && !expr->kids.empty()) {
+        if (expr->kids[0]->kind == PyNodeKind::Name) {
+            const int index = analyzer.ResolveFrom(scope, expr->kids[0]->name);
+            if (index >= 0 && analyzer.bindings()[static_cast<size_t>(index)].kind == BindKind::Function) {
+                return LocalReturnType(analyzer, analyzer.bindings()[static_cast<size_t>(index)].node, depth);
+            }
+        }
         const std::string callee = QualifiedNameOfExpr(analyzer, expr->kids[0].get(), scope, depth + 1);
         if (callee == "matplotlib.pyplot.subplots") return SubplotsType(expr);
         if (!callee.empty() && analyzer.opts().external_return_type) {
@@ -2012,7 +2207,9 @@ std::string QualifiedNameOfExpr(const Analyzer &analyzer, const PyNode *expr, in
         const Binding &b = analyzer.bindings()[static_cast<size_t>(index)];
         const std::string imported = QualifiedNameOfBinding(b);
         if (!imported.empty()) return imported;
-        if (b.value_path.empty()) return QualifiedNameOfExpr(analyzer, b.value, b.scope, depth + 1);
+        if (b.value_path.empty() && b.kind != BindKind::Param && b.kind != BindKind::ForTarget) {
+            return QualifiedNameOfExpr(analyzer, b.value, b.scope, depth + 1);
+        }
         return ExternalTypeOfBinding(analyzer, b, depth + 1).qualified_name;
     }
     if (expr->kind == PyNodeKind::Attribute && !expr->kids.empty()) {

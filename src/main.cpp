@@ -3742,7 +3742,7 @@ const char *kKeybindingsText =
     "  Alt+p / Alt+Shift+Tab          previous buffer tab in pane\n"
     "\n"
     "Language tools\n"
-    "  gd  gh                         go to definition / help (LSP hover, or the R UI's help tab)\n"
+    "  gd  gi  gh                     go to definition / implementation / help (LSP hover, or the R UI's help tab)\n"
     "  gk                             LSP hover docs; in C/C++ UI mode, shown in the Help tab\n"
     "  gt  :MepLangTest               run this file's tests in the tab terminal -- go test, pytest/\n"
     "                                 unittest, testthat, the file's gtest/catch2 binary, cargo test,\n"
@@ -8856,13 +8856,8 @@ const char *kBuiltinLsp =
     "mep.command('MepLspSignatureHelp', mep.lsp_signature_help)\n"
     "mep.command('MepLspRename', mep.lsp_rename)\n"
     "mep.command('MepLspCodeAction', mep.lsp_code_action)\n"
-    // Leader-key defaults: 'lt'/'rn'/'ca' deliberately match mep.nvim's
-    // own keymaps.lua defaults (<leader>lt/rn/ca) for the methods it also
-    // binds under <leader>; implementation/signature-help have no such
-    // precedent there (mep.nvim uses bare 'gi'/'<C-k>' for those instead)
-    // since mep.map only binds single ASCII keys in Normal/Visual mode --
-    // no 'g'-prefixed two-key sequences or Ctrl-modified letters -- so
-    // 'li'/'lk' extend the same 'l' (LSP) leader group by mnemonic instead.
+    // Keep implementation available in the LSP leader group as well as gi.
+    // Type definition, rename and code action match mep.nvim's defaults.
     "mep.leader_map('li', 'LSP: goto implementation', mep.lsp_goto_implementation)\n"
     "mep.leader_map('lt', 'LSP: goto type definition', mep.lsp_goto_type_definition)\n"
     "mep.leader_map('lk', 'LSP: signature help', mep.lsp_signature_help)\n"
@@ -8876,6 +8871,7 @@ const char *kBuiltinLsp =
     // doc comment on why gd was unreachable before it existed).
     "mep.map('n', 'K', mep.lsp_hover, {desc = 'LSP: hover'})\n"
     "mep.map_g('d', mep.lsp_goto_definition)\n"
+    "mep.map_g('i', mep.lsp_goto_implementation)\n"
     // --- Diagnostics UI (Phase 21) -- built on the publishDiagnostics
     // store kBuiltinLsp already populates (mep_lsp_diagnostics, upvalue-
     // shared since this all lives in the same DoString chunk).

@@ -20,6 +20,7 @@ work without servers fighting over one project.
 |----------------+-------------------------------|
 | =K=            | hover documentation           |
 | =gd=           | go to definition              |
+| =gi=           | go to implementation          |
 | =Q=            | this line's diagnostics, in a popup |
 | =]e= / =[e=    | next / previous error, its text in a tooltip |
 | =]d= / =[d=    | next / previous diagnostic (any severity), its text in a tooltip |

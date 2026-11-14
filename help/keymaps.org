@@ -40,7 +40,7 @@ startup, so redefining it in =init.lua= simply replaces it:
 
 - the =mod1= layer, every key of it;
 - =s= for [[file:quick-jump.html][quick jump]];
-- =K= for LSP hover, =gd= for definition;
+- =K= for LSP hover, =gd= for definition, =gi= for implementation;
 - every =<leader>= sequence.
 
 The core modal machinery -- motions, operators, text objects -- is in C++

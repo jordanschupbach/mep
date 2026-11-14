@@ -33795,8 +33795,22 @@ bool Editor::ResolveMotion(char c, CursorPos from, int count, CursorPos *target,
     *inclusive = false;
     int n = std::max(1, count);
     switch (c) {
-        case 'h': *target = {from.row, std::max(0, from.col - n)}; return true;
-        case 'l': *target = {from.row, from.col + n}; return true;
+        case 'h':
+        case 'l': {
+            // Columns are byte offsets. Advancing a single byte into an APL
+            // glyph (or any UTF-8 character) makes ClampCursor snap back to
+            // its start, so repeated `l` can never get past it. Count whole
+            // codepoints here, also for Visual and operator-pending motions.
+            const std::string &line = Buf().lines[static_cast<size_t>(from.row)];
+            size_t col = static_cast<size_t>(std::clamp(from.col, 0, static_cast<int>(line.size())));
+            for (int i = 0; i < n; i++) {
+                const size_t next = c == 'h' ? Utf8PrevBoundary(line, col) : Utf8NextBoundary(line, col);
+                if (next == col) break;
+                col = next;
+            }
+            *target = {from.row, static_cast<int>(col)};
+            return true;
+        }
         case 'j': {
             int row = from.row;
             for (int i = 0; i < n; i++) row = StepVisibleRow(row, 1);

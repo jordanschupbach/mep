@@ -931,6 +931,10 @@ bench-mepml *args: build-native
     echo
     python3 tools/bench_report.py
 
+# Real-window regression for UTF-8 h/l motions (requires Xvfb).
+test-utf8-motion: build-native
+    python3 tools/utf8_motion_live_check.py --build-dir {{native_build_dir}}
+
 # The tests that drive a real `mep` window: the agent-RPC test (spawns
 # mep, needs a display and a working GL driver -- under Xvfb that means a
 # GPU-capable/llvmpipe driver; the sandbox WORKSPACES_PLAN.md was written

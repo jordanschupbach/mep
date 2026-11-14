@@ -5,6 +5,8 @@
 // assert().
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -312,6 +314,105 @@ void TestFormat() {
     CHECK(!err.empty());
 }
 
+// Docstrings: the file's own procedures, and the definitions of the modules
+// it uses (a/b.scm on the search path) and the files it loads.
+void TestDocstringsAndModules() {
+    const auto own = SchemeLspAnalyze(L("(define (twice x)\n  \"Doubles X.\\nTwo lines.\"\n  (* 2 x))\n"
+                                        "(define half (lambda (x) \"Halves X.\" (/ x 2)))\n"
+                                        "(define (only-string) \"not a docstring\")\n(twice (half 4))\n(only-string)"));
+    const SchemeLspHoverInfo h = SchemeLspHover(*own, 5, 2);
+    CHECK(h.found && h.text.find("Doubles X.\nTwo lines.") != std::string::npos);
+    CHECK(SchemeLspHover(*own, 5, 9).text.find("Halves X.") != std::string::npos);
+    CHECK(SchemeLspHover(*own, 6, 2).text.find("not a docstring") == std::string::npos);
+    CHECK(SchemeLspSignatureAt(*own, 5, 7).documentation.find("Doubles X.") != std::string::npos);
+
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("mep-scheme-lsp-test-" + std::to_string(std::rand()));
+    fs::create_directories(root / "proj");
+    fs::create_directories(root / "site" / "datamunge");
+    auto write = [](const fs::path &p, const std::string &text) {
+        std::ofstream out(p);
+        out << text;
+    };
+    write(root / "site" / "datamunge" / "stats.scm",
+          "(define-module (datamunge stats)\n  #:export (mean))\n\n(define* (mean values #:optional weights)\n"
+          "  \"Arithmetic mean of VALUES.\n\nWEIGHTS, when given, weight each value.\"\n  (/ (apply + values) "
+          "(length values)))\n");
+    write(root / "proj" / "helpers.scm", "(define (helper y)\n  \"Helps with Y.\"\n  y)\n");
+    const std::string main = (root / "proj" / "main.scm").string();
+    const auto doc = SchemeLspAnalyze(L("(add-to-load-path \"../site\")\n(use-modules (datamunge stats))\n"
+                                        "(load \"helpers.scm\")\n(display (mean '(1 2 3)))\n(helper 1)\n"),
+                                      "file://" + main);
+    const std::vector<std::string> files = SchemeLspSearchFiles(*doc);
+    CHECK(files.size() == 2 && files[0] == (root / "proj").string() + "/../site/datamunge/stats.scm");
+    const SchemeLspHoverInfo m = SchemeLspHover(*doc, 3, 10);
+    CHECK(m.found && m.text.find("(mean values #:optional weights)") != std::string::npos);
+    CHECK(m.text.find("Arithmetic mean of VALUES.") != std::string::npos && m.text.find("stats.scm:4") != std::string::npos);
+    CHECK(SchemeLspHover(*doc, 4, 2).text.find("Helps with Y.") != std::string::npos);
+    const SchemeLspSignatureHelp sh = SchemeLspSignatureAt(*doc, 3, 15);
+    CHECK(sh.found && sh.label == "(mean values #:optional weights)" && sh.documentation.find("WEIGHTS") != std::string::npos);
+    // Vocabulary names still come from the vocabulary.
+    CHECK(SchemeLspHover(*doc, 3, 2).text.find("display") != std::string::npos);
+    // The server-wide directories.
+    const auto bare = SchemeLspAnalyze(L("(use-modules (datamunge stats))\n(mean '(1))"), (root / "x.scm").string());
+    CHECK(SchemeLspHover(*bare, 1, 2).text.find("Arithmetic mean") == std::string::npos);
+    SchemeLspSetSearchPath({(root / "site").string()});
+    CHECK(SchemeLspHover(*bare, 1, 2).text.find("Arithmetic mean") != std::string::npos);
+    SchemeLspSetSearchPath({});
+    CHECK(SchemeLspModuleFile("(datamunge stats)", {(root / "site").string()}) ==
+          (root / "site" / "datamunge" / "stats.scm").string());
+    CHECK(SchemeLspModuleFile("datamunge nope", {(root / "site").string()}).empty());
+    const SchemeLspDefDoc d = SchemeLspFindDefinition("mean", {(root / "site" / "datamunge" / "stats.scm").string()});
+    CHECK(d.found && d.exported && d.line == 3 && d.doc.find("weight each value") != std::string::npos);
+    CHECK(!SchemeLspFindDefinition("nope", files).found);
+    CHECK(SchemeLspVocabDoc("string-split").find("string-split") != std::string::npos);
+    CHECK(SchemeLspVocabDoc("nope_nothing").empty());
+    CHECK(SchemeLspUriToPath("file:///a%20b/c.scm") == "/a b/c.scm");
+    fs::remove_all(root);
+}
+
+// GOOPS: define-class and define-generic take their documentation from the
+// comments above them, also when GOOPS is imported with #:prefix (Rosetta's
+// generated modules), and Rosetta's documented generic -- a documented
+// (define (f self . args) "doc" ...) rebound by (define f (%documented ...)) --
+// keeps its docstring.
+void TestGoopsDocs() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("mep-scheme-lsp-goops-" + std::to_string(std::rand()));
+    fs::create_directories(root / "site");
+    {
+        std::ofstream out(root / "site" / "shapes.scm");
+        out << "(define-module (shapes)\n  #:use-module ((oop goops) #:prefix goops:)\n"
+               "  #:export (<shape> <circle> area perimeter))\n\n"
+               ";; A shape.\n;;\n;; Construct with:\n;;   (make <shape>)\n(goops:define-class <shape> ())\n\n"
+               ";; A circle.\n(goops:define-class <circle> (<shape>) (r #:init-keyword #:r))\n\n"
+               "(define (area self . args)\n  \"The area of a shape.\"\n  (core:apply %g:area self args))\n"
+               "(define area (%documented area %g:area #f))\n\n"
+               ";; Not this one.\n\n;; The perimeter of a shape.\n(goops:define-generic perimeter)\n";
+    }
+    const auto doc = SchemeLspAnalyze(L("(use-modules (oop goops) (shapes))\n(define c (make <circle> #:r 1.0))\n"
+                                        "(area c)\n(perimeter c)\n(make <shape>)\n"),
+                                      (root / "main.scm").string());
+    SchemeLspSetSearchPath({(root / "site").string()});
+    const SchemeLspHoverInfo circle = SchemeLspHover(*doc, 1, 18);
+    CHECK(circle.found && circle.text.find("A circle.") != std::string::npos && circle.text.find("*class*") != std::string::npos);
+    const SchemeLspHoverInfo shape = SchemeLspHover(*doc, 4, 8);
+    CHECK(shape.text.find("A shape.\n\nConstruct with:\n  (make <shape>)") != std::string::npos);
+    const SchemeLspHoverInfo area = SchemeLspHover(*doc, 2, 2);
+    CHECK(area.text.find("(area self . args)") != std::string::npos && area.text.find("The area of a shape.") != std::string::npos);
+    const SchemeLspHoverInfo perimeter = SchemeLspHover(*doc, 3, 2);
+    CHECK(perimeter.text.find("The perimeter of a shape.") != std::string::npos &&
+          perimeter.text.find("Not this one") == std::string::npos && perimeter.text.find("*generic*") != std::string::npos);
+    SchemeLspSetSearchPath({});
+    // In the file itself, unprefixed.
+    const auto own = SchemeLspAnalyze(L("(use-modules (oop goops))\n;; Points in the plane.\n(define-class <point> ())\n"
+                                        ";; Distance to the origin.\n(define-generic norm)\n(make <point>)\n(norm 1)\n"));
+    CHECK(SchemeLspHover(*own, 5, 8).text.find("Points in the plane.") != std::string::npos);
+    CHECK(SchemeLspHover(*own, 6, 2).text.find("Distance to the origin.") != std::string::npos);
+    CHECK(SchemeLspFindDefinition("<shape>", {(root / "site" / "shapes.scm").string()}).kind == "class");
+    fs::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -326,6 +427,8 @@ int main() {
     TestSymbolsFolds();
     TestRobustness();
     TestFormat();
+    TestDocstringsAndModules();
+    TestGoopsDocs();
     std::printf("scheme_lsp_test: %d checks passed\n", g_checks);
     return 0;
 }

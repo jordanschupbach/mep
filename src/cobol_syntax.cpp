@@ -1,4 +1,4 @@
-// COBOL line structure and highlighting: see cobol_syntax.h.
+// COBOL line structure: see cobol_syntax.h.
 #include "cobol_syntax.h"
 
 #include <algorithm>
@@ -91,6 +91,12 @@ bool LooksFree(const std::string &line) {
     const std::string seq = Trimmed(area);
     if (seq.empty()) return false;
     if (line.find('\t') < 6) return false;
+    // Six characters filling the area, then an indicator: a fixed-format line with a word where its
+    // sequence number would be (GnuCOBOL ignores the area, whatever it holds).
+    if (area.size() == 6 && area.find(' ') == std::string::npos &&
+        (line.size() == 6 || std::strchr(" */-Dd", line[6]) != nullptr)) {
+        return false;
+    }
     return !AllDigits(seq);  // a sequence number is fixed format's; anything else there is code
 }
 
@@ -206,146 +212,4 @@ bool CobolDocCommentText(const std::string &line, std::string *text) {
     while (!rest.empty() && (rest.back() == ' ' || rest.back() == '\t' || rest.back() == '\r')) rest.pop_back();
     if (text) *text = rest;
     return true;
-}
-
-std::vector<std::vector<CobolHighlightSpan>> CobolHighlight(const std::vector<std::string> &lines) {
-    const std::vector<CobolFormat> formats = CobolLineFormats(lines);
-    std::vector<std::vector<CobolHighlightSpan>> out(lines.size());
-    bool in_procedure = false;
-    bool sentence_start = true;
-    int name_level = 0;        // the level number just read: the next word is the name it declares
-    bool pic_pending = false;  // PIC [IS] read: the next token is a picture string
-    std::string prev_word;
-    for (size_t row = 0; row < lines.size(); row++) {
-        const std::string &line = lines[row];
-        auto &spans = out[row];
-        auto add = [&spans](int a, int b, const char *g) {
-            if (b > a) spans.push_back({a, b, g});
-        };
-        const CobolLineInfo info = CobolClassifyLine(line, formats[row]);
-        const int len = static_cast<int>(line.size());
-        if (formats[row] == CobolFormat::Fixed && !(info.directive && info.code_start < 6)) {
-            const int seq_end = std::min(6, len);
-            if (line.find_first_not_of(' ') < static_cast<size_t>(seq_end)) add(0, seq_end, "Comment");
-            if (len > 6 && (line[6] == '-' || line[6] == 'D' || line[6] == 'd')) add(6, 7, "Purple");
-        }
-        if (info.comment_line) {
-            add(info.comment_start, len, "Comment");
-            continue;
-        }
-        if (info.directive) {
-            add(info.code_start, info.code_end, "Purple");
-            if (info.comment_start >= 0) add(info.comment_start, len, "Comment");
-            continue;
-        }
-        int i = info.code_start;
-        const int end = info.code_end;
-        while (i < end) {
-            const char c = line[static_cast<size_t>(i)];
-            if (std::isspace(static_cast<unsigned char>(c))) {
-                i++;
-                continue;
-            }
-            if (pic_pending && c != '.') {
-                int j = i;
-                while (j < end && !std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(j)]))) j++;
-                int pic_end = j;
-                if (pic_end > i + 1 && line[static_cast<size_t>(pic_end) - 1] == '.') pic_end--;
-                const std::string word = CobolUpper(line.substr(static_cast<size_t>(i), static_cast<size_t>(pic_end - i)));
-                if (word == "IS") {
-                    add(i, pic_end, "Purple");
-                } else {
-                    add(i, pic_end, "Cyan");
-                    pic_pending = false;
-                }
-                sentence_start = false;
-                i = pic_end;
-                continue;
-            }
-            const bool prefixed_literal = std::strchr("XxNnZzBbHhGg", c) != nullptr && i + 1 < end &&
-                                          (line[static_cast<size_t>(i) + 1] == '"' || line[static_cast<size_t>(i) + 1] == '\'');
-            if (c == '"' || c == '\'' || prefixed_literal) {
-                int j = prefixed_literal ? i + 1 : i;
-                const char q = line[static_cast<size_t>(j)];
-                j++;
-                while (j < end) {
-                    if (line[static_cast<size_t>(j)] == q) {
-                        if (j + 1 < end && line[static_cast<size_t>(j) + 1] == q) {
-                            j += 2;
-                            continue;
-                        }
-                        j++;
-                        break;
-                    }
-                    j++;
-                }
-                add(i, j, "Green");
-                sentence_start = false;
-                name_level = 0;
-                i = j;
-                continue;
-            }
-            if (c == '.' && (i + 1 >= end || std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(i) + 1])))) {
-                sentence_start = true;
-                name_level = 0;
-                pic_pending = false;
-                i++;
-                continue;
-            }
-            if (!CobolWordChar(c) && !((c == '+' || c == '-') && i + 1 < end &&
-                                       std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(i) + 1])))) {
-                sentence_start = false;
-                i++;
-                continue;
-            }
-            int j = i + 1;
-            while (j < end && CobolWordChar(line[static_cast<size_t>(j)])) j++;
-            std::string word = line.substr(static_cast<size_t>(i), static_cast<size_t>(j - i));
-            const bool signed_number = c == '+' || c == '-';
-            const std::string digits = signed_number ? word.substr(1) : word;
-            if (AllDigits(digits) && j + 1 < end && (line[static_cast<size_t>(j)] == '.' || line[static_cast<size_t>(j)] == ',') &&
-                std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(j) + 1]))) {
-                j++;
-                while (j < end && std::isdigit(static_cast<unsigned char>(line[static_cast<size_t>(j)]))) j++;
-                word = line.substr(static_cast<size_t>(i), static_cast<size_t>(j - i));
-            }
-            const std::string up = CobolUpper(word);
-            bool numeric = !digits.empty() && std::isdigit(static_cast<unsigned char>(digits[0]));
-            for (char d : digits) numeric = numeric && (std::isdigit(static_cast<unsigned char>(d)) || d == '.' || d == ',');
-            if (numeric) {
-                const int level = AllDigits(word) && word.size() <= 2 ? std::stoi(word) : -1;
-                const bool is_level = sentence_start && !in_procedure &&
-                                      ((level >= 1 && level <= 49) || level == 66 || level == 77 || level == 78 || level == 88);
-                add(i, j, is_level ? "Orange" : "Cyan");
-                name_level = is_level ? level : 0;
-            } else if (name_level != 0) {
-                if (up == "FILLER") {
-                    add(i, j, "Purple");
-                } else if (!CobolIsKeyword(up)) {
-                    if (name_level == 1 || name_level == 77) add(i, j, "Blue");
-                    else if (name_level == 78 || name_level == 88) add(i, j, "Cyan");
-                } else {
-                    add(i, j, "Purple");
-                }
-                name_level = 0;
-            } else if (CobolIsKeyword(up)) {
-                add(i, j, "Purple");
-                if (up == "PIC" || up == "PICTURE") pic_pending = true;
-                if (up == "DIVISION") in_procedure = prev_word == "PROCEDURE";
-            } else if (in_procedure && sentence_start) {
-                // A paragraph (`NAME.`) or section (`NAME SECTION.`) header.
-                int k = j;
-                while (k < end && line[static_cast<size_t>(k)] == ' ') k++;
-                const bool period = k < end && line[static_cast<size_t>(k)] == '.' &&
-                                    (k + 1 >= end || std::isspace(static_cast<unsigned char>(line[static_cast<size_t>(k) + 1])));
-                const bool section = CobolUpper(line.substr(static_cast<size_t>(k), 7)) == "SECTION";
-                if (period || section) add(i, j, "Blue");
-            }
-            sentence_start = false;
-            prev_word = up;
-            i = j;
-        }
-        if (info.comment_start >= 0) add(info.comment_start, len, "Comment");
-    }
-    return out;
 }

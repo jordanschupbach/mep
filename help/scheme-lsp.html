@@ -101,6 +101,24 @@ variables that are only ever <code>set!</code>.</p>
 <li><b>Folding</b> of multi-line forms, strings and comment runs.</li>
 <li><b>Formatting</b> with mep's own Scheme formatter, the same one as <code>gf</code>. See <a href="formatting.html">Formatting</a>.</li>
 </ul>
+<h1>Docstrings, and modules on the load path</h1>
+<p>A procedure's docstring -- <code>(define (f x) "doc" body...)</code>, a <code>lambda</code>'s, a
+<code>define-syntax-rule</code>'s -- shows in hover and signature help. A name the
+file and the vocabulary of its imports do not define is looked up in the
+modules it uses (<code>(a b)</code> as <code>a/b.scm</code> in its directory, its
+<code>(add-to-load-path "dir")</code> literals, the workspace, <code>GUILE_LOAD_PATH</code> and
+<code>MEP_GUILE_PATH</code>) and in the files it =load=s or =include=s.</p>
+<p>GOOPS: <code>define-class</code> and <code>define-generic</code> (or <code>define-accessor</code>) take no
+docstring, so the <code>;;</code> comment lines directly above them are their
+documentation. This also holds when GOOPS is imported with a prefix, as in
+<code>(goops:define-class &lt;circle&gt; (&lt;shape&gt;))</code>. A generic that is first defined
+as a documented procedure and then rebound, as Rosetta's generated modules
+do with <code>(define (area self . args) "doc" ...)</code> followed by
+<code>(define area (%documented ...))</code>, keeps the docstring of the first
+definition.</p>
+<p><code>mep-scheme-lsp --doc NAME [-L DIR]... [--module "a b"]... [--file FILE]...</code>
+prints a definition's signature and docstring, for the
+<a href="guile-mode.html">Guile Scheme mode</a>'s Help tab.</p>
 <h1>Linting from the command line</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-scheme-lsp</span> <span class="tok-red">--lint</span> FILE...</code></pre></div>
 <p>prints every diagnostic as <code>path:line:col: severity: message [code]</code> --

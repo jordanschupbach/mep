@@ -33,15 +33,19 @@ stale copy from disk.</p>
 <tr><td>Nix (<code>.nix</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Fish (<code>.fish</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Fortran (<code>.f90</code>, <code>.f95</code>, <code>.f03</code>, <code>.f08</code>, <code>.F90</code>)</td><td><b>built in</b> -- fprettify's output, nothing to install</td></tr>
+<tr><td>COBOL (<code>.cob</code>, <code>.cbl</code>, <code>.cpy</code>, <code>.cobol</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Tcl (<code>.tcl</code>, <code>.tk</code>, <code>.tm</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Octave, MATLAB (<code>.m</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>GAP (<code>.g</code>, <code>.gi</code>, <code>.gd</code>, <code>.gap</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Scheme (<code>.scm</code>, <code>.ss</code>, <code>.sld</code>, <code>.sls</code>, <code>.sps</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Lua (<code>.lua</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>Julia (<code>.jl</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
+<tr><td>Ruby (<code>.rb</code>)</td><td><b>built in</b> -- mep's own (rubocop's default layout), nothing to install</td></tr>
+<tr><td>OCaml (<code>.ml</code>, <code>.mli</code>)</td><td><b>built in</b> -- mep's own (ocamlformat's default style, margin 80), nothing to install</td></tr>
 <tr><td>Go (<code>.go</code>)</td><td><b>built in</b> -- gofmt's output, nothing to install</td></tr>
 <tr><td>JavaScript (<code>.js</code>, <code>.jsx</code>, <code>.mjs</code>, <code>.cjs</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>TypeScript (<code>.ts</code>, <code>.tsx</code>, <code>.mts</code>, <code>.cts</code>)</td><td><b>built in</b> -- the JavaScript formatter, nothing to install</td></tr>
+<tr><td>APL (<code>.apl</code>, <code>.apls</code>, <code>.aplf</code>, <code>.aplo</code>, <code>.apln</code>, <code>.aplc</code>, <code>.apli</code>, <code>.dyalog</code>)</td><td><b>built in</b> -- mep's own, nothing to install</td></tr>
 <tr><td>mepml (<code>.mepml</code>)</td><td><b>built in</b> -- see <i>mepml documents</i> below</td></tr>
 <tr><td>anything else</td><td><code>mep.lsp_format</code>, if a server is attached</td></tr>
 </table>
@@ -829,6 +833,52 @@ mangles them, and their columns are the layout.</p>
 <p>The same entries exist for <code>f95</code>, <code>f03</code>, <code>f08</code> and <code>F90</code>.</p>
 <h2>Using fprettify instead</h2>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.f90 = <span class="tok-blue">{</span><span class="tok-green">'fprettify'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The COBOL formatter</h1>
+<p>COBOL gets a conservative GnuCOBOL layout, in fixed format (sequence area
+in columns 1-6, indicator in column 7, Area A from column 8, Area B from
+column 12, identification area from column 73) and free format alike; the
+format is read the way the <a href="cobol-lsp.html">COBOL language server</a>
+reads it (<code>&gt;&gt;SOURCE FORMAT</code>, <code>$SET SOURCEFORMAT</code>, else a guess from the
+sequence area). It only re-indents -- no line is split, joined, re-cased
+or re-worded:</p>
+<ul>
+<li>division, section and paragraph headers, <code>FD</code> / <code>SD</code> entries, level 01, 66, 77 and 78 entries, <code>DECLARATIVES</code> and <code>END PROGRAM</code> go in Area A (column 1 in free format);</li>
+<li>data entries are indented by their place in the record's hierarchy (one step per nesting level, whatever the level numbers are; an 88 one step under its item), and a <code>PICTURE</code> clause right after the name lines up at column 40 (Area A + 32) when it fits;</li>
+<li>statements go in Area B (one step in, in free format), with the bodies of <code>IF</code> / <code>ELSE</code>, <code>EVALUATE</code> ... <code>WHEN</code>, inline <code>PERFORM</code> ... <code>END-PERFORM</code>, <code>SEARCH</code> ... <code>WHEN</code> and the conditional phrases (=AT END=, <code>ON SIZE ERROR</code>, <code>INVALID KEY</code>, <code>ON EXCEPTION</code>, <code>ON OVERFLOW</code> and their <code>NOT</code> forms) one step further in; <code>END-IF</code> and friends and <code>ELSE</code> go back to their statement, and a period closes every open scope;</li>
+<li>a statement or entry continued over several lines keeps its later lines where they were relative to its first (in the procedure division at least one step in).</li>
+</ul>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cobol</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cobol">       PROCEDURE DIVISION.
+       MAIN-PARA.
+       PERFORM VARYING I FROM 1 BY 1 UNTIL I &gt; 3
+       IF I = 2
+       DISPLAY "TWO"
+       END-IF
+       END-PERFORM
+       STOP RUN.</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">cobol</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="cobol">       PROCEDURE DIVISION.
+       MAIN-PARA.
+           PERFORM VARYING I FROM 1 BY 1 UNTIL I &gt; 3
+               IF I = 2
+                   DISPLAY "TWO"
+               END-IF
+           END-PERFORM
+           STOP RUN.</code></pre></div>
+<p>It leaves exactly as they are: comment and blank lines, compiler
+directives, <code>COPY</code> and <code>REPLACE</code> statements, <code>EXEC</code> ... <code>END-EXEC</code>
+blocks, debugging lines (<code>D</code> in column 7), comment entries (<code>AUTHOR.</code> and
+the like), continued literals and their continuation lines, lines with a
+tab before the code, the sequence and identification areas, and in fixed
+format any line that would no longer fit in columns 8-72. Every changed
+line is checked to hold the same words and literals as before; a file
+whose format is unclear (free-format code next to fixed-format sequence
+numbers) is refused, and <code>gf</code> says on which line. Formatting a formatted
+file changes nothing. The same formatter answers the language server's
+<code>textDocument/formatting</code>.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.cob.indent = <span class="tok-cyan">3</span>         <span class="tok-comment">-- columns per level (default 4)</span>
+<span class="tok-cyan">mep</span>.format_languages.cob.align_pic = <span class="tok-cyan">false</span>  <span class="tok-comment">-- leave PICTURE clauses where they are</span></code></pre></div>
+<p>The same entries exist for <code>cbl</code>, <code>cpy</code>, <code>cobol</code> and their upper-case forms.</p>
 <h1>The GAP formatter</h1>
 <p>GAP has no standard formatter, so mep's re-indents and changes nothing
 else: a block body one step in -- the way GAP's own function printer
@@ -1153,6 +1203,108 @@ and braces above, <code>return</code>, <code>in</code>, number spellings); anyth
 the buffer alone.</p>
 <h2>Using Runic instead</h2>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.jl = <span class="tok-blue">{</span><span class="tok-green">'runic'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The Ruby formatter</h1>
+<p>Ruby files get the community layout -- what rubocop's and standardrb's
+default <code>Layout</code> cops ask for -- from mep itself, with no Ruby installed.
+It works on the tree-sitter-ruby syntax tree and changes only whitespace:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">ruby</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="ruby">module Shapes
+    class Circle&lt;Shape
+        def initialize(r,scale=1, unit:"cm")
+            @r=r*scale
+            @unit = unit
+        end
+        def area
+            Math::PI*@r**2
+        end
+    end
+end</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">ruby</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="ruby">module Shapes
+  class Circle &lt; Shape
+    def initialize(r, scale = 1, unit: "cm")
+      @r = r * scale
+      @unit = unit
+    end
+
+    def area
+      Math::PI * @r**2
+    end
+  end
+end</code></pre></div>
+<ul>
+<li><b>Indentation</b>: two spaces per level -- modules, classes, methods, blocks, <code>if=/=unless=/=case=/=while=/=begin</code>, and brackets whose contents start on the next line. <code>else</code>, <code>elsif</code>, <code>when</code>, <code>in</code>, <code>rescue</code>, <code>ensure</code> and the closing <code>end</code> or bracket line up with the line that opened them. <code>x = if ...</code> keeps its <code>end</code> under <code>if</code> when it already was there (rubocop's default) or under <code>x</code> (standardrb's). A line that continues an expression -- a method chain, arguments aligned under the first one, a condition split after <code>&amp;&amp;</code> -- keeps its offset from the line the expression starts on.</li>
+<li><b>Spacing</b>: one space around binary and assignment operators and <code>&lt;</code> in <code>class A &lt; B</code>, after commas, after <code>key:</code>, before a block's <code>{</code> and inside its braces (<code>{ |x| x }</code>); none before a comma or inside parentheses and brackets. <code>**</code> and ranges are left tight. Extra spaces that align a column of <code>=</code> or trailing comments stay. <code>a -b</code> (a space before an operator but none after) is left exactly as written, because Ruby may read it as <code>a(-b)</code>.</li>
+<li><b>Blank lines</b>: no trailing whitespace, no runs of blank lines, none at the start or end of a class, method or block body, one blank line between two multi-line method definitions (above the second one's doc comment), and one newline at the end of the file.</li>
+<li><b>Never touched</b>: strings and their quotes, heredocs, <code>%w[]</code> and the other percent literals, regexps, comments, <code>begin=/=end</code> blocks and everything after <code>__END__</code>. Long lines are not wrapped.</li>
+</ul>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>A file with a syntax error is left as it was, and <code>gf</code> gives the error's
+line. The result is parsed again and must have the same syntax tree, the
+same string, comment and heredoc texts, and the same non-blank characters
+as the input; otherwise the buffer is left alone. Over the 981 files of
+Ruby 3.4's standard library, it formats 979 (the other two hit gaps in the
+tree-sitter grammar and are refused as syntax errors); every result is
+idempotent and parses, under Ruby's own parser, to the same abstract syntax
+tree as the original (up to the values of <code>__LINE__</code>, where blank lines
+were removed).</p>
+<p><code>mep-ruby-lsp</code> uses the same formatter for <code>textDocument/formatting</code>.</p>
+<h2>Using rubocop instead</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.rb = <span class="tok-blue">{</span><span class="tok-green">'rubocop'</span>, <span class="tok-green">'--autocorrect'</span>, <span class="tok-green">'--stderr'</span>, <span class="tok-green">'--stdin'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span></code></pre></div>
+<h1>The OCaml formatter</h1>
+<p>OCaml files (<code>.ml</code> and <code>.mli</code>) are laid out the way ocamlformat's default
+profile lays them out, by mep itself, with no OCaml or opam installed:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">ocaml</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="ocaml">let rec fact n = if n&lt;=1 then 1 else n*fact (n-1)
+let describe = function
+| [] -&gt; "empty"
+| [x] -&gt; "one: "^string_of_int x
+| _ -&gt; "many"
+module Shape = struct
+type t = Circle of float | Square of float
+let area s = match s with
+| Circle r -&gt; 3.14*.r*.r
+| Square a -&gt; a*.a
+end</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">ocaml</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="ocaml">let rec fact n = if n &lt;= 1 then 1 else n * fact (n - 1)
+let describe = function
+  | [] -&gt; "empty"
+  | [ x ] -&gt; "one: " ^ string_of_int x
+  | _ -&gt; "many"
+module Shape = struct
+  type t = Circle of float | Square of float
+  let area s = match s with
+    | Circle r -&gt; 3.14 *. r *. r
+    | Square a -&gt; a *. a
+end</code></pre></div>
+<ul>
+<li><b>Indentation</b>: two columns per level. <code>struct</code>, <code>sig</code>, <code>begin</code>, <code>object</code> and bracket contents go two in and their <code>end</code> or closer back out; a <code>let ... in</code> body stays at the <code>let</code>'s column; match and <code>function</code> arms line up with their <code>match</code> (or two in from the <code>let</code> that holds them), and an arm's body on its own line goes four in from its <code>|</code>; <code>then</code> and <code>else</code> go under their <code>if</code>; a binding's body on the next line goes two in; a doc comment keeps its place with the item.</li>
+<li><b>Spacing</b>: one space around binary operators (<code>+</code>, <code>*.</code>, <code>^</code>, <code>|&gt;</code>, <code>::</code>, <code>=</code>, <code>-&gt;</code> ...) and after =,= and <code>;</code>, none before them; <code>x:int</code> labels and <code>~f:</code> arguments stay tight; one space inside <code>[ ]</code>, <code>[| |]</code>, <code>{ }</code> and <code>{&lt; &gt;}</code>. Runs of spaces collapse to one, except the gap before a trailing comment.</li>
+<li><b>Long lines</b> (over the margin, 80) are broken where ocamlformat breaks them first: after a binding's <code>=</code>, after an arm's <code>-&gt;</code>, before <code>else</code>, before <code>|&gt;</code>, and after <code>;</code> in a sequence or a list.</li>
+<li><b>Never touched</b>: strings, quoted strings (<code>{id|...|id}</code>), character literals, comment contents (a multi-line comment moves as a whole), <code>#</code> directives. It does not join lines or move code across lines other than for over-long ones, so it is not a full reprinter: a <code>match</code> that ocamlformat would put on its own line stays where it is.</li>
+</ul>
+<h2>It will not rewrite a file it cannot prove it preserved</h2>
+<p>It changes only the whitespace between tokens. Its result must lex to the
+same token stream as the input (comments compared with their continuation
+lines' indentation ignored), every bracket, <code>begin=/=end</code> and
+<code>struct=/=sig=/=end</code> must balance, and the result must be a fixed point --
+formatting it again changes nothing. Otherwise the buffer is left alone and
+<code>gf</code> reports why, with the line for an unterminated string or comment.
+Over the 144 <code>.ml</code> and <code>.mli</code> files of OCaml 5.4's standard library it
+refuses none, keeps 94.5% of the lines ocamlformat itself writes exactly
+as ocamlformat writes them, and ocamlformat formats mep's output to the
+same text as the original in 131 files (the other 13 differ only inside
+comments).</p>
+<p><code>mep-ocaml-lsp</code> uses the same formatter for <code>textDocument/formatting</code>;
+<code>textDocument/rangeFormatting</code> re-indents the selected lines without
+breaking any.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.ml = <span class="tok-blue">{</span>builtin = <span class="tok-green">'format_ocaml'</span>, name = <span class="tok-green">"mep's OCaml formatter"</span>, width = <span class="tok-cyan">100</span><span class="tok-blue">}</span></code></pre></div>
+<p><code>width</code> is the margin (default 80). =mep.format_ocaml(text, width,
+{indent = 2})= is the formatter as a Lua function: the formatted text, or
+<code>nil</code>, an error message and a line.</p>
+<h2>Using ocamlformat instead</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.ml = <span class="tok-blue">{</span><span class="tok-green">'ocamlformat'</span>, <span class="tok-green">'--enable-outside-detected-project'</span>, <span class="tok-green">'--name={}'</span>, <span class="tok-green">'-'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.format_languages.mli = <span class="tok-cyan">mep</span>.format_languages.ml</code></pre></div>
 <h1>The C# formatter</h1>
 <p>mep lays C# out the way <code>dotnet format whitespace</code> does with no
 <code>.editorconfig</code> -- four-space indentation, braces on their own lines, its
@@ -1269,6 +1421,50 @@ token, against the input -- finds a difference it did not intend.</p>
   <span class="tok-green">'styler::style_file(commandArgs(TRUE))'</span>, <span class="tok-green">'{}'</span><span class="tok-blue">}</span></code></pre></div>
 <p>Both need the tool installed, and <code>air</code> takes its own margin from the
 nearest <code>air.toml</code> rather than from <code>width</code> above.</p>
+<h1>The APL formatter</h1>
+<p>GNU APL and Dyalog APL source gets a conservative layout: it re-indents
+structures and tidies the spaces around three glyphs, and touches nothing
+inside an expression -- a space next to a function can change what an APL
+line means (<code>x f←1</code>), so it is never removed.</p>
+<ul>
+<li>the bodies of control structures (<code>:If</code> ... <code>:EndIf</code>, <code>:For</code>, <code>:While</code>, <code>:Repeat</code>, <code>:Select</code> / <code>:Case</code>, <code>:Trap</code>, <code>:With</code>, <code>:Hold</code>) and of <code>:Namespace</code>, <code>:Class</code> and <code>:Interface</code> scripts are indented one level (four columns) past their opener; <code>:Else</code>, <code>:ElseIf</code>, <code>:Case</code> and <code>:EndXxx</code> line up with it;</li>
+<li>the body of a dfn whose braces span lines is indented one level past the line that opens it, and a line starting with <code>}</code> lines up with that line;</li>
+<li>a tradfn's body sits two columns past its <code>∇</code>;</li>
+<li><code>←</code> loses the spaces around it (<code>x←1</code>), <code>⋄</code> (and GNU's <code>◊</code>) gets one space on each side, a trailing comment gets a space before <code>⍝</code> when it has none (more are kept, so aligned comments stay aligned), and <code>⍝text</code> becomes <code>⍝ text</code> (more spaces after <code>⍝</code> are kept: they may be indented code in a doc block);</li>
+<li>trailing whitespace goes.</li>
+</ul>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">apl</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="apl">:Namespace stats
+∇ R←Mean X
+R ← (+/X)÷≢X   ⍝the mean
+∇
+sd←{
+m←Mean ⍵
+((+/(⍵-m)*2)÷≢⍵)*0.5}
+:EndNamespace</code></pre></div>
+<p>becomes</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">apl</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="apl">:Namespace stats
+    ∇ R←Mean X
+      R←(+/X)÷≢X   ⍝ the mean
+    ∇
+    sd←{
+        m←Mean ⍵
+        ((+/(⍵-m)*2)÷≢⍵)*0.5}
+:EndNamespace</code></pre></div>
+<p>Lines outside any structure keep their indentation, and so do the
+continuation lines of a <code>(</code> or <code>[</code> left open, <code>)commands</code> and a <code>#!</code> line.
+No line is split or joined.</p>
+<h2>It will not rewrite code it cannot prove it preserved</h2>
+<p>Every line is re-tokenized after formatting and must hold exactly the same
+tokens as before (comments compared without the spaces after <code>⍝</code>); an
+unterminated string, an unbalanced or mismatched control structure, a
+structure left open at the end of the file, or a <code>∇</code> inside an open
+structure makes <code>gf</code> refuse and say on which line. Formatting a formatted
+file changes nothing. The same formatter answers the
+<a href="apl-lsp.html">APL language server</a>'s <code>textDocument/formatting</code>.</p>
+<h2>Options</h2>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.format_languages.apl.indent = <span class="tok-cyan">2</span>   <span class="tok-comment">-- columns per level (default 4)</span></code></pre></div>
+<p>The same entries exist for <code>apls</code>, <code>aplf</code>, <code>aplo</code>, <code>apln</code>, <code>aplc</code>, <code>apli</code>
+and <code>dyalog</code>.</p>
 <h1>Line width</h1>
 <p>The built-in formatters wrap at <b>100 columns</b> for C++ and Nix, <b>88</b> for Python
 and <b>80</b> for C, R and SQL -- <code>width</code> in each one's table entry, and the subsections

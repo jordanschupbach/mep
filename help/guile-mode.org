@@ -1,0 +1,85 @@
+#+TITLE: Guile Scheme mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="53">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.scm= or
+=.ss= file. The tab becomes a Guile workspace: your file, the Guile REPL
+below it, and panels showing what that session holds.
+
+The console is the stock REPL, started as =guile -q -l mep_init.scm=. =-q=
+leaves =~/.guile= out, so no colorized printer or readline colors get in
+the way; the init script turns on =(ice-9 readline)= when it is installed,
+for line editing and history. Meta-commands (=,describe=, =,m=, =,q=) work
+as usual. It starts with mep's environment, so =GUILE_LOAD_PATH= fills
+=%load-path=, and the init script adds the directories in =MEP_GUILE_PATH=
+and your file's directory: =(use-modules (datamunge))= loads what it would
+in a terminal in that project.
+
+* Working in it
+
+| Key / call          | Does                                                       |
+|---------------------+------------------------------------------------------------|
+| =<leader>rr=        | run the whole file in the console                          |
+| =<leader>re=        | run the top-level form at the cursor (or the selection)    |
+| =gh=                | help for the name under the cursor, in the Help panel      |
+| =(mep-help 'name)=  | the same, from the console                                 |
+| =(mep-view 'x)=     | a value -- pretty-printed, with its type -- in Inspect     |
+
+Neither key pastes your code into the prompt. The code is written to a
+file padded to your file's line numbers, and one =(mep-eval-file ...)=
+line reads it as if from your file and compiles it form by form in the
+REPL's current module. Definitions stay, errors name your file and line,
+and the REPL prints the last value. =<leader>rr= runs the buffer as it is
+in the editor, unsaved changes included, with its directory on
+=%load-path=. A file with a =;; CMD:= line still runs that line on the Run
+button.
+
+* The panels
+
+| Panel   | Shows                                                                  |
+|---------+------------------------------------------------------------------------|
+| Module  | =module-map= of the REPL's current module: the bindings the session made, with a procedure's arguments or a value |
+| Modules | the modules the current module uses, and the directories added to =%load-path= |
+| Inspect | =mep-view= of a value                                                   |
+| Help    | a procedure's documentation                                             |
+
+Clicking a Module row inspects it. The panels follow =,m= to another
+module, and refresh before every prompt (a =before-read-hook=).
+
+* Help
+
+=(mep-help 'name)= -- and =gh= -- shows what the session knows first: the
+procedure's arguments, the module it comes from, and its documentation as
+=,describe= finds it (=procedure-documentation=, and Guile's own reference
+for built-ins). Then =mep-scheme-lsp --doc= (see
+[[file:scheme-lsp.html][The Scheme language server]]) reads the docstring
+from the defining module's source on =%load-path= -- =(define (f x) "doc"
+...)= -- and from the files the session loaded. When the two agree, only
+the source location is added. A Rosetta-generated Guile module's
+procedures carry the C++ library's documentation as docstrings; a
+procedure written in C, whose docstring the session lacks, still gets it
+from the source.
+
+In a =.scm= buffer =gh= also opens the language server's hover, which
+reads the same docstrings from the modules your file uses, without a
+running session.
+
+* Options
+
+#+begin_src lua
+mep.opt.guile_ui_cmd = {'guile3.0'}   -- the console's command
+mep.opt.guile_ui_info_share = 0.3     -- the panels' width
+#+end_src
+
+A =;; REPL: nix develop .#guile --command guile= line in the file
+overrides =guile_ui_cmd= for that file. The mode appends =-q -l= and its
+init script, so the command must accept them, as =guile= does.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:scheme-lsp.html][The Scheme language server]].
+- [[file:run-button.html][Run button]] -- a =;; CMD:= line runs a file another way.

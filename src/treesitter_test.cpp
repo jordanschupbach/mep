@@ -819,6 +819,165 @@ void TestNim() {
 }
 
 // ---------------------------------------------------------------------------
+// APL: mep's own grammar (grammars/tree-sitter-apl), GNU APL and Dyalog
+// ---------------------------------------------------------------------------
+
+void TestApl() {
+    for (const char *ft : {"apl", "apls", "aplf", "apln", "dyalog"}) CHECK(TreesitterHasGrammar(ft));
+    CHECK(TreesitterHasFoldQuery("apl"));
+    CHECK(TreesitterHasStructureQuery("apln"));
+    const std::string src =
+        ":Namespace datamunge\n"
+        "    ⍝ Adds.\n"
+        "    ∇ R←A Add B;T\n"
+        "      T←A\n"
+        "      :If T>¯1.5E3\n"
+        "          R←T+B\n"
+        "      :EndIf\n"
+        "    ∇\n"
+        "    Mean←{\n"
+        "        (+/⍵)÷≢⍵\n"
+        "    }\n"
+        "    ⎕IO←0 ⋄ s←'it''s'\n"
+        ":EndNamespace\n";
+    ExpectCaptures("apln", src, ":Namespace", "keyword");
+    ExpectCaptures("apln", src, "datamunge", "variable module");
+    ExpectCaptures("apln", src, "⍝ Adds.", "comment");
+    ExpectCaptures("apln", src, "Add B", "variable function");
+    ExpectCaptures("apln", src, "A Add", "variable variable.parameter");
+    ExpectCaptures("apln", src, ";T", "punctuation.delimiter");
+    ExpectCaptures("apln", src, ":If", "keyword");
+    ExpectCaptures("apln", src, "¯1.5E3", "number");
+    ExpectCaptures("apln", src, "+B", "function.builtin");
+    ExpectCaptures("apln", src, "Mean", "variable function");
+    ExpectCaptures("apln", src, "/⍵", "operator");
+    ExpectCaptures("apln", src, "⍵)", "variable.parameter.builtin");
+    ExpectCaptures("apln", src, "⎕IO", "function.builtin");
+    ExpectCaptures("apln", src, "⋄", "punctuation.delimiter");
+    ExpectCaptures("apln", src, "'it''s'", "string");
+    bool fn_fold = false, if_fold = false, dfn_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("apln", src)) {
+        fn_fold = fn_fold || (r.start_row == 2 && r.end_row >= 6);
+        if_fold = if_fold || (r.start_row == 4 && r.end_row >= 5);
+        dfn_fold = dfn_fold || (r.start_row == 8 && r.end_row >= 9);
+    }
+    CHECK(fn_fold);
+    CHECK(if_fold);
+    CHECK(dfn_fold);
+    ExpectOutline("apln", src, "0:namespace:datamunge@0\n1:function:Add@2\n1:function:Mean@8\n");
+}
+
+// ---------------------------------------------------------------------------
+// COBOL: mep's own grammar (grammars/tree-sitter-cobol), fixed and free format
+// ---------------------------------------------------------------------------
+
+void TestCobol() {
+    for (const char *ft : {"cob", "cbl", "cpy", "CBL"}) CHECK(TreesitterHasGrammar(ft));
+    CHECK(TreesitterHasFoldQuery("cob"));
+    CHECK(TreesitterHasStructureQuery("cob"));
+    // Fixed format: sequence numbers, column-7 comments and indicators, the
+    // identification area -- none of it is code.
+    const std::string fixed =
+        "000100 IDENTIFICATION DIVISION.                                         KMDEMO01\n"
+        "000200 PROGRAM-ID. KMDEMO.\n"
+        "000300 DATA DIVISION.\n"
+        "000400 WORKING-STORAGE SECTION.\n"
+        "000500     COPY datamunge.\n"
+        "000600*>> How many clusters to ask for.\n"
+        "000700 77 WS-K PIC 9(4) VALUE 3.\n"
+        "000800 01 WS-REC.\n"
+        "000900    05 WS-FLAG PIC X VALUE \"N\".\n"
+        "001000       88 WS-DONE VALUE \"Y\".\n"
+        "001100* MOVE 1 TO X in a comment line\n"
+        "001200 PROCEDURE DIVISION.\n"
+        "001300 MAIN-PARA.\n"
+        "001400     MOVE WS-K TO DM-KMEANS-FIT-K\n"
+        "001500     IF NOT WS-DONE\n"
+        "001600         DISPLAY FUNCTION TRIM(WS-FLAG) *> trailing comment\n"
+        "001700     END-IF\n"
+        "001800D    DISPLAY \"debugging\"\n"
+        "001900     PERFORM CLEANUP\n"
+        "002000     STOP RUN.\n"
+        "002100 CLEANUP.\n"
+        "002200     MOVE SPACES TO WS-FLAG\n"
+        "002300     .\n";
+    ExpectCaptures("cob", fixed, "000100", "comment");
+    ExpectCaptures("cob", fixed, "IDENTIFICATION", "keyword");
+    ExpectCaptures("cob", fixed, "KMDEMO01", "comment");
+    ExpectCaptures("cob", fixed, "KMDEMO.", "module");
+    ExpectCaptures("cob", fixed, "COPY", "keyword");
+    ExpectCaptures("cob", fixed, "datamunge", "string.special.path");
+    ExpectCaptures("cob", fixed, "*>> How", "comment comment.documentation");
+    ExpectCaptures("cob", fixed, "77", "type.builtin");
+    ExpectCaptures("cob", fixed, "WS-K PIC", "constructor");
+    ExpectCaptures("cob", fixed, "9(4)", "constant");
+    ExpectCaptures("cob", fixed, "3.", "number");
+    ExpectCaptures("cob", fixed, "WS-REC", "constructor");
+    ExpectCaptures("cob", fixed, "WS-FLAG PIC", "");
+    ExpectCaptures("cob", fixed, "WS-DONE VALUE", "constant");
+    ExpectCaptures("cob", fixed, "\"N\"", "string");
+    ExpectCaptures("cob", fixed, "MOVE 1 TO X", "comment");
+    ExpectCaptures("cob", fixed, "MAIN-PARA", "function");
+    ExpectCaptures("cob", fixed, "MOVE WS-K", "keyword");
+    ExpectCaptures("cob", fixed, "TRIM", "function.builtin");
+    ExpectCaptures("cob", fixed, "*> trailing", "comment");
+    ExpectCaptures("cob", fixed, "D    DISPLAY", "preproc");
+    ExpectCaptures("cob", fixed, "CLEANUP\n", "function.call");
+    ExpectCaptures("cob", fixed, "SPACES", "keyword constant.builtin");
+    ExpectCaptures("cob", fixed, "CLEANUP.", "function");
+
+    // Free format, guessed from the text (code in columns 1-6), and a
+    // >>SOURCE directive.
+    const std::string free =
+        "*> A free-format program.\n"
+        "IDENTIFICATION DIVISION.\n"
+        "PROGRAM-ID. FREE-EX.\n"
+        "DATA DIVISION.\n"
+        "WORKING-STORAGE SECTION.\n"
+        "01 WS-X USAGE COMP-2 VALUE 1.0E-6.\n"
+        "PROCEDURE DIVISION.\n"
+        "    PERFORM VARYING I FROM 1 BY 1 UNTIL I > 10\n"
+        "        CALL \"dm_close\" USING DM-HANDLE DM-STATUS\n"
+        "    END-PERFORM\n"
+        "    STOP RUN.\n";
+    ExpectCaptures("cob", free, "*> A free", "comment");
+    ExpectCaptures("cob", free, "IDENTIFICATION", "keyword");
+    ExpectCaptures("cob", free, "01", "type.builtin");
+    ExpectCaptures("cob", free, "WS-X", "constructor");
+    ExpectCaptures("cob", free, "COMP-2", "keyword");
+    ExpectCaptures("cob", free, "1.0E-6", "number");
+    ExpectCaptures("cob", free, "PERFORM", "keyword");
+    ExpectCaptures("cob", free, "\"dm_close\"", "string");
+    ExpectCaptures("cob", free, "END-PERFORM", "keyword");
+    const std::string directive =
+        "       >>SOURCE FORMAT IS FREE\n"
+        "IDENTIFICATION DIVISION.\n"
+        "PROGRAM-ID. D.\n"
+        "PROCEDURE DIVISION.\n"
+        "      DISPLAY \"x\" *> six columns in: still code\n"
+        "    STOP RUN.\n";
+    ExpectCaptures("cob", directive, ">>SOURCE", "preproc");
+    ExpectCaptures("cob", directive, "DISPLAY", "keyword");
+    ExpectCaptures("cob", directive, "*> six", "comment");
+
+    // Folds: the program and its divisions.
+    bool program_fold = false, data_fold = false, procedure_fold = false;
+    for (const TSFoldRange &r : TreesitterFoldRanges("cob", fixed)) {
+        program_fold = program_fold || (r.start_row == 0 && r.end_row >= 21);
+        data_fold = data_fold || (r.start_row == 2 && r.end_row >= 9);
+        procedure_fold = procedure_fold || (r.start_row == 11 && r.end_row >= 21);
+    }
+    CHECK(program_fold);
+    CHECK(data_fold);
+    CHECK(procedure_fold);
+
+    // The outline: the program, its records and paragraphs.
+    ExpectOutline("cob", fixed,
+                  "0:module:KMDEMO@1\n1:variable:WS-K@6\n1:variable:WS-REC@7\n1:function:MAIN-PARA@12\n"
+                  "1:function:CLEANUP@20\n");
+}
+
+// ---------------------------------------------------------------------------
 // Rust: mep's own grammar (grammars/tree-sitter-rust), compiled in
 // ---------------------------------------------------------------------------
 
@@ -2654,6 +2813,47 @@ void TestRStructure() {
                   "0:function:obj$method@12\n");
 }
 
+// OCaml (grammars/tree-sitter-ocaml): .ml and .mli outlines and folds.
+void TestOcamlStructure() {
+    CHECK(TreesitterHasStructureQuery("ml"));
+    CHECK(TreesitterHasStructureQuery("mli"));
+    const std::string ml =
+        "type shape = Circle of float | Square of float\n"
+        "let pi = 3.14\n"
+        "let area s =\n"
+        "  let sq x = x *. x in\n"
+        "  match s with Circle r -> pi *. sq r | Square a -> sq a\n"
+        "let show = function Circle _ -> \"c\" | Square _ -> \"s\"\n"
+        "module M = struct\n"
+        "  let inner = 1\n"
+        "end\n";
+    ExpectOutline("ml", ml,
+                  "0:enum:shape@0\n"
+                  "1:enummember:Circle@0\n"
+                  "1:enummember:Square@0\n"
+                  "0:variable:pi@1\n"
+                  "0:function:area@2\n"
+                  "0:function:show@5\n"
+                  "0:module:M@6\n"
+                  "1:variable:inner@7\n");
+    const std::string mli =
+        "type t = { x : int }\n"
+        "val make : int -> t\n"
+        "module type S = sig\n"
+        "  val name : string\n"
+        "end\n"
+        "exception Oops\n";
+    ExpectOutline("mli", mli,
+                  "0:struct:t@0\n"
+                  "1:field:x@0\n"
+                  "0:function:make@1\n"
+                  "0:interface:S@2\n"
+                  "1:function:name@3\n"
+                  "0:class:Oops@5\n");
+    CHECK(!TreesitterFoldRanges("ml", ml).empty());
+    CHECK(!TreesitterFoldRanges("mli", mli).empty());
+}
+
 // ---------------------------------------------------------------------------
 // The span pipeline itself
 // ---------------------------------------------------------------------------
@@ -3056,6 +3256,8 @@ int main() {
     TestJava();
     TestD();
     TestNim();
+    TestCobol();
+    TestApl();
     TestJulia();
     TestRust();
     TestZig();
@@ -3077,6 +3279,7 @@ int main() {
     TestMarkdown();
     TestR();
     TestRStructure();
+    TestOcamlStructure();
     TestSpanOrderAndClipping();
     TestGrammarAvailability();
     TestTiebreakAcrossLanguages();

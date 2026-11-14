@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guile Scheme mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="53">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Guile Scheme mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.scm</code> or
+<code>.ss</code> file. The tab becomes a Guile workspace: your file, the Guile REPL
+below it, and panels showing what that session holds.</p>
+<p>The console is the stock REPL, started as <code>guile -q -l mep_init.scm</code>. <code>-q</code>
+leaves <code>~/.guile</code> out, so no colorized printer or readline colors get in
+the way; the init script turns on <code>(ice-9 readline)</code> when it is installed,
+for line editing and history. Meta-commands (=,describe=, =,m=, =,q=) work
+as usual. It starts with mep's environment, so <code>GUILE_LOAD_PATH</code> fills
+<code>%load-path</code>, and the init script adds the directories in <code>MEP_GUILE_PATH</code>
+and your file's directory: <code>(use-modules (datamunge))</code> loads what it would
+in a terminal in that project.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>run the whole file in the console</td></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the top-level form at the cursor (or the selection)</td></tr>
+<tr><td><code>gh</code></td><td>help for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>(mep-help 'name)</code></td><td>the same, from the console</td></tr>
+<tr><td><code>(mep-view 'x)</code></td><td>a value -- pretty-printed, with its type -- in Inspect</td></tr>
+</table>
+<p>Neither key pastes your code into the prompt. The code is written to a
+file padded to your file's line numbers, and one <code>(mep-eval-file ...)</code>
+line reads it as if from your file and compiles it form by form in the
+REPL's current module. Definitions stay, errors name your file and line,
+and the REPL prints the last value. <code>&lt;leader&gt;rr</code> runs the buffer as it is
+in the editor, unsaved changes included, with its directory on
+<code>%load-path</code>. A file with a <code>;; CMD:</code> line still runs that line on the Run
+button.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Module</td><td><code>module-map</code> of the REPL's current module: the bindings the session made, with a procedure's arguments or a value</td></tr>
+<tr><td>Modules</td><td>the modules the current module uses, and the directories added to <code>%load-path</code></td></tr>
+<tr><td>Inspect</td><td><code>mep-view</code> of a value</td></tr>
+<tr><td>Help</td><td>a procedure's documentation</td></tr>
+</table>
+<p>Clicking a Module row inspects it. The panels follow =,m= to another
+module, and refresh before every prompt (a <code>before-read-hook</code>).</p>
+<h1>Help</h1>
+<p><code>(mep-help 'name)</code> -- and <code>gh</code> -- shows what the session knows first: the
+procedure's arguments, the module it comes from, and its documentation as
+=,describe= finds it (<code>procedure-documentation</code>, and Guile's own reference
+for built-ins). Then <code>mep-scheme-lsp --doc</code> (see
+<a href="scheme-lsp.html">The Scheme language server</a>) reads the docstring
+from the defining module's source on <code>%load-path</code> -- =(define (f x) "doc"
+...)= -- and from the files the session loaded. When the two agree, only
+the source location is added. A Rosetta-generated Guile module's
+procedures carry the C++ library's documentation as docstrings; a
+procedure written in C, whose docstring the session lacks, still gets it
+from the source.</p>
+<p>In a <code>.scm</code> buffer <code>gh</code> also opens the language server's hover, which
+reads the same docstrings from the modules your file uses, without a
+running session.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.guile_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'guile3.0'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- the console's command</span>
+<span class="tok-cyan">mep</span>.opt.guile_ui_info_share = <span class="tok-cyan">0.3</span>     <span class="tok-comment">-- the panels' width</span></code></pre></div>
+<p>A <code>;; REPL: nix develop .#guile --command guile</code> line in the file
+overrides <code>guile_ui_cmd</code> for that file. The mode appends <code>-q -l</code> and its
+init script, so the command must accept them, as <code>guile</code> does.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="scheme-lsp.html">The Scheme language server</a>.</li>
+<li><a href="run-button.html">Run button</a> -- a <code>;; CMD:</code> line runs a file another way.</li>
+</ul>
+</body>
+</html>

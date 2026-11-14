@@ -60,7 +60,12 @@
 #include "go_queries.h"
 #include "java_queries.h"
 #include "julia_queries.h"
+#include "ruby_queries.h"
+#include "ocaml_queries.h"
+#include "ocaml_interface_queries.h"
 #include "nim_queries.h"
+#include "cobol_queries.h"
+#include "apl_queries.h"
 #include "rust_queries.h"
 #include "zig_queries.h"
 #include "d_queries.h"
@@ -103,7 +108,12 @@ const TSLanguage *tree_sitter_gap(void);              // mep's own: grammars/tre
 const TSLanguage *tree_sitter_go(void);               // mep's own: grammars/tree-sitter-go
 const TSLanguage *tree_sitter_java(void);             // mep's own: grammars/tree-sitter-java
 const TSLanguage *tree_sitter_julia(void);            // mep's own: grammars/tree-sitter-julia
+const TSLanguage *tree_sitter_ruby(void);             // mep's own: grammars/tree-sitter-ruby
+const TSLanguage *tree_sitter_ocaml(void);            // mep's own: grammars/tree-sitter-ocaml (.ml)
+const TSLanguage *tree_sitter_ocaml_interface(void);  // mep's own: grammars/tree-sitter-ocaml_interface (.mli)
 const TSLanguage *tree_sitter_nim(void);              // mep's own: grammars/tree-sitter-nim
+const TSLanguage *tree_sitter_cobol(void);            // mep's own: grammars/tree-sitter-cobol
+const TSLanguage *tree_sitter_apl(void);              // mep's own: grammars/tree-sitter-apl
 const TSLanguage *tree_sitter_rust(void);             // mep's own: grammars/tree-sitter-rust
 const TSLanguage *tree_sitter_zig(void);              // mep's own: grammars/tree-sitter-zig
 const TSLanguage *tree_sitter_d(void);                // mep's own: grammars/tree-sitter-d
@@ -303,12 +313,36 @@ const std::unordered_map<std::string, LangEntry> &LanguageTable() {
         {"nim", {tree_sitter_nim, kHighlightsNim}},
         {"nims", {tree_sitter_nim, kHighlightsNim}},
         {"nimble", {tree_sitter_nim, kHighlightsNim}},
+        // COBOL: programs and copybooks, fixed and free format (the scanner tells them apart).
+        {"cob", {tree_sitter_cobol, kHighlightsCobol}},
+        {"cbl", {tree_sitter_cobol, kHighlightsCobol}},
+        {"cobol", {tree_sitter_cobol, kHighlightsCobol}},
+        {"cpy", {tree_sitter_cobol, kHighlightsCobol}},
+        {"COB", {tree_sitter_cobol, kHighlightsCobol}},
+        {"CBL", {tree_sitter_cobol, kHighlightsCobol}},
+        {"COBOL", {tree_sitter_cobol, kHighlightsCobol}},
+        {"CPY", {tree_sitter_cobol, kHighlightsCobol}},
+        // APL: GNU APL and Dyalog APL scripts, functions, namespaces and classes.
+        {"apl", {tree_sitter_apl, kHighlightsApl}},
+        {"apls", {tree_sitter_apl, kHighlightsApl}},
+        {"aplf", {tree_sitter_apl, kHighlightsApl}},
+        {"aplo", {tree_sitter_apl, kHighlightsApl}},
+        {"apln", {tree_sitter_apl, kHighlightsApl}},
+        {"aplc", {tree_sitter_apl, kHighlightsApl}},
+        {"apli", {tree_sitter_apl, kHighlightsApl}},
+        {"dyalog", {tree_sitter_apl, kHighlightsApl}},
         {"rs", {tree_sitter_rust, kHighlightsRust}},
         {"zig", {tree_sitter_zig, kHighlightsZig}},
         {"zon", {tree_sitter_zig, kHighlightsZig}},
         {"d", {tree_sitter_d, kHighlightsD}},
         {"di", {tree_sitter_d, kHighlightsD}},
         {"jl", {tree_sitter_julia, kHighlightsJulia}},
+        {"rb", {tree_sitter_ruby, kHighlightsRuby}},
+        {"rake", {tree_sitter_ruby, kHighlightsRuby}},
+        {"gemspec", {tree_sitter_ruby, kHighlightsRuby}},
+        {"ru", {tree_sitter_ruby, kHighlightsRuby}},
+        {"ml", {tree_sitter_ocaml, kHighlightsOcaml}},
+        {"mli", {tree_sitter_ocaml_interface, kHighlightsOcamlInterface}},
         {"f90", {tree_sitter_fortran, kHighlightsFortran}},
         {"f95", {tree_sitter_fortran, kHighlightsFortran}},
         {"f03", {tree_sitter_fortran, kHighlightsFortran}},
@@ -399,12 +433,34 @@ const std::unordered_map<std::string, LangEntry> &FoldQueryTable() {
         {"nim", {tree_sitter_nim, kFoldsNim}},
         {"nims", {tree_sitter_nim, kFoldsNim}},
         {"nimble", {tree_sitter_nim, kFoldsNim}},
+        {"cob", {tree_sitter_cobol, kFoldsCobol}},
+        {"cbl", {tree_sitter_cobol, kFoldsCobol}},
+        {"cobol", {tree_sitter_cobol, kFoldsCobol}},
+        {"cpy", {tree_sitter_cobol, kFoldsCobol}},
+        {"COB", {tree_sitter_cobol, kFoldsCobol}},
+        {"CBL", {tree_sitter_cobol, kFoldsCobol}},
+        {"COBOL", {tree_sitter_cobol, kFoldsCobol}},
+        {"CPY", {tree_sitter_cobol, kFoldsCobol}},
+        {"apl", {tree_sitter_apl, kFoldsApl}},
+        {"apls", {tree_sitter_apl, kFoldsApl}},
+        {"aplf", {tree_sitter_apl, kFoldsApl}},
+        {"aplo", {tree_sitter_apl, kFoldsApl}},
+        {"apln", {tree_sitter_apl, kFoldsApl}},
+        {"aplc", {tree_sitter_apl, kFoldsApl}},
+        {"apli", {tree_sitter_apl, kFoldsApl}},
+        {"dyalog", {tree_sitter_apl, kFoldsApl}},
         {"rs", {tree_sitter_rust, kFoldsRust}},
         {"zig", {tree_sitter_zig, kFoldsZig}},
         {"zon", {tree_sitter_zig, kFoldsZig}},
         {"d", {tree_sitter_d, kFoldsD}},
         {"di", {tree_sitter_d, kFoldsD}},
         {"jl", {tree_sitter_julia, kFoldsJulia}},
+        {"rb", {tree_sitter_ruby, kFoldsRuby}},
+        {"rake", {tree_sitter_ruby, kFoldsRuby}},
+        {"gemspec", {tree_sitter_ruby, kFoldsRuby}},
+        {"ru", {tree_sitter_ruby, kFoldsRuby}},
+        {"ml", {tree_sitter_ocaml, kFoldsOcaml}},
+        {"mli", {tree_sitter_ocaml_interface, kFoldsOcamlInterface}},
         {"f90", {tree_sitter_fortran, kFoldsFortran}},
         {"f95", {tree_sitter_fortran, kFoldsFortran}},
         {"f03", {tree_sitter_fortran, kFoldsFortran}},
@@ -495,11 +551,33 @@ const std::unordered_map<std::string, LangEntry> &StructureQueryTable() {
         {"nim", {tree_sitter_nim, kStructureNim}},
         {"nims", {tree_sitter_nim, kStructureNim}},
         {"nimble", {tree_sitter_nim, kStructureNim}},
+        {"cob", {tree_sitter_cobol, kStructureCobol}},
+        {"cbl", {tree_sitter_cobol, kStructureCobol}},
+        {"cobol", {tree_sitter_cobol, kStructureCobol}},
+        {"cpy", {tree_sitter_cobol, kStructureCobol}},
+        {"COB", {tree_sitter_cobol, kStructureCobol}},
+        {"CBL", {tree_sitter_cobol, kStructureCobol}},
+        {"COBOL", {tree_sitter_cobol, kStructureCobol}},
+        {"CPY", {tree_sitter_cobol, kStructureCobol}},
+        {"apl", {tree_sitter_apl, kStructureApl}},
+        {"apls", {tree_sitter_apl, kStructureApl}},
+        {"aplf", {tree_sitter_apl, kStructureApl}},
+        {"aplo", {tree_sitter_apl, kStructureApl}},
+        {"apln", {tree_sitter_apl, kStructureApl}},
+        {"aplc", {tree_sitter_apl, kStructureApl}},
+        {"apli", {tree_sitter_apl, kStructureApl}},
+        {"dyalog", {tree_sitter_apl, kStructureApl}},
         {"rs", {tree_sitter_rust, kStructureRust}},
         {"zig", {tree_sitter_zig, kStructureZig}},
         {"d", {tree_sitter_d, kStructureD}},
         {"di", {tree_sitter_d, kStructureD}},
         {"jl", {tree_sitter_julia, kStructureJulia}},
+        {"rb", {tree_sitter_ruby, kStructureRuby}},
+        {"rake", {tree_sitter_ruby, kStructureRuby}},
+        {"gemspec", {tree_sitter_ruby, kStructureRuby}},
+        {"ru", {tree_sitter_ruby, kStructureRuby}},
+        {"ml", {tree_sitter_ocaml, kStructureOcaml}},
+        {"mli", {tree_sitter_ocaml_interface, kStructureOcamlInterface}},
         {"f90", {tree_sitter_fortran, kStructureFortran}},
         {"f95", {tree_sitter_fortran, kStructureFortran}},
         {"f03", {tree_sitter_fortran, kStructureFortran}},
@@ -527,24 +605,6 @@ struct DynLangEntry {
     const char *query_source;
 };
 
-// .mli files share the OCaml query, except that the interface grammar has
-// no shebang node -- left in, it makes ts_query_new reject the whole query.
-/**
- * @brief Returns the OCaml highlight query with its shebang capture removed,
- * for the ocaml_interface grammar; built once for the process lifetime.
- * @return The adapted query source, stable for QueryFor's pointer-keyed cache.
- */
-const char *OcamlInterfaceHighlights() {
-    static const std::string query = [] {
-        std::string q = kHighlightsOcaml;
-        const std::string shebang = " (shebang)";
-        size_t pos = q.find(shebang);
-        if (pos != std::string::npos) q.erase(pos, shebang.size());
-        return q;
-    }();
-    return query.c_str();
-}
-
 /**
  * @brief Returns the process-lifetime table of filetypes with a known
  * highlight query but no compiled-in grammar, keyed by bare file
@@ -560,10 +620,7 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
         {"html", {"html", kHighlightsHtml}},
         {"htm", {"html", kHighlightsHtml}},
         {"json", {"json", kHighlightsJson}},
-        {"ml", {"ocaml", kHighlightsOcaml}},
-        {"mli", {"ocaml_interface", OcamlInterfaceHighlights()}},
         {"php", {"php", kHighlightsPhp}},
-        {"rb", {"ruby", kHighlightsRuby}},
         {"scala", {"scala", kHighlightsScala}},
         {"sbt", {"scala", kHighlightsScala}},
         {"v", {"verilog", kHighlightsVerilog}},
@@ -631,7 +688,6 @@ const std::unordered_map<std::string, DynLangEntry> &DynamicLanguageTable() {
  */
 const std::unordered_map<std::string, DynLangEntry> &DynamicStructureQueryTable() {
     static const std::unordered_map<std::string, DynLangEntry> table = {
-        {"rb", {"ruby", kStructureRuby}},
         {"php", {"php", kStructurePhp}},
     };
     return table;

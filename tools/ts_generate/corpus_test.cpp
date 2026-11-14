@@ -31,7 +31,7 @@
 namespace fs = std::filesystem;
 
 #define MEP_TS_GRAMMARS(X) \
-    X(bash) X(c) X(c_sharp) X(clojure) X(commonlisp) X(cpp) X(crystal) X(d) X(fish) X(fortran) X(gap) X(go) X(java) X(javascript) X(julia) X(just) X(lua) X(markdown) X(markdown_inline) X(matlab) X(maxima) X(mepml) X(nim) X(nix) X(org) X(python) X(r) X(rust) X(scheme) X(sql) X(tcl) X(tsx) X(typescript) X(zig)
+    X(apl) X(bash) X(c) X(c_sharp) X(clojure) X(cobol) X(commonlisp) X(cpp) X(crystal) X(d) X(fish) X(fortran) X(gap) X(go) X(java) X(javascript) X(julia) X(just) X(lua) X(markdown) X(markdown_inline) X(matlab) X(maxima) X(mepml) X(nim) X(nix) X(ocaml) X(ocaml_interface) X(org) X(python) X(r) X(ruby) X(rust) X(scheme) X(sql) X(tcl) X(tsx) X(typescript) X(zig)
 
 #define DECLARE(name) extern "C" const TSLanguage *tree_sitter_##name(void);
 MEP_TS_GRAMMARS(DECLARE)

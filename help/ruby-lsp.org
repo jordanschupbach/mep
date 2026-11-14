@@ -1,0 +1,131 @@
+#+TITLE: The Ruby language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+Ruby files (=.rb=, =.rake=, =.gemspec=, =.ru=) get a language server of
+their own, =mep-ruby-lsp=, built and shipped with mep. Open one and it
+attaches by itself -- no gem to install, no Ruby needed. It replaces
+solargraph as mep's default for Ruby.
+
+It parses with the same tree-sitter-ruby grammar mep highlights with, and
+reads documentation the way YARD writes it: =@param=, =@option=,
+=@return=, =@raise=, =@yield=, =@yieldparam=, =@example=, =@overload=,
+=@note=, =@see=, =@deprecated= and the rest, in the comments above a
+definition. That makes it fit for gems whose Ruby side is a set of
+documented stubs over native code -- a Rosetta-generated binding such as
+datamunge's, where every class and method has a =.rb= declaration carrying
+the C++ documentation as YARD comments.
+
+* Where it looks for code
+
+Beyond the file itself, the server reads the files it =require=s, and
+theirs, the way Ruby would find them:
+
+- =require_relative 'x'= -- next to the requiring file;
+- =require 'x'= -- along a load path built from, in order:
+  - =-I= directories on a =# CMD: ruby -I lib ...= line in the file (see
+    [[file:run-button.html][Run button]]), relative to the file;
+  - =$LOAD_PATH.unshift(...)=, =$LOAD_PATH << ...= and =$:.push(...)=
+    lines in the file, with string literals, =__dir__=, =__FILE__=,
+    =File.expand_path=, =File.join= and =File.dirname= worked out;
+  - =RUBYLIB=;
+  - the =lib/= directory of the file's gem (the nearest ancestor with a
+    =lib/=), the workspace's =lib/= and the =lib/= of gems vendored one or
+    two levels below the workspace root;
+  - installed gems under =GEM_HOME= and =GEM_PATH=;
+- =load= and =autoload= with literal paths.
+
+A file is parsed once and kept until it changes on disk, so a large gem
+costs its first lookup only.
+
+* What it reports
+
+| Code              | Severity | What it means |
+|-------------------+----------+---------------|
+| =syntax-error=    | error    | the file does not parse: =missing `end`=, =unexpected `)`=, or which opener (=class=, =def=, =do= ...) never gets its =end= |
+| =missing-require= | warning  | a =require_relative= names a file that does not exist (=.rb=, =.so=, =.bundle= and =.dll= are all tried) |
+
+That is the whole list, on purpose: a diagnostic from this server means
+something is wrong. A =require= that cannot be found is never reported --
+it may come from a gem that is not installed here, or from a load path set
+up at run time -- and neither is a =require_relative= inside a =begin=, an
+=if= or a method, which code uses for optional parts. Over Ruby 3.4's
+standard library (981 files) it reports syntax errors in two files, both
+constructs the tree-sitter grammar does not yet parse (=?&=-style
+character literals, and an ==begin= comment containing ="=begin"=), and
+nothing else.
+
+* What else it does
+
+- *Completion* after =.= offers the methods of the receiver's class and
+  its ancestors and mixins: from =Foo.new=, a YARD =@return [Foo]=, a
+  =@param= type, the last assignment to a local or an instance variable,
+  a block's =@yieldparam= or the element type of an =Array<Foo>= it
+  iterates. After =Foo::= it offers constants and class methods; after
+  =@= the instance variables of the class; in =require '...'= the files
+  on the load path. Elsewhere: locals in scope, methods of the enclosing
+  class, top-level methods, constants and keywords. Ruby's core classes
+  (=Kernel=, =Array=, =Hash=, =String=, =Integer=, =Enumerable= ...) are
+  built in. It still works while the line being typed does not parse.
+- *Hover* shows the signature, where it is defined, and its YARD
+  documentation rendered: parameters with types, options, return value,
+  exceptions, examples, and each =@overload= as its own signature.
+- *Signature help* inside a call's parentheses shows the parameters, the current one highlighted with its
+  =@param= text, and one signature per =@overload=, chosen by the number
+  of arguments typed.
+- *Go to definition* jumps to a method, class, module, constant or local,
+  in this file or one it requires.
+- *Find references* and *highlight*: a local's uses in its scope (block
+  parameters that shadow it are kept apart); other names, by word in the
+  file.
+- *Rename* a local variable or parameter across its scope.
+- *Outline*: modules, classes, methods, constants, =attr_*= accessors and
+  aliases, nested as in the source.
+- *Folding* of classes, methods, blocks, conditionals, arrays, hashes,
+  heredocs and comment runs.
+- *Formatting* is mep's Ruby formatter (see [[file:formatting.html][Formatting]]),
+  the same one =gf= runs.
+
+* Linting from the command line
+
+#+begin_src sh
+mep-ruby-lsp --lint FILE...
+#+end_src
+
+prints every diagnostic as =path:line:col: severity: message [code]= --
+1-based line and column, then the severity (=error=, =warning=, =info=,
+=hint=), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, =mep-ruby-lsp= is the language server on stdio.
+
+* Documentation from the command line
+
+#+begin_src sh
+mep-ruby-lsp --doc 'Datamunge::Frame#filter' -I lib -r datamunge
+#+end_src
+
+prints a name's documentation as Markdown -- the text hover shows -- and
+exits 1 when it finds none. The name is =Foo=, =Foo::Bar=, =Foo#method=
+(an instance method), =Foo.method= (a class method) or a bare method name.
+=-I DIR= adds to the load path, =-r LIB= requires a library, =--file FILE=
+reads a file directly and =--context FILE= resolves the name from inside
+that file, with its own requires. The Ruby language UI mode's Help tab
+(see [[file:ruby-mode.html][Ruby mode]]) is built on it.
+
+* Using solargraph instead
+
+solargraph is still registered, with no filetypes. To switch:
+
+#+begin_src lua
+mep.lsp_servers.solargraph.filetypes = {'rb'}
+mep.lsp_servers.ruby_ls.filetypes = {}
+#+end_src
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:ruby-mode.html][Ruby mode]] -- irb with panels, and help from the live session.
+- [[file:formatting.html][Formatting]] -- the Ruby formatter.

@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "ruby",
+      "camelcase": "Ruby",
+      "scope": "source.ruby",
+      "path": ".",
+      "file-types": ["rb", "rake", "gemspec", "ru"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Ruby, mep's own copy of tree-sitter-ruby 0.23.1 (MIT)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

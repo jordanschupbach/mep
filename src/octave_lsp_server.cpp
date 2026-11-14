@@ -5,6 +5,8 @@
 //   mep-octave-lsp                    the language server on stdio
 //   mep-octave-lsp --lint FILE...     diagnostics as path:line:col: severity: message [code];
 //                                     exit 1 on any error or warning ('-' reads stdin)
+//   mep-octave-lsp --doc NAME [--path DIR]... [--file FILE]...
+//                                     NAME's help text, read from .m comment blocks
 //   mep-octave-lsp --octave-check FILE...  what Octave's __parse_file__ says, or "ok"
 //                                     (tools/octave_parse_check.py compares the two)
 //
@@ -14,6 +16,8 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -86,6 +90,106 @@ Json EditsJson(const std::vector<OctaveLspTextEdit> &edits) {
     return arr;
 }
 
+// $MEP_OCTAVE_PATH, split on the path separator.
+std::vector<std::string> EnvPath() {
+    std::vector<std::string> out;
+    const char *env = std::getenv("MEP_OCTAVE_PATH");
+    if (!env) return out;
+#if defined(_WIN32)
+    const char sep = ';';
+#else
+    const char sep = ':';
+#endif
+    std::string cur;
+    for (const char *p = env;; p++) {
+        if (*p == sep || *p == '\0') {
+            if (!cur.empty()) out.push_back(cur);
+            cur.clear();
+            if (!*p) break;
+        } else {
+            cur += *p;
+        }
+    }
+    return out;
+}
+
+// --doc NAME [--path DIR]... [--file FILE]...: the help text of NAME as plain text -- a
+// command-line function in one of the FILEs, else NAME.m in the --path directories,
+// $MEP_OCTAVE_PATH or the working directory (`pkg.fn`, `pkg.Class`, `pkg.Class.method`
+// in +pkg directories), else through the FILEs' `import`s, else Octave's own usage
+// lines, else the one package member so named. Exit 1 when nothing is found.
+int Doc(const std::vector<std::string> &args) {
+    std::string name;
+    std::vector<std::string> dirs, files;
+    for (size_t i = 0; i < args.size(); i++) {
+        if ((args[i] == "--path" || args[i] == "-p") && i + 1 < args.size()) {
+            dirs.push_back(args[++i]);
+        } else if (args[i] == "--file" && i + 1 < args.size()) {
+            files.push_back(args[++i]);
+        } else if (name.empty()) {
+            name = args[i];
+        }
+    }
+    if (name.empty()) {
+        std::fprintf(stderr, "mep-octave-lsp: --doc needs a NAME\n");
+        return 2;
+    }
+    for (const std::string &d : EnvPath()) dirs.push_back(d);
+    dirs.push_back(".");
+    OctaveLspDocLookup d;
+    for (const std::string &f : files) {
+        d = OctaveLspFindInFile(name, f);
+        if (d.found && !d.signature.empty()) break;
+        d = OctaveLspDocLookup();
+    }
+    if (!d.found) d = OctaveLspFindOnPath(name, dirs);
+    std::vector<std::string> candidates;
+    if (!d.found) {
+        // Bare names: the FILEs' imports; the one package member so named unless Octave has it.
+        std::vector<std::string> imports;
+        for (const std::string &f : files) {
+            std::ifstream in(f);
+            std::vector<std::string> lines;
+            for (std::string l; std::getline(in, l);) lines.push_back(l);
+            for (const std::string &i : OctaveLspImports(*OctaveLspAnalyze(lines, f))) imports.push_back(i);
+        }
+        const OctaveLspDocLookup r = OctaveLspResolveName(name, dirs, imports, &candidates);
+        const bool via_import = r.found && candidates.size() != 1;
+        const bool octave_has = OctaveLspHover(*OctaveLspAnalyze({name}), 0, 0).text.find("Octave") != std::string::npos;
+        if (r.found && (via_import || !octave_has)) d = r;
+    }
+    if (d.found) {
+        std::string what = d.signature.empty() ? "a script" : "a function";
+        if (d.kind == "class") what = "a classdef class";
+        else if (d.kind == "method" || d.kind == "static method" || d.kind == "property")
+            what = "a " + d.kind + " of class " + d.qualified.substr(0, d.qualified.rfind('.'));
+        const std::string shown = d.qualified.empty() ? name : d.qualified;
+        std::string out = "'" + shown + "' is " + what + " from the file " + d.path + "\n\n";
+        if (!d.signature.empty()) out += "    " + d.signature + "\n\n";
+        out += d.help.empty() ? std::string("(no help text)\n") : d.help;
+        std::fputs(out.c_str(), stdout);
+        return 0;
+    }
+    // Octave's own function: the usage lines the vocabulary has.
+    const auto doc = OctaveLspAnalyze({name});
+    const OctaveLspHoverInfo h = OctaveLspHover(*doc, 0, 0);
+    if (h.found && h.text.find("Octave") != std::string::npos) {
+        std::string t = h.text;
+        for (const char *fence : {"```octave\n", "```\n"}) {
+            size_t at;
+            while ((at = t.find(fence)) != std::string::npos) t.erase(at, std::strlen(fence));
+        }
+        std::fputs((t + "\n").c_str(), stdout);
+        return 0;
+    }
+    if (candidates.size() > 1) {
+        std::fprintf(stderr, "mep-octave-lsp: '%s' is ambiguous:", name.c_str());
+        for (const std::string &c : candidates) std::fprintf(stderr, " %s", c.c_str());
+        std::fprintf(stderr, "\n");
+    }
+    return 1;
+}
+
 class OctaveLanguageServer {
 public:
     void HandleMessage(const std::string &body) {
@@ -96,6 +200,7 @@ public:
         const bool is_request = msg.contains("id");
 
         if (method == "initialize") {
+            SetSearchPath(params);
             Reply(msg.get("id"), Capabilities());
             return;
         }
@@ -222,6 +327,18 @@ private:
         msg["method"] = method;
         msg["params"] = std::move(params);
         Send(msg);
+    }
+
+    // The workspace folders and $MEP_OCTAVE_PATH: where hover looks for NAME.m.
+    static void SetSearchPath(const Json &params) {
+        std::vector<std::string> dirs;
+        const Json &folders = params.get("workspaceFolders");
+        if (folders.is_array())
+            for (const Json &f : folders.items()) dirs.push_back(OctaveLspUriToPath(f.get("uri").as_string()));
+        if (dirs.empty() && params.get("rootUri").is_string())
+            dirs.push_back(OctaveLspUriToPath(params.get("rootUri").as_string()));
+        for (const std::string &d : EnvPath()) dirs.push_back(d);
+        OctaveLspSetSearchPath(dirs);
     }
 
     static Json Capabilities() {
@@ -534,8 +651,11 @@ int main(int argc, char **argv) {
             }
             return 0;
         }
+        if (first == "--doc") return Doc(rest);
         if (first == "--help" || first == "-h") {
             std::printf("usage: mep-octave-lsp                          run the language server on stdio\n"
+                        "       mep-octave-lsp --doc NAME [--path DIR]... [--file FILE]...\n"
+                        "                                               NAME's help text from .m comments\n"
                         "       mep-octave-lsp --lint FILE...           print diagnostics (FILE '-' reads stdin)\n"
                         "       mep-octave-lsp --octave-check FILE...   Octave's own parse verdict, or ok\n");
             return 0;

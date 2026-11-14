@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Ruby language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Ruby language server</h1>
+<h1>What it is</h1>
+<p>Ruby files (<code>.rb</code>, <code>.rake</code>, <code>.gemspec</code>, <code>.ru</code>) get a language server of
+their own, <code>mep-ruby-lsp</code>, built and shipped with mep. Open one and it
+attaches by itself -- no gem to install, no Ruby needed. It replaces
+solargraph as mep's default for Ruby.</p>
+<p>It parses with the same tree-sitter-ruby grammar mep highlights with, and
+reads documentation the way YARD writes it: <code>@param</code>, <code>@option</code>,
+<code>@return</code>, <code>@raise</code>, <code>@yield</code>, <code>@yieldparam</code>, <code>@example</code>, <code>@overload</code>,
+<code>@note</code>, <code>@see</code>, <code>@deprecated</code> and the rest, in the comments above a
+definition. That makes it fit for gems whose Ruby side is a set of
+documented stubs over native code -- a Rosetta-generated binding such as
+datamunge's, where every class and method has a <code>.rb</code> declaration carrying
+the C++ documentation as YARD comments.</p>
+<h1>Where it looks for code</h1>
+<p>Beyond the file itself, the server reads the files it =require=s, and
+theirs, the way Ruby would find them:</p>
+<ul>
+<li>=require_relative 'x'= -- next to the requiring file;</li>
+<li>=require 'x'= -- along a load path built from, in order:</li>
+<li><code>-I</code> directories on a <code># CMD: ruby -I lib ...</code> line in the file (see <a href="run-button.html">Run button</a>), relative to the file;</li>
+<li><code>$LOAD_PATH.unshift(...)</code>, <code>$LOAD_PATH &lt;&lt; ...</code> and <code>$:.push(...)</code> lines in the file, with string literals, <code>__dir__</code>, <code>__FILE__</code>, <code>File.expand_path</code>, <code>File.join</code> and <code>File.dirname</code> worked out;</li>
+<li><code>RUBYLIB</code>;</li>
+<li>the <code>lib/</code> directory of the file's gem (the nearest ancestor with a <code>lib/</code>), the workspace's <code>lib/</code> and the <code>lib/</code> of gems vendored one or two levels below the workspace root;</li>
+<li>installed gems under <code>GEM_HOME</code> and <code>GEM_PATH</code>;</li>
+<li><code>load</code> and <code>autoload</code> with literal paths.</li>
+</ul>
+<p>A file is parsed once and kept until it changes on disk, so a large gem
+costs its first lookup only.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>the file does not parse: <code>missing `end`</code>, <code>unexpected `)`</code>, or which opener (<code>class</code>, <code>def</code>, <code>do</code> ...) never gets its <code>end</code></td></tr>
+<tr><td><code>missing-require</code></td><td>warning</td><td>a <code>require_relative</code> names a file that does not exist (<code>.rb</code>, <code>.so</code>, <code>.bundle</code> and <code>.dll</code> are all tried)</td></tr>
+</table>
+<p>That is the whole list, on purpose: a diagnostic from this server means
+something is wrong. A <code>require</code> that cannot be found is never reported --
+it may come from a gem that is not installed here, or from a load path set
+up at run time -- and neither is a <code>require_relative</code> inside a <code>begin</code>, an
+<code>if</code> or a method, which code uses for optional parts. Over Ruby 3.4's
+standard library (981 files) it reports syntax errors in two files, both
+constructs the tree-sitter grammar does not yet parse (<code>?&amp;</code>-style
+character literals, and an <code>=begin</code> comment containing ="=begin"=), and
+nothing else.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Completion</b> after <code>.</code> offers the methods of the receiver's class and its ancestors and mixins: from <code>Foo.new</code>, a YARD <code>@return [Foo]</code>, a <code>@param</code> type, the last assignment to a local or an instance variable, a block's <code>@yieldparam</code> or the element type of an <code>Array&lt;Foo&gt;</code> it iterates. After <code>Foo::</code> it offers constants and class methods; after <code>@</code> the instance variables of the class; in =require '...'= the files on the load path. Elsewhere: locals in scope, methods of the enclosing class, top-level methods, constants and keywords. Ruby's core classes (<code>Kernel</code>, <code>Array</code>, <code>Hash</code>, <code>String</code>, <code>Integer</code>, <code>Enumerable</code> ...) are built in. It still works while the line being typed does not parse.</li>
+<li><b>Hover</b> shows the signature, where it is defined, and its YARD documentation rendered: parameters with types, options, return value, exceptions, examples, and each <code>@overload</code> as its own signature.</li>
+<li><b>Signature help</b> inside a call's parentheses shows the parameters, the current one highlighted with its <code>@param</code> text, and one signature per <code>@overload</code>, chosen by the number of arguments typed.</li>
+<li><b>Go to definition</b> jumps to a method, class, module, constant or local, in this file or one it requires.</li>
+<li><b>Find references</b> and <b>highlight</b>: a local's uses in its scope (block parameters that shadow it are kept apart); other names, by word in the file.</li>
+<li><b>Rename</b> a local variable or parameter across its scope.</li>
+<li><b>Outline</b>: modules, classes, methods, constants, <code>attr_*</code> accessors and aliases, nested as in the source.</li>
+<li><b>Folding</b> of classes, methods, blocks, conditionals, arrays, hashes, heredocs and comment runs.</li>
+<li><b>Formatting</b> is mep's Ruby formatter (see <a href="formatting.html">Formatting</a>), the same one <code>gf</code> runs.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-ruby-lsp</span> <span class="tok-red">--lint</span> FILE...</code></pre></div>
+<p>prints every diagnostic as <code>path:line:col: severity: message [code]</code> --
+1-based line and column, then the severity (<code>error</code>, <code>warning</code>, <code>info</code>,
+<code>hint</code>), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, <code>mep-ruby-lsp</code> is the language server on stdio.</p>
+<h1>Documentation from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-ruby-lsp</span> <span class="tok-red">--doc</span> <span class="tok-green">'Datamunge::Frame#filter'</span> <span class="tok-red">-I</span> lib <span class="tok-red">-r</span> datamunge</code></pre></div>
+<p>prints a name's documentation as Markdown -- the text hover shows -- and
+exits 1 when it finds none. The name is <code>Foo</code>, <code>Foo::Bar</code>, <code>Foo#method</code>
+(an instance method), <code>Foo.method</code> (a class method) or a bare method name.
+<code>-I DIR</code> adds to the load path, <code>-r LIB</code> requires a library, <code>--file FILE</code>
+reads a file directly and <code>--context FILE</code> resolves the name from inside
+that file, with its own requires. The Ruby language UI mode's Help tab
+(see <a href="ruby-mode.html">Ruby mode</a>) is built on it.</p>
+<h1>Using solargraph instead</h1>
+<p>solargraph is still registered, with no filetypes. To switch:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.solargraph.filetypes = <span class="tok-blue">{</span><span class="tok-green">'rb'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.ruby_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="ruby-mode.html">Ruby mode</a> -- irb with panels, and help from the live session.</li>
+<li><a href="formatting.html">Formatting</a> -- the Ruby formatter.</li>
+</ul>
+</body>
+</html>

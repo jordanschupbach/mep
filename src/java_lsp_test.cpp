@@ -7,7 +7,11 @@
 #include <string>
 #include <vector>
 
+#include <filesystem>
+#include <fstream>
+
 #include "java_lsp.h"
+#include "java_lsp_javadoc.h"
 
 namespace {
 int g_checks = 0;
@@ -59,11 +63,287 @@ void TestRobustness() {
     }
 }
 
+
+const char *kFrame = R"JAVA(package org.datamunge;
+
+import java.util.List;
+
+/**
+ * A table of named columns.
+ *
+ * <p>Rows are {@code long}-indexed; see {@link Column#size()}.
+ * @since 1.2
+ */
+public final class DataFrame implements AutoCloseable {
+    /** The default number of rows {@link #head} shows. */
+    public static final int DEFAULT_HEAD = 5, OTHER = 6;
+
+    private final java.util.Map<String, List<Integer>> cols = new java.util.HashMap<>();
+
+    /**
+     * Creates an empty frame.
+     */
+    public DataFrame() {
+        Runnable r = new Runnable() {
+            /** Not a member of DataFrame. */
+            public void run() {}
+        };
+    }
+
+    /**
+     * Keeps the rows where {@code column} is above {@code threshold}.
+     *
+     * @param column the column's name
+     * @param threshold rows at or below it are dropped
+     * @return a new frame
+     * @throws IllegalArgumentException when there is no such column
+     */
+    public DataFrame filter(String column, double threshold) {
+        String s = "}{ not a brace";
+        return this;
+    }
+
+    /** Overload: keeps rows matching a predicate. */
+    public <T> DataFrame filter(java.util.function.Predicate<T> p) { return this; }
+
+    /** The first rows.
+     * <pre>{@code
+     * frame.head(3);
+     * }</pre>
+     */
+    public DataFrame head(int n) { return this; }
+
+    @Override
+    public void close() {}
+
+    /** How rows are joined. */
+    public enum JoinKind {
+        /** Rows in both. */
+        INNER,
+        /** All left rows. */
+        LEFT(1) { },
+        OUTER;
+        JoinKind() {}
+        JoinKind(int x) {}
+        /** Whether rows can be dropped. */
+        public boolean drops() { return this == INNER; }
+    }
+
+    /** A cell position. @param row the row */
+    public record Cell(long row, String column) {}
+
+    /** Something to visit columns. */
+    public interface Visitor {
+        /** Called once per column. */
+        void visit(String name);
+        /** Default method. */
+        default int order() { return 0; }
+    }
+}
+)JAVA";
+
+const javadoc::Decl *FindDecl(const std::vector<javadoc::Decl> &decls, const std::string &name,
+                              const std::string &kind = "") {
+    for (const javadoc::Decl &d : decls)
+        if (javadoc::Matches(d, name) && (kind.empty() || d.kind == kind)) return &d;
+    return nullptr;
+}
+
+void TestJavadocIndex() {
+    const std::vector<javadoc::Decl> decls = javadoc::IndexSource(kFrame, "DataFrame.java");
+    const javadoc::Decl *frame = FindDecl(decls, "DataFrame", "class");
+    CHECK(frame && frame->package == "org.datamunge" && frame->line == 11);
+    CHECK(frame->signature == "public final class DataFrame implements AutoCloseable");
+    CHECK(frame->doc.find("A table of named columns.") == 0);
+    const javadoc::Decl *ctor = FindDecl(decls, "DataFrame.DataFrame", "constructor");
+    CHECK(ctor && ctor->doc == "Creates an empty frame.");
+    const javadoc::Decl *head_const = FindDecl(decls, "DEFAULT_HEAD");
+    CHECK(head_const && head_const->kind == "field" && head_const->signature == "public static final int DEFAULT_HEAD");
+    const javadoc::Decl *other = FindDecl(decls, "OTHER");
+    CHECK(other && other->signature == "public static final int OTHER");
+    const javadoc::Decl *cols = FindDecl(decls, "cols");
+    CHECK(cols && cols->signature == "private final java.util.Map<String, List<Integer>> cols");
+    // The anonymous class's method is not DataFrame's.
+    CHECK(FindDecl(decls, "run") == nullptr);
+    int filters = 0;
+    for (const javadoc::Decl &d : decls) filters += javadoc::Matches(d, "DataFrame#filter(String, double)");
+    CHECK(filters == 2);
+    const javadoc::Decl *filter = FindDecl(decls, "org.datamunge.DataFrame.filter");
+    CHECK(filter && filter->kind == "method" && filter->owner == "DataFrame");
+    CHECK(filter->signature == "public DataFrame filter(String column, double threshold)");
+    CHECK(FindDecl(decls, "head") && FindDecl(decls, "close"));
+    // Nested types and their members, enum constants.
+    CHECK(FindDecl(decls, "DataFrame.JoinKind", "enum"));
+    const javadoc::Decl *inner = FindDecl(decls, "JoinKind.INNER");
+    CHECK(inner && inner->kind == "constant" && inner->doc == "Rows in both." && inner->owner == "DataFrame.JoinKind");
+    const javadoc::Decl *left = FindDecl(decls, "LEFT");
+    CHECK(left && left->doc == "All left rows." && left->signature == "LEFT(1)");
+    const javadoc::Decl *outer = FindDecl(decls, "OUTER");
+    CHECK(outer && outer->doc.empty());
+    CHECK(FindDecl(decls, "JoinKind.drops", "method"));
+    CHECK(FindDecl(decls, "JoinKind.JoinKind", "constructor"));
+    const javadoc::Decl *cell = FindDecl(decls, "Cell", "record");
+    CHECK(cell && cell->signature == "public record Cell(long row, String column)");
+    CHECK(FindDecl(decls, "Visitor.visit", "method") && FindDecl(decls, "Visitor.order", "method"));
+    CHECK(javadoc::PackageOf(kFrame) == "org.datamunge");
+}
+
+void TestJavadocRender() {
+    const std::vector<javadoc::Decl> decls = javadoc::IndexSource(kFrame, "DataFrame.java");
+    const std::string frame = javadoc::RenderDecl(*FindDecl(decls, "DataFrame", "class"));
+    CHECK(frame.find("```java\npublic final class DataFrame implements AutoCloseable\n```") == 0);
+    CHECK(frame.find("class in `org.datamunge`") != std::string::npos);
+    CHECK(frame.find("Rows are `long`-indexed; see `Column.size()`.") != std::string::npos);
+    CHECK(frame.find("**Since:** 1.2") != std::string::npos);
+    CHECK(frame.find("DataFrame.java:11") != std::string::npos);
+    const std::string filter = javadoc::RenderDecl(*FindDecl(decls, "filter"), false);
+    CHECK(filter.find("method in `org.datamunge.DataFrame`") != std::string::npos);
+    CHECK(filter.find("Keeps the rows where `column` is above `threshold`.") != std::string::npos);
+    CHECK(filter.find("**Parameters:**\n- `column` -- the column's name\n- `threshold` -- rows at or below it are dropped") !=
+          std::string::npos);
+    CHECK(filter.find("**Returns:** a new frame") != std::string::npos);
+    CHECK(filter.find("**Throws:**\n- `IllegalArgumentException` -- when there is no such column") != std::string::npos);
+    CHECK(filter.find("DataFrame.java") == std::string::npos);
+    const std::string head = javadoc::RenderDoc(FindDecl(decls, "head")->doc);
+    CHECK(head.find("The first rows.\n\n```java\nframe.head(3);\n```") == 0);
+    CHECK(javadoc::RenderDoc("A &lt;b&gt; <b>bold</b> <i>it</i>.<br>Next<ul><li>one</li></ul>") ==
+          "A <b> **bold** *it*.  \nNext\n\n- one");
+    CHECK(javadoc::RenderDoc("Old.\n@deprecated use {@link #other}") == "**Deprecated.** use `other`\n\nOld.");
+}
+
+void TestJavadocFind() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("mep-javadoc-test-" + std::to_string(std::rand()));
+    fs::create_directories(root / "src/org/datamunge");
+    fs::create_directories(root / "copy/org/datamunge");
+    { std::ofstream(root / "src/org/datamunge/DataFrame.java") << kFrame; }
+    { std::ofstream(root / "copy/org/datamunge/DataFrame.java") << kFrame; }
+    {
+        std::ofstream(root / "src/org/datamunge/Column.java")
+            << "package org.datamunge;\n/** One column. */\npublic class Column {\n  /** Its length. */\n  public long size() { return 0; }\n}\n";
+    }
+    javadoc::SearchPath where;
+    where.sourcepath = {(root / "src").string(), (root / "copy").string()};
+    // Qualified: straight to the package's path; the identical copy counts once.
+    std::vector<javadoc::Decl> hits = javadoc::Find("org.datamunge.DataFrame.filter", where);
+    CHECK(hits.size() == 2 && hits[0].doc.find("Keeps the rows") == 0);
+    // Unqualified: a scan of the roots, files named after the query first.
+    hits = javadoc::Find("Column#size()", where);
+    CHECK(hits.size() == 1 && hits[0].doc == "Its length." && hits[0].owner == "Column");
+    hits = javadoc::Find("DataFrame", where);
+    CHECK(!hits.empty() && hits[0].kind == "class");
+    CHECK(javadoc::Find("NoSuchThing", where).empty());
+    // The package root of a file, from its package declaration.
+    const std::string file = (root / "src/org/datamunge/DataFrame.java").string();
+    CHECK(javadoc::PackageRoot(file, kFrame) == (root / "src").string());
+    CHECK(javadoc::PackageRoot("/x/y/Wrong.java", kFrame).empty());
+    CHECK(javadoc::SplitPathList("a::b:c") == std::vector<std::string>({"a", "b", "c"}));
+    fs::remove_all(root);
+}
+
+void TestHover() {
+    const auto doc = JavaLspAnalyze(L(std::string(kFrame) + "\nclass Use {\n  void f(DataFrame df) {\n    df.filter(\"x\", 1);\n  }\n}\n"));
+    const int base = static_cast<int>(L(kFrame).size());  // the line after kFrame's last
+    // `df.filter`: df's declared type from the parameter list.
+    CHECK(JavaLspTypeOfVariable(L("  void f(DataFrame df) {"), "df") == "DataFrame");
+    CHECK(JavaLspTypeOfVariable(L("Map<String, List<Integer>> m = x;"), "m") == "Map");
+    CHECK(JavaLspTypeOfVariable(L("int n = 3;"), "n").empty());
+    CHECK(JavaLspTypeOfVariable(L("org.dm.Frame f = null;"), "f") == "org.dm.Frame");
+    const JavaLspDocQuery q = JavaLspDocQueryAt(*doc, base + 2, 8);
+    CHECK(q.found && q.name == "DataFrame.filter" && q.range.col == 7 && q.range.end_col == 13);
+    const JavaLspHoverInfo h = JavaLspHover(*doc, base + 2, 8);
+    CHECK(h.found && h.text.find("Keeps the rows where") != std::string::npos);
+    CHECK(h.text.find("Overload: keeps rows matching a predicate.") != std::string::npos);
+    // On a declaration's own name.
+    const JavaLspHoverInfo h2 = JavaLspHover(*doc, 10, 22);
+    CHECK(h2.found && h2.text.find("A table of named columns.") != std::string::npos);
+    CHECK(!JavaLspHover(*doc, 2, 0).found);
+}
+
+void TestHoverExpressions() {
+    // Return types from declaration headers (as java_lsp_javadoc.h's Decl::signature holds them).
+    CHECK(JavaLspReturnType("public DataFrame sortBy(String columnName)", "sortBy") == "DataFrame");
+    CHECK(JavaLspReturnType("public static datamunge.DataFrame iris()", "iris") == "datamunge.DataFrame");
+    CHECK(JavaLspReturnType("public List<String> columns()", "columns") == "List");
+    CHECK(JavaLspReturnType("public static double[] seql(double from, double to, long n)", "seql") == "double[]");
+    CHECK(JavaLspReturnType("public static <T> Map<String, T> index(T x)", "index") == "Map");
+    CHECK(JavaLspReturnType("public DataFrame(double[] values)", "DataFrame").empty());  // a constructor
+    CHECK(JavaLspReturnType("public long nrows()", "sortBy").empty());
+    CHECK(JavaLspSuperclass("public class RPlot extends Plot") == "Plot");
+    CHECK(JavaLspSuperclass("public final class A extends org.x.B<T> implements C") == "org.x.B");
+    CHECK(JavaLspSuperclass("public class DataFrame implements AutoCloseable").empty());
+
+    // A stand-in for the server's Javadoc lookup.
+    const JavaLspMethodType returns = [](const std::string &type, const std::string &method) -> std::string {
+        if (type == "DataFrame" && (method == "select" || method == "sortBy")) return "DataFrame";
+        if (type == "DataFrame" && method == "nrows") return "long";
+        if (type == "Data" && method == "iris") return "datamunge.DataFrame";
+        if (type == "datamunge.DataFrame" && method == "select") return "DataFrame";
+        if (type == "RPlot" && method == "create") return "RPlot";
+        if (type == "RPlot" && method == "title") return "RPlot";
+        if (type == "RPlot" && method == "points") return "RPlot";
+        return "";
+    };
+    const std::vector<std::string> lines = L(
+        "class Use {\n"
+        "  void f() {\n"
+        "    var sales = new DataFrame();\n"
+        "    var picked = sales.select(List.of(\"a(\", \"b\")).sortBy(\"a\", false);\n"
+        "    var iris = Data.iris();\n"
+        "    try (var frame = new datamunge.DataFrame()) {\n"
+        "      frame.nrows();\n"
+        "    }\n"
+        "    RPlot.create().title(\"t\") // a comment (with a paren\n"
+        "        .points(x, y)\n"
+        "        .save(\"p.svg\");\n"
+        "  }\n"
+        "}\n");
+    CHECK(JavaLspTypeOfExpression(lines, "sales", returns) == "DataFrame");
+    CHECK(JavaLspTypeOfExpression(lines, "picked", returns) == "DataFrame");
+    CHECK(JavaLspTypeOfExpression(lines, "iris", returns) == "datamunge.DataFrame");
+    CHECK(JavaLspTypeOfExpression(lines, "frame", returns) == "datamunge.DataFrame");
+    CHECK(JavaLspTypeOfExpression(lines, "iris.select(x)", returns) == "DataFrame");
+    CHECK(JavaLspTypeOfExpression(lines, "new Box<String>(1)", returns) == "Box");
+    CHECK(JavaLspTypeOfExpression(lines, "sales.unknown()", returns).empty());
+    CHECK(JavaLspTypeOfExpression(lines, "helper(1)", returns).empty());
+    CHECK(JavaLspTypeOfExpression(lines, "sales", nullptr) == "DataFrame");  // `new T()` needs no lookup
+
+    const auto doc = JavaLspAnalyze(lines);
+    // `sales.select`: sales from `var sales = new DataFrame()`.
+    JavaLspDocQuery q = JavaLspDocQueryAt(*doc, 3, 24, returns);
+    CHECK(q.found && q.name == "DataFrame.select" && q.range.col == 23 && q.range.end_col == 29);
+    // `.sortBy` after a call whose argument list holds a "(" in a string.
+    const int sort_col = static_cast<int>(lines[3].find("sortBy"));
+    q = JavaLspDocQueryAt(*doc, 3, sort_col + 1, returns);
+    CHECK(q.found && q.name == "DataFrame.sortBy" && q.range.col == sort_col);
+    // `frame.nrows` with frame from try-with-resources, qualified.
+    q = JavaLspDocQueryAt(*doc, 6, 13, returns);
+    CHECK(q.found && q.name == "datamunge.DataFrame.nrows");
+    // `Data.iris` stays as written.
+    q = JavaLspDocQueryAt(*doc, 4, 22, returns);
+    CHECK(q.found && q.name == "Data.iris");
+    // A chain continued on the next lines, past a // comment.
+    q = JavaLspDocQueryAt(*doc, 9, 10, returns);
+    CHECK(q.found && q.name == "RPlot.points");
+    q = JavaLspDocQueryAt(*doc, 10, 10, returns);
+    CHECK(q.found && q.name == "RPlot.save");
+    // Without a lookup only `new` receivers resolve; the rest keeps the old answer.
+    q = JavaLspDocQueryAt(*doc, 3, 24);
+    CHECK(q.found && q.name == "DataFrame.select");
+    q = JavaLspDocQueryAt(*doc, 3, sort_col + 1);
+    CHECK(q.found && q.name == "sortBy");
+}
+
 }  // namespace
 
 int main() {
     TestCompletion();
     TestRobustness();
+    TestJavadocIndex();
+    TestJavadocRender();
+    TestJavadocFind();
+    TestHover();
+    TestHoverExpressions();
     std::printf("java_lsp_test: %d checks passed\n", g_checks);
     return 0;
 }

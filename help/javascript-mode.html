@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JavaScript mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="44">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>JavaScript mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.js</code>, <code>.mjs</code> or
+<code>.cjs</code> file. The tab becomes a Node.js workspace: your file, an
+interactive <code>node</code> below it, and panels showing what that session holds.</p>
+<p>The console is the stock Node.js REPL, started by a small init script
+that calls <code>repl.start()</code> with Node's own evaluator. Line editing,
+completion, <code>.editor</code>, top-level <code>await</code> and the display of an
+expression's value are Node's. It starts with mep's environment: the
+<code>node</code> on <code>PATH</code> and <code>NODE_PATH</code>, as a project's dev shell or direnv set
+them, so <code>require('pkg')</code> loads the same package it would in a terminal in
+that project. In datamunge's <code>javascript</code> dev shell, that includes
+<code>@datamunge/datamungejs</code>, the Rosetta-generated native addon.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / command</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>run the whole file in the console</td></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the top-level statement at the cursor in the console</td></tr>
+<tr><td><code>gh</code></td><td>help for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>:help name</code></td><td>the same, from the console (<code>obj.method</code>, a module name too)</td></tr>
+<tr><td><code>:inspect name</code></td><td>a value, a few levels deep, in Inspect</td></tr>
+<tr><td>=:eval "file" "source"=</td><td>what <code>&lt;leader&gt;re</code> types: run <code>file</code> as if it were <code>source</code></td></tr>
+<tr><td>=:run "file" "source"=</td><td>what <code>&lt;leader&gt;rr</code> types</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> finds the statement around the cursor: from the nearest line
+above that starts one at column 0, outside every bracket, to just before
+the next. That is a whole <code>function</code> or <code>class</code>, an object or array
+literal over several lines, a call chain whose <code>.then(...)</code> lines continue
+it, or a single line. Closing brackets never start a statement, and neither
+does a line that continues the previous one (a trailing operator, comma or
+open bracket, or a leading <code>.</code>). On a comment, it is the statement the
+comment documents. A live Visual selection is sent as it is.</p>
+<p>Neither key pastes your code into the prompt. The code is written to a
+file, padded to its line numbers, and run with a single <code>:eval</code> line under
+your file's name, with <code>require</code>, <code>__filename</code> and <code>__dirname</code> relative to
+your file. An error names your file and line, and a relative
+<code>require('./util')</code> finds the file next to yours. The value of a final
+expression is displayed as at the prompt; <code>undefined</code> is not.</p>
+<p><code>&lt;leader&gt;rr</code> runs the buffer as it is in the editor, unsaved changes
+included. mod1+Enter still pastes the current line or the selection
+straight into the prompt (see <a href="repl.html">REPL and send-to-terminal</a>).</p>
+<h1>What the session does to your code</h1>
+<p>Everything evaluated, typed or sent, is rewritten a little first so a
+file can be sent piece by piece and sent again:</p>
+<ul>
+<li>Top-level <code>const</code>, <code>let</code> and <code>class</code> become globals (<code>var</code>), so sending a statement twice does not fail with "has already been declared" and the Variables panel can list them. Declarations inside functions and blocks are untouched.</li>
+<li>A static <code>import</code> becomes a dynamic one, which a script can run: <code>import {a, b as c} from 'm'= becomes =var {a, b: c} = await import('m')</code>, <code>import x from 'm'= takes the default export, and =import * as ns</code> the namespace. The specifier is resolved as <code>require</code> would resolve it, so <code>NODE_PATH</code> and paths relative to your file work, which plain ESM resolution does not. Named imports from a CommonJS module, such as a native addon whose exports Node cannot list, come from its <code>module.exports</code>.</li>
+<li><code>export</code> is dropped: <code>export function f</code> defines <code>f</code>, =export default expr= stores the value in <code>__default</code>, and <code>export { ... }</code> does nothing.</li>
+</ul>
+<p>The rest of the code is evaluated as written, by Node's own evaluator,
+which handles top-level <code>await</code>.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Variables</td><td>the globals the session has made, with kind and value (the signature for a function)</td></tr>
+<tr><td>Modules</td><td>what the session =require=d or imported, with version and file</td></tr>
+<tr><td>History</td><td>what was evaluated, newest last; sent code as <code>file:lines</code> and its first line</td></tr>
+<tr><td>Inspect</td><td><code>:inspect</code> of a value: <code>util.inspect</code>, four levels deep</td></tr>
+<tr><td>Help</td><td>the documentation of a name (below)</td></tr>
+</table>
+<p>Clicking a Variables row inspects it; clicking a Modules row shows the
+module's documentation in Help. What existed when the console started,
+Node's globals and built-in modules, is left out. The panels refresh after
+every evaluation.</p>
+<h1>Help</h1>
+<p><code>gh</code> over a name, or <code>:help name</code> in the console, shows in Help:</p>
+<ul>
+<li>the JSDoc of the name's TypeScript declarations, when it comes from a package that has them. The declaration file is the one TypeScript would use: the <code>types</code> or <code>typings</code> field of the package's <code>package.json</code>, its <code>exports["."].types</code>, the <code>.d.ts</code> beside its main file, <code>index.d.ts</code>, or <code>@types/pkg</code>. The package is found as <code>require</code> finds it, through <code>node_modules</code> and <code>NODE_PATH</code>. The name may be a module's export (<code>dm.ref</code>, or <code>ref</code> after <code>const {ref} = require(...)</code>), a class member (<code>Polynomial.degree</code>), or a method of an instance (<code>p.degree</code> when <code>p</code> is a <code>Polynomial</code>). An enum member shows its enum's documentation.</li>
+<li>then what the running session knows: a function's signature from its source (or its argument count for a native one) and its source, a class's methods, an object's keys with their kinds, a value's display. A Node built-in module (<code>fs</code>, <code>path</code>) lists its exports and links to its page on nodejs.org.</li>
+</ul>
+<p>The declarations are read by the JavaScript language server's own <code>.d.ts</code>
+reader, through <code>mep-js-lsp --dts-doc</code> (see
+<a href="js-lsp.html">The JavaScript language server</a>); with an older
+<code>mep-js-lsp</code>, the init script reads the file itself. <code>gh</code> also sends the
+file you are in, so a name it binds with <code>require</code> or <code>import</code> is
+documented before the code has run. In a JavaScript buffer <code>gh</code> also
+opens the language server's hover. Without the mode open, <code>gh</code> is that
+hover alone.</p>
+<p>In datamunge, from the <code>javascript</code> dev shell after =just
+build-javascript=:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">js</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="js"><span class="tok-purple">const</span> dm = <span class="tok-blue">require</span>(<span class="tok-green">'@datamunge/datamungejs'</span>);
+<span class="tok-purple">const</span> p = <span class="tok-purple">new</span> dm.Polynomial([<span class="tok-cyan">1</span>, <span class="tok-cyan">2</span>, <span class="tok-cyan">3</span>]);
+p.<span class="tok-blue">degree</span>();     <span class="tok-comment">// gh on degree: "Degree of the polynomial; ..."</span></code></pre></div>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.javascript_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'node'</span>, <span class="tok-green">'--enable-source-maps'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- the console's command</span>
+<span class="tok-cyan">mep</span>.opt.javascript_ui_info_share = <span class="tok-cyan">0.3</span>                         <span class="tok-comment">-- the panels' width</span></code></pre></div>
+<p>A <code>// REPL: nix develop .#javascript --command node</code> line in the file
+overrides <code>javascript_ui_cmd</code> for that file. The mode appends its init
+script, so the command must accept a script path, as <code>node</code> does. The
+REPL's history is kept in <code>~/.node_repl_history</code> (or <code>NODE_REPL_HISTORY</code>;
+empty turns it off), as the plain <code>node</code> REPL keeps it.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="js-lsp.html">The JavaScript language server</a>.</li>
+<li><a href="run-button.html">Run button</a> -- a <code>// CMD:</code> line runs a file another way.</li>
+</ul>
+</body>
+</html>

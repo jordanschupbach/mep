@@ -261,11 +261,20 @@ matlab-grammar: (grammar-generate "matlab")
 gap-grammar: (grammar-generate "gap")
 # Regenerate the Go grammar.
 go-grammar: (grammar-generate "go")
+# Regenerate the COBOL grammar (fixed and free format; from yutaro-sakamoto/tree-sitter-cobol).
+cobol-grammar: (grammar-generate "cobol")
+# Regenerate the APL grammar (GNU APL and Dyalog; mep's own).
+apl-grammar: (grammar-generate "apl")
 rust-grammar: (grammar-generate "rust")
 # Regenerate the Zig grammar (oracle: Zig's own parser via tools/ts_grammar_diff/zig_check.sh).
 zig-grammar: (grammar-generate "zig")
 # Regenerate the Julia grammar (from tree-sitter-julia 0.25.0; oracle tools/ts_grammar_diff/julia_check.jl).
 julia-grammar: (grammar-generate "julia")
+# Regenerate the Ruby grammar (tree-sitter-ruby 0.23.1, vendored).
+ruby-grammar: (grammar-generate "ruby")
+# Regenerate the OCaml grammars (tree-sitter-ocaml 0.26.0, vendored): .ml and .mli.
+ocaml-grammar: (grammar-generate "ocaml") (grammar-generate "ocaml_interface")
+ocaml_interface-grammar: (grammar-generate "ocaml_interface")
 # Regenerate the D grammar (from gdamore/tree-sitter-d 0.8.2; oracle tools/ts_grammar_diff/d_check.sh).
 d-grammar: (grammar-generate "d")
 # Link the pinned LDC (the D compiler's own parser: the oracle for `just
@@ -824,7 +833,7 @@ test: build-native
     ./{{native_build_dir}}/mep-check-help {{native_build_dir}}/mep --strict
     echo "== deps-audit"
     scripts/deps-audit.sh {{native_build_dir}}/mep
-    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-org-ts-test mep-ts-corpus-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-clojure-lsp-test mep-crystal-lsp-test mep-csharp-lsp-test mep-sql-lsp-test mep-nix-lsp-test mep-cobol-lsp-test mep-nim-lsp-test mep-nim-format-test mep-java-lsp-test mep-java-format-test mep-kotlin-lsp-test mep-kotlin-format-test mep-zig-lsp-test mep-zig-format-test mep-rust-lsp-test mep-rust-vocab-test mep-rust-format-test mep-rust-parse-test mep-go-lsp-test mep-go-format-test mep-gap-lsp-test mep-gap-format-test mep-julia-parse-test mep-julia-lsp-test mep-julia-format-test mep-tcl-lsp-test mep-tcl-format-test mep-octave-lsp-test mep-octave-format-test mep-fish-lsp-test mep-fish-format-test mep-fortran-lsp-test mep-fortran-format-test mep-scheme-lsp-test mep-scheme-format-test mep-lua-lsp-test mep-lua-format-test mep-js-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-bash-format-test mep-clojure-format-test mep-crystal-format-test mep-csharp-format-test mep-sql-format-test mep-nix-format-test mep-c-format-test mep-lisp-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
+    targets=(mep-test-runner-test mep-job-test mep-project-search-test mep-cad-math-test mep-cad-predicates-test mep-cad-nurbs-test mep-cad-curve-test mep-cad-surface-test mep-cad-mass-test mep-cad-topology-test mep-cad-intersect-test mep-cad-boolean-test mep-cad-sketch-test mep-cad-feature-test mep-cad-modify-test mep-cad-pattern-test mep-cad-assembly-test mep-cad-doc-test mep-cad-step-test mep-cad-exchange-test mep-fem-mesh-test mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-style-test mep-mepml-ts-test mep-org-ts-test mep-ts-corpus-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-clojure-lsp-test mep-crystal-lsp-test mep-csharp-lsp-test mep-sql-lsp-test mep-nix-lsp-test mep-ocaml-lsp-test mep-ocaml-format-test mep-apl-lsp-test mep-apl-format-test mep-ruby-lsp-test mep-ruby-format-test mep-cobol-lsp-test mep-cobol-format-test mep-nim-lsp-test mep-nim-format-test mep-java-lsp-test mep-java-format-test mep-kotlin-lsp-test mep-kotlin-format-test mep-zig-lsp-test mep-zig-format-test mep-rust-lsp-test mep-rust-vocab-test mep-rust-format-test mep-rust-parse-test mep-go-lsp-test mep-go-format-test mep-gap-lsp-test mep-gap-format-test mep-julia-parse-test mep-julia-lsp-test mep-julia-format-test mep-tcl-lsp-test mep-tcl-format-test mep-octave-lsp-test mep-octave-format-test mep-fish-lsp-test mep-fish-format-test mep-fortran-lsp-test mep-fortran-format-test mep-scheme-lsp-test mep-scheme-format-test mep-lua-lsp-test mep-lua-format-test mep-js-lsp-test mep-vterm-test mep-spell-test mep-indent-test mep-treesitter-test mep-python-format-test mep-r-format-test mep-cpp-format-test mep-maxima-format-test mep-bash-format-test mep-clojure-format-test mep-crystal-format-test mep-csharp-format-test mep-sql-format-test mep-nix-format-test mep-c-format-test mep-lisp-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test mep-editor-fold-test mep-editor-reload-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test mep-jpeg-codec-test mep-ccitt-codec-test mep-text-diff-test mep-pdf-object-test mep-pdf-xref-test mep-pdf-crypt-test mep-pdf-filters-test mep-pdf-document-test mep-pdf-outline-test mep-pdf-links-test mep-pdf-annots-test mep-pdf-writer-test mep-rasterizer-test mep-pdf-content-test mep-cff-test mep-type1-test mep-pdf-encodings-test mep-pdf-font-test mep-pdf-text-test mep-theme-recolor-test mep-text-quality-test mep-mov-container-test mep-youtube-player-test mep-collab-crdt-test mep-collab-session-test)
     cmake --build {{native_build_dir}} -j --target "${targets[@]}"
     for t in "${targets[@]}"; do
         if [ -x "{{native_build_dir}}/$t" ]; then
@@ -1166,11 +1175,83 @@ test-lua-ui:
 test-julia-ui:
     python3 tools/julia_ui_check.py
 
+# The Ruby UI mode without a window: the Lua chunk on stubs, the MepUI init
+# script in ruby (panels, eval with source lines in the session's binding,
+# help resolved at runtime and read by mep-ruby-lsp --doc from the datamunge
+# fixture's YARD docs, inspect) and the real irb under a pty.
+test-ruby-ui:
+    python3 tools/ruby_ui_check.py
+
+# The OCaml UI mode without a window: the Lua chunk on stubs, the MepUI init
+# script in the `ocaml` toplevel (panels, eval with source lines, help read by
+# mep-ocaml-lsp --doc from a fixture .mli's odoc comments, inspect) and the
+# real toplevel under a pty. Skips cleanly without `ocaml` on PATH.
+test-ocaml-ui:
+    python3 tools/ocaml_ui_check.py
+
+# The JavaScript UI mode without a window: the Lua chunk on stubs, the init
+# script in node (panels, :eval with source lines, the import rewrite, help
+# from a package's .d.ts JSDoc -- via mep-js-lsp --dts-doc when a build has
+# it, and the script's own reader) and the real REPL under a pty.
+test-javascript-ui:
+    python3 tools/javascript_ui_check.py
+
 # The C# UI mode's console without a window: built with the real SDK, then
 # :run / :evalat of a file-based app whose #:project it builds, and :help of
 # the referenced library (its XML documentation).
 test-csharp-ui:
     python3 tools/csharp_ui_check.py
+
+# The Fortran UI mode without a window: its Lua against stubs, then the
+# console with the real gfortran -- inputs, the Variables file, :help from a
+# used module's FORD docs and for an intrinsic, errors, :run of a program.
+# Uses gfortran from PATH, else nixpkgs' (mep-fortran-lsp from build/native).
+test-fortran-ui:
+    if command -v gfortran >/dev/null; then python3 tools/fortran_ui_check.py; else nix shell nixpkgs#gfortran --command python3 tools/fortran_ui_check.py; fi
+
+# The Java UI mode without a window: the Lua chunk on stubs, the jshell-engine
+# console with a real JDK (snippets, panels, /evalat line numbers, the CMD:
+# header's class path and its restart, /run, Javadoc via mep-java-lsp --doc
+# and the JDK's src.zip) and the console under a pty. Skips without a JDK.
+test-java-ui:
+    python3 tools/java_ui_check.py
+
+# The Go UI mode without a window: the Lua chunk on stubs, the console with a
+# real go offline (go run of a package and a file, a CMD: header, godoc via
+# mep-go-lsp --doc from a replace dir and the module cache, go doc, exports)
+# and the console under a pty. The go parts skip without go.
+test-go-ui:
+    python3 tools/go_ui_check.py
+
+# The APL UI mode without a window: its Lua against stubs, then GNU APL's
+# console driven headless with the run.apl / eval.apl files the mode )COPYs,
+# and mep-apl-lsp --doc / --outline / --glyphs (the Help, Functions and
+# Glyphs panels). The console part skips without `apl` on PATH.
+test-apl-ui:
+    python3 tools/apl_ui_check.py
+
+# The Octave UI mode without a window: the Lua chunk on stubs, the init script
+# in octave-cli (panels, source with source lines, mep_run, help -- Octave's
+# own, then .m stub comments through mep-octave-lsp --doc, also for a compiled
+# .oct without a docstring when mkoctfile exists), and the real prompt under a
+# pty (its input-event hook refreshes the panels). Skips without octave-cli.
+test-octave-ui:
+    python3 tools/octave_ui_check.py
+
+# The Tcl UI mode without a window: the Lua chunk on stubs, the init script in
+# tclsh 8.6 or 9 (panels, ::mep::eval_file with source lines, help from a
+# package's proc doc comments through mep-tcl-lsp --doc, built-in manual text,
+# inspect) and its prompt loop under a pty. Skips without tclsh.
+test-tcl-ui:
+    python3 tools/tcl_ui_check.py
+
+# The Guile UI mode without a window: the Lua chunk on stubs, the init script
+# in guile (Module/Modules panels, mep-eval-file with source lines, help --
+# procedure-documentation / object-documentation plus the module source's
+# docstring through mep-scheme-lsp --doc -- and inspect) and the real REPL
+# under a pty (its before-read-hook refreshes the panels). Skips without guile.
+test-guile-ui:
+    python3 tools/guile_ui_check.py
 
 # The Lua UI in the actual editor on a private X11 display: <leader>re, Run
 # (with a LUA_PATH-only module), gh, teardown.

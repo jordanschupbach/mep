@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Go language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The Go language server</h1>
+<h1>What it is</h1>
+<p>Go files get a language server of their own, <code>mep-go-lsp</code>, built
+and shipped with mep. Open a <code>.go</code> file and it attaches by itself --
+nothing to install, no Go toolchain needed.</p>
+<p>Its parser is a port of Go's own <code>go/parser</code>, so a syntax error carries the
+same message at the same line and column that <code>gofmt -e</code> or <code>go vet</code> would
+print. It knows the whole standard library (Go 1.26): every package, with
+its functions, types, methods and fields, their signatures and Go's own
+documentation.</p>
+<p>It looks at one file at a time. Everything a file can decide about itself
+is exact -- local variables, parameters, labels, imports -- but a name
+declared in another file of the same package, or in a package outside the
+standard library, is simply unknown to it. So it never claims a plain name
+is undefined, and it does not type-check. For whole-package analysis, <code>gopls</code>
+is still registered and can be switched on (see <a href="lsp.html">Language servers</a>).</p>
+<p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>go/parser's error, word for word</td></tr>
+<tr><td><code>unused-variable</code></td><td>error</td><td><code>declared and not used: x</code> -- a local that is never read (a plain <code>x = ...</code> does not count as a read, as in Go)</td></tr>
+<tr><td><code>unused-import</code></td><td>error</td><td>="fmt" imported and not used=</td></tr>
+<tr><td><code>unused-label</code></td><td>error</td><td>a label nothing jumps to or breaks out of</td></tr>
+<tr><td><code>undefined-label</code></td><td>error</td><td><code>goto</code>, <code>break</code> or <code>continue</code> naming a label the function does not have</td></tr>
+<tr><td><code>misplaced-branch</code></td><td>error</td><td><code>break</code> outside a loop, switch or select; <code>continue</code> outside a loop; <code>fallthrough</code> out of place</td></tr>
+<tr><td><code>missing-return</code></td><td>error</td><td>a function with results can reach its closing brace</td></tr>
+<tr><td><code>redeclared</code></td><td>error</td><td>a name declared twice in one block</td></tr>
+<tr><td><code>no-new-variables</code></td><td>error</td><td><code>:=</code> with nothing new on the left</td></tr>
+<tr><td><code>undefined</code></td><td>error</td><td><code>pkg.Name</code> where <code>pkg</code> is a standard-library package with no such exported name</td></tr>
+<tr><td><code>unreachable</code></td><td>warning</td><td>code after a <code>return</code>, <code>panic</code>, infinite loop, ... (greyed out)</td></tr>
+<tr><td><code>self-assignment</code></td><td>warning</td><td><code>x = x</code></td></tr>
+<tr><td><code>deprecated</code></td><td>hint</td><td>a standard-library name documented as deprecated, with the reason (struck through)</td></tr>
+</table>
+<p>The error-level checks are the Go compiler's own errors, so on code that
+builds they are silent: over Go's source tree and six large projects (9,931
+files outside test data) the only reports are two real ones (a typo in a
+file excluded from the build, and code after an infinite loop) plus the
+deprecation hints. Checks that depend on uses are skipped while the file has
+a syntax error, since a broken tree would make them guess.</p>
+<p>An import's name is known for the standard library. For other packages it
+is guessed from the path (<code>github.com/x/go-yaml/v3</code> is <code>yaml</code>), and an
+import is only reported unused when no unknown <code>name.</code> appears anywhere in
+the file. Standard-library members are only checked in files that build for
+linux/amd64: a <code>_windows.go</code> file, a <code>//go:build ignore</code> file or an external
+test package using its package's test hooks is left alone.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> shows a declaration and its doc comment: for the standard library, the signature, Go's documentation and a link to pkg.go.dev; for a variable declared with <code>:=</code>, its type where it can be worked out (<code>x, err :</code> strconv.Atoi(s)= gives <code>var x int</code>). For <code>pkg.Name</code> of a package outside the standard library -- the module's own packages, a <code>replace</code> directory, <code>vendor/</code>, the module cache -- it reads that package's doc comments. Methods and fields of such a package's values work too: <code>df.Select</code> after <code>df, err :</code> datamunge.NewDataFrame()= or <code>df :</code> datamunge.Must(datamunge.NewDataFrame())= (the type is the first result of the documented function), through <code>var x *pkg.T</code>, parameters, call chains (<code>datamunge.Must(df.Select(cols)).SortBy</code>, continued over lines) and methods promoted from embedded types (<code>RPlot</code> embedding <code>Plot</code>).</li>
+<li><b>Completion</b> offers the names in scope (locals, parameters, this file's declarations, imports), builtins and keywords; after <code>pkg.</code>, the package's members; after <code>x.</code>, the fields and methods of <code>x</code>'s type, for types declared in the file and standard-library types (<code>b.Wr</code> on a <code>strings.Builder</code> offers <code>WriteString</code>); inside an import's quotes, the standard-library import paths.</li>
+<li><b>Signature help</b> for standard-library functions and methods, builtins and functions declared in the file, with the current argument highlighted.</li>
+<li><b>Go to definition</b> and <b>references</b> for anything declared in the file, including struct fields and methods reached through a selector.</li>
+<li><b>Rename</b> of local names (variables, parameters, labels, local types). Package-level names are visible in the package's other files, so renaming them here is refused rather than done half way.</li>
+<li><b>Outline</b>: functions, methods as <code>(*T).Name</code>, types with their fields and interface methods, constants and variables.</li>
+<li><b>Folding</b> of blocks, composite literals, struct and interface bodies, parenthesised declarations, long calls, case clauses and comments.</li>
+<li><b>Formatting</b> with mep's gofmt (see <a href="formatting.html">Formatting</a>).</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-go-lsp</span> <span class="tok-red">--lint</span> FILE...</code></pre></div>
+<p>prints every diagnostic as <code>path:line:col: severity: message [code]</code> --
+1-based line and column, then the severity (<code>error</code>, <code>warning</code>, <code>info</code>,
+<code>hint</code>), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, <code>mep-go-lsp</code> is the language server on stdio.</p>
+<p><code>mep-go-lsp --doc NAME [--dir DIR] [--file FILE]...</code> prints the doc comment
+of <code>NAME</code> as Markdown, in <code>go doc</code>'s forms (<code>pkg</code>, <code>pkg.Name</code>,
+<code>pkg.Type.Method</code>, <code>Name</code>, an import path), resolving <code>pkg</code> through the
+files' imports; it exits 1 when nothing matches. =mep-go-lsp --exports [PKG]
+[--dir DIR] [--all]= lists a package's exported names, one per line: kind,
+name, signature, <code>file:line</code>. The Go UI mode uses both (see
+<a href="go-mode.html">Go mode</a>).</p>
+<p><code>mep-go-lsp --parse-check FILE...</code> prints only the parser's errors, one line
+per file, in the form <code>just go-parse-check</code> compares against <code>go/parser</code>.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="formatting.html">Formatting</a> -- the Go formatter.</li>
+</ul>
+</body>
+</html>

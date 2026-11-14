@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The APL language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The APL language server</h1>
+<h1>What it is</h1>
+<p>APL files get a language server of their own, <code>mep-apl-lsp</code>, built and
+shipped with mep. Open a <code>.apl</code>, <code>.apls</code>, <code>.aplf</code>, <code>.aplo</code>, <code>.apln</code>,
+<code>.aplc</code>, <code>.apli</code> or <code>.dyalog</code> file and it attaches by itself -- nothing to
+install, and it never runs an interpreter. It reads both GNU APL and Dyalog
+APL source: tradfns (<code>∇ R←A Fn B;locals</code>), dfns and dops (<code>f←{...}</code> with
+<code>⍺ ⍵ ∇ ⍺⍺ ⍵⍵</code> and guards), <code>:Namespace</code> / <code>:Class</code> scripts, Dyalog's
+control structures, labels, <code>⎕names</code>, <code>)commands</code>, GNU's <code>◊</code> diamond and
+double-quoted strings, and <code>.aplf</code> / <code>.aplo</code> files that hold one function.</p>
+<p>It is made for namespaces like the ones Rosetta generates: a function's
+documentation is the <code>⍝</code> lines right after its header, and the server
+shows them -- in the hover, in completion and in the APL UI mode's Help tab.</p>
+<p>The same binary is a command-line linter and documentation printer; see
+<i>From the command line</i> below. mep's syntax highlighting -- the
+compiled-in <code>tree-sitter-apl</code> grammar -- highlights glyphs by role,
+numbers (<code>¯2.5E¯3J1</code>), strings, comments, <code>⎕names</code>, keywords and labels,
+folds tradfns, dfns, namespaces and control structures, and fills the
+structure sidebar.</p>
+<h1>Documentation comments</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">apl</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="apl">:Namespace datamunge
+    ∇ R←A Add B
+    ⍝ Adds two arrays elementwise.
+    ⍝
+    ⍝ - `A`: left array
+      R←A+B
+    ∇
+
+    ⍝ The mean of a vector.
+    Mean←{(+/⍵)÷≢⍵}
+:EndNamespace</code></pre></div>
+<ul>
+<li>A tradfn's doc is the run of <code>⍝</code> lines right after its header (and after the <code>∇</code> line of an <code>.aplf</code> file).</li>
+<li>A dfn's doc is the <code>⍝</code> lines at the top of its body, else the comment block right above <code>name←{</code>, else a trailing comment on the same line.</li>
+<li>A variable's doc is the trailing comment of its first assignment, else the comment block above it.</li>
+</ul>
+<p>The text after <code>⍝</code> and its space is shown verbatim as Markdown, so Rosetta's
+<code>`code`</code>, lists and fenced blocks render as written.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>an unterminated string, a character APL has no use for, a <code>∇</code> header that doesn't parse, a stray <code>)</code></td></tr>
+<tr><td><code>unbalanced</code></td><td>error</td><td>a <code>( [ {</code> without its partner, or the wrong partner</td></tr>
+<tr><td><code>control-structure</code></td><td>error</td><td>a <code>:EndIf</code> with no <code>:If</code>, the wrong <code>:End</code>, an <code>:Else</code> outside an <code>:If</code> / <code>:Select</code>, a structure left open, a <code>∇</code> left open</td></tr>
+<tr><td><code>unknown-keyword</code></td><td>error</td><td>a <code>:Word</code> that is no control word</td></tr>
+<tr><td><code>outside-dfn</code></td><td>warning</td><td><code>⍺ ⍵ ⍺⍺ ⍵⍵</code> outside braces and tradfns</td></tr>
+<tr><td><code>unknown-system-name</code></td><td>warning</td><td>a <code>⎕NAME</code> neither GNU APL nor Dyalog defines</td></tr>
+<tr><td><code>unknown-command</code></td><td>warning</td><td>a <code>)COMMAND</code> neither defines (<code>]user commands</code> are not checked)</td></tr>
+</table>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> (<code>K</code>): a glyph's monadic and dyadic meanings and its backtick key; a <code>⎕name</code>, control word or <code>)command</code>'s meaning; a user function's header with its <code>⍝</code> doc; a local's role (result, left argument, right argument, local, label). Functions are found in the document, then in every other APL file of the workspace.</li>
+<li><b>Completion</b>:</li>
+<li>A backtick followed by a key types a glyph: the Dyalog US keyboard layout, the same keys as mep's <code>&lt;leader&gt;as</code> glyph picker. Some common ones: <code>`r</code> ⍴, <code>`i</code> ⍳, <code>`e</code> ∊, <code>`w</code> ⍵, <code>`a</code> ⍺, <code>`[</code> ←, <code>`]</code> →, <code>`l</code> ⎕, <code>`g</code> ∇, <code>`1</code> ¨, <code>`T</code> ⍨, <code>`o</code> ○, <code>`z</code> ⊂, <code>`x</code> ⊃, <code>`y</code> ↑, <code>`u</code> ↓, <code>`-</code> ×, <code>`=</code> ÷, <code>`s</code> ⌈, <code>`d</code> ⌊, <code>`j</code> ∘, <code>`J</code> ⍤, <code>`&lt;</code> ⍪, <code>`:</code> ≡, <code>`2</code> ¯, <code>`}</code> ⍬; a backtick then a comma types ⍝, then a double quote ≢, and two backticks ⋄. The menu after a bare backtick lists them all; <code>mep-apl-lsp --glyphs</code> prints the table.</li>
+<li>A glyph's name of two letters or more completes to the glyph: <code>rho</code> -&gt; ⍴, <code>iota</code> -&gt; ⍳, <code>each</code> -&gt; ¨, <code>reduce</code> -&gt; <code>/</code>, <code>tally</code> -&gt; ≢.</li>
+<li><code>⎕</code> completes system names (GNU APL's and Dyalog's), <code>)</code> system commands, <code>:</code> control words, <code>ns.</code> a namespace's members.</li>
+<li>Plain names complete the current function's arguments, locals and labels, then every function, operator, namespace and variable of the document and the workspace. A function in another file's namespace inserts its qualified name (<code>datamunge.Mean</code>) while you type <code>Mean</code>.</li>
+<li><b>Signature help</b> after a space or <code>(</code> past a function name: its header, with the right argument active when the cursor is right of the function and the left one when it is left of it.</li>
+<li><b>Go to definition</b> (<code>gd</code>) of a function, operator, namespace, variable, local or label, across files; <b>references</b> and <b>rename</b> of a name in the document.</li>
+<li><b>Outline</b> (structure sidebar, document symbols) of namespaces, classes, tradfns, dfns, operators and variables, and <b>folds</b> of every function, namespace and control structure.</li>
+<li><b>Formatting</b> (<code>gf</code> and the server's formatting request): see <a href="formatting.html">Formatting</a>.</li>
+</ul>
+<h1>The workspace</h1>
+<p>On start the server scans the workspace root and every entry of
+<code>MEP_APL_PATH</code> (colon-separated directories or files) for APL files,
+skipping hidden and build directories, and indexes their definitions.
+Saved files are re-read; open documents always use the editor's text.
+Set <code>MEP_APL_PATH</code> to the directory of a Rosetta-generated binding to get
+its functions' docs everywhere.</p>
+<h1>From the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-apl-lsp</span> <span class="tok-red">--lint</span> FILE...
+<span class="tok-blue">mep-apl-lsp</span> <span class="tok-red">--doc</span> [--root DIR] NAME [FILE...]
+<span class="tok-blue">mep-apl-lsp</span> <span class="tok-red">--hover</span> FILE LINE COL
+<span class="tok-blue">mep-apl-lsp</span> <span class="tok-red">--outline</span> FILE
+<span class="tok-blue">mep-apl-lsp</span> <span class="tok-red">--glyphs</span></code></pre></div>
+<ul>
+<li><code>--lint</code> prints every diagnostic as <code>path:line:col: severity: message [code]</code> -- 1-based line and column. It exits 1 if anything printed is an error or a warning, 2 if a file could not be read, and 0 otherwise. <code>-</code> reads stdin.</li>
+<li><code>--doc</code> prints NAME's documentation as Markdown: a glyph (<code>⍴</code> or <code>rho</code>), a <code>⎕name</code>, a control word, a <code>)command</code>, or a function, looked up in the FILEs, then under DIR (default: the current directory) and <code>MEP_APL_PATH</code>. <code>ns.fn</code> finds a namespace member. It exits 1 when there is none. The APL UI mode's <code>gh</code> uses it.</li>
+<li><code>--hover</code> prints the hover at a 1-based line and column.</li>
+<li><code>--outline</code> prints one definition per line: <code>line&lt;TAB&gt;depth&lt;TAB&gt;kind&lt;TAB&gt;qualified name&lt;TAB&gt;header</code>.</li>
+<li><code>--glyphs</code> prints the glyph table: <code>glyph&lt;TAB&gt;kind&lt;TAB&gt;key&lt;TAB&gt;names&lt;TAB&gt;monadic / dyadic</code>.</li>
+</ul>
+<p>With no arguments, <code>mep-apl-lsp</code> is the language server on stdio.</p>
+<h1>Limits</h1>
+<ul>
+<li>Expressions are not parsed beyond tokens: whether a name is a function or an array is known only from its definition, so no type or valence checking is done.</li>
+<li>References and rename stay in the current document.</li>
+<li>The workspace is scanned once at start (with a file budget); files changed outside the editor are seen when saved or reopened.</li>
+<li>Dyalog Link's directory-to-namespace mapping is not modelled: a file's <code>:Namespace</code> gives its members' qualified names, a loose <code>.aplf</code> file's function is top-level.</li>
+</ul>
+<h1>See also</h1>
+<ul>
+<li><a href="apl-mode.html">APL language UI</a> -- the console, Help, Glyphs and Functions panels.</li>
+<li><a href="formatting.html">Formatting</a> -- what <code>gf</code> changes in APL.</li>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+</ul>
+</body>
+</html>

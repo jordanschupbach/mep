@@ -19,6 +19,32 @@ The same binary is a command-line linter; see /Linting from the command line/ be
 * What else it does
 
 - *Completion* offers the words of the document.
+- *Hover* shows a declaration's Javadoc as Markdown (description,
+  parameters, return value, exceptions): for declarations in the document,
+  and for =Type.member= or =x.member= and bare type names from other files
+  -- the file's package root, its directory and =$MEP_JAVA_SOURCEPATH=.
+  The receiver's type comes from the text, without a compiler:
+  - a variable's declared type, or for =var x = ...= the type of its
+    initializer (=new DataFrame()=, =Data.iris()=);
+  - a call's return type, read from the method's declaration, so chained
+    calls work (=df.select(...).sortBy= and a chain continued on the next
+    lines, =    .title(...)=);
+  - members a class inherits, through the =extends= of its declaration
+    (=RPlot.saveSvg= finds =Plot.saveSvg=).
+  A bare type name is looked up as =Name.java= at each root, in the file's
+  package and in the packages it imports.
+
+* Javadoc from the command line
+
+#+begin_src sh
+mep-java-lsp --doc NAME [--sourcepath PATHS]... [--file FILE]...
+#+end_src
+
+prints the Javadoc of =NAME= (=DataFrame=, =DataFrame.filter=,
+=org.datamunge.DataFrame#filter(double)=, =filter=) as Markdown, with
+each match's file and line. It looks in the files, their package roots, the
+source path and =$MEP_JAVA_SOURCEPATH=, and exits 1 when nothing matches.
+The Java UI mode's Help tab uses it (see [[file:java-mode.html][Java mode]]).
 
 * Linting from the command line
 

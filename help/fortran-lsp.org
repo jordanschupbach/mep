@@ -97,20 +97,31 @@ those that need an =INCLUDE= or another file to decide.
 * What else it does
 
 - *Hover* on a name shows its declaration -- type, attributes, kind
-  (dummy argument, parameter, function result, component, ...) and line;
-  on an intrinsic, its argument lists, a one-line summary, its class
-  (elemental function, subroutine, ...) and standard.
+  (dummy argument, parameter, function result, component, ...), a
+  parameter's value, a procedure's dummy arguments, a derived type's
+  components and bindings, a generic interface's specific procedures --
+  then its FORD documentation as Markdown, and where it is declared; on an
+  intrinsic, its argument lists, a one-line summary, its class (elemental
+  function, subroutine, ...) and standard.
 - *Completion* offers the names in scope (the unit's own, its host's, and
-  those of modules in the same file that it =USE=s), intrinsics and
-  keywords; after =var%=, the components and bindings of =var='s derived
-  type; after =use=, the modules in the file and the intrinsic modules.
-- *Signature help* shows the dummy arguments of the file's own
-  subroutines and functions, and the argument list of an intrinsic.
+  those of the modules it =USE=s, from the same file or another), with
+  their documentation, intrinsics and keywords; after =var%=, the
+  components and bindings of =var='s derived type, inherited ones
+  included; after =use=, the modules it can find and the intrinsic
+  modules; in a =use m, only:= list, what =m= exports.
+- *Signature help* shows the dummy arguments of subroutines and functions
+  (each with its declaration and documentation), one signature per
+  specific procedure of a generic interface -- the one that fits the
+  arguments written so far is active, and =name== picks the dummy -- the
+  bindings of a type-bound generic (without the passed object), a type's
+  constructor, and the argument list of an intrinsic.
 - *Go to definition*, *references* and *rename* follow Fortran's scoping:
   host association into internal and module procedures, =USE= of modules
-  in the same file (renames included), components through =a%b=, kind
-  parameters in literals (=1.0_dp=), and =END SUBROUTINE name=. Rename
-  refuses a name that is not a Fortran name or that is taken in the scope.
+  (renames included), components and bindings through =a%b=, kind
+  parameters in literals (=1.0_dp=), and =END SUBROUTINE name=. Definition
+  goes into the file of a module from elsewhere; references and rename
+  stay in the file. Rename refuses a name that is not a Fortran name, that
+  is taken in the scope, or that belongs to another file's module.
 - The *outline* lists programs, modules, submodules, subroutines,
   functions, derived types with their components and bindings, named
   interfaces, and module variables and parameters.
@@ -120,6 +131,86 @@ those that need an =INCLUDE= or another file to decide.
   fprettify's layout at its defaults, byte for byte, with no Python
   installed. Fixed-form files are left alone. See
   [[file:formatting.html][Formatting]].
+
+* Modules in other files
+
+A =use datamunge= of a module the file does not define sends the server
+looking for the file that does: a file with a =module datamunge=
+statement (names are case-insensitive), searched in this order:
+
+1. the workspace -- the Fortran files (=.f90=, =.F90=, =.f=, =.for=,
+   =.f95=, =.f03=, =.f08=, ...) under the directory the editor opened,
+   indexed when the server starts, skipping hidden directories and build
+   output (=build*=, =cmake-build-*=, =CMakeFiles=, =_build=, =_deps=,
+   =bin=, =obj=, =target=, =node_modules=, ...) -- and the files open in
+   the editor, whose unsaved text counts;
+2. the directories in =MEP_FORTRAN_PATH=, separated by colons;
+3. the =-I= directories in the =FFLAGS= and =FCFLAGS= environment
+   variables (=-Idir= or =-I dir=; a relative one is taken from the
+   workspace root);
+4. the directory of the file doing the =USE=.
+
+A module generated into a build directory -- a binding generator's
+output, say -- is found by putting that directory on =MEP_FORTRAN_PATH=,
+or in =FFLAGS= as the compiler sees it:
+
+#+begin_src sh
+export MEP_FORTRAN_PATH=$PWD/build/generated
+#+end_src
+
+Then hover, completion, signature help and go to definition work on its
+names as on the file's own: everything it exports, its =PRIVATE= names
+left out, =only:= lists and renames (=use datamunge, only: f => fit=)
+honoured, and what it re-exports from modules it =USE=s followed in turn.
+After =obj%=, when =obj='s declared type comes from the module, the
+completions are its components and type-bound procedures, those it
+inherits through =extends(...)= included.
+
+A module's file is read once and kept until it changes on disk (its
+modification time or size), so a generated module of tens of thousands of
+lines costs one parse: on a 70,000-line module with 4,000 procedures and
+1,000 generic interfaces, the first parse takes about 0.15 s and a hover
+afterwards well under a millisecond. Lints stay per file: =undeclared= is
+still quiet in a scope that =USE=s a module from another file.
+
+** FORD documentation
+
+Comments in [[https://forddocs.readthedocs.io][FORD]]'s style document the entity they sit by -- a
+module, procedure, derived type, component, type-bound procedure,
+generic interface, parameter or variable:
+
+#+begin_src fortran
+!> Fit a model to the data.
+!!
+!! Least squares, weighted when weights are given.
+interface fit
+   module procedure fit_1, fit_2
+end interface fit
+
+subroutine fit_2(x, n, out)
+   !! Fit with a scalar.
+   real(c_double), intent(in) :: x   !! the scalar
+   integer, intent(in) :: n          !! how many
+   real(c_double), intent(out) :: out
+end subroutine fit_2
+#+end_src
+
+- =!>= lines directly above an entity's statement document it, and so do
+  the =!!= lines continuing such a block (Doxygen's convention);
+- =!!= at the end of the statement's line, and =!!= lines directly below
+  it, document it too (FORD's convention; =!<= trails as well);
+- a dummy argument is documented by =!!= on its declaration or by a
+  =@param name text= line in its procedure's block (=@param[in]= too).
+
+The text is Markdown and is shown as Markdown. Doxygen's tags, as
+documentation converted from C++ carries them, are turned into it:
+=@brief= and =@details= are dropped, =@param= lines become an
+*Arguments* list and =@return= a *Returns* line, =@note=, =@warning=,
+=@see=, =@deprecated= and their kind become labelled paragraphs,
+=@code= / =@endcode= a code block, and =@p name= becomes =name=.
+Hover on a generic interface lists its specific procedures with their
+summaries; a type-bound procedure with no documentation of its own shows
+its procedure's.
 
 * Using fortls instead
 
@@ -148,7 +239,11 @@ solver.f90:41:9: error: Symbol 'resid' has no IMPLICIT type [undeclared]
 is an error or a warning, 2 if a file could not be read, and 0 otherwise.
 Standard input is read as free form. =mep-fortran-lsp --gfortran-check
 FILE...= prints just the first syntax error for each file, as =LINE:
-message= (line 0 for the end of the file), or =ok=. With no arguments,
+message= (line 0 for the end of the file), or =ok=. =mep-fortran-lsp
+--intrinsic NAME= prints what the server knows about an intrinsic
+procedure, an intrinsic module's entity or a keyword -- its forms, class,
+standard and summary -- and exits 1 when it knows nothing; the
+[[file:fortran-mode.html][Fortran mode]]'s Help uses it. With no arguments,
 =mep-fortran-lsp= is the language server on stdio.
 
 * See also

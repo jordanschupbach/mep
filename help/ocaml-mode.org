@@ -1,0 +1,108 @@
+#+TITLE: OCaml mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="54">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.ml= or =.mli= file.
+The tab becomes an OCaml workspace: your file, a toplevel below it, and
+panels showing what that session holds.
+
+The console is =utop= when it is on =PATH=, else the stock =ocaml=
+toplevel, so line editing, history, completion and the display of a
+phrase's value are its own. It starts with mep's environment (=OCAMLPATH=,
+=OPAM_SWITCH_PREFIX=, =CAML_LD_LIBRARY_PATH=, as an opam switch, a dev
+shell or direnv set them), so =#require "pkg"= and =#load= find what they
+would in a terminal in that project.
+
+* Working in it
+
+| Key / call               | Does                                                         |
+|--------------------------+--------------------------------------------------------------|
+| =<leader>rr=             | run the whole file in the console                            |
+| =<leader>re=             | run the top-level phrase at the cursor (or the selection)    |
+| =gh=                     | help for the name under the cursor, in the Help panel        |
+| =MepUI.help "List.map";;= | the same, from the console                                  |
+| =MepUI.view "x";;=       | a value -- its type and the whole value -- or a module's signature, in Inspect |
+
+=<leader>re= finds the phrase around the cursor: from the nearest line
+above that starts one at column 0 to just before the next. That is a whole
+=let= (with its =and= bindings), =type=, =module ... end= or =open=.
+A line starting with =and=, =in=, =end=, =done=, =then=, =else=, =with=,
+=|= or a closing bracket never starts a phrase, and neither does a line
+that continues the previous one (one ending in ~=~, another operator, a
+comma, an open bracket, or a keyword such as =in=, =then=, =match= or
+=fun=), nor one inside a comment or a string. Comments after the
+phrase are left out, and =;;= is added when the phrase lacks it.
+
+Neither key pastes your code into the prompt. The code is written to a
+file after a line-number directive (=# 12 "/path/main.ml"=) and loaded
+with a single =#use "...";;= line, so the toplevel's type errors and
+exceptions name your file and line. =<leader>rr= runs the buffer as it is
+in the editor, unsaved changes included. mod1+Enter still pastes the
+current line or the selection straight into the prompt (see
+[[file:repl.html][REPL and send-to-terminal]]).
+
+* The panels
+
+| Panel     | Shows                                                                   |
+|-----------+-------------------------------------------------------------------------|
+| Variables | the values the session defined, with their type and a short value, then its types |
+| Modules   | the modules the session defined, then the directories it added with =#directory= (folded) |
+| Inspect   | =MepUI.view=: the value printed in full, as the toplevel prints it, or a module's signature |
+| Help      | the odoc documentation of a value, type or module, then the session's view of it |
+
+Clicking a value in Variables inspects it; clicking a module shows its
+help. The standard library, the predefined types and mep's own =MepUI=
+module are left out.
+
+The panels refresh before each phrase is read: the init script hooks the
+toplevel's phrase reader (and =UTop.at_new_command= under utop). They need
+the compiler libraries (=+compiler-libs=, part of every OCaml install);
+without them the panels stay empty and the rest still works.
+
+* Help from the live session
+
+=MepUI.help "Datamunge.Stats.mean"= -- and =gh= over that name in your
+file -- has =mep-ocaml-lsp --doc= (see
+[[file:ocaml-lsp.html][The OCaml language server]]) read the name's odoc
+comments from the =.mli= it is declared in, resolving it from inside your
+file (its =open=s) with the session's =#directory= directories added to
+the search, and shows them rendered: signature, text, =@param=,
+=@return=, =@raise= and the rest. That is how a Rosetta-generated
+binding's interface shows the C++ documentation. Below comes the
+session's own view: the value's type as the toplevel inferred it, or the
+module's signature -- so a value you defined in the session, which no
+=.mli= documents, still gets a type.
+
+In an OCaml buffer =gh= also opens the language server's hover, which
+needs no running session. Without the mode open, =gh= is that hover alone.
+
+* Options
+
+#+begin_src lua
+mep.opt.ocaml_ui_cmd = {'utop'}     -- the console's command (default: utop if on PATH, else ocaml)
+mep.opt.ocaml_ui_info_share = 0.3   -- the panels' width
+#+end_src
+
+A =(* REPL: dune utop lib *)= line in the file overrides =ocaml_ui_cmd= for
+that file. The mode appends =-init= and its init script, so the command
+must accept them, as =ocaml=, =utop= and =dune utop DIR --= do.
+
+* Limits
+
+- =#require= (findlib's topfind) adds directories without going through
+  =#directory=, so they are not listed in Modules or passed to
+  =mep-ocaml-lsp --doc=; the session's view in Help still covers what the
+  packages define. =#directory= the package's directory to get its odoc
+  docs too.
+- Values are shown with the toplevel's printer, abstract types as =<abstr>=
+  and functions as =<fun>=, as the toplevel prints them.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:ocaml-lsp.html][The OCaml language server]].
+- [[file:formatting.html][Formatting]] -- =gf= formats OCaml in ocamlformat's default style.
+- [[file:run-button.html][Run button]] -- a =(* CMD: ... *)= line runs a file another way.

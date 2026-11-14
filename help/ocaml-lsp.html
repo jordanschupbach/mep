@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The OCaml language server</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Code">
+<meta name="help-order" content="14">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>The OCaml language server</h1>
+<h1>What it is</h1>
+<p>OCaml files (<code>.ml</code> and <code>.mli</code>) get a language server of their own,
+<code>mep-ocaml-lsp</code>, built and shipped with mep. Open one and it attaches by
+itself -- no opam switch, no <code>ocaml-lsp-server</code>, no build needed. It
+replaces <code>ocamllsp</code> as mep's default for OCaml.</p>
+<p>It parses with the tree-sitter-ocaml grammars mep highlights with (the
+implementation grammar for <code>.ml</code>, the interface grammar for <code>.mli</code>), reads
+the <code>.mli</code> files of the modules a file uses, and renders their odoc
+comments. That makes it fit for libraries whose OCaml side is a documented
+interface over C stubs -- a Rosetta-generated binding, where every value
+of the <code>.mli</code> carries the C++ documentation as an odoc comment. It does not
+type-check: types come from <code>val</code> declarations and annotations, not from
+inference.</p>
+<h1>Where it looks for modules</h1>
+<p>A module name such as <code>Foo</code> (in <code>Foo.bar</code>, <code>open Foo</code>, <code>module M = Foo</code>,
+<code>include Foo</code>) is looked up as <code>foo.mli</code> / <code>foo.ml</code>, in order:</p>
+<ul>
+<li>the file's own directory, then <code>-I</code> directories on a <code>(* CMD: ocaml -I lib ... *)</code> line in the file (see <a href="run-button.html">Run button</a>), relative to the file;</li>
+<li>the workspace: the client's root, or the nearest ancestor with a <code>dune-project</code> or <code>.git</code>, searched recursively (<code>_build</code>, <code>_opam</code> and hidden directories are skipped);</li>
+<li>the standard library, found with <code>ocamlfind ocamlc -where</code> or <code>ocamlc -where</code> (<code>OCAMLLIB</code> or <code>MEP_OCAML_STDLIB</code> override it) -- <code>Stdlib__List</code> is <code>list.mli</code> there;</li>
+<li>library directories, and one or two package levels below each: <code>MEP_OCAML_PATH</code> (colon separated), <code>_opam/lib</code> of the project or any ancestor, <code>$OPAM_SWITCH_PREFIX/lib</code>, <code>OCAMLPATH</code>, and the directories <code>ocamlfind printconf path</code> prints (asked once, only when <code>ocamlfind</code> is on <code>PATH</code>).</li>
+</ul>
+<p>When a module has both, the <code>.mli</code> is read for signatures and docs and the
+<code>.ml</code> is where <i>go to definition</i> lands. Without any OCaml installed, a
+compiled-in summary of <code>Stdlib</code>, <code>List</code>, <code>String</code>, <code>Array</code>, <code>Printf</code>,
+<code>Option</code> and <code>Hashtbl</code> stands in for the standard library.</p>
+<p>Inside a file, names resolve as OCaml does: the innermost binding (<code>let</code>,
+<code>let ... in</code>, function parameters, match cases, <code>for</code>), then the modules
+opened at that point (<code>open M</code>, <code>let open M in</code>, <code>M.( ... )</code>, latest first),
+then <code>Stdlib</code>. Module paths follow aliases (<code>module M = Foo.Bar</code>), module
+types (<code>module M : S</code>), <code>module type of</code> and <code>include</code>, and an opened
+module's submodules (after <code>open Datamunge</code>, <code>Stats.mean</code> is
+<code>Datamunge.Stats.mean</code>). Each file is parsed once and kept until it changes
+on disk.</p>
+<h1>What it reports</h1>
+<table>
+<tr><th>Code</th><th>Severity</th><th>What it means</th></tr>
+<tr><td><code>syntax-error</code></td><td>error</td><td>the file does not parse (the grammar's error or missing node)</td></tr>
+<tr><td><code>unused-variable</code></td><td>warning</td><td>a <code>let x = ... in</code> whose <code>x</code> is never used (OCaml's warning 26); names starting with <code>_</code> are exempt</td></tr>
+<tr><td><code>unbound-value</code></td><td>error / warning</td><td><code>Foo.bar</code> where <code>Foo</code> is found and has no <code>bar</code> -- an error when <code>Foo</code> comes from an <code>.mli</code>, a warning from an <code>.ml</code></td></tr>
+<tr><td><code>deprecated</code></td><td>warning</td><td>a use of a value marked <code>[@@ocaml.deprecated]</code> or <code>@deprecated</code></td></tr>
+</table>
+<p><code>unbound-value</code> is reported only when every member of the module is known:
+not for modules with a functor application or an unresolved <code>include</code>, and
+not against the compiled-in standard library summary. Lines with a syntax
+error get no other diagnostics. Over OCaml 5.4's standard library (72
+<code>.ml</code> and 72 <code>.mli</code> files) it reports nothing.</p>
+<h1>What else it does</h1>
+<ul>
+<li><b>Hover</b> shows the signature (<code>val</code>, <code>external</code>, the type definition, <code>module</code>, the constructor and its type) and the odoc documentation rendered as Markdown: <code>[code]</code>, <code>{[ ... ]}</code> blocks, <code>{b}</code>, <code>{i}</code>, <code>{e}</code>, lists, headings, <code>{!refs}</code> and links, and the tags <code>@param</code>, <code>@return</code>, <code>@raise</code>, <code>@see</code>, <code>@since</code>, <code>@deprecated</code>, <code>@before</code>. Docs are attached as odoc does: right after an item (same line, or the next line with a blank line after), else right before it; a constructor's or field's comment on its own line. In an <code>.ml</code> with an <code>.mli</code> beside it, a top-level <code>let</code> shows the <code>.mli</code>'s <code>val</code> and docs.</li>
+<li><b>Completion</b> after <code>Foo.</code> (or <code>Foo.Bar.</code>) offers the module's values, submodules, constructors and types; elsewhere the bindings in scope, the file's own values, the opened modules' values, <code>Stdlib</code>, module names from the workspace, the standard library and the library directories, and keywords.</li>
+<li><b>Signature help</b> in an application (<code>List.map f |</code>) splits the type at its arrows and highlights the argument under the cursor, counting positional arguments and matching <code>~label:</code> arguments by name, with the <code>@param</code> text of each parameter.</li>
+<li><b>Go to definition</b> jumps to a local, a top-level item, or a module's item in its <code>.ml</code>; <b>go to declaration</b> prefers the <code>.mli</code>.</li>
+<li><b>Find references</b>, <b>highlight</b> and <b>rename</b> for values bound in the file (<code>~x</code> arguments become <code>~x:new</code>, <code>{ x }</code> becomes <code>{ x = new }</code>; a labelled parameter is not renamed, since that changes the function's labels). References to a module's value list its uses in the file.</li>
+<li><b>Outline</b>: values, externals, types with their constructors and fields, exceptions, modules and module types with their members, classes and methods.</li>
+<li><b>Folding</b> of definitions, <code>struct=/=sig</code> bodies, matches, <code>let ... in</code>, literals and comments.</li>
+<li><b>Formatting</b> is mep's OCaml formatter in ocamlformat's default style (see <a href="formatting.html">Formatting</a>), the same one <code>gf</code> runs. Range formatting re-indents the selected lines without breaking or joining any.</li>
+</ul>
+<h1>Linting from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-ocaml-lsp</span> <span class="tok-red">--lint</span> FILE...</code></pre></div>
+<p>prints every diagnostic as <code>path:line:col: severity: message [code]</code> --
+1-based line and column, then the severity (<code>error</code>, <code>warning</code>, <code>info</code>,
+<code>hint</code>), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, <code>mep-ocaml-lsp</code> is the language server on stdio.</p>
+<h1>Documentation from the command line</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-ocaml-lsp</span> <span class="tok-red">--doc</span> Datamunge.Stats.mean <span class="tok-red">-I</span> _build/default/lib</code></pre></div>
+<p>prints a name's documentation as Markdown -- the text hover shows -- and
+exits 1 when it finds none. The name is a module path (<code>List</code>,
+<code>Datamunge.Stats</code>: its docs and a list of its values), a qualified value,
+type or constructor (<code>List.map</code>), or a bare name seen through <code>Stdlib</code>.
+<code>-I DIR</code> adds a directory to search and <code>--context FILE</code> resolves the name
+from inside that file, with its =open=s. The OCaml language UI mode's Help
+tab (see <a href="ocaml-mode.html">OCaml mode</a>) is built on it.</p>
+<h1>Using ocamllsp instead</h1>
+<p><code>ocamllsp</code> (from <code>ocaml-lsp-server</code>, which type-checks through merlin and
+needs a built project) is still registered, with no filetypes. To switch:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.ocamllsp.filetypes = <span class="tok-blue">{</span><span class="tok-green">'ml'</span>, <span class="tok-green">'mli'</span><span class="tok-blue">}</span>
+<span class="tok-cyan">mep</span>.lsp_servers.ocaml_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span></code></pre></div>
+<h1>See also</h1>
+<ul>
+<li><a href="lsp.html">Language servers</a> -- the keys, the diagnostics popup, and the other servers.</li>
+<li><a href="ocaml-mode.html">OCaml mode</a> -- utop or the <code>ocaml</code> toplevel with panels, and help from the session.</li>
+<li><a href="formatting.html">Formatting</a> -- the OCaml formatter.</li>
+</ul>
+</body>
+</html>

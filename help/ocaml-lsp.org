@@ -1,0 +1,146 @@
+#+TITLE: The OCaml language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+OCaml files (=.ml= and =.mli=) get a language server of their own,
+=mep-ocaml-lsp=, built and shipped with mep. Open one and it attaches by
+itself -- no opam switch, no =ocaml-lsp-server=, no build needed. It
+replaces =ocamllsp= as mep's default for OCaml.
+
+It parses with the tree-sitter-ocaml grammars mep highlights with (the
+implementation grammar for =.ml=, the interface grammar for =.mli=), reads
+the =.mli= files of the modules a file uses, and renders their odoc
+comments. That makes it fit for libraries whose OCaml side is a documented
+interface over C stubs -- a Rosetta-generated binding, where every value
+of the =.mli= carries the C++ documentation as an odoc comment. It does not
+type-check: types come from =val= declarations and annotations, not from
+inference.
+
+* Where it looks for modules
+
+A module name such as =Foo= (in =Foo.bar=, =open Foo=, =module M = Foo=,
+=include Foo=) is looked up as =foo.mli= / =foo.ml=, in order:
+
+- the file's own directory, then =-I= directories on a
+  =(* CMD: ocaml -I lib ... *)= line in the file (see
+  [[file:run-button.html][Run button]]), relative to the file;
+- the workspace: the client's root, or the nearest ancestor with a
+  =dune-project= or =.git=, searched recursively (=_build=, =_opam= and
+  hidden directories are skipped);
+- the standard library, found with =ocamlfind ocamlc -where= or
+  =ocamlc -where= (=OCAMLLIB= or =MEP_OCAML_STDLIB= override it) --
+  =Stdlib__List= is =list.mli= there;
+- library directories, and one or two package levels below each:
+  =MEP_OCAML_PATH= (colon separated), =_opam/lib= of the project or any
+  ancestor, =$OPAM_SWITCH_PREFIX/lib=, =OCAMLPATH=, and the directories
+  =ocamlfind printconf path= prints (asked once, only when =ocamlfind= is
+  on =PATH=).
+
+When a module has both, the =.mli= is read for signatures and docs and the
+=.ml= is where /go to definition/ lands. Without any OCaml installed, a
+compiled-in summary of =Stdlib=, =List=, =String=, =Array=, =Printf=,
+=Option= and =Hashtbl= stands in for the standard library.
+
+Inside a file, names resolve as OCaml does: the innermost binding (=let=,
+=let ... in=, function parameters, match cases, =for=), then the modules
+opened at that point (=open M=, =let open M in=, =M.( ... )=, latest first),
+then =Stdlib=. Module paths follow aliases (=module M = Foo.Bar=), module
+types (=module M : S=), =module type of= and =include=, and an opened
+module's submodules (after =open Datamunge=, =Stats.mean= is
+=Datamunge.Stats.mean=). Each file is parsed once and kept until it changes
+on disk.
+
+* What it reports
+
+| Code              | Severity        | What it means |
+|-------------------+-----------------+---------------|
+| =syntax-error=    | error           | the file does not parse (the grammar's error or missing node) |
+| =unused-variable= | warning         | a =let x = ... in= whose =x= is never used (OCaml's warning 26); names starting with =_= are exempt |
+| =unbound-value=   | error / warning | =Foo.bar= where =Foo= is found and has no =bar= -- an error when =Foo= comes from an =.mli=, a warning from an =.ml= |
+| =deprecated=      | warning         | a use of a value marked =[@@ocaml.deprecated]= or =@deprecated= |
+
+=unbound-value= is reported only when every member of the module is known:
+not for modules with a functor application or an unresolved =include=, and
+not against the compiled-in standard library summary. Lines with a syntax
+error get no other diagnostics. Over OCaml 5.4's standard library (72
+=.ml= and 72 =.mli= files) it reports nothing.
+
+* What else it does
+
+- *Hover* shows the signature (=val=, =external=, the type definition,
+  =module=, the constructor and its type) and the odoc documentation
+  rendered as Markdown: =[code]=, ={[ ... ]}= blocks, ={b}=, ={i}=, ={e}=,
+  lists, headings, ={!refs}= and links, and the tags =@param=, =@return=,
+  =@raise=, =@see=, =@since=, =@deprecated=, =@before=. Docs are attached
+  as odoc does: right after an item (same line, or the next line with a
+  blank line after), else right before it; a constructor's or field's
+  comment on its own line. In an =.ml= with an =.mli= beside it, a
+  top-level =let= shows the =.mli='s =val= and docs.
+- *Completion* after =Foo.= (or =Foo.Bar.=) offers the module's values,
+  submodules, constructors and types; elsewhere the bindings in scope,
+  the file's own values, the opened modules' values, =Stdlib=, module
+  names from the workspace, the standard library and the library
+  directories, and keywords.
+- *Signature help* in an application (=List.map f |=) splits the type at
+  its arrows and highlights the argument under the cursor, counting
+  positional arguments and matching =~label:= arguments by name, with the
+  =@param= text of each parameter.
+- *Go to definition* jumps to a local, a top-level item, or a module's item
+  in its =.ml=; *go to declaration* prefers the =.mli=.
+- *Find references*, *highlight* and *rename* for values bound in the file
+  (=~x= arguments become =~x:new=, ={ x }= becomes ={ x = new }=; a
+  labelled parameter is not renamed, since that changes the function's
+  labels). References to a module's value list its uses in the file.
+- *Outline*: values, externals, types with their constructors and fields,
+  exceptions, modules and module types with their members, classes and
+  methods.
+- *Folding* of definitions, =struct=/=sig= bodies, matches, =let ... in=,
+  literals and comments.
+- *Formatting* is mep's OCaml formatter in ocamlformat's default style
+  (see [[file:formatting.html][Formatting]]), the same one =gf= runs. Range
+  formatting re-indents the selected lines without breaking or joining any.
+
+* Linting from the command line
+
+#+begin_src sh
+mep-ocaml-lsp --lint FILE...
+#+end_src
+
+prints every diagnostic as =path:line:col: severity: message [code]= --
+1-based line and column, then the severity (=error=, =warning=, =info=,
+=hint=), the message and the code. It exits 1 if anything printed is an
+error or a warning, 2 if a file could not be read, and 0 otherwise. With no
+arguments, =mep-ocaml-lsp= is the language server on stdio.
+
+* Documentation from the command line
+
+#+begin_src sh
+mep-ocaml-lsp --doc Datamunge.Stats.mean -I _build/default/lib
+#+end_src
+
+prints a name's documentation as Markdown -- the text hover shows -- and
+exits 1 when it finds none. The name is a module path (=List=,
+=Datamunge.Stats=: its docs and a list of its values), a qualified value,
+type or constructor (=List.map=), or a bare name seen through =Stdlib=.
+=-I DIR= adds a directory to search and =--context FILE= resolves the name
+from inside that file, with its =open=s. The OCaml language UI mode's Help
+tab (see [[file:ocaml-mode.html][OCaml mode]]) is built on it.
+
+* Using ocamllsp instead
+
+=ocamllsp= (from =ocaml-lsp-server=, which type-checks through merlin and
+needs a built project) is still registered, with no filetypes. To switch:
+
+#+begin_src lua
+mep.lsp_servers.ocamllsp.filetypes = {'ml', 'mli'}
+mep.lsp_servers.ocaml_ls.filetypes = {}
+#+end_src
+
+* See also
+
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.
+- [[file:ocaml-mode.html][OCaml mode]] -- utop or the =ocaml= toplevel with panels, and help from the session.
+- [[file:formatting.html][Formatting]] -- the OCaml formatter.

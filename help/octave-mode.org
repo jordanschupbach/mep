@@ -1,0 +1,97 @@
+#+TITLE: Octave mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="51">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.m= file.
+The tab becomes an Octave workspace: your file, an interactive
+=octave-cli= below it, and panels showing what that session holds.
+
+The console is the stock =octave-cli= (no GUI), so line editing, history,
+completion and value display are Octave's own. It starts with mep's
+environment (=OCTAVE_PATH= included), and its load path gets:
+
+- the directory of your file, so functions in sibling =.m= files resolve;
+- every directory in =MEP_OCTAVE_PATH=;
+- the =--path DIR= / =-p DIR= directories of an =octave= command in the
+  file's =% CMD:= line (see [[file:run-button.html][Run button]]), with
+  =$(pwd)= read as mep's working directory.
+
+* Working in it
+
+| Key / call               | Does                                                       |
+|--------------------------+------------------------------------------------------------|
+| =<leader>rr=             | run the whole file in the console                          |
+| =<leader>re=             | run the statement at the cursor (or the selection)         |
+| =gh=                     | help for the name under the cursor, in the Help panel      |
+| =mep_help ('name')=      | the same, from the console                                 |
+| =mep_view (x)=           | a value -- its =disp=, class, size and fields -- in Inspect |
+| =mep_run (file)=         | run a file the way =<leader>rr= does                       |
+
+=<leader>re= finds the top-level statement around the cursor: a whole
+=function=, =if=, =for=, =while=, =switch=, =try= or =unwind_protect= block up
+to its =end=, or a single line with its =...= continuations and open
+brackets. =end= inside an index (=x(end)=) and keywords inside strings and
+comments do not count.
+
+Neither key pastes your code into the prompt. The code is written to a
+file in the session directory, named after your file and padded to its
+line numbers, and run with one =source (...)= line in the base workspace.
+Variables it assigns stay in the workspace, and an error names your line.
+=<leader>rr= runs the buffer as it is in the editor, unsaved changes
+included, through =mep_run=: like Octave's =run=, it changes to the file's
+directory for the run and adds it to the load path.
+
+A file with a =% CMD:= line still runs that line on the Run button, as
+without the mode.
+
+* The panels
+
+| Panel     | Shows                                                             |
+|-----------+-------------------------------------------------------------------|
+| Workspace | =whos= of the base workspace: name, class, size and a short value |
+| Path      | the directories added to the load path, and the loaded packages   |
+| Inspect   | =mep_view= of a value                                              |
+| Help      | the help text of a function                                        |
+
+Clicking a Workspace row inspects it. The panels refresh after every
+command, through an input-event hook that runs while the prompt waits.
+
+* Help
+
+=mep_help ('name')= -- and =gh= over a name in your file -- first asks
+Octave: =help name= shows a =.m= file's comment block or a built-in's
+documentation (Texinfo rendered), and =which= where the function comes
+from.
+
+When Octave has no help text -- a compiled =.oct= function without a
+docstring, or a command-line function -- the Help tab reads the comment
+blocks of the =.m= files instead, with =mep-octave-lsp --doc= (see
+[[file:octave-lsp.html][The Octave language server]]): =NAME.m= in the
+directories on the session's load path, and the functions of the scripts
+the session ran. A Rosetta-generated Octave binding ships such =.m=
+stubs, carrying the C++ library's documentation, next to its =.oct=
+functions.
+
+In a =.m= buffer =gh= also opens the language server's hover, which shows
+the same help text without a running session.
+
+* Options
+
+#+begin_src lua
+mep.opt.octave_ui_cmd = {'octave', '--no-gui'}   -- the console's command
+mep.opt.octave_ui_info_share = 0.3               -- the panels' width
+#+end_src
+
+A =% REPL: nix develop --command octave-cli= line in the file overrides
+=octave_ui_cmd= for that file. The mode appends =-q --persist --eval
+"source (...)"=, so the command must accept them, as =octave-cli= and
+=octave= do.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:octave-lsp.html][The Octave language server]].
+- [[file:run-button.html][Run button]] -- a =% CMD:= line runs a file another way.

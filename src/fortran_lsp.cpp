@@ -37,6 +37,18 @@ struct Symbol {
     bool in_common = false;
     bool in_namelist = false;
     bool equivalenced = false;
+    // for documentation and cross-file queries
+    int stmt = -1;             // the statement that declares it (its FORD docs sit around it)
+    bool placeholder = false;  // made by an attribute statement (PUBLIC :: x) before its declaration
+    std::vector<std::string> specifics;  // generic interface / generic binding / type constructor
+    bool constructor = false;  // a type that also names a generic interface
+    std::string extends;       // type: parent type
+    std::string target;        // binding: the procedure it binds (or the interface of a deferred one)
+    std::string pass;          // binding: "" passes the first dummy, "-" is NOPASS, else PASS(name)
+    int owner = -1;            // component/binding: the type symbol
+    int decl_line = -1, decl_end = -1;  // where its type declaration names it (a dummy's is not its line)
+    std::string prefix;        // procedure prefix (pure, elemental, module, ...)
+    std::string result;        // function RESULT name, when not the function's own
 };
 
 struct Scope {
@@ -52,6 +64,13 @@ struct Scope {
     std::set<std::string> labels;
     int first_line = 0, last_line = 0;
     bool is_interface_body = false;
+    struct Use {
+        std::string module;
+        bool only = false;
+        std::set<std::string> renamed;  // module names renamed away (local => name): not visible as name
+    };
+    std::vector<Use> use_list;
+    bool default_private = false;  // a bare PRIVATE statement in a module
 };
 
 }  // namespace
@@ -77,6 +96,10 @@ public:
     std::map<std::string, int> modules;  // module name -> scope
     std::map<std::string, int> types;    // derived type name -> symbol (any scope; first wins)
     std::map<int, std::vector<int>> components;  // type symbol -> component symbols
+    // modules from other files, as the module source resolved them (USE name -> analysis)
+    std::map<std::string, std::shared_ptr<const FortranLspDocument>> imports;
+    std::vector<std::string> known_modules;  // what the module source can resolve
+    std::map<int, std::string> trailing_docs;  // line -> its trailing `!!`/`!<` comment
 };
 
 namespace {
@@ -121,6 +144,40 @@ const char *KindWord(SymKind k) {
     return "";
 }
 
+// The binding a PROCEDURE statement in a type's CONTAINS part makes of entity @p e:
+// its target (name => target, or the interface of PROCEDURE(iface)) and how it passes the object.
+void BindingDetails(const fp::Stmt &st, const fp::Entity &e, Symbol *c) {
+    const std::vector<fp::Token> &t = st.toks;
+    size_t dc = t.size();
+    for (size_t i = st.first; i < t.size(); i++) {
+        if (t[i].text == "::") {
+            dc = i;
+            break;
+        }
+    }
+    size_t attrs_end = dc == t.size() ? st.first + 1 : dc;
+    for (size_t i = st.first + 1; i < attrs_end && i < t.size(); i++) {
+        if (t[i].kind != fp::TokKind::Name) continue;
+        if (t[i].lower == "nopass") {
+            c->pass = "-";
+        } else if (t[i].lower == "pass") {
+            if (i + 2 < attrs_end && t[i + 1].text == "(" && t[i + 2].kind == fp::TokKind::Name) c->pass = t[i + 2].lower;
+        } else if (t[i].lower == "deferred") {
+            c->detail = "deferred";
+        }
+    }
+    if (t.size() > st.first + 3 && t[st.first].lower == "procedure" && t[st.first + 1].text == "(" &&
+        t[st.first + 2].kind == fp::TokKind::Name)
+        c->target = t[st.first + 2].lower;
+    for (size_t i = dc == t.size() ? st.first : dc; i < t.size(); i++) {
+        if (t[i].pos == e.pos) {
+            if (i + 2 < t.size() && t[i + 1].text == "=>" && t[i + 2].kind == fp::TokKind::Name) c->target = t[i + 2].lower;
+            break;
+        }
+    }
+    if (c->target.empty()) c->target = e.name;
+}
+
 // ---- building the model ------------------------------------------------------------------
 
 class Builder {
@@ -130,11 +187,26 @@ public:
 
 private:
     int AddSym(int scope, const std::string &name, const std::string &spelling, SymKind kind, fp::Pos pos,
-               fp::Pos end) {
+               fp::Pos end, bool placeholder = false) {
         Scope &sc = d_->scopes[static_cast<size_t>(scope)];
         auto it = sc.names.find(name);
-        if (it != sc.names.end()) return it->second;
+        if (it != sc.names.end()) {
+            Symbol &old = d_->syms[static_cast<size_t>(it->second)];
+            if (old.placeholder && !placeholder) {
+                // PUBLIC :: x (or a PROCEDURE in an interface) came first: this is the declaration
+                old.placeholder = false;
+                old.kind = kind;
+                old.spelling = spelling.empty() ? name : spelling;
+                old.line = pos.line;
+                old.col = pos.col;
+                old.end_col = end.line == pos.line ? end.col : pos.col + static_cast<int>(name.size());
+                old.stmt = cur_stmt_;
+            }
+            return it->second;
+        }
         Symbol s;
+        s.placeholder = placeholder;
+        s.stmt = cur_stmt_;
         s.name = name;
         s.spelling = spelling.empty() ? name : spelling;
         s.kind = kind;
@@ -156,8 +228,14 @@ private:
     int Lookup(int scope, const std::string &name, int depth = 0) const;
     void Lints();
 
+    void AddSpecifics(int scope, int interface_construct, const std::vector<std::string> &names);
+
     FortranLspDocument *d_;
     std::map<int, int> scope_of_construct_;
+    int cur_stmt_ = -1;
+
+public:
+    FortranLspModuleSource *modules_ = nullptr;
 };
 
 void Builder::Run() {
@@ -206,7 +284,19 @@ void Builder::Run() {
         while (c > 0 && ScopeOfConstruct(c) < 0) c = src.constructs[static_cast<size_t>(c)].parent;
         d_->scope_of_stmt[si] = c >= 0 ? ScopeOfConstruct(c) : 0;
     }
-    for (size_t si = 0; si < src.stmts.size(); si++) Declare(static_cast<int>(si), d_->scope_of_stmt[si]);
+    for (size_t si = 0; si < src.stmts.size(); si++) {
+        cur_stmt_ = static_cast<int>(si);
+        Declare(static_cast<int>(si), d_->scope_of_stmt[si]);
+    }
+    cur_stmt_ = -1;
+    // trailing `!!` / `!<` comments: FORD (and Doxygen) documentation of the statement they end
+    for (const fp::Comment &cm : src.comments) {
+        if (cm.text.size() < 2 || cm.text[0] != '!' || (cm.text[1] != '!' && cm.text[1] != '<')) continue;
+        if (static_cast<size_t>(cm.pos.line) >= d_->lines.size()) continue;
+        const std::string &l = d_->lines[static_cast<size_t>(cm.pos.line)];
+        size_t first = l.find_first_not_of(" \t");
+        if (first != std::string::npos && static_cast<int>(first) < cm.pos.col) d_->trailing_docs[cm.pos.line] = cm.text;
+    }
     // implicit none / opaque use are inherited from hosts
     for (size_t i = 1; i < d_->scopes.size(); i++) {
         Scope &sc = d_->scopes[i];
@@ -253,12 +343,20 @@ void Builder::Declare(int si, int scope) {
             Symbol &sym = d_->syms[static_cast<size_t>(s)];
             sym.unit = own;
             sym.type = st.unit.type;
+            sym.prefix = st.unit.prefix;
+            if (st.kind == K::Function && st.unit.result != st.unit.name) sym.result = st.unit.result;
             for (const fp::Entity &e : st.unit.dummies) sym.dummies.push_back(e.spelling);
             if (st.kind == K::ModuleProcedureUnit) sym.detail = "module procedure";
+            // an interface body of a named generic interface is one of its specifics
+            if (sc.is_interface_body && in->parent > 0 &&
+                src.constructs[static_cast<size_t>(in->parent)].kind == K::Interface)
+                AddSpecifics(host, in->parent, {st.unit.name});
         }
         for (const fp::Entity &e : st.unit.dummies) {
             if (e.name == "*") continue;
-            AddSym(own, e.name, e.spelling, SymKind::Dummy, e.pos, e.end);
+            int d = AddSym(own, e.name, e.spelling, SymKind::Dummy, e.pos, e.end);
+            // its documentation is at its type declaration, not at the procedure statement
+            if (d_->syms[static_cast<size_t>(d)].stmt == si) d_->syms[static_cast<size_t>(d)].stmt = -1;
         }
         if (st.kind == K::Function) {
             const std::string &r = st.unit.result.empty() ? st.unit.name : st.unit.result;
@@ -270,6 +368,7 @@ void Builder::Declare(int si, int scope) {
                 }
             }
             int s = AddSym(own, r, r == st.unit.name ? st.unit.spelling : r, SymKind::Result, p, e);
+            if (d_->syms[static_cast<size_t>(s)].stmt == si) d_->syms[static_cast<size_t>(s)].stmt = -1;
             d_->syms[static_cast<size_t>(s)].type = st.unit.type;
             if (!st.unit.type.empty()) d_->syms[static_cast<size_t>(s)].declared = true;
         }
@@ -290,6 +389,21 @@ void Builder::Declare(int si, int scope) {
                     sc.opaque_use = true;
                 }
             }
+            // a module from another file: the module source finds and analyses it
+            if (!known && !st.use_intrinsic && modules_ && !d_->imports.count(st.group) &&
+                !(intrinsic && st.group != "mpi" && st.group != "mpi_f08")) {
+                std::shared_ptr<const FortranLspDocument> m = modules_->Module(st.group);
+                if (m) d_->imports[st.group] = m;
+            }
+            {
+                Scope::Use u;
+                u.module = st.group;
+                u.only = st.use_only;
+                for (const fp::Entity &e : st.entities) {
+                    if (!e.rename.empty()) u.renamed.insert(e.rename);
+                }
+                sc.use_list.push_back(u);
+            }
             for (const fp::Entity &e : st.entities) {
                 int s = AddSym(scope, e.name, e.spelling, SymKind::Use, e.pos, e.end);
                 d_->syms[static_cast<size_t>(s)].from = st.group + (e.rename.empty() ? "" : ":" + e.rename);
@@ -303,6 +417,13 @@ void Builder::Declare(int si, int scope) {
         case K::TypeDecl:
         case K::Procedure: {
             bool in_type = in && in->kind == K::DerivedType;
+            bool in_interface = in && in->kind == K::Interface;
+            if (in_interface && st.kind == K::Procedure) {
+                // PROCEDURE :: a, b inside a generic interface: its specifics
+                std::vector<std::string> names;
+                for (const fp::Entity &e : st.entities) names.push_back(e.name);
+                AddSpecifics(scope, cons, names);
+            }
             for (const fp::Entity &e : st.entities) {
                 if (in_type) {
                     // component of the type opened by in->open
@@ -312,7 +433,10 @@ void Builder::Declare(int si, int scope) {
                     Symbol c;
                     c.name = e.name;
                     c.spelling = e.spelling;
-                    c.kind = st.kind == K::Procedure ? SymKind::Binding : SymKind::Component;
+                    bool after_contains = in->contains >= 0 && si > in->contains;
+                    c.kind = st.kind == K::Procedure || (after_contains && st.type.compare(0, 9, "procedure") == 0)
+                                 ? SymKind::Binding
+                                 : SymKind::Component;
                     c.line = e.pos.line;
                     c.col = e.pos.col;
                     c.end_col = e.end.col;
@@ -321,14 +445,23 @@ void Builder::Declare(int si, int scope) {
                     c.attrs = st.attrs;
                     c.array = e.array;
                     c.declared = true;
+                    c.stmt = si;
+                    c.owner = ti->second;
+                    if (c.kind == SymKind::Binding) BindingDetails(st, e, &c);
                     d_->components[ti->second].push_back(static_cast<int>(d_->syms.size()));
                     d_->syms.push_back(c);
                     continue;
                 }
                 SymKind k = (st.attrs & fp::kAttrParameter) ? SymKind::Parameter : SymKind::Variable;
                 if (st.kind == K::Procedure || st.type.compare(0, 9, "procedure") == 0) k = SymKind::Function;
-                int s = AddSym(scope, e.name, e.spelling, k, e.pos, e.end);
+                int s = AddSym(scope, e.name, e.spelling, k, e.pos, e.end, in_interface && st.kind == K::Procedure);
                 Symbol &sym = d_->syms[static_cast<size_t>(s)];
+                // a dummy or result typed here: its documentation is here
+                if (sym.stmt < 0 && (sym.kind == SymKind::Dummy || sym.kind == SymKind::Result)) {
+                    sym.stmt = si;
+                    sym.decl_line = e.pos.line;
+                    sym.decl_end = e.end.line == e.pos.line ? e.end.col : e.pos.col + static_cast<int>(e.name.size());
+                }
                 if (sym.kind == SymKind::Variable && k == SymKind::Parameter) sym.kind = k;
                 sym.type = st.type;
                 sym.attrs |= st.attrs;
@@ -339,13 +472,19 @@ void Builder::Declare(int si, int scope) {
             return;
         }
         case K::Attribute:
-        case K::Common:
+        case K::Common: {
+            std::string kw = st.toks.empty() ? "" : st.toks[st.first].lower;
+            if (st.kind == K::Attribute && st.entities.empty() && in && in->kind == K::Module &&
+                (kw == "private" || kw == "public"))
+                sc.default_private = kw == "private";
             for (const fp::Entity &e : st.entities) {
-                int s = AddSym(scope, e.name, e.spelling, SymKind::Variable, e.pos, e.end);
+                int s = AddSym(scope, e.name, e.spelling, SymKind::Variable, e.pos, e.end, st.kind == K::Attribute);
                 Symbol &sym = d_->syms[static_cast<size_t>(s)];
                 if (st.kind == K::Common) sym.in_common = true;
                 if (e.array) sym.array = true;
-                std::string w = st.toks.empty() ? "" : st.toks[st.first].lower;
+                std::string w = kw;
+                if (w == "public") sym.attrs |= fp::kAttrPublic;
+                if (w == "private") sym.attrs |= fp::kAttrPrivate;
                 if (w == "external") {
                     if (sym.kind == SymKind::Variable) sym.kind = SymKind::Function;
                     sym.attrs |= fp::kAttrExternal;
@@ -357,6 +496,7 @@ void Builder::Declare(int si, int scope) {
                 // the block name is not a local name: no symbol
             }
             return;
+        }
         case K::Parameter:
             for (const fp::Entity &e : st.entities) {
                 int s = AddSym(scope, e.name, e.spelling, SymKind::Parameter, e.pos, e.end);
@@ -383,13 +523,36 @@ void Builder::Declare(int si, int scope) {
             return;
         case K::DerivedType: {
             int s = AddSym(scope, st.unit.name, st.unit.spelling, SymKind::Type, st.unit.name_pos, st.unit.name_end);
+            Symbol &sym = d_->syms[static_cast<size_t>(s)];
+            if (sym.kind == SymKind::Interface) {
+                // the generic interface of the same name came first: it is the type's constructor
+                sym.kind = SymKind::Type;
+                sym.constructor = true;
+                sym.spelling = st.unit.spelling;
+                sym.line = st.unit.name_pos.line;
+                sym.col = st.unit.name_pos.col;
+                sym.end_col = st.unit.name_end.col;
+                sym.stmt = si;
+            }
+            for (const fp::NameRef &r : st.refs) {
+                if (r.ctx == fp::RefCtx::Type) sym.extends = r.name;
+            }
+            if (st.abstract) sym.detail = "abstract";
             if (!d_->types.count(st.unit.name)) d_->types[st.unit.name] = s;
             return;
         }
         case K::Interface:
             if (!st.unit.name.empty() && !st.generic_spec) {
-                AddSym(scope, st.unit.name, st.unit.spelling, SymKind::Interface, st.unit.name_pos,
-                       st.unit.name_end);
+                int s = AddSym(scope, st.unit.name, st.unit.spelling, SymKind::Interface, st.unit.name_pos,
+                               st.unit.name_end);
+                if (d_->syms[static_cast<size_t>(s)].kind == SymKind::Type) d_->syms[static_cast<size_t>(s)].constructor = true;
+            }
+            return;
+        case K::ModuleProcedureList:
+            if (in && in->kind == K::Interface) {
+                std::vector<std::string> names;
+                for (const fp::Entity &e : st.entities) names.push_back(e.name);
+                AddSpecifics(scope, cons, names);
             }
             return;
         case K::Generic:
@@ -400,11 +563,22 @@ void Builder::Declare(int si, int scope) {
                     Symbol c;
                     c.name = st.unit.name;
                     c.spelling = st.unit.name;
+                    if (st.unit.name_pos.line >= 0 && static_cast<size_t>(st.unit.name_pos.line) < d_->lines.size()) {
+                        const std::string &l = d_->lines[static_cast<size_t>(st.unit.name_pos.line)];
+                        if (st.unit.name_end.col <= static_cast<int>(l.size()))
+                            c.spelling = l.substr(static_cast<size_t>(st.unit.name_pos.col),
+                                                  static_cast<size_t>(st.unit.name_end.col - st.unit.name_pos.col));
+                    }
                     c.kind = SymKind::Binding;
                     c.line = st.unit.name_pos.line;
                     c.col = st.unit.name_pos.col;
                     c.end_col = st.unit.name_end.col;
                     c.detail = "generic binding";
+                    c.stmt = si;
+                    c.owner = ti->second;
+                    for (const fp::NameRef &r : st.refs) {
+                        if (r.ctx == fp::RefCtx::Generic) c.specifics.push_back(r.name);
+                    }
                     d_->components[ti->second].push_back(static_cast<int>(d_->syms.size()));
                     d_->syms.push_back(c);
                 }
@@ -439,6 +613,20 @@ void Builder::Declare(int si, int scope) {
             return;
         default:
             return;
+    }
+}
+
+void Builder::AddSpecifics(int scope, int interface_construct, const std::vector<std::string> &names) {
+    const fp::Source &src = *d_->src;
+    if (interface_construct <= 0) return;
+    const fp::Stmt &is = src.stmts[static_cast<size_t>(src.constructs[static_cast<size_t>(interface_construct)].open)];
+    if (is.unit.name.empty() || is.generic_spec) return;
+    Scope &sc = d_->scopes[static_cast<size_t>(scope)];
+    auto it = sc.names.find(is.unit.name);
+    if (it == sc.names.end()) return;
+    Symbol &g = d_->syms[static_cast<size_t>(it->second)];
+    for (const std::string &n : names) {
+        if (std::find(g.specifics.begin(), g.specifics.end(), n) == g.specifics.end()) g.specifics.push_back(n);
     }
 }
 
@@ -788,6 +976,9 @@ std::string SymbolDetail(const FortranLspDocument &doc, const Symbol &s) {
             break;
     }
     out = s.type.empty() ? std::string(KindWord(s.kind)) : s.type;
+    if ((s.attrs & fp::kAttrIntentIn) && (s.attrs & fp::kAttrIntentOut)) out += ", intent(inout)";
+    else if (s.attrs & fp::kAttrIntentIn) out += ", intent(in)";
+    else if (s.attrs & fp::kAttrIntentOut) out += ", intent(out)";
     static const struct {
         uint32_t bit;
         const char *w;
@@ -797,9 +988,6 @@ std::string SymbolDetail(const FortranLspDocument &doc, const Symbol &s) {
     for (const auto &a : kA) {
         if (s.attrs & a.bit) out += std::string(", ") + a.w;
     }
-    if ((s.attrs & fp::kAttrIntentIn) && (s.attrs & fp::kAttrIntentOut)) out += ", intent(inout)";
-    else if (s.attrs & fp::kAttrIntentIn) out += ", intent(in)";
-    else if (s.attrs & fp::kAttrIntentOut) out += ", intent(out)";
     out += " :: " + s.spelling;
     if (s.array) out += "(...)";
     (void)doc;
@@ -832,12 +1020,989 @@ const char *const kKeywords[] = {
     "import", "kind", "len", "data", "common", "namelist", "equivalence", "entry", "include", "enum",
     "enumerator", "rank", "is", "contiguous", "asynchronous", "codimension", "sync all", "lock", "unlock"};
 
+// ---- across files: targets, lookups, FORD documentation ------------------------------------------
+
+// A symbol in some analysis: this document's, or that of a module it imports.
+struct Target {
+    const FortranLspDocument *doc = nullptr;
+    int sym = -1;
+    bool ok() const { return doc && sym >= 0; }
+    const Symbol &s() const { return doc->syms[static_cast<size_t>(sym)]; }
+};
+
+constexpr int kMaxDepth = 16;         // USE chains
+constexpr int kMaxInheritance = 128;  // EXTENDS chains
+
+// The analysis holding module @p m as @p doc sees it (its own, or an import), and the module's scope there.
+const FortranLspDocument *ModuleDoc(const FortranLspDocument &doc, const std::string &m, int *scope) {
+    auto it = doc.modules.find(m);
+    if (it != doc.modules.end()) {
+        *scope = it->second;
+        return &doc;
+    }
+    auto im = doc.imports.find(m);
+    if (im == doc.imports.end() || !im->second) return nullptr;
+    auto jt = im->second->modules.find(m);
+    if (jt == im->second->modules.end()) return nullptr;
+    *scope = jt->second;
+    return im->second.get();
+}
+
+bool Exported(const FortranLspDocument &doc, const Symbol &s) {
+    if (s.attrs & fp::kAttrPrivate) return false;
+    if (s.attrs & fp::kAttrPublic) return true;
+    return s.scope < 0 || !doc.scopes[static_cast<size_t>(s.scope)].default_private;
+}
+
+Target ExportOf(const FortranLspDocument &doc, const std::string &mod, const std::string &name, int depth);
+
+// A USE-associated name: the entity it names in its module (itself when that is out of sight).
+Target FollowUse(const FortranLspDocument &doc, int sym, int depth) {
+    const Symbol &s = doc.syms[static_cast<size_t>(sym)];
+    if (s.kind != SymKind::Use) return {&doc, sym};
+    size_t colon = s.from.find(':');
+    std::string mod = s.from.substr(0, colon);
+    std::string orig = colon == std::string::npos ? s.name : s.from.substr(colon + 1);
+    Target t = ExportOf(doc, mod, orig, depth + 1);
+    return t.ok() ? t : Target{&doc, sym};
+}
+
+// What module @p mod (as @p doc sees it) makes available as @p name: its own public
+// entities and those it USEs in turn, private ones excluded.
+Target ExportOf(const FortranLspDocument &doc, const std::string &mod, const std::string &name, int depth) {
+    if (depth > kMaxDepth) return {};
+    int ms = -1;
+    const FortranLspDocument *md = ModuleDoc(doc, mod, &ms);
+    if (!md) return {};
+    const Scope &sc = md->scopes[static_cast<size_t>(ms)];
+    Target found;
+    auto it = sc.names.find(name);
+    if (it != sc.names.end()) {
+        const Symbol &s = md->syms[static_cast<size_t>(it->second)];
+        if (!Exported(*md, s)) return {};
+        if (!s.placeholder) return FollowUse(*md, it->second, depth);
+        found = {md, it->second};  // PUBLIC :: name, of something the module USEs
+    }
+    if (found.ok() || !sc.default_private) {
+        for (const Scope::Use &u : sc.use_list) {
+            if (u.only || u.renamed.count(name)) continue;
+            Target t = ExportOf(*md, u.module, name, depth + 1);
+            if (t.ok()) return t;
+        }
+    }
+    return found;
+}
+
+// @p name as seen from @p scope of @p doc: host association, USE (of a module in this file or
+// another), a submodule's parent, the file's global names.
+Target LookupIn(const FortranLspDocument &doc, int scope, const std::string &name, int depth = 0) {
+    if (depth > kMaxDepth) return {};
+    for (int s = scope; s >= 0 && static_cast<size_t>(s) < doc.scopes.size();
+         s = doc.scopes[static_cast<size_t>(s)].parent) {
+        const Scope &sc = doc.scopes[static_cast<size_t>(s)];
+        Target local;
+        auto it = sc.names.find(name);
+        if (it != sc.names.end()) {
+            const Symbol &sym = doc.syms[static_cast<size_t>(it->second)];
+            if (sym.kind == SymKind::Use) return FollowUse(doc, it->second, depth);
+            local = {&doc, it->second};
+            if (!sym.placeholder) return local;
+        }
+        for (const Scope::Use &u : sc.use_list) {
+            if (u.only || u.renamed.count(name)) continue;
+            Target t = ExportOf(doc, u.module, name, depth + 1);
+            if (t.ok()) return t;
+        }
+        if (local.ok()) return local;
+        if (sc.kind == fp::StmtKind::Submodule && sc.construct > 0) {
+            const fp::Stmt &open =
+                doc.src->stmts[static_cast<size_t>(doc.src->constructs[static_cast<size_t>(sc.construct)].open)];
+            int ms = -1;
+            const FortranLspDocument *md = ModuleDoc(doc, open.unit.parent, &ms);
+            if (md && !(md == &doc && ms == s)) {
+                Target t = LookupIn(*md, ms, name, depth + 1);
+                if (t.ok()) return t;
+            }
+        }
+        if (sc.parent < 0 && s != 0) {
+            auto g = doc.scopes[0].names.find(name);
+            return g == doc.scopes[0].names.end() ? Target{} : Target{&doc, g->second};
+        }
+    }
+    return {};
+}
+
+// The names module @p mod exports, as @p doc sees it.
+void ExportsOf(const FortranLspDocument &doc, const std::string &mod, int depth, std::set<std::string> *seen,
+               const std::set<std::string> &hidden, std::vector<std::pair<std::string, Target>> *out) {
+    if (depth > kMaxDepth) return;
+    int ms = -1;
+    const FortranLspDocument *md = ModuleDoc(doc, mod, &ms);
+    if (!md) return;
+    const Scope &sc = md->scopes[static_cast<size_t>(ms)];
+    for (const auto &kv : sc.names) {
+        const Symbol &s = md->syms[static_cast<size_t>(kv.second)];
+        if (hidden.count(kv.first) || !Exported(*md, s) || seen->count(kv.first)) continue;
+        Target t = s.placeholder ? ExportOf(doc, mod, kv.first, depth) : FollowUse(*md, kv.second, depth);
+        if (!t.ok()) continue;
+        seen->insert(kv.first);
+        out->push_back({kv.first, t});
+    }
+    if (sc.default_private) return;
+    for (const Scope::Use &u : sc.use_list) {
+        if (u.only) continue;
+        std::set<std::string> h = hidden;
+        h.insert(u.renamed.begin(), u.renamed.end());
+        ExportsOf(*md, u.module, depth + 1, seen, h, out);
+    }
+}
+
+// The scope a symbol's names are looked up from (a component's: its type's).
+int ScopeOfSym(const Target &t) {
+    const Symbol &s = t.s();
+    if (s.scope >= 0) return s.scope;
+    if (s.owner >= 0) return t.doc->syms[static_cast<size_t>(s.owner)].scope;
+    return 0;
+}
+
+// type(foo) / class(foo(k=4)) -> foo; "" for intrinsic types and class(*).
+std::string TypeNameOf(const std::string &t) {
+    size_t lp;
+    if (t.compare(0, 5, "type(") == 0) lp = 4;
+    else if (t.compare(0, 6, "class(") == 0) lp = 5;
+    else return "";
+    size_t a = lp + 1;
+    while (a < t.size() && t[a] == ' ') a++;
+    size_t b = a;
+    while (b < t.size() && IsNameChar(t[b])) b++;
+    return Lower(t.substr(a, b - a));
+}
+
+Target FindType(const FortranLspDocument &doc, int scope, const std::string &name) {
+    if (name.empty()) return {};
+    Target t = LookupIn(doc, scope, name);
+    if (t.ok() && t.s().kind == SymKind::Type) return t;
+    auto it = doc.types.find(name);
+    if (it != doc.types.end()) return {&doc, it->second};
+    for (const auto &im : doc.imports) {
+        if (!im.second) continue;
+        auto jt = im.second->types.find(name);
+        if (jt != im.second->types.end()) return {im.second.get(), jt->second};
+    }
+    return {};
+}
+
+// A type's components and bindings, its own first, then those it inherits through EXTENDS
+// (a binding overridden here hides the parent's).
+void Members(const Target &type, std::vector<Target> *out, std::set<std::string> *seen, int depth) {
+    if (!type.ok() || depth > kMaxInheritance) return;
+    auto it = type.doc->components.find(type.sym);
+    if (it != type.doc->components.end()) {
+        for (int c : it->second) {
+            if (seen->insert(type.doc->syms[static_cast<size_t>(c)].name).second) out->push_back({type.doc, c});
+        }
+    }
+    const Symbol &ts = type.s();
+    if (!ts.extends.empty()) {
+        Target p = FindType(*type.doc, ScopeOfSym(type), ts.extends);
+        if (p.ok() && !(p.doc == type.doc && p.sym == type.sym)) Members(p, out, seen, depth + 1);
+    }
+}
+
+std::vector<Target> MembersOf(const Target &type) {
+    std::vector<Target> out;
+    std::set<std::string> seen;
+    Members(type, &out, &seen, 0);
+    return out;
+}
+
+Target MemberOf(const Target &type, const std::string &name) {
+    for (const Target &m : MembersOf(type)) {
+        if (m.s().name == name) return m;
+    }
+    return {};
+}
+
+// The derived type of a variable, component or function result.
+Target TypeOf(const Target &v) {
+    if (!v.ok()) return {};
+    const Symbol &s = v.s();
+    std::string tn = TypeNameOf(s.type);
+    if (tn.empty() && s.kind == SymKind::Function && s.unit >= 0) {
+        const Scope &u = v.doc->scopes[static_cast<size_t>(s.unit)];
+        auto r = u.names.find(s.result.empty() ? s.name : s.result);
+        if (r != u.names.end()) tn = TypeNameOf(v.doc->syms[static_cast<size_t>(r->second)].type);
+    }
+    return FindType(*v.doc, ScopeOfSym(v), tn);
+}
+
+// The names of `a%b(i)%c` ending at the `%` at byte @p pct, base first.
+std::vector<std::string> ChainBefore(const std::string &l, int pct) {
+    std::vector<std::string> names;
+    int q = pct - 1;
+    for (int guard = 0; guard < 64; guard++) {
+        while (q >= 0 && l[static_cast<size_t>(q)] == ' ') q--;
+        if (q >= 0 && l[static_cast<size_t>(q)] == ')') {
+            int depth = 0;
+            for (; q >= 0; q--) {
+                if (l[static_cast<size_t>(q)] == ')') depth++;
+                else if (l[static_cast<size_t>(q)] == '(' && --depth == 0) break;
+            }
+            q--;
+            while (q >= 0 && l[static_cast<size_t>(q)] == ' ') q--;
+        }
+        int e = q + 1;
+        while (q >= 0 && IsNameChar(l[static_cast<size_t>(q)])) q--;
+        if (e - (q + 1) <= 0) return {};
+        names.push_back(Lower(l.substr(static_cast<size_t>(q + 1), static_cast<size_t>(e - q - 1))));
+        int r = q;
+        while (r >= 0 && l[static_cast<size_t>(r)] == ' ') r--;
+        if (r >= 0 && l[static_cast<size_t>(r)] == '%') {
+            q = r - 1;
+            continue;
+        }
+        break;
+    }
+    std::reverse(names.begin(), names.end());
+    return names;
+}
+
+Target ResolveChain(const FortranLspDocument &doc, int line, const std::vector<std::string> &names) {
+    if (names.empty()) return {};
+    Target t = LookupIn(doc, ScopeAtLine(doc, line), names[0]);
+    for (size_t i = 1; i < names.size() && t.ok(); i++) t = MemberOf(TypeOf(t), names[i]);
+    return t;
+}
+
+// Whether byte @p col of @p l is inside a `!` comment.
+bool InComment(const std::string &l, int col) {
+    char q = 0;
+    for (int i = 0; i < col && static_cast<size_t>(i) < l.size(); i++) {
+        char c = l[static_cast<size_t>(i)];
+        if (q) {
+            if (c == q) q = 0;
+        } else if (c == '\'' || c == '"') {
+            q = c;
+        } else if (c == '!') {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The entity named at (line, col): a local declaration or reference, a module in USE, a
+// component through a%b, or a name from a USEd module in another file.
+Target TargetAt(const FortranLspDocument &doc, int line, int col, FortranLspRange *range) {
+    if (line < 0 || static_cast<size_t>(line) >= doc.lines.size()) return {};
+    const std::string &l = doc.lines[static_cast<size_t>(line)];
+    for (const auto &r : doc.refs) {
+        if (r.line != line || col < r.col || col > r.end_col || r.ctx != fp::RefCtx::Module || r.sym >= 0) continue;
+        auto im = doc.imports.find(r.name);
+        if (im == doc.imports.end() || !im->second) continue;
+        auto g = im->second->scopes[0].names.find(r.name);
+        if (g == im->second->scopes[0].names.end()) continue;
+        if (range) *range = {r.line, r.col, r.line, r.end_col};
+        return {im->second.get(), g->second};
+    }
+    int sym = SymbolAt(doc, line, col, range);
+    if (sym >= 0) return FollowUse(doc, sym, 0);
+    int a = 0, b = 0;
+    std::string w = Lower(WordAt(l, col, &a, &b));
+    if (w.empty() || (w[0] >= '0' && w[0] <= '9') || InComment(l, a)) return {};
+    if (range) *range = {line, a, line, b};
+    int p = a - 1;
+    while (p >= 0 && l[static_cast<size_t>(p)] == ' ') p--;
+    if (p >= 0 && l[static_cast<size_t>(p)] == '%') return MemberOf(TypeOf(ResolveChain(doc, line, ChainBefore(l, p))), w);
+    return LookupIn(doc, ScopeAtLine(doc, line), w);
+}
+
+// ---- FORD documentation ----
+
+// A full-line comment opening with !<mark> (`!>` or `!!`); @p text gets what follows the marker.
+bool DocLine(const std::string &l, char mark, std::string *text) {
+    size_t k = l.find_first_not_of(" \t");
+    if (k == std::string::npos || l.size() < k + 2 || l[k] != '!' || l[k + 1] != mark) return false;
+    if (text) {
+        std::string t = l.substr(k + 2);
+        if (!t.empty() && t[0] == ' ') t.erase(0, 1);
+        while (!t.empty() && (t.back() == ' ' || t.back() == '\r' || t.back() == '\t')) t.pop_back();
+        *text = t;
+    }
+    return true;
+}
+
+// The documentation lines of a symbol, markers stripped: the `!>` block directly above its
+// statement (Doxygen's `!!` continuation lines included), then a trailing `!!`/`!<` on it and the
+// `!!` lines directly below it.
+std::vector<std::string> RawDoc(const FortranLspDocument &doc, const Symbol &s) {
+    std::vector<std::string> out;
+    if (s.stmt < 0 || static_cast<size_t>(s.stmt) >= doc.src->stmts.size()) return out;
+    const fp::Stmt &st = doc.src->stmts[static_cast<size_t>(s.stmt)];
+    int first = std::min(st.pos.line, st.label.empty() ? st.pos.line : st.label_pos.line);
+    int last = std::max(st.end.line, first);
+    int n = static_cast<int>(doc.lines.size());
+    if (first < 0 || first >= n) return out;
+    int i = first - 1;
+    while (i >= 0 && (DocLine(doc.lines[static_cast<size_t>(i)], '>', nullptr) ||
+                      DocLine(doc.lines[static_cast<size_t>(i)], '!', nullptr)))
+        i--;
+    int top = -1;
+    for (int k = i + 1; k < first; k++) {
+        if (DocLine(doc.lines[static_cast<size_t>(k)], '>', nullptr)) {
+            top = k;  // leading `!!` lines belong to the statement above
+            break;
+        }
+    }
+    for (int k = top; k >= 0 && k < first; k++) {
+        std::string t;
+        if (!DocLine(doc.lines[static_cast<size_t>(k)], '>', &t)) DocLine(doc.lines[static_cast<size_t>(k)], '!', &t);
+        out.push_back(t);
+    }
+    std::vector<std::string> after;
+    // trailing: on the entity's own line when the statement spans several
+    auto tr = doc.trailing_docs.end();
+    int own = s.decl_line >= 0 ? s.decl_line : s.line;
+    if (own >= first && own <= last && last > first) {
+        tr = doc.trailing_docs.find(own);
+    } else {
+        for (int k = first; k <= last && tr == doc.trailing_docs.end(); k++) tr = doc.trailing_docs.find(k);
+    }
+    if (tr != doc.trailing_docs.end()) {
+        std::string t = tr->second.substr(2);
+        if (!t.empty() && t[0] == ' ') t.erase(0, 1);
+        while (!t.empty() && (t.back() == ' ' || t.back() == '\r')) t.pop_back();
+        after.push_back(t);
+    }
+    for (int k = last + 1; k < n && k <= last + 200; k++) {
+        std::string t;
+        if (!DocLine(doc.lines[static_cast<size_t>(k)], '!', &t)) break;
+        after.push_back(t);
+    }
+    if (!out.empty() && !after.empty()) out.push_back("");
+    out.insert(out.end(), after.begin(), after.end());
+    while (!out.empty() && out.back().empty()) out.pop_back();
+    while (!out.empty() && out.front().empty()) out.erase(out.begin());
+    return out;
+}
+
+std::string Trim(const std::string &s) {
+    size_t a = s.find_first_not_of(" \t");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r");
+    return s.substr(a, b - a + 1);
+}
+
+// `@p name` / `\c name` / `@a name` -> `name`
+std::string InlineTags(const std::string &s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if ((s[i] == '@' || s[i] == '\\') && i + 2 < s.size() && (s[i + 1] == 'p' || s[i + 1] == 'c' || s[i + 1] == 'a') &&
+            s[i + 2] == ' ' && (i == 0 || s[i - 1] == ' ' || s[i - 1] == '(')) {
+            size_t a = i + 3;
+            size_t b = a;
+            while (b < s.size() && IsNameChar(s[b])) b++;
+            if (b > a) {
+                out += "`" + s.substr(a, b - a) + "`";
+                i = b - 1;
+                continue;
+            }
+        }
+        out += s[i];
+    }
+    return out;
+}
+
+struct ParsedDoc {
+    std::string body;                                         // markdown
+    std::vector<std::pair<std::string, std::string>> params;  // lower-case name, text
+    std::string returns;
+    bool empty() const { return body.empty() && params.empty() && returns.empty(); }
+};
+
+// FORD documentation is Markdown already; Doxygen's tags (as converted docs carry them) become
+// Markdown too: @brief/@details are dropped, @param/@return gathered, @note & co. labelled.
+ParsedDoc ParseDoc(const std::vector<std::string> &raw) {
+    ParsedDoc d;
+    std::vector<std::string> body;
+    enum { kBody, kParam, kReturn } mode = kBody;
+    static const std::pair<const char *, const char *> kLabels[] = {
+        {"note", "Note"},       {"warning", "Warning"},   {"attention", "Attention"}, {"see", "See also"},
+        {"sa", "See also"},     {"deprecated", "Deprecated"}, {"since", "Since"},     {"todo", "To do"},
+        {"throws", "Throws"},   {"throw", "Throws"},      {"exception", "Throws"},    {"pre", "Precondition"},
+        {"post", "Postcondition"}, {"author", "Author"},  {"version", "Version"},     {"bug", "Bug"},
+        {"remark", "Remark"},   {"remarks", "Remark"},    {"example", "Example"}};
+    auto paragraph = [&]() {
+        if (!body.empty() && !body.back().empty()) body.push_back("");
+    };
+    for (const std::string &line : raw) {
+        std::string t = Trim(line);
+        if (t.size() > 1 && (t[0] == '@' || t[0] == '\\') && ((t[1] >= 'a' && t[1] <= 'z') || (t[1] >= 'A' && t[1] <= 'Z'))) {
+            size_t e = 1;
+            while (e < t.size() && IsNameChar(t[e])) e++;
+            std::string tag = Lower(t.substr(1, e - 1));
+            std::string rest = t.substr(e);
+            if (tag == "param" || tag == "tparam" || tag == "arg") {
+                rest = Trim(rest);
+                if (!rest.empty() && rest[0] == '[') {
+                    size_t c = rest.find(']');
+                    rest = Trim(c == std::string::npos ? "" : rest.substr(c + 1));
+                }
+                size_t ne = 0;
+                while (ne < rest.size() && IsNameChar(rest[ne])) ne++;
+                if (ne > 0) {
+                    d.params.push_back({Lower(rest.substr(0, ne)), InlineTags(Trim(rest.substr(ne)))});
+                    mode = kParam;
+                    continue;
+                }
+            } else if (tag == "return" || tag == "returns" || tag == "result" || tag == "retval") {
+                d.returns = InlineTags(Trim(rest));
+                mode = kReturn;
+                continue;
+            } else if (tag == "brief" || tag == "short" || tag == "summary") {
+                if (!Trim(rest).empty()) body.push_back(InlineTags(Trim(rest)));
+                mode = kBody;
+                continue;
+            } else if (tag == "details") {
+                paragraph();
+                if (!Trim(rest).empty()) body.push_back(InlineTags(Trim(rest)));
+                mode = kBody;
+                continue;
+            } else if (tag == "code") {
+                body.push_back("```fortran");
+                mode = kBody;
+                continue;
+            } else if (tag == "endcode") {
+                body.push_back("```");
+                continue;
+            } else {
+                const char *label = nullptr;
+                for (const auto &kl : kLabels) {
+                    if (tag == kl.first) label = kl.second;
+                }
+                if (label) {
+                    paragraph();
+                    body.push_back(std::string("**") + label + ":** " + InlineTags(Trim(rest)));
+                    mode = kBody;
+                    continue;
+                }
+            }
+        }
+        if (mode != kBody) {
+            if (t.empty()) {
+                mode = kBody;
+                continue;
+            }
+            std::string &to = mode == kParam ? d.params.back().second : d.returns;
+            to += (to.empty() ? "" : " ") + InlineTags(t);
+            continue;
+        }
+        body.push_back(InlineTags(line));
+    }
+    while (!body.empty() && Trim(body.back()).empty()) body.pop_back();
+    while (!body.empty() && Trim(body.front()).empty()) body.erase(body.begin());
+    for (size_t i = 0; i < body.size(); i++) d.body += (i ? "\n" : "") + body[i];
+    return d;
+}
+
+ParsedDoc DocOf(const Target &t) { return ParseDoc(RawDoc(*t.doc, t.s())); }
+
+// The first paragraph, on one line.
+std::string Summary(const std::string &body) {
+    std::string out;
+    size_t i = 0;
+    while (i < body.size()) {
+        size_t e = body.find('\n', i);
+        if (e == std::string::npos) e = body.size();
+        std::string l = Trim(body.substr(i, e - i));
+        if (l.empty()) break;
+        if (l.compare(0, 3, "```") == 0) break;
+        out += (out.empty() ? "" : " ") + l;
+        i = e + 1;
+    }
+    return out;
+}
+
+// Dimensions and initialiser written after an entity's name: `x(:, n) = 3`.
+void EntityTail(const FortranLspDocument &doc, const Symbol &s, std::string *dims, std::string *init) {
+    int line = s.decl_line >= 0 ? s.decl_line : s.line;
+    if (line < 0 || static_cast<size_t>(line) >= doc.lines.size()) return;
+    const std::string &l = doc.lines[static_cast<size_t>(line)];
+    size_t k = static_cast<size_t>(std::max(0, s.decl_line >= 0 ? s.decl_end : s.end_col));
+    if (k > l.size()) return;
+    auto blanks = [&]() {
+        while (k < l.size() && (l[k] == ' ' || l[k] == '\t')) k++;
+    };
+    blanks();
+    for (char open : {'(', '['}) {
+        if (k < l.size() && l[k] == open) {
+            char close = open == '(' ? ')' : ']';
+            int depth = 0;
+            size_t a = k;
+            for (; k < l.size(); k++) {
+                if (l[k] == open) depth++;
+                else if (l[k] == close && --depth == 0) break;
+            }
+            if (k >= l.size()) return;
+            if (open == '(') *dims = l.substr(a, k - a + 1);
+            k++;
+            blanks();
+        }
+    }
+    if (k < l.size() && l[k] == '*') return;  // character*len
+    if (k + 1 < l.size() && l[k] == '=' && l[k + 1] != '=') {
+        bool arrow = l[k + 1] == '>';
+        k += arrow ? 2 : 1;
+        size_t a = k;
+        int depth = 0;
+        char q = 0;
+        for (; k < l.size(); k++) {
+            char c = l[k];
+            if (q) {
+                if (c == q) q = 0;
+                continue;
+            }
+            if (c == '\'' || c == '"') q = c;
+            else if (c == '(' || c == '[') depth++;
+            else if (c == ')' || c == ']') depth--;
+            else if ((c == ',' && depth == 0) || c == '!' || c == '&') break;
+        }
+        std::string v = Trim(l.substr(a, k - a));
+        if (k < l.size() && l[k] == '&') v += " ...";
+        if (v.size() > 120) v = v.substr(0, 117) + "...";
+        if (!v.empty()) *init = (arrow ? "=> " : "= ") + v;
+    }
+}
+
+// `real(dp), intent(in), optional :: x(:)`, `integer, parameter :: red = 1`
+std::string DeclLine(const Target &t) {
+    const Symbol &s = t.s();
+    std::string out = SymbolDetail(*t.doc, s);
+    if (s.kind == SymKind::Function || s.kind == SymKind::Subroutine || s.kind == SymKind::Use) return out;
+    std::string dims, init;
+    EntityTail(*t.doc, s, &dims, &init);
+    if (!dims.empty() && out.size() >= 5 && out.compare(out.size() - 5, 5, "(...)") == 0) {
+        out.replace(out.size() - 5, 5, dims);
+    } else if (!dims.empty() && !s.array) {
+        out += dims;
+    }
+    if (!init.empty() && s.kind != SymKind::Dummy) out += " " + init;
+    return out;
+}
+
+std::string ProcHeader(const Target &t) {
+    const Symbol &s = t.s();
+    if (s.detail == "module procedure") return "module procedure " + s.spelling;
+    std::string h = s.prefix.empty() ? "" : s.prefix + " ";
+    if (!s.type.empty() && s.kind == SymKind::Function) h += s.type + " ";
+    h += s.kind == SymKind::Subroutine ? "subroutine " : s.kind == SymKind::Entry ? "entry " : "function ";
+    h += s.spelling + "(";
+    for (size_t i = 0; i < s.dummies.size(); i++) h += (i ? ", " : "") + s.dummies[i];
+    h += ")";
+    if (!s.result.empty()) h += " result(" + s.result + ")";
+    return h;
+}
+
+Target DummyOf(const Target &proc, const std::string &name) {
+    const Symbol &s = proc.s();
+    if (s.unit < 0) return {};
+    const Scope &u = proc.doc->scopes[static_cast<size_t>(s.unit)];
+    auto it = u.names.find(Lower(name));
+    return it == u.names.end() ? Target{} : Target{proc.doc, it->second};
+}
+
+// The procedure statement and its dummies' declarations.
+std::string ProcDecl(const Target &t) {
+    const Symbol &s = t.s();
+    std::string out = ProcHeader(t);
+    if (s.unit < 0) return out;
+    int shown = 0;
+    for (const std::string &d : s.dummies) {
+        Target dt = DummyOf(t, d);
+        if (!dt.ok() || !dt.s().declared) continue;
+        if (++shown > 40) {
+            out += "\n    ! ...";
+            break;
+        }
+        out += "\n    " + DeclLine(dt);
+    }
+    if (s.kind == SymKind::Function && s.type.empty()) {
+        Target r = DummyOf(t, s.result.empty() ? s.name : s.result);
+        if (r.ok() && r.s().declared) out += "\n    " + DeclLine(r);
+    }
+    return out;
+}
+
+std::string BindingLine(const Target &t) {
+    const Symbol &s = t.s();
+    if (s.detail == "generic binding") {
+        std::string out = "generic :: " + s.spelling + " => ";
+        for (size_t i = 0; i < s.specifics.size(); i++) out += (i ? ", " : "") + s.specifics[i];
+        return out;
+    }
+    std::string out = s.type.compare(0, 10, "procedure(") == 0 ? s.type : "procedure";
+    if (s.pass == "-") out += ", nopass";
+    else if (!s.pass.empty()) out += ", pass(" + s.pass + ")";
+    if (s.detail == "deferred") out += ", deferred";
+    out += " :: " + s.spelling;
+    if (s.detail != "deferred" && s.target != s.name && !s.target.empty()) out += " => " + s.target;
+    return out;
+}
+
+std::string TypeBlock(const Target &t) {
+    const Symbol &s = t.s();
+    std::string out = "type";
+    if (s.detail == "abstract") out += ", abstract";
+    if (!s.extends.empty()) out += ", extends(" + s.extends + ")";
+    out += " :: " + s.spelling;
+    std::vector<Target> comps, binds;
+    auto it = t.doc->components.find(t.sym);
+    if (it != t.doc->components.end()) {
+        for (int c : it->second) {
+            Target ct{t.doc, c};
+            (ct.s().kind == SymKind::Binding ? binds : comps).push_back(ct);
+        }
+    }
+    int shown = 0;
+    for (const Target &c : comps) {
+        if (++shown > 40) break;
+        out += "\n    " + DeclLine(c);
+    }
+    if (!binds.empty()) out += "\ncontains";
+    for (const Target &b : binds) {
+        if (++shown > 40) break;
+        out += "\n    " + BindingLine(b);
+    }
+    if (shown > 40) out += "\n    ! ... " + std::to_string(comps.size() + binds.size() - 40) + " more";
+    out += "\nend type " + s.spelling;
+    return out;
+}
+
+// The procedure a generic's specific names, or a binding binds.
+Target ProcNamed(const Target &from, const std::string &name) {
+    Target p = LookupIn(*from.doc, ScopeOfSym(from), name);
+    return p;
+}
+
+// The dummy a binding passes the object as ("" for none).
+std::string PassedDummy(const Target &binding, const Target &proc) {
+    const std::string &pass = binding.s().pass;
+    if (pass == "-") return "";
+    if (!pass.empty()) return pass;
+    return proc.ok() && !proc.s().dummies.empty() ? Lower(proc.s().dummies[0]) : "";
+}
+
+std::string Where(const Target &t, const FortranLspDocument &from) {
+    const Symbol &s = t.s();
+    std::string what = s.kind == SymKind::Function && s.detail == "statement function" ? "statement function" : KindWord(s.kind);
+    if (s.kind == SymKind::Binding && s.detail == "generic binding") what = "generic type-bound procedure";
+    if (t.doc == &from) return what + ", declared on line " + std::to_string(s.line + 1);
+    std::string mod;
+    for (int sc = ScopeOfSym(t); sc > 0; sc = t.doc->scopes[static_cast<size_t>(sc)].parent) {
+        const Scope &scope = t.doc->scopes[static_cast<size_t>(sc)];
+        if (scope.kind == fp::StmtKind::Module || scope.kind == fp::StmtKind::Submodule) {
+            mod = scope.name;
+            break;
+        }
+    }
+    std::string file = t.doc->path.substr(t.doc->path.find_last_of('/') == std::string::npos ? 0 : t.doc->path.find_last_of('/') + 1);
+    std::string out = what;
+    if (!mod.empty() && s.kind != SymKind::Module) out += " from module `" + mod + "`";
+    return out + ", " + file + ":" + std::to_string(s.line + 1);
+}
+
+// The arguments documented by @param lines or by docs on the dummies' declarations.
+std::string ArgumentDocs(const Target &proc, const ParsedDoc &pd, const std::string &skip) {
+    const Symbol &s = proc.s();
+    std::string out;
+    for (const std::string &d : s.dummies) {
+        std::string ld = Lower(d);
+        if (ld == skip || ld == "*") continue;
+        std::string desc;
+        for (const auto &p : pd.params) {
+            if (p.first == ld) desc = p.second;
+        }
+        Target dt = DummyOf(proc, d);
+        if (desc.empty() && dt.ok()) desc = ParseDoc(RawDoc(*dt.doc, dt.s())).body;
+        bool optional = dt.ok() && (dt.s().attrs & fp::kAttrOptional);
+        if (desc.empty() && !optional) continue;
+        for (char &c : desc) {
+            if (c == '\n') c = ' ';
+        }
+        out += "\n- `" + d + "`" + (optional ? " *(optional)*" : "") + (desc.empty() ? "" : ": " + desc);
+    }
+    std::string ret = pd.returns;
+    if (ret.empty() && s.kind == SymKind::Function) {
+        Target r = DummyOf(proc, s.result.empty() ? s.name : s.result);
+        if (r.ok() && r.sym != proc.sym) ret = Summary(ParseDoc(RawDoc(*r.doc, r.s())).body);
+    }
+    std::string res;
+    if (!out.empty()) res = "**Arguments**\n" + out;
+    if (!ret.empty()) res += std::string(res.empty() ? "" : "\n\n") + "**Returns:** " + ret;
+    return res;
+}
+
+std::string Join(const std::string &a, const std::string &b) {
+    if (a.empty()) return b;
+    if (b.empty()) return a;
+    return a + "\n\n" + b;
+}
+
+bool IsProc(const Target &t) {
+    return t.ok() && (t.s().kind == SymKind::Function || t.s().kind == SymKind::Subroutine || t.s().kind == SymKind::Entry);
+}
+
+// The documentation of a symbol, as Markdown: its own text, then its arguments; a binding
+// without docs of its own shows its procedure's; a generic lists its specifics.
+std::string DocsOf(const Target &t, bool list_specifics = true) {
+    if (!t.ok()) return "";
+    const Symbol &s = t.s();
+    ParsedDoc pd = DocOf(t);
+    switch (s.kind) {
+        case SymKind::Function:
+        case SymKind::Subroutine:
+        case SymKind::Entry:
+            return Join(pd.body, ArgumentDocs(t, pd, ""));
+        case SymKind::Binding: {
+            if (s.detail == "generic binding") {
+                std::string out = pd.body;
+                if (!list_specifics || s.owner < 0) return out;
+                std::string list;
+                Target owner{t.doc, s.owner};
+                for (const std::string &spec : s.specifics) {
+                    Target b = MemberOf(owner, spec);
+                    Target p = b.ok() ? ProcNamed(b, b.s().target) : Target{};
+                    std::string sum = b.ok() ? Summary(DocOf(b).body) : "";
+                    if (sum.empty() && p.ok()) sum = Summary(DocOf(p).body);
+                    list += "\n- `" + spec + "`" + (sum.empty() ? "" : ": " + sum);
+                }
+                return Join(out, list.empty() ? "" : "**Specific bindings**\n" + list);
+            }
+            Target p = ProcNamed(t, s.target);
+            if (!IsProc(p)) return pd.body;
+            ParsedDoc ppd = DocOf(p);
+            std::string body = pd.body.empty() ? ppd.body : pd.body;
+            return Join(body, ArgumentDocs(p, pd.params.empty() && pd.returns.empty() ? ppd : pd, PassedDummy(t, p)));
+        }
+        case SymKind::Interface:
+        case SymKind::Type: {
+            std::string out = pd.body;
+            if (!list_specifics || s.specifics.empty()) return out;
+            std::string list;
+            for (const std::string &spec : s.specifics) {
+                Target p = ProcNamed(t, spec);
+                std::string head = IsProc(p) ? p.s().spelling + "(" : spec;
+                if (IsProc(p)) {
+                    for (size_t i = 0; i < p.s().dummies.size(); i++) head += (i ? ", " : "") + p.s().dummies[i];
+                    head += ")";
+                }
+                std::string sum = IsProc(p) ? Summary(DocOf(p).body) : "";
+                list += "\n- `" + head + "`" + (sum.empty() ? "" : ": " + sum);
+            }
+            return Join(out, (s.kind == SymKind::Type ? "**Constructors**\n" : "**Specific procedures**\n") + list);
+        }
+        case SymKind::Dummy: {
+            if (!pd.body.empty() || s.scope <= 0) return pd.body;
+            // documented by an @param of its procedure
+            const Scope &unit = t.doc->scopes[static_cast<size_t>(s.scope)];
+            if (unit.parent < 0) return pd.body;
+            auto it = t.doc->scopes[static_cast<size_t>(unit.parent)].names.find(unit.name);
+            if (it == t.doc->scopes[static_cast<size_t>(unit.parent)].names.end()) return pd.body;
+            for (const auto &p : DocOf({t.doc, it->second}).params) {
+                if (p.first == s.name) return p.second;
+            }
+            return pd.body;
+        }
+        default:
+            return pd.body;
+    }
+}
+
+// The declaration shown in a hover's code block.
+std::string DeclText(const Target &t) {
+    const Symbol &s = t.s();
+    switch (s.kind) {
+        case SymKind::Function:
+        case SymKind::Subroutine:
+        case SymKind::Entry:
+            return s.unit >= 0 || !s.dummies.empty() || s.kind == SymKind::Entry ? ProcDecl(t) : DeclLine(t);
+        case SymKind::Interface: {
+            std::string out = "interface " + s.spelling;
+            size_t shown = 0;
+            for (const std::string &spec : s.specifics) {
+                if (++shown > 50) {
+                    out += "\n    ! ... " + std::to_string(s.specifics.size() - 50) + " more";
+                    break;
+                }
+                Target p = ProcNamed(t, spec);
+                out += "\n    " + (IsProc(p) ? ProcHeader(p) : "module procedure " + spec);
+            }
+            return out + "\nend interface " + s.spelling;
+        }
+        case SymKind::Type:
+            return TypeBlock(t);
+        case SymKind::Binding: {
+            std::string out = BindingLine(t);
+            if (s.detail == "generic binding") return out;
+            Target p = ProcNamed(t, s.target);
+            if (IsProc(p)) out += "\n\n" + ProcDecl(p);
+            return out;
+        }
+        case SymKind::Module:
+            return "module " + s.spelling;
+        case SymKind::Program:
+            return "program " + s.spelling;
+        default:
+            return DeclLine(t);
+    }
+}
+
+// A one-line description, for completion details.
+std::string OneLine(const Target &t) {
+    const Symbol &s = t.s();
+    switch (s.kind) {
+        case SymKind::Function:
+        case SymKind::Subroutine:
+        case SymKind::Entry:
+            return s.unit >= 0 || !s.dummies.empty() ? ProcHeader(t) : DeclLine(t);
+        case SymKind::Interface:
+            return "interface " + s.spelling + " (" + std::to_string(s.specifics.size()) + " specific" +
+                   (s.specifics.size() == 1 ? "" : "s") + ")";
+        case SymKind::Type:
+            return "type" + std::string(s.extends.empty() ? "" : ", extends(" + s.extends + ")") + " :: " + s.spelling;
+        case SymKind::Binding:
+            return BindingLine(t);
+        case SymKind::Module:
+            return "module " + s.spelling;
+        default:
+            return DeclLine(t);
+    }
+}
+
+FortranLspKind ItemKind(const Symbol &s) {
+    switch (s.kind) {
+        case SymKind::Function:
+        case SymKind::Subroutine:
+        case SymKind::Entry:
+        case SymKind::Interface:
+            return FortranLspKind::Function;
+        case SymKind::Module: return FortranLspKind::Module;
+        case SymKind::Type: return FortranLspKind::Struct;
+        case SymKind::Parameter: return FortranLspKind::Constant;
+        case SymKind::Binding: return FortranLspKind::Method;
+        case SymKind::Component: return FortranLspKind::Field;
+        default: return FortranLspKind::Variable;
+    }
+}
+
+FortranLspCompletionItem TargetItem(const std::string &label, const Target &t, int a, int b) {
+    return Item(label, ItemKind(t.s()), OneLine(t), DocsOf(t, false), a, b);
+}
+
+// One signature of a procedure, called as @p name; @p skip is the dummy a binding passes.
+FortranLspSignature SigOf(const Target &proc, const std::string &name, const std::string &skip, const std::string &note,
+                          const ParsedDoc *override_doc = nullptr) {
+    FortranLspSignature sig;
+    const Symbol &s = proc.s();
+    ParsedDoc pd = override_doc && !override_doc->empty() ? *override_doc : DocOf(proc);
+    sig.label = name + "(";
+    bool any = false;
+    for (const std::string &d : s.dummies) {
+        std::string ld = Lower(d);
+        if (ld == skip || d == "*") continue;
+        if (any) sig.label += ", ";
+        any = true;
+        sig.label += d;
+        sig.params.push_back(d);
+        Target dt = DummyOf(proc, d);
+        std::string desc;
+        for (const auto &p : pd.params) {
+            if (p.first == ld) desc = p.second;
+        }
+        if (desc.empty() && dt.ok()) desc = ParseDoc(RawDoc(*dt.doc, dt.s())).body;
+        std::string pdoc = dt.ok() && dt.s().declared ? "`" + DeclLine(dt) + "`" : "";
+        sig.param_docs.push_back(Join(pdoc, desc));
+    }
+    sig.label += ")";
+    std::string docs = Join(pd.body, ArgumentDocs(proc, pd, skip));
+    if (docs.empty()) docs = KindWord(s.kind);
+    sig.documentation = Join(note, docs);
+    return sig;
+}
+
+// The components a structure constructor takes, parents' first.
+void ConstructorComponents(const Target &type, std::vector<Target> *out, int depth) {
+    if (!type.ok() || depth > kMaxInheritance) return;
+    const Symbol &ts = type.s();
+    if (!ts.extends.empty()) {
+        Target p = FindType(*type.doc, ScopeOfSym(type), ts.extends);
+        if (p.ok() && !(p.doc == type.doc && p.sym == type.sym)) ConstructorComponents(p, out, depth + 1);
+    }
+    auto it = type.doc->components.find(type.sym);
+    if (it == type.doc->components.end()) return;
+    for (int c : it->second) {
+        if (type.doc->syms[static_cast<size_t>(c)].kind == SymKind::Component) out->push_back({type.doc, c});
+    }
+}
+
+// Every signature a call of @p t, written as @p called (a rename's local name), can have;
+// @p via is the type of the object for a binding.
+std::vector<FortranLspSignature> SignaturesOf(const Target &t, const Target &via, const std::string &called) {
+    std::vector<FortranLspSignature> out;
+    if (!t.ok()) return out;
+    const Symbol &s = t.s();
+    const std::string &name = called.empty() ? s.spelling : called;
+    if (IsProc(t)) {
+        out.push_back(SigOf(t, name, "", ""));
+    } else if (s.kind == SymKind::Interface || (s.kind == SymKind::Type && !s.specifics.empty())) {
+        // each specific's own documentation, after the generic's summary
+        std::string summary = s.kind == SymKind::Interface ? Summary(DocOf(t).body) : "";
+        for (const std::string &spec : s.specifics) {
+            Target p = ProcNamed(t, spec);
+            if (IsProc(p))
+                out.push_back(SigOf(p, name, "", Join(summary, "*specific procedure `" + p.s().spelling + "`*")));
+        }
+    } else if (s.kind == SymKind::Type) {
+        FortranLspSignature sig;
+        sig.label = name + "(";
+        std::vector<Target> comps;
+        ConstructorComponents(t, &comps, 0);
+        for (size_t i = 0; i < comps.size(); i++) {
+            if (i) sig.label += ", ";
+            sig.label += comps[i].s().spelling;
+            sig.params.push_back(comps[i].s().spelling);
+            sig.param_docs.push_back(Join("`" + DeclLine(comps[i]) + "`", DocOf(comps[i]).body));
+        }
+        sig.label += ")";
+        sig.documentation = Join("*structure constructor*", DocOf(t).body);
+        out.push_back(sig);
+    } else if (s.kind == SymKind::Binding) {
+        Target type = via.ok() ? via : Target{t.doc, s.owner};
+        if (s.detail == "generic binding") {
+            std::string summary = Summary(DocOf(t).body);
+            for (const std::string &spec : s.specifics) {
+                Target b = MemberOf(type, spec);
+                if (!b.ok()) continue;
+                Target p = ProcNamed(b, b.s().target);
+                if (!IsProc(p)) continue;
+                ParsedDoc bd = DocOf(b);
+                out.push_back(SigOf(p, name, PassedDummy(b, p), Join(summary, "*binding `" + b.s().spelling + "`*"), &bd));
+            }
+        } else {
+            Target p = ProcNamed(t, s.target);
+            ParsedDoc bd = DocOf(t);
+            if (IsProc(p)) out.push_back(SigOf(p, name, PassedDummy(t, p), "", &bd));
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 // ---- public API --------------------------------------------------------------------------------
 
 std::shared_ptr<const FortranLspDocument> FortranLspAnalyze(const std::vector<std::string> &lines,
-                                                            const std::string &path) {
+                                                            const std::string &path,
+                                                            FortranLspModuleSource *modules) {
     auto doc = std::make_shared<FortranLspDocument>();
     doc->lines = lines;
     doc->path = path;
@@ -846,8 +2011,54 @@ std::shared_ptr<const FortranLspDocument> FortranLspAnalyze(const std::vector<st
     o.preprocess = fp::PreprocessedPath(path);
     doc->src = fp::Read(lines, o);
     Builder b(doc.get());
+    b.modules_ = modules;
     b.Run();
+    if (modules) doc->known_modules = modules->ModuleNames();
     return doc;
+}
+
+std::shared_ptr<const FortranLspDocument> FortranLspAnalyze(const std::vector<std::string> &lines,
+                                                            const std::string &path) {
+    return FortranLspAnalyze(lines, path, nullptr);
+}
+
+const std::string &FortranLspPath(const FortranLspDocument &doc) { return doc.path; }
+
+std::vector<std::string> FortranLspModulesDefined(const FortranLspDocument &doc) {
+    std::vector<std::string> out;
+    for (const auto &m : doc.modules) out.push_back(m.first);
+    return out;
+}
+
+std::vector<std::pair<std::string, std::shared_ptr<const FortranLspDocument>>> FortranLspImports(
+    const FortranLspDocument &doc) {
+    return {doc.imports.begin(), doc.imports.end()};
+}
+
+std::vector<std::string> FortranLspScanModuleNames(const std::string &text) {
+    std::vector<std::string> out;
+    size_t i = 0, n = text.size();
+    while (i < n) {
+        size_t e = text.find('\n', i);
+        if (e == std::string::npos) e = n;
+        size_t k = i;
+        while (k < e && (text[k] == ' ' || text[k] == '\t')) k++;
+        if (e - k > 7 && (text[k] | 0x20) == 'm' && Lower(text.substr(k, 6)) == "module" &&
+            (text[k + 6] == ' ' || text[k + 6] == '\t')) {
+            size_t a = k + 6;
+            while (a < e && (text[a] == ' ' || text[a] == '\t')) a++;
+            size_t b = a;
+            while (b < e && IsNameChar(text[b])) b++;
+            size_t r = b;
+            while (r < e && (text[r] == ' ' || text[r] == '\t' || text[r] == '\r')) r++;
+            std::string name = Lower(text.substr(a, b - a));
+            if (b > a && (r == e || text[r] == '!') && name != "procedure" && !(name[0] >= '0' && name[0] <= '9') &&
+                std::find(out.begin(), out.end(), name) == out.end())
+                out.push_back(name);
+        }
+        i = e + 1;
+    }
+    return out;
 }
 
 std::vector<FortranLspDiagnostic> FortranLspDiagnostics(const FortranLspDocument &doc) { return doc.diags; }
@@ -887,59 +2098,49 @@ std::vector<FortranLspCompletionItem> FortranLspCompletions(const FortranLspDocu
     std::string lw = Lower(word);
     std::set<std::string> seen;
     auto want = [&](const std::string &name) { return Lower(name).compare(0, lw.size(), lw) == 0 && seen.insert(Lower(name)).second; };
-    // components after `%`
+    // components and bindings after `%`, inherited ones included
     int p = a - 1;
     while (p >= 0 && (l[static_cast<size_t>(p)] == ' ')) p--;
     if (p >= 0 && l[static_cast<size_t>(p)] == '%') {
-        int q = p - 1;
-        while (q >= 0 && l[static_cast<size_t>(q)] == ' ') q--;
-        if (q >= 0 && l[static_cast<size_t>(q)] == ')') {
-            int depth = 0;
-            for (; q >= 0; q--) {
-                if (l[static_cast<size_t>(q)] == ')') depth++;
-                else if (l[static_cast<size_t>(q)] == '(' && --depth == 0) break;
-            }
-            q--;
-        }
-        int bs = 0;
-        std::string base = q >= 0 ? WordAt(l, q, &bs, nullptr) : "";
-        int sym = -1;
-        for (const auto &r : doc.refs) {
-            if (r.line == line && r.col == bs && r.sym >= 0) sym = r.sym;
-        }
-        if (sym < 0) {
-            int sc = ScopeAtLine(doc, line);
-            for (int s = sc; s >= 0 && sym < 0; s = doc.scopes[static_cast<size_t>(s)].parent) {
-                auto it = doc.scopes[static_cast<size_t>(s)].names.find(Lower(base));
-                if (it != doc.scopes[static_cast<size_t>(s)].names.end()) sym = it->second;
-            }
-        }
-        if (sym >= 0) {
-            const std::string &t = doc.syms[static_cast<size_t>(sym)].type;
-            size_t lp = t.find('(');
-            if (lp != std::string::npos) {
-                auto ti = doc.types.find(t.substr(lp + 1, t.find(')') - lp - 1));
-                if (ti != doc.types.end()) {
-                    auto ci = doc.components.find(ti->second);
-                    if (ci != doc.components.end()) {
-                        for (int c : ci->second) {
-                            const Symbol &cs = doc.syms[static_cast<size_t>(c)];
-                            if (!want(cs.spelling)) continue;
-                            out.push_back(Item(cs.spelling, cs.kind == SymKind::Binding ? FortranLspKind::Method : FortranLspKind::Field,
-                                               SymbolDetail(doc, cs), "", a, b));
-                        }
-                    }
-                }
-            }
+        Target type = TypeOf(ResolveChain(doc, line, ChainBefore(l, p)));
+        for (const Target &m : MembersOf(type)) {
+            if (!want(m.s().spelling)) continue;
+            out.push_back(TargetItem(m.s().spelling, m, a, b));
         }
         return out;
     }
     // after `use`: module names
     std::string before = Lower(l.substr(0, static_cast<size_t>(a)));
     size_t k = before.find_first_not_of(" \t");
-    if (k != std::string::npos && before.compare(k, 3, "use") == 0 && before.find(',') == std::string::npos) {
+    bool use_line = k != std::string::npos && before.compare(k, 3, "use") == 0 &&
+                    (before.size() == k + 3 || !IsNameChar(before[k + 3]));
+    if (use_line && before.find(',') != std::string::npos) {
+        // use m, only: x -- what m exports
+        size_t m0 = k + 3;
+        while (m0 < before.size() && (before[m0] == ' ' || before[m0] == ':')) m0++;
+        size_t m1 = m0;
+        while (m1 < before.size() && IsNameChar(before[m1])) m1++;
+        std::string mod = before.substr(m0, m1 - m0);
+        size_t arrow = before.rfind("=>");
+        size_t comma = before.rfind(',');
+        if (arrow != std::string::npos && arrow > comma) {
+            // local => |: the module's name
+        } else if (!mod.empty()) {
+            std::set<std::string> seen_exports;
+            std::vector<std::pair<std::string, Target>> exports;
+            ExportsOf(doc, mod, 0, &seen_exports, {}, &exports);
+            for (const auto &e : exports) {
+                if (want(e.second.s().spelling)) out.push_back(TargetItem(e.second.s().spelling, e.second, a, b));
+            }
+            if (!exports.empty()) return out;
+        }
+    }
+    if (use_line && before.find(',') == std::string::npos) {
         for (const auto &m : doc.modules) {
             if (want(m.first)) out.push_back(Item(m.first, FortranLspKind::Module, "module", "", a, b));
+        }
+        for (const std::string &m : doc.known_modules) {
+            if (want(m)) out.push_back(Item(m, FortranLspKind::Module, "module", "", a, b));
         }
         size_t n = 0;
         const FortranVocabEntry *v = FortranVocab(&n);
@@ -955,12 +2156,32 @@ std::vector<FortranLspCompletionItem> FortranLspCompletions(const FortranLspDocu
         for (const auto &kv : doc.scopes[static_cast<size_t>(s)].names) {
             const Symbol &sym = doc.syms[static_cast<size_t>(kv.second)];
             if (!want(sym.spelling)) continue;
+            if (sym.kind == SymKind::Use) {
+                // a name from USE ..., ONLY: (or a rename): what it names in its module
+                Target t = FollowUse(doc, kv.second, 0);
+                if (t.sym != kv.second || t.doc != &doc) {
+                    FortranLspCompletionItem it = TargetItem(sym.spelling, t, a, b);
+                    out.push_back(it);
+                    continue;
+                }
+            }
             FortranLspKind kind = sym.kind == SymKind::Function || sym.kind == SymKind::Subroutine ? FortranLspKind::Function
                                   : sym.kind == SymKind::Module ? FortranLspKind::Module
                                   : sym.kind == SymKind::Type ? FortranLspKind::Struct
                                   : sym.kind == SymKind::Parameter ? FortranLspKind::Constant
+                                  : sym.kind == SymKind::Interface ? FortranLspKind::Function
                                                                    : FortranLspKind::Variable;
-            out.push_back(Item(sym.spelling, kind, SymbolDetail(doc, sym), "", a, b));
+            out.push_back(Item(sym.spelling, kind, SymbolDetail(doc, sym), DocsOf({&doc, kv.second}, false), a, b));
+        }
+        // modules from other files USEd here without ONLY: everything they export
+        for (const Scope::Use &u : doc.scopes[static_cast<size_t>(s)].use_list) {
+            if (u.only || doc.modules.count(u.module) || !doc.imports.count(u.module)) continue;
+            std::vector<std::pair<std::string, Target>> exports;
+            std::set<std::string> seen_exports;
+            ExportsOf(doc, u.module, 0, &seen_exports, u.renamed, &exports);
+            for (const auto &e : exports) {
+                if (want(e.second.s().spelling)) out.push_back(TargetItem(e.second.s().spelling, e.second, a, b));
+            }
         }
         if (s == 0) break;
     }
@@ -1001,13 +2222,11 @@ FortranLspHoverInfo FortranLspHover(const FortranLspDocument &doc, int line, int
     FortranLspHoverInfo h;
     if (line < 0 || static_cast<size_t>(line) >= doc.lines.size()) return h;
     FortranLspRange range;
-    int sym = SymbolAt(doc, line, col, &range);
-    if (sym >= 0) {
-        const Symbol &s = doc.syms[static_cast<size_t>(sym)];
+    Target t = TargetAt(doc, line, col, &range);
+    if (t.ok()) {
         h.found = true;
         h.range = range;
-        h.text = "```fortran\n" + SymbolDetail(doc, s) + "\n```\n" + KindWord(s.kind) + ", declared on line " +
-                 std::to_string(s.line + 1);
+        h.text = "```fortran\n" + DeclText(t) + "\n```\n" + Join(DocsOf(t), Where(t, doc));
         return h;
     }
     int a = 0, b = 0;
@@ -1050,31 +2269,66 @@ FortranLspSignatureHelp FortranLspSignatureAt(const FortranLspDocument &doc, int
     int a = 0;
     std::string name = Lower(WordAt(l, j, &a, nullptr));
     if (name.empty()) return sh;
-    // a procedure of this file
-    int sc = ScopeAtLine(doc, line);
-    int sym = -1;
-    for (int s = sc; s >= 0 && sym < 0; s = doc.scopes[static_cast<size_t>(s)].parent) {
-        auto it = doc.scopes[static_cast<size_t>(s)].names.find(name);
-        if (it != doc.scopes[static_cast<size_t>(s)].names.end()) sym = it->second;
-        if (s == 0) break;
-    }
-    if (sym < 0) {
-        auto it = doc.scopes[0].names.find(name);
-        if (it != doc.scopes[0].names.end()) sym = it->second;
-    }
-    if (sym >= 0 && (doc.syms[static_cast<size_t>(sym)].kind == SymKind::Function ||
-                     doc.syms[static_cast<size_t>(sym)].kind == SymKind::Subroutine)) {
-        const Symbol &s = doc.syms[static_cast<size_t>(sym)];
-        sh.found = true;
-        sh.label = s.spelling + "(";
-        for (size_t k = 0; k < s.dummies.size(); k++) {
-            if (k) sh.label += ", ";
-            sh.label += s.dummies[k];
-            sh.params.push_back(s.dummies[k]);
+    // the argument being written: `name = ...` picks that dummy
+    std::string keyword;
+    {
+        int arg_start = i + 1;
+        int d = 0;
+        for (int q = std::min(col, static_cast<int>(l.size())) - 1; q > i; q--) {
+            char c = l[static_cast<size_t>(q)];
+            if (c == ')') d++;
+            else if (c == '(') d--;
+            else if (c == ',' && d == 0) {
+                arg_start = q + 1;
+                break;
+            }
         }
-        sh.label += ")";
-        sh.active_param = std::min(commas, std::max(0, static_cast<int>(sh.params.size()) - 1));
-        sh.documentation = KindWord(s.kind);
+        std::string arg = l.substr(static_cast<size_t>(arg_start), static_cast<size_t>(std::max(0, col - arg_start)));
+        size_t k0 = arg.find_first_not_of(" \t");
+        if (k0 != std::string::npos && IsNameChar(arg[k0])) {
+            size_t k1 = k0;
+            while (k1 < arg.size() && IsNameChar(arg[k1])) k1++;
+            size_t k2 = k1;
+            while (k2 < arg.size() && arg[k2] == ' ') k2++;
+            if (k2 < arg.size() && arg[k2] == '=' && (k2 + 1 >= arg.size() || arg[k2 + 1] != '='))
+                keyword = Lower(arg.substr(k0, k1 - k0));
+        }
+    }
+    // a procedure, generic, type or binding of this file or a USEd module
+    Target t, via;
+    {
+        int p = a - 1;
+        while (p >= 0 && l[static_cast<size_t>(p)] == ' ') p--;
+        if (p >= 0 && l[static_cast<size_t>(p)] == '%') {
+            via = TypeOf(ResolveChain(doc, line, ChainBefore(l, p)));
+            t = MemberOf(via, name);
+        } else {
+            t = LookupIn(doc, ScopeAtLine(doc, line), name);
+        }
+    }
+    std::vector<FortranLspSignature> sigs = SignaturesOf(t, via, l.substr(static_cast<size_t>(a), name.size()));
+    if (!sigs.empty()) {
+        auto index_of = [](const FortranLspSignature &sg, const std::string &kw) {
+            for (size_t k = 0; k < sg.params.size(); k++) {
+                if (Lower(sg.params[k]) == kw) return static_cast<int>(k);
+            }
+            return -1;
+        };
+        int active = -1;
+        for (size_t k = 0; k < sigs.size() && active < 0; k++) {
+            if (keyword.empty() ? static_cast<int>(sigs[k].params.size()) > commas : index_of(sigs[k], keyword) >= 0)
+                active = static_cast<int>(k);
+        }
+        if (active < 0) active = 0;
+        const FortranLspSignature &sg = sigs[static_cast<size_t>(active)];
+        sh.found = true;
+        sh.signatures = sigs;
+        sh.active_signature = active;
+        sh.label = sg.label;
+        sh.params = sg.params;
+        sh.documentation = sg.documentation;
+        int kw = keyword.empty() ? -1 : index_of(sg, keyword);
+        sh.active_param = kw >= 0 ? kw : std::min(commas, std::max(0, static_cast<int>(sh.params.size()) - 1));
         return sh;
     }
     const FortranVocabEntry *e = FortranVocabFind(name.c_str(), name.size());
@@ -1100,16 +2354,22 @@ FortranLspSignatureHelp FortranLspSignatureAt(const FortranLspDocument &doc, int
     }
     sh.active_param = std::min(commas, std::max(0, static_cast<int>(sh.params.size()) - 1));
     sh.documentation = e->summary;
+    FortranLspSignature sg;
+    sg.label = sh.label;
+    sg.params = sh.params;
+    sg.documentation = sh.documentation;
+    sh.signatures.push_back(sg);
     return sh;
 }
 
 std::vector<FortranLspLocation> FortranLspDefinition(const FortranLspDocument &doc, int line, int col) {
     std::vector<FortranLspLocation> out;
-    int sym = SymbolAt(doc, line, col, nullptr);
-    if (sym < 0) return out;
-    const Symbol &s = doc.syms[static_cast<size_t>(sym)];
+    Target t = TargetAt(doc, line, col, nullptr);
+    if (!t.ok()) return out;
+    const Symbol &s = t.s();
     FortranLspLocation loc;
     loc.range = {s.line, s.col, s.line, s.end_col};
+    if (t.doc != &doc) loc.path = t.doc->path;
     out.push_back(loc);
     return out;
 }

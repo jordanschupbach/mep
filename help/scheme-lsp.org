@@ -116,6 +116,28 @@ variables that are only ever =set!=.
 - *Formatting* with mep's own Scheme formatter, the same one as =gf=. See
   [[file:formatting.html][Formatting]].
 
+* Docstrings, and modules on the load path
+
+A procedure's docstring -- =(define (f x) "doc" body...)=, a =lambda='s, a
+=define-syntax-rule='s -- shows in hover and signature help. A name the
+file and the vocabulary of its imports do not define is looked up in the
+modules it uses (=(a b)= as =a/b.scm= in its directory, its
+=(add-to-load-path "dir")= literals, the workspace, =GUILE_LOAD_PATH= and
+=MEP_GUILE_PATH=) and in the files it =load=s or =include=s.
+
+GOOPS: =define-class= and =define-generic= (or =define-accessor=) take no
+docstring, so the =;;= comment lines directly above them are their
+documentation. This also holds when GOOPS is imported with a prefix, as in
+=(goops:define-class <circle> (<shape>))=. A generic that is first defined
+as a documented procedure and then rebound, as Rosetta's generated modules
+do with =(define (area self . args) "doc" ...)= followed by
+=(define area (%documented ...))=, keeps the docstring of the first
+definition.
+
+=mep-scheme-lsp --doc NAME [-L DIR]... [--module "a b"]... [--file FILE]...=
+prints a definition's signature and docstring, for the
+[[file:guile-mode.html][Guile Scheme mode]]'s Help tab.
+
 * Linting from the command line
 
 #+begin_src sh

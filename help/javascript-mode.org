@@ -1,0 +1,146 @@
+#+TITLE: JavaScript mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="44">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.js=, =.mjs= or
+=.cjs= file. The tab becomes a Node.js workspace: your file, an
+interactive =node= below it, and panels showing what that session holds.
+
+The console is the stock Node.js REPL, started by a small init script
+that calls =repl.start()= with Node's own evaluator. Line editing,
+completion, =.editor=, top-level =await= and the display of an
+expression's value are Node's. It starts with mep's environment: the
+=node= on =PATH= and =NODE_PATH=, as a project's dev shell or direnv set
+them, so =require('pkg')= loads the same package it would in a terminal in
+that project. In datamunge's =javascript= dev shell, that includes
+=@datamunge/datamungejs=, the Rosetta-generated native addon.
+
+* Working in it
+
+| Key / command          | Does                                                          |
+|------------------------+---------------------------------------------------------------|
+| =<leader>rr=           | run the whole file in the console                             |
+| =<leader>re=           | run the top-level statement at the cursor in the console      |
+| =gh=                   | help for the name under the cursor, in the Help panel         |
+| =:help name=           | the same, from the console (=obj.method=, a module name too)  |
+| =:inspect name=        | a value, a few levels deep, in Inspect                        |
+| =:eval "file" "source"= | what =<leader>re= types: run =file= as if it were =source= |
+| =:run "file" "source"= | what =<leader>rr= types                                       |
+
+=<leader>re= finds the statement around the cursor: from the nearest line
+above that starts one at column 0, outside every bracket, to just before
+the next. That is a whole =function= or =class=, an object or array
+literal over several lines, a call chain whose =.then(...)= lines continue
+it, or a single line. Closing brackets never start a statement, and neither
+does a line that continues the previous one (a trailing operator, comma or
+open bracket, or a leading =.=). On a comment, it is the statement the
+comment documents. A live Visual selection is sent as it is.
+
+Neither key pastes your code into the prompt. The code is written to a
+file, padded to its line numbers, and run with a single =:eval= line under
+your file's name, with =require=, =__filename= and =__dirname= relative to
+your file. An error names your file and line, and a relative
+=require('./util')= finds the file next to yours. The value of a final
+expression is displayed as at the prompt; =undefined= is not.
+
+=<leader>rr= runs the buffer as it is in the editor, unsaved changes
+included. mod1+Enter still pastes the current line or the selection
+straight into the prompt (see [[file:repl.html][REPL and send-to-terminal]]).
+
+* What the session does to your code
+
+Everything evaluated, typed or sent, is rewritten a little first so a
+file can be sent piece by piece and sent again:
+
+- Top-level =const=, =let= and =class= become globals (=var=), so sending
+  a statement twice does not fail with "has already been declared" and the
+  Variables panel can list them. Declarations inside functions and blocks
+  are untouched.
+- A static =import= becomes a dynamic one, which a script can run:
+  =import {a, b as c} from 'm'= becomes =var {a, b: c} = await import('m')=,
+  =import x from 'm'= takes the default export, and =import * as ns= the
+  namespace. The specifier is resolved as =require= would resolve it, so
+  =NODE_PATH= and paths relative to your file work, which plain ESM
+  resolution does not. Named imports from a CommonJS module, such as a
+  native addon whose exports Node cannot list, come from its
+  =module.exports=.
+- =export= is dropped: =export function f= defines =f=, =export default
+  expr= stores the value in =__default=, and =export { ... }= does nothing.
+
+The rest of the code is evaluated as written, by Node's own evaluator,
+which handles top-level =await=.
+
+* The panels
+
+| Panel     | Shows                                                                     |
+|-----------+---------------------------------------------------------------------------|
+| Variables | the globals the session has made, with kind and value (the signature for a function) |
+| Modules   | what the session =require=d or imported, with version and file           |
+| History   | what was evaluated, newest last; sent code as =file:lines= and its first line |
+| Inspect   | =:inspect= of a value: =util.inspect=, four levels deep                    |
+| Help      | the documentation of a name (below)                                        |
+
+Clicking a Variables row inspects it; clicking a Modules row shows the
+module's documentation in Help. What existed when the console started,
+Node's globals and built-in modules, is left out. The panels refresh after
+every evaluation.
+
+* Help
+
+=gh= over a name, or =:help name= in the console, shows in Help:
+
+- the JSDoc of the name's TypeScript declarations, when it comes from a
+  package that has them. The declaration file is the one TypeScript would
+  use: the =types= or =typings= field of the package's =package.json=, its
+  =exports["."].types=, the =.d.ts= beside its main file, =index.d.ts=,
+  or =@types/pkg=. The package is found as =require= finds it, through
+  =node_modules= and =NODE_PATH=. The name may be a module's export
+  (=dm.ref=, or =ref= after =const {ref} = require(...)=), a class
+  member (=Polynomial.degree=), or a method of an instance
+  (=p.degree= when =p= is a =Polynomial=). An enum member shows its
+  enum's documentation.
+- then what the running session knows: a function's signature from its
+  source (or its argument count for a native one) and its source, a
+  class's methods, an object's keys with their kinds, a value's display.
+  A Node built-in module (=fs=, =path=) lists its exports and links to its
+  page on nodejs.org.
+
+The declarations are read by the JavaScript language server's own =.d.ts=
+reader, through =mep-js-lsp --dts-doc= (see
+[[file:js-lsp.html][The JavaScript language server]]); with an older
+=mep-js-lsp=, the init script reads the file itself. =gh= also sends the
+file you are in, so a name it binds with =require= or =import= is
+documented before the code has run. In a JavaScript buffer =gh= also
+opens the language server's hover. Without the mode open, =gh= is that
+hover alone.
+
+In datamunge, from the =javascript= dev shell after =just
+build-javascript=:
+
+#+begin_src js
+const dm = require('@datamunge/datamungejs');
+const p = new dm.Polynomial([1, 2, 3]);
+p.degree();     // gh on degree: "Degree of the polynomial; ..."
+#+end_src
+
+* Options
+
+#+begin_src lua
+mep.opt.javascript_ui_cmd = {'node', '--enable-source-maps'}   -- the console's command
+mep.opt.javascript_ui_info_share = 0.3                         -- the panels' width
+#+end_src
+
+A =// REPL: nix develop .#javascript --command node= line in the file
+overrides =javascript_ui_cmd= for that file. The mode appends its init
+script, so the command must accept a script path, as =node= does. The
+REPL's history is kept in =~/.node_repl_history= (or =NODE_REPL_HISTORY=;
+empty turns it off), as the plain =node= REPL keeps it.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:js-lsp.html][The JavaScript language server]].
+- [[file:run-button.html][Run button]] -- a =// CMD:= line runs a file another way.

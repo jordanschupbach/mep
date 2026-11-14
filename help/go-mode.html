@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Go mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="49">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Go mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.go</code> file. The tab
+becomes a Go workspace: your file, a console below it, an Exports and a
+History panel at the top right and Help at the bottom right.</p>
+<p>It needs <code>python3</code>, and <code>go</code> on <code>PATH</code> to run anything. mep's dev shell has
+both. Docs from the workspace and its dependencies work without <code>go</code>.</p>
+<h1>The console</h1>
+<p>Go has no REPL, so the console shows run output and documentation:</p>
+<table>
+<tr><th>Input</th><th>Does</th></tr>
+<tr><td><code>:run FILE</code></td><td>what <code>&lt;leader&gt;rr</code> does</td></tr>
+<tr><td><code>:test [ARGS]</code></td><td><code>go test</code> in the package's directory</td></tr>
+<tr><td><code>:doc NAME [FILE]</code></td><td>godoc of <code>NAME</code> in the Help panel</td></tr>
+<tr><td><code>:godoc NAME</code></td><td><code>go doc NAME</code> itself</td></tr>
+<tr><td><code>:exports [PKG]</code></td><td>a package's exported identifiers in the Exports panel</td></tr>
+<tr><td><code>:cd DIR</code></td><td>the directory commands run in (the file's package by default)</td></tr>
+<tr><td><code>:help</code>, <code>:quit</code></td><td>the commands; leave</td></tr>
+<tr><td>anything else</td><td>a shell command, run in that directory: <code>go vet</code>, <code>go test ./...</code></td></tr>
+</table>
+<h1>Running</h1>
+<p><code>&lt;leader&gt;rr</code> (or the Run button, or <code>&lt;leader&gt;re</code>) saves the file and runs:</p>
+<ul>
+<li>its <code>CMD:</code> line (see <a href="run-button.html">Run button</a>), typed in mep's working directory as the Run button would;</li>
+<li>otherwise, for a <code>package main</code>, <code>go run .</code> in the file's directory when the package has other files, or <code>go run FILE</code> when it is one file;</li>
+<li>for a library package, <code>go build .</code>, which shows its errors (<code>:test</code> runs its tests).</li>
+</ul>
+<p><code>:MepGoRunOnSave</code> turns re-running on and off: when it is on, saving any
+<code>.go</code> file of the package runs the file again. <code>mep.opt.go_ui_run_on_save</code>
+sets the default. Each save also refreshes the Exports panel.</p>
+<h1>Panels</h1>
+<ul>
+<li><b>Exports</b>: the package's exported identifiers (for a <code>package main</code>, which exports nothing, all its top-level names), each type's methods and fields under it, then the package's imports. Clicking a name shows its doc. Clicking an import shows its package doc and lists its exports instead, with a row that leads back.</li>
+<li><b>History</b>: runs and commands. Clicking one runs it again.</li>
+<li><b>Help</b>: what <code>gh</code> and <code>:doc</code> show.</li>
+</ul>
+<h1>Help</h1>
+<p><code>gh</code> over a name (or <code>:doc NAME</code>) shows its doc comment. <code>NAME</code> takes
+<code>go doc</code>'s forms: <code>dm.NewFrame</code>, <code>dm.Frame.Rows</code>, <code>Frame</code>, <code>strings.ToUpper</code>,
+or an import path such as <code>example.com/datamunge.Frame</code>. A package name is
+one of the file's imports, by its alias or its package clause. mep's Go
+server reads the sources (<code>mep-go-lsp --doc</code>), from:</p>
+<ol>
+<li>the file's own package (unexported names too);</li>
+<li>the main module, from the <code>go.mod</code> above the file (or <code>GOFLAGS</code>'s <code>-modfile=</code>);</li>
+<li><code>replace</code> directives to a local directory, or to another module version;</li>
+<li><code>vendor/</code> (first under <code>GOFLAGS</code>-mod=vendor=), then the module cache (<code>$GOMODCACHE</code>, else <code>$GOPATH/pkg/mod</code>) at the version <code>go.mod</code> requires;</li>
+<li><code>GOROOT/src</code> for the standard library, then <code>$GOPATH/src</code>.</li>
+</ol>
+<p>When it finds nothing, <code>go doc NAME</code> answers (it works offline for the
+standard library and the module cache). Hovering <code>pkg.Name</code> in the editor
+reads the same doc comments through the language server.</p>
+<p>Rosetta's cgo binding of datamunge carries its documentation as godoc
+comments. A <code>replace</code> directive to it, or the module cache, is enough for
+<code>gh</code> and hover to show it.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.go_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'python3'</span><span class="tok-blue">}</span>      <span class="tok-comment">-- what runs the console program</span>
+<span class="tok-cyan">mep</span>.opt.go_ui_run_on_save = <span class="tok-cyan">false</span>    <span class="tok-comment">-- re-run on save from the start</span>
+<span class="tok-cyan">mep</span>.opt.go_ui_info_share = <span class="tok-cyan">0.34</span>      <span class="tok-comment">-- the panels' share of the width</span></code></pre></div>
+<p>A <code>REPL:</code> comment replaces the <code>python3</code>. <code>:MepGoRestart</code> starts a fresh
+console.</p>
+<h1>Checking it</h1>
+<p><code>just test-go-ui</code> runs <code>tools/go_ui_check.py</code>: the mode's Lua on stubs, the
+console with a real <code>go</code> offline (<code>GOFLAGS</code>-mod=mod=, <code>GOPROXY=off</code>, a
+temporary <code>GOCACHE</code>) on a module with a local <code>replace</code> and a module-cache
+dependency, and the console under a pty. The parts that need <code>go</code> skip
+without it.</p>
+</body>
+</html>

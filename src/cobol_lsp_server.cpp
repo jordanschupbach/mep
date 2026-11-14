@@ -228,6 +228,14 @@ public:
             } else {
                 Reply(msg.get("id"), result);
             }
+        } else if (method == "textDocument/formatting" || method == "textDocument/rangeFormatting") {
+            std::string error;
+            Json result = Format(params, method == "textDocument/rangeFormatting", &error);
+            if (!error.empty()) {
+                ReplyError(msg.get("id"), -32603, error);
+            } else {
+                Reply(msg.get("id"), result);
+            }
         } else if (method == "completionItem/resolve") {
             Reply(msg.get("id"), params);
         } else {
@@ -335,6 +343,8 @@ private:
         caps["definitionProvider"] = true;
         caps["referencesProvider"] = true;
         caps["documentHighlightProvider"] = true;
+        caps["documentFormattingProvider"] = true;
+        caps["documentRangeFormattingProvider"] = true;
         caps["renameProvider"] = rename;
 
         Json info = Json::Object();
@@ -540,6 +550,24 @@ private:
         Json out = Json::Object();
         out["changes"] = changes;
         return out;
+    }
+
+    /** @brief mep's COBOL formatter (CobolLspFormat): edits for the whole document or the range's lines. */
+    Json Format(const Json &params, bool range, std::string *error) {
+        const std::string uri = UriOf(params);
+        const auto it = docs_.find(uri);
+        if (it == docs_.end()) return Json::Array();
+        int first = 0, last = -1;
+        if (range) {
+            const Json &r = params.get("range");
+            first = r.get("start").get("line").as_int();
+            last = r.get("end").get("line").as_int();
+            // A range ending at column 0 of a line does not take that line in.
+            if (last > first && r.get("end").get("character").as_int() == 0) last--;
+        }
+        const std::vector<CobolLspTextEdit> edits = CobolLspFormat(it->second.lines, first, last, error);
+        if (!error->empty()) return Json();
+        return EditsJson(edits);
     }
 
     Json SignatureHelp(const Json &params) {

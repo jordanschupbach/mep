@@ -210,6 +210,11 @@ module or script as above, and TypeScript for <code>.ts</code>, <code>.tsx</code
 <code>.cts</code> and the <code>.d.ts</code> kinds. It exits 1 if anything printed is an error or
 a warning, 2 if a file could not be read, and 0 otherwise. With no
 arguments, <code>mep-js-lsp</code> is the language server on stdio.</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-js-lsp</span> <span class="tok-red">--dts-doc</span> index.d.ts Polynomial.degree</code></pre></div>
+<p>prints the hover a declaration file gives a name (a function, a class,
+<code>Class.member</code>, <code>Enum.member</code>, <code>namespace.name</code>) as markdown, and with no
+name the file's exports. It exits 1 if the file declares no such name.
+The <a href="javascript-mode.html">JavaScript mode</a>'s console uses it for <code>gh</code>.</p>
 <h1>Using typescript-language-server instead</h1>
 <p><code>typescript-language-server</code> is still registered, with no filetypes of
 its own. For type checking (it runs <code>tsc</code>'s language service over the

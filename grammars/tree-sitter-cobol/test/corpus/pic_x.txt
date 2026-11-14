@@ -1,0 +1,47 @@
+====================================
+PIC X
+====================================
+       identification division.
+       program-id. a.
+       data division.
+       working-storage section.
+       01 str1 PIC X(10)xx(111).
+       01 str2 PIC X(10).
+       01 str2 PIC X.
+       procedure division.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (working_storage_section
+        (keyword)
+        (keyword)
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_x)))
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_x)))
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_x)))))
+    (procedure_division
+      (keyword)
+      (keyword))))

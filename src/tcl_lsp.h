@@ -21,8 +21,12 @@ struct TclLspRange {
 
 class TclLspDocument;
 
-/** @brief Parses and analyses a document; every query below runs on the result. */
-std::shared_ptr<const TclLspDocument> TclLspAnalyze(const std::vector<std::string> &lines);
+/**
+ * @brief Parses and analyses a document; every query below runs on the result.
+ * @param path The file's path or file:// URI, if known: `source` and `lappend auto_path` resolve from its directory.
+ */
+std::shared_ptr<const TclLspDocument> TclLspAnalyze(const std::vector<std::string> &lines,
+                                                    const std::string &path = std::string());
 
 // --- Diagnostics ------------------------------------------------------------------
 
@@ -148,5 +152,77 @@ std::string TclLspParseReport(const std::string &text);
 
 /** @brief The formatter as one edit over the changed lines; none when already formatted. */
 std::vector<TclLspTextEdit> TclLspFormat(const std::vector<std::string> &lines, int width, std::string *error);
+
+
+// --- Procs of other files -----------------------------------------------------------
+//
+// Hover and signature help on a command the document neither defines nor
+// finds among Tcl's built-ins look for a proc of that name (with the comment
+// block above it as its documentation) in the files the document `source`s,
+// the .tcl files of its own directory, of `lappend auto_path DIR` literals
+// and of the server-wide directories (the workspace, $TCLLIBPATH,
+// $MEP_TCL_PATH: each directory and its package subdirectories). The Tcl UI
+// mode's Help tab asks the same of `mep-tcl-lsp --doc NAME`, for a generated
+// binding's .tcl files whose procs carry the library's documentation.
+//
+// TclOO classes (`oo::class create NAME {...}`, with the comment block above
+// it) and their methods (`method m {...}` in the body, `oo::define`/
+// `oo::objdefine NAME method ...`) count too: hover on `$obj m` finds m's
+// docs when the file sets `obj` from `[CLASS new ...]` / `[CLASS create ...]`
+// (inherited through `superclass`), else lists every known class's m.
+
+/** @brief A file:// URI as a path (percent-decoded); anything else unchanged. */
+std::string TclLspUriToPath(const std::string &uri);
+
+struct TclLspProcDoc {
+    bool found = false;
+    bool method = false;       // a TclOO method: qname is "::ns::Class name"
+    std::string klass;         // a method's class (::ns::Class)
+    std::string qname;         // ::ns::name
+    std::string written;       // as in the source
+    std::string params_label;  // "a {b 1} args"
+    std::vector<std::string> params;
+    std::string doc;   // the comment block above the proc (markdown-ish text)
+    std::string path;  // the defining file
+    int line = 0;      // 0-based
+};
+
+struct TclLspClassDoc {
+    bool found = false;
+    std::string qname;                // ::ns::Class
+    std::vector<std::string> supers;  // superclasses, qualified
+    std::string doc;                  // the comment block above `oo::class create`
+    std::string path;
+    int line = 0;  // 0-based
+};
+
+/** @brief The server-wide search directories (after the document's own). */
+void TclLspSetSearchPath(const std::vector<std::string> &dirs);
+/** @brief The .tcl/.tm files of `dirs` and of their immediate subdirectories. */
+std::vector<std::string> TclLspTclFilesIn(const std::vector<std::string> &dirs);
+/** @brief The files a document's commands are looked up in, in order. */
+std::vector<std::string> TclLspSearchFiles(const TclLspDocument &doc);
+/** @brief The proc `name` (qualified, relative to namespace `ns`, or as a tail) in `files`. */
+TclLspProcDoc TclLspFindProc(const std::string &name, const std::vector<std::string> &files,
+                             const std::string &ns = "::");
+/** @brief The TclOO class `name` (qualified, relative to `ns`, or as a tail) in `files`. */
+TclLspClassDoc TclLspFindClass(const std::string &name, const std::vector<std::string> &files,
+                               const std::string &ns = "::");
+/**
+ * @brief Method `method` of class `klass` (resolved as TclLspFindClass does) or of its superclasses;
+ * `new`/`create` find the constructor.
+ */
+TclLspProcDoc TclLspFindMethod(const std::string &klass, const std::string &method,
+                               const std::vector<std::string> &files, const std::string &ns = "::");
+/** @brief Every class's method named `method` in `files` (once per class). */
+std::vector<TclLspProcDoc> TclLspFindMethods(const std::string &method, const std::vector<std::string> &files);
+/** @brief The names of the methods class `qname` itself defines, in order. */
+std::vector<std::string> TclLspClassMethods(const std::string &qname, const std::vector<std::string> &files);
+/** @brief A class as hover markdown: its definition, superclasses, doc comment and file. */
+std::string TclLspClassMarkdown(const TclLspClassDoc &c);
+/** @brief A proc (or method) as hover markdown: its definition line, doc comment and file. */
+std::string TclLspProcMarkdown(const TclLspProcDoc &p);
+/** @brief A built-in command's usage and manual text ("string map" too); "" when unknown. */
+std::string TclLspBuiltinDoc(const std::string &name);
 
 #endif  // MEP_TCL_LSP_H

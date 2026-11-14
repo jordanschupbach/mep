@@ -1,0 +1,192 @@
+====================================
+occurs
+====================================
+       identification division.
+       program-id. a.
+       data division.
+       working-storage section.
+       01 lv1.
+         03 lv3 occurs 3.
+           05 lv5 pic x.
+       procedure division.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (working_storage_section
+        (keyword)
+        (keyword)
+        (data_description
+          (level_number)
+          (entry_name))
+        (data_description
+          (level_number)
+          (entry_name)
+          (occurs_clause
+            (keyword)
+            num: (integer)))
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_x)))))
+    (procedure_division
+      (keyword)
+      (keyword))))
+
+====================================
+occurs to
+====================================
+       identification division.
+       program-id. a.
+       data division.
+       working-storage section.
+       01 lv1.
+         03 lv3 occurs 3 to 5.
+           05 lv5 pic x.
+       procedure division.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (working_storage_section
+        (keyword)
+        (keyword)
+        (data_description
+          (level_number)
+          (entry_name))
+        (data_description
+          (level_number)
+          (entry_name)
+          (occurs_clause
+            (keyword)
+            num: (integer)
+            to: (keyword)
+            to: (integer)))
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_x)))))
+    (procedure_division
+      (keyword)
+      (keyword))))
+
+====================================
+occurs times
+====================================
+       identification division.
+       program-id. a.
+       data division.
+       working-storage section.
+       01 lv1.
+         03 lv3 occurs 3 times.
+           05 lv5 pic x.
+       procedure division.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (working_storage_section
+        (keyword)
+        (keyword)
+        (data_description
+          (level_number)
+          (entry_name))
+        (data_description
+          (level_number)
+          (entry_name)
+          (occurs_clause
+            (keyword)
+            num: (integer)
+            (keyword)))
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_x)))))
+    (procedure_division
+      (keyword)
+      (keyword))))
+
+====================================
+occurs depending
+====================================
+       identification division.
+       program-id. a.
+       data division.
+       working-storage section.
+       01 lv1.
+         03 lv3 occurs 3 depending l.
+           05 lv5 pic x.
+       01 l pic x.
+       procedure division.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (working_storage_section
+        (keyword)
+        (keyword)
+        (data_description
+          (level_number)
+          (entry_name))
+        (data_description
+          (level_number)
+          (entry_name)
+          (occurs_clause
+            (keyword)
+            num: (integer)
+            depending: (keyword)
+            depending: (qualified_word
+              (WORD))))
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_x)))
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_x)))))
+    (procedure_division
+      (keyword)
+      (keyword))))

@@ -178,7 +178,7 @@ automatic refresh, leaving the command.
 * Servers mep knows about
 
 Forty-five. Each is used when its command is on =$PATH=; the org, R,
-Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, JavaScript, Go and COBOL ones ship with mep itself:
+Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, JavaScript, Go, COBOL and Ruby ones ship with mep itself:
 
 | Language        | Command                            |
 |-----------------+------------------------------------|
@@ -190,7 +190,6 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, 
 | JavaScript      | =mep-js-lsp= (ships with mep), or =typescript-language-server= |
 | TypeScript      | =mep-js-lsp= (ships with mep), or =typescript-language-server= |
 | Java            | =jdtls=                            |
-| Ruby            | =solargraph=                       |
 | PHP             | =intelephense=                     |
 | C#              | =mep-csharp-lsp= (ships with mep), or =OmniSharp= |
 | Haskell         | =haskell-language-server-wrapper=  |
@@ -200,7 +199,10 @@ Python, C++, C, Maxima, Common Lisp, Bash, Clojure, Crystal, C#, SQL, Nix, Lua, 
 | Bash            | =mep-bash-lsp= (ships with mep), or =bash-language-server= |
 | SQL (SQLite)    | =mep-sql-lsp= (ships with mep), or =sqls=, =sql-language-server= |
 | Nix             | =mep-nix-lsp= (ships with mep), or =nil=, =nixd= |
-| COBOL           | =mep-cobol-lsp= (ships with mep): hover shows the C++ docs rosetta writes into copybooks |
+| OCaml           | =mep-ocaml-lsp= (ships with mep) |
+| APL             | =mep-apl-lsp= (ships with mep) |
+| Ruby            | =mep-ruby-lsp= (ships with mep), or =solargraph= |
+| COBOL           | =mep-cobol-lsp= (ships with mep): hover shows the C++ docs rosetta writes into copybooks; formatting |
 | Nim             | =mep-nim-lsp= (ships with mep) |
 | Java            | =mep-java-lsp= (ships with mep) |
 | Kotlin          | =mep-kotlin-lsp= (ships with mep) |

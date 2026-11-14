@@ -1,0 +1,105 @@
+#+TITLE: Ruby mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="46">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.rb= file.
+The tab becomes a Ruby workspace: your file, an interactive =irb= below
+it, and panels showing what that session holds.
+
+The console is the stock =irb=, so line editing, history, completion and
+the display of an expression's value are its own. It starts with mep's
+environment: the =ruby= on =PATH=, =RUBYLIB=, =GEM_HOME=, =GEM_PATH= and
+=BUNDLE_GEMFILE=, as a project's dev shell or direnv set them, so
+=require 'gem'= loads the same library it would in a terminal in that
+project. In a Rosetta-generated binding such as datamunge's, that is the
+gem whose =.rb= stubs carry the C++ documentation as YARD comments.
+
+* Working in it
+
+| Key / call             | Does                                                       |
+|------------------------+------------------------------------------------------------|
+| =<leader>rr=           | run the whole file in the console                          |
+| =<leader>re=           | run the top-level statement at the cursor (or the selection) |
+| =gh=                   | help for the name under the cursor, in the Help panel      |
+| =MepUI.help('name')=   | the same, from the console                                 |
+| =MepUI.view(x)=        | a value -- pretty-printed, with its class and fields -- in Inspect |
+| =MepUI.run(file)=      | run a file the way =<leader>rr= does                       |
+
+=<leader>re= finds the statement around the cursor: from the nearest line
+above that starts one at column 0 to just before the next. That is a whole
+=class=, =module= or =def=, a =do ... end= call, or a single line. =end=,
+=else=, =elsif=, =when=, =rescue=, =ensure=, closing brackets and a line
+starting with =.= never start a statement, and neither does a line that
+continues the previous one (a trailing operator, comma, =\= or open
+bracket), a heredoc's body or a ==begin= block.
+
+Neither key pastes your code into the prompt. The code is written to a
+file and run with a single =MepUI.eval_file(...)= line, in irb's own
+binding, under your file's name and padded to its line numbers. Local
+variables it assigns stay in the session; a backtrace names the right
+line; =__FILE__=, =__dir__= and =require_relative= work as they would
+running the file. irb displays the value as for anything typed.
+
+=<leader>rr= runs the buffer as it is in the editor, unsaved changes
+included. mod1+Enter still pastes the current line or the selection
+straight into the prompt (see [[file:repl.html][REPL and send-to-terminal]]).
+
+* The panels
+
+| Panel     | Shows                                                                   |
+|-----------+-------------------------------------------------------------------------|
+| Variables | the session's local variables, instance variables of =main=, the constants (classes, modules, values) and top-level methods it defined, with class and value |
+| Features  | the files =require=d since the console started, then the =$LOAD_PATH= (folded) |
+| Inspect   | =MepUI.view= of a value: =pretty_inspect=, its ancestors, instance variables and own methods |
+| Help      | the YARD documentation of a class, module or method, then the runtime's view of it |
+
+Clicking a Variables row inspects it; clicking a Features row opens the
+file. What existed when the console started -- Ruby's core and what irb
+loaded -- is left out.
+
+The panels refresh after every command: the init script hooks irb's
+evaluation. Under a console that is not irb (a =REPL:= line that starts
+plain =ruby=, say), they refresh once a second.
+
+* Help from the live session
+
+=MepUI.help('frame.filter')= -- and =gh= over =frame.filter= in your file
+-- first asks the running session what the name is: =frame= is a
+=Datamunge::Frame=, and =filter= is defined by =Datamunge::Frame= in
+=lib/datamunge.rb=. It then has =mep-ruby-lsp --doc= (see
+[[file:ruby-lsp.html][The Ruby language server]]) read that method's YARD
+comments from the source, with the session's =$LOAD_PATH= and the files
+it loaded, and shows them rendered: signature, parameters with their
+types, options, return value, exceptions, examples and overloads. Below
+comes what Ruby itself knows: the parameters, the owner and the source
+location, or for a class its ancestors and methods.
+
+Names resolve the way you would write them: =Foo=, =Foo::Bar=,
+=Foo#method= (an instance method), =Foo.method=, =obj.method= for a local
+or instance variable =obj=, and a bare method name. Nothing beyond
+constants and variables is evaluated to find a receiver, so =gh= never
+runs code. A method defined in C (most of Ruby's core) shows its runtime
+signature only.
+
+In a =.rb= buffer =gh= also opens the language server's hover, which
+needs no running session. Without the mode open, =gh= is that hover alone.
+
+* Options
+
+#+begin_src lua
+mep.opt.ruby_ui_cmd = {'irb', '--nocolorize'}   -- the console's command
+mep.opt.ruby_ui_info_share = 0.3                -- the panels' width
+#+end_src
+
+A =# REPL: bundle exec irb= line in the file overrides =ruby_ui_cmd= for
+that file. The mode appends =-r= and its init script, so the command must
+accept them, as =irb= does.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:ruby-lsp.html][The Ruby language server]].
+- [[file:run-button.html][Run button]] -- a =# CMD:= line runs a file another way.

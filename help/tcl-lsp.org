@@ -118,6 +118,33 @@ tests' own deliberate mistakes (=catch {set}=), each with Tcl's message.
   =tclfmt=, byte for byte. Only the lines that change are edited. See
   [[file:formatting.html][Formatting]].
 
+* Procs of other files
+
+Hover and signature help on a command the file neither defines nor finds
+among Tcl's built-ins look for a proc of that name -- its documentation is
+the comment block above it -- in the files the file =source=s (a literal
+path, or =[file join [file dirname [info script]] ...]=), the =.tcl= files
+of its directory, of =lappend auto_path DIR= literals, of the workspace,
+=TCLLIBPATH= and =MEP_TCL_PATH= (each with its package subdirectories).
+
+TclOO classes count too. Hover on a class command (=datamunge::DataFrame
+new=) shows the comment block above its =oo::class create=; hover on a
+method call =$df sort_by ...= shows the method's comment block when the file
+sets =df= from =[CLASS new ...]= or =[CLASS create NAME ...]= (with or
+without =namespace import=). The method is looked up in the class, then
+its =superclass=es; =new= and =create= show the constructor, and
+=CLASS method= covers static methods (=oo::objdefine CLASS method=). When
+the object's class is unknown (=set b [$a select ...]=), hover lists that
+method of every class that defines it. This is how the documented stubs of
+a generated binding's package file (Rosetta's =datamunge.tcl=, found
+through =MEP_TCL_PATH=) reach its examples.
+
+=mep-tcl-lsp --doc NAME [-L DIR]... [--file FILE]...= prints a proc's doc
+comment, a class's (with its superclasses and methods), a method's (=--doc
+"DataFrame sort_by"= or =--doc datamunge::DataFrame sort_by=), or a
+built-in's usage and manual text, for the [[file:tcl-mode.html][Tcl
+mode]]'s Help tab.
+
 * Linting from the command line
 
 #+begin_src sh

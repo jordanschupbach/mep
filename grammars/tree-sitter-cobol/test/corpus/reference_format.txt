@@ -1,0 +1,540 @@
+====================================
+fixed format: sequence and identification areas
+====================================
+000100 IDENTIFICATION DIVISION.                                         PROG0001
+000200 PROGRAM-ID. A.                                                   PROG0002
+000300 PROCEDURE DIVISION.
+000400     STOP RUN.
+---
+
+(start
+  (sequence_area)
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (identification_area)
+      (sequence_area)
+      (keyword)
+      (program_name))
+    (identification_area)
+    (sequence_area)
+    (procedure_division
+      (keyword)
+      (keyword)
+      (sequence_area)
+      (stop_statement
+        (keyword)
+        (keyword))
+      (period))))
+
+====================================
+fixed format: comment lines, indicator and floating comment
+====================================
+      * a comment line
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. A.
+      / a page-eject comment
+       PROCEDURE DIVISION.
+      D    DISPLAY "debugging"
+           DISPLAY "x" *> after the code
+           STOP RUN.
+---
+
+(start
+  (comment)
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (comment)
+    (procedure_division
+      (keyword)
+      (keyword)
+      (indicator)
+      (display_statement
+        (keyword)
+        (string))
+      (display_statement
+        (keyword)
+        (string))
+      (comment)
+      (stop_statement
+        (keyword)
+        (keyword))
+      (period))))
+
+====================================
+fixed format: continued literal
+====================================
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. A.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC X(60) VALUE "a literal that runs on past the end of the line
+      -    "and is continued".
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (working_storage_section
+        (keyword)
+        (keyword)
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_x))
+          (value_clause
+            (keyword)
+            (value_item
+              (string))))))))
+
+====================================
+fixed format: a word in the sequence area
+====================================
+000100 IDENTIFICATION DIVISION.
+000200 PROGRAM-ID. A.
+000300 PROCEDURE DIVISION.
+rogerw     DISPLAY "x".
+000500     STOP RUN.
+---
+
+(start
+  (sequence_area)
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (sequence_area)
+      (keyword)
+      (program_name))
+    (sequence_area)
+    (procedure_division
+      (keyword)
+      (keyword)
+      (sequence_area)
+      (display_statement
+        (keyword)
+        (string))
+      (period)
+      (sequence_area)
+      (stop_statement
+        (keyword)
+        (keyword))
+      (period))))
+
+====================================
+free format: guessed from the text
+====================================
+*> A free-format program: code in columns 1-6.
+IDENTIFICATION DIVISION.
+PROGRAM-ID. A.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 WS-X USAGE COMP-2 VALUE 1.0E-6.
+01 WS-H USAGE BINARY-DOUBLE UNSIGNED.
+PROCEDURE DIVISION.
+    MOVE 1 TO WS-X *> a comment
+    STOP RUN.
+---
+
+(start
+  (comment)
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (working_storage_section
+        (keyword)
+        (keyword)
+        (data_description
+          (level_number)
+          (entry_name)
+          (usage_clause
+            (keyword)
+            (COMP_2
+              (keyword)))
+          (value_clause
+            (keyword)
+            (value_item
+              (number
+                (decimal)))))
+        (data_description
+          (level_number)
+          (entry_name)
+          (usage_clause
+            (keyword)
+            (BINARY_DOUBLE
+              (keyword))
+            (UNSIGNED
+              (keyword))))))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (move_statement
+        (keyword)
+        src: (number
+          (integer))
+        (keyword)
+        dst: (qualified_word
+          (WORD)))
+      (comment)
+      (stop_statement
+        (keyword)
+        (keyword))
+      (period))))
+
+====================================
+free format: directive
+====================================
+       >>SOURCE FORMAT IS FREE
+IDENTIFICATION DIVISION.
+PROGRAM-ID. A.
+PROCEDURE DIVISION.
+      DISPLAY "six columns in"
+    STOP RUN.
+---
+
+(start
+  (compiler_directive)
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (display_statement
+        (keyword)
+        (string))
+      (stop_statement
+        (keyword)
+        (keyword))
+      (period))))
+
+====================================
+free format: $SET directive and back to fixed
+====================================
+      $SET SOURCEFORMAT"FREE"
+IDENTIFICATION DIVISION.
+PROGRAM-ID. A.
+>>SOURCE FIXED
+       PROCEDURE DIVISION.
+      * a comment line again
+           STOP RUN.
+---
+
+(start
+  (compiler_directive)
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (compiler_directive)
+    (procedure_division
+      (keyword)
+      (keyword)
+      (comment)
+      (stop_statement
+        (keyword)
+        (keyword))
+      (period))))
+
+====================================
+free format: several programs, empty linkage section
+====================================
+IDENTIFICATION DIVISION.
+PROGRAM-ID. A.
+PROCEDURE DIVISION.
+    GOBACK.
+END PROGRAM A.
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. B.
+DATA DIVISION.
+LINKAGE SECTION.
+COPY "callbacks.cpy".
+PROCEDURE DIVISION USING X Y.
+    GOBACK.
+END PROGRAM B.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (goback_statement
+        (keyword))
+      (period))
+    (end_program
+      (keyword)
+      (program_name)))
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (linkage_section
+        (keyword)
+        (keyword)))
+    (copy_statement
+      (keyword)
+      book: (string))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (procedure_using_chaining
+        (USING
+          (keyword))
+        (procedure_param)
+        (procedure_param))
+      (goback_statement
+        (keyword))
+      (period))
+    (end_program
+      (keyword)
+      (program_name))))
+
+====================================
+copybook of data entries
+====================================
+      *>> The status record.
+       01 DM-STATUS.
+          05 DM-STATUS-CODE USAGE BINARY-LONG SIGNED VALUE 0.
+             88 DM-STATUS-OK VALUE 0.
+          05 DM-STATUS-KIND PIC X(10) VALUE SPACES.
+---
+
+(start
+  (comment)
+  (record_description_list
+    (data_description
+      (level_number)
+      (entry_name))
+    (data_description
+      (level_number)
+      (entry_name)
+      (usage_clause
+        (keyword)
+        (BINARY_LONG
+          (keyword))
+        (SIGNED
+          (keyword)))
+      (value_clause
+        (keyword)
+        (value_item
+          (number
+            (integer)))))
+    (data_description
+      (level_number)
+      (entry_name)
+      (value_clause
+        (keyword)
+        (value_item
+          (number
+            (integer)))))
+    (data_description
+      (level_number)
+      (entry_name)
+      (picture_clause
+        (keyword)
+        (picture_x))
+      (value_clause
+        (keyword)
+        (value_item
+          (SPACE
+            (keyword)))))))
+
+====================================
+COPY REPLACING and REPLACE
+====================================
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. A.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       COPY BOOK1 REPLACING ==:PFX:== BY ==WS== LEADING X BY Y.
+       REPLACE ==A== BY ==B==.
+       PROCEDURE DIVISION.
+           STOP RUN.
+       REPLACE OFF.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (working_storage_section
+        (keyword)
+        (keyword)))
+    (copy_statement
+      (keyword)
+      book: (WORD)
+      (replacing_clause
+        (keyword)
+        (replacing_item_pair
+          x: (pseudo_text)
+          (keyword)
+          by: (pseudo_text))
+        (replacing_item_pair
+          leading_or_trailing: (LEADING
+            (keyword))
+          x: (WORD)
+          (keyword)
+          by: (WORD))))
+    (replace_statement
+      (keyword)
+      (replacing_item_pair
+        x: (pseudo_text)
+        (keyword)
+        by: (pseudo_text)))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (stop_statement
+        (keyword)
+        (keyword))
+      (period)))
+  (replace_statement
+    (keyword)
+    (keyword)))
+
+====================================
+GnuCOBOL: LINE SEQUENTIAL, inline PERFORM, EVALUATE
+====================================
+IDENTIFICATION DIVISION.
+PROGRAM-ID. A.
+ENVIRONMENT DIVISION.
+INPUT-OUTPUT SECTION.
+FILE-CONTROL.
+    SELECT F ASSIGN TO "f.txt" ORGANIZATION IS LINE SEQUENTIAL.
+PROCEDURE DIVISION.
+    PERFORM VARYING I FROM 1 BY 1 UNTIL I > 10
+        EVALUATE TRUE
+            WHEN I = 1 DISPLAY FUNCTION TRIM(X)
+            WHEN OTHER CONTINUE
+        END-EVALUATE
+    END-PERFORM
+    STOP RUN.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (input_output_section
+        (keyword)
+        (keyword)
+        (keyword)
+        (select_statement
+          (keyword)
+          file_name: (WORD)
+          (assign_clause
+            (keyword)
+            (keyword)
+            to: (string))
+          (organization_clause
+            (keyword)
+            (keyword)
+            (LINE
+              (keyword))
+            (SEQUENTIAL
+              (keyword))))))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (perform_statement_loop
+        (keyword)
+        option: (perform_option
+          (keyword)
+          varying: (perform_varying
+            (qualified_word
+              (WORD))
+            (keyword)
+            from: (number
+              (integer))
+            (keyword)
+            by: (number
+              (integer))
+            (keyword)
+            until: (expr
+              (qualified_word
+                (WORD))
+              (gt)
+              (number
+                (integer))))))
+      (evaluate_header
+        (keyword)
+        (evaluate_subject
+          (TRUE
+            (keyword))))
+      (when
+        (keyword)
+        (expr
+          (qualified_word
+            (WORD))
+          (eq)
+          (number
+            (integer))))
+      (display_statement
+        (keyword)
+        (function_
+          (keyword)
+          (WORD)
+          (func_args
+            (qualified_word
+              (WORD)))))
+      (when_other
+        (keyword))
+      (continue_statement
+        (keyword))
+      (END_EVALUATE
+        (keyword))
+      (END_PERFORM
+        (keyword))
+      (stop_statement
+        (keyword)
+        (keyword))
+      (period))))

@@ -22,7 +22,8 @@ struct SchemeLspRange {
 class SchemeLspDocument;
 
 /** @brief Parses and analyses a document; every query below runs on the result. */
-std::shared_ptr<const SchemeLspDocument> SchemeLspAnalyze(const std::vector<std::string> &lines);
+std::shared_ptr<const SchemeLspDocument> SchemeLspAnalyze(const std::vector<std::string> &lines,
+                                                          const std::string &path = std::string());
 
 // --- Diagnostics ------------------------------------------------------------------
 
@@ -139,5 +140,45 @@ std::vector<SchemeLspFold> SchemeLspFolds(const SchemeLspDocument &doc);
 
 /** @brief The formatter as one edit over the changed lines; none when already formatted. */
 std::vector<SchemeLspTextEdit> SchemeLspFormat(const std::vector<std::string> &lines, int width, std::string *error);
+
+
+// --- Definitions of other files ------------------------------------------------------
+//
+// Hover and signature help on a name that neither the file nor the Scheme
+// vocabulary of its imports defines look in the files of the modules it
+// uses -- `(use-modules (a b))` / `#:use-module` as a/b.scm on the search
+// path: the file's directory, `(add-to-load-path "dir")` literals and the
+// server-wide directories (the workspace, $GUILE_LOAD_PATH, $MEP_GUILE_PATH)
+// -- and in the files it `load`s or `include`s. A procedure's docstring,
+// `(define (f x) "doc" body...)`, is its documentation, here and for the
+// file's own definitions. `mep-scheme-lsp --doc NAME` answers the same for
+// the Guile UI mode's Help tab.
+
+/** @brief A file:// URI as a path (percent-decoded); anything else unchanged. */
+std::string SchemeLspUriToPath(const std::string &uri);
+
+struct SchemeLspDefDoc {
+    bool found = false;
+    std::string name;
+    std::string sig;   // "(f a #:optional b)", "" for a variable
+    std::string doc;   // the docstring, "" when none
+    std::string kind;  // "procedure", "variable", "macro", ...
+    std::string path;
+    int line = 0;  // 0-based
+    bool exported = false;
+};
+
+/** @brief The server-wide search directories (after the document's own). */
+void SchemeLspSetSearchPath(const std::vector<std::string> &dirs);
+/** @brief Module `a b c` (or "(a b c)") as a/b/c.scm in the first of `dirs` that has it; "" if none. */
+std::string SchemeLspModuleFile(const std::string &module, const std::vector<std::string> &dirs);
+/** @brief The files a document's imported names are looked up in, in order. */
+std::vector<std::string> SchemeLspSearchFiles(const SchemeLspDocument &doc);
+/** @brief The top-level definition of `name` in the first of `files` that has one. */
+SchemeLspDefDoc SchemeLspFindDefinition(const std::string &name, const std::vector<std::string> &files);
+/** @brief A definition as hover markdown: signature, docstring, kind and file. */
+std::string SchemeLspDefMarkdown(const SchemeLspDefDoc &d);
+/** @brief A name of the Scheme vocabulary: its signature and modules as text; "" when unknown. */
+std::string SchemeLspVocabDoc(const std::string &name);
 
 #endif  // MEP_SCHEME_LSP_H

@@ -1,0 +1,96 @@
+#+TITLE: Go mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="49">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.go= file. The tab
+becomes a Go workspace: your file, a console below it, an Exports and a
+History panel at the top right and Help at the bottom right.
+
+It needs =python3=, and =go= on =PATH= to run anything. mep's dev shell has
+both. Docs from the workspace and its dependencies work without =go=.
+
+* The console
+
+Go has no REPL, so the console shows run output and documentation:
+
+| Input             | Does                                                                |
+|-------------------+---------------------------------------------------------------------|
+| =:run FILE=       | what =<leader>rr= does                                              |
+| =:test [ARGS]=    | =go test= in the package's directory                                |
+| =:doc NAME [FILE]= | godoc of =NAME= in the Help panel                                  |
+| =:godoc NAME=     | =go doc NAME= itself                                                |
+| =:exports [PKG]=  | a package's exported identifiers in the Exports panel               |
+| =:cd DIR=         | the directory commands run in (the file's package by default)       |
+| =:help=, =:quit=  | the commands; leave                                                 |
+| anything else     | a shell command, run in that directory: =go vet=, =go test ./...=   |
+
+* Running
+
+=<leader>rr= (or the Run button, or =<leader>re=) saves the file and runs:
+
+- its =CMD:= line (see [[file:run-button.html][Run button]]), typed in
+  mep's working directory as the Run button would;
+- otherwise, for a =package main=, =go run .= in the file's directory when
+  the package has other files, or =go run FILE= when it is one file;
+- for a library package, =go build .=, which shows its errors (=:test=
+  runs its tests).
+
+=:MepGoRunOnSave= turns re-running on and off: when it is on, saving any
+=.go= file of the package runs the file again. =mep.opt.go_ui_run_on_save=
+sets the default. Each save also refreshes the Exports panel.
+
+* Panels
+
+- *Exports*: the package's exported identifiers (for a =package main=,
+  which exports nothing, all its top-level names), each type's methods and
+  fields under it, then the package's imports. Clicking a name shows its
+  doc. Clicking an import shows its package doc and lists its exports
+  instead, with a row that leads back.
+- *History*: runs and commands. Clicking one runs it again.
+- *Help*: what =gh= and =:doc= show.
+
+* Help
+
+=gh= over a name (or =:doc NAME=) shows its doc comment. =NAME= takes
+=go doc='s forms: =dm.NewFrame=, =dm.Frame.Rows=, =Frame=, =strings.ToUpper=,
+or an import path such as =example.com/datamunge.Frame=. A package name is
+one of the file's imports, by its alias or its package clause. mep's Go
+server reads the sources (=mep-go-lsp --doc=), from:
+
+1. the file's own package (unexported names too);
+2. the main module, from the =go.mod= above the file (or =GOFLAGS='s
+   =-modfile==);
+3. =replace= directives to a local directory, or to another module version;
+4. =vendor/= (first under =GOFLAGS=-mod=vendor=), then the module cache
+   (=$GOMODCACHE=, else =$GOPATH/pkg/mod=) at the version =go.mod= requires;
+5. =GOROOT/src= for the standard library, then =$GOPATH/src=.
+
+When it finds nothing, =go doc NAME= answers (it works offline for the
+standard library and the module cache). Hovering =pkg.Name= in the editor
+reads the same doc comments through the language server.
+
+Rosetta's cgo binding of datamunge carries its documentation as godoc
+comments. A =replace= directive to it, or the module cache, is enough for
+=gh= and hover to show it.
+
+* Options
+
+#+begin_src lua
+mep.opt.go_ui_cmd = {'python3'}      -- what runs the console program
+mep.opt.go_ui_run_on_save = false    -- re-run on save from the start
+mep.opt.go_ui_info_share = 0.34      -- the panels' share of the width
+#+end_src
+
+A =REPL:= comment replaces the =python3=. =:MepGoRestart= starts a fresh
+console.
+
+* Checking it
+
+=just test-go-ui= runs =tools/go_ui_check.py=: the mode's Lua on stubs, the
+console with a real =go= offline (=GOFLAGS=-mod=mod=, =GOPROXY=off=, a
+temporary =GOCACHE=) on a module with a local =replace= and a module-cache
+dependency, and the console under a pty. The parts that need =go= skip
+without it.

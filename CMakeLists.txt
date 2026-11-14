@@ -563,11 +563,17 @@ mep_grammar(matlab Matlab)
 mep_grammar(gap Gap)
 mep_grammar(go Go)
 mep_grammar(julia Julia)
+mep_grammar(ruby Ruby)
 mep_grammar(rust Rust)
 mep_grammar(zig Zig)
 mep_grammar(d D)
 mep_grammar(java Java)
 mep_grammar(nim Nim)
+mep_grammar(cobol Cobol)
+mep_grammar(apl Apl)
+# OCaml (.ml) and its interface dialect (.mli): tree-sitter-ocaml, vendored.
+mep_grammar(ocaml Ocaml)
+mep_grammar(ocaml_interface OcamlInterface)
 
 # Regenerating a grammar needs neither the tree-sitter CLI nor Node
 # (tools/ts_generate/README.md): mep-ts-generate runs grammar.js on mep's
@@ -833,6 +839,10 @@ endif()
 if(NOT DEFINED MEP_FORTRAN_FORMAT_SOURCES)
     set(MEP_FORTRAN_FORMAT_SOURCES src/fortran_format.cpp)
 endif()
+# mep's own COBOL formatter (re-indents fixed and free format; cobol_format.h).
+if(NOT DEFINED MEP_COBOL_FORMAT_SOURCES)
+    set(MEP_COBOL_FORMAT_SOURCES src/cobol_format.cpp src/cobol_syntax.cpp)
+endif()
 if(NOT DEFINED MEP_OCTAVE_FORMAT_SOURCES)
     set(MEP_OCTAVE_FORMAT_SOURCES src/octave_format.cpp src/octave_parse.cpp)
 endif()
@@ -894,6 +904,15 @@ if(NOT DEFINED MEP_JAVA_FORMAT_SOURCES)
 endif()
 if(NOT DEFINED MEP_NIM_FORMAT_SOURCES)
     set(MEP_NIM_FORMAT_SOURCES src/nim_format.cpp)
+endif()
+if(NOT DEFINED MEP_RUBY_FORMAT_SOURCES)
+    set(MEP_RUBY_FORMAT_SOURCES src/ruby_format.cpp)
+endif()
+if(NOT DEFINED MEP_APL_FORMAT_SOURCES)
+    set(MEP_APL_FORMAT_SOURCES src/apl_format.cpp src/apl_lex.cpp)
+endif()
+if(NOT DEFINED MEP_OCAML_FORMAT_SOURCES)
+    set(MEP_OCAML_FORMAT_SOURCES src/ocaml_format.cpp)
 endif()
 if(NOT DEFINED MEP_NIX_FORMAT_SOURCES)
     set(MEP_NIX_FORMAT_SOURCES src/nix_format.cpp src/nix_format_parse.cpp src/nix_format_pretty.cpp
@@ -1177,6 +1196,12 @@ add_library(mep_core STATIC
     # mep's own Nix formatter (mep.format_nix): a port of nixfmt's lexer,
     # parser, printer and layout engine.
     ${MEP_NIX_FORMAT_SOURCES}
+    # mep.format_ocaml: mep's own OCaml formatter.
+    ${MEP_OCAML_FORMAT_SOURCES}
+    # mep.format_apl: mep's own APL formatter.
+    ${MEP_APL_FORMAT_SOURCES}
+    # mep.format_ruby: mep's own Ruby formatter.
+    ${MEP_RUBY_FORMAT_SOURCES}
     # mep.format_nim: mep's own Nim formatter.
     ${MEP_NIM_FORMAT_SOURCES}
     # mep.format_java: mep's own Java formatter.
@@ -1228,9 +1253,10 @@ add_library(mep_core STATIC
     # COMMON-LISP name table.
     src/lisp_indent.cpp
     src/lisp_format.cpp
-    # COBOL line structure + highlighter (mep.cobol_highlight), shared with
-    # mep-cobol-lsp.
+    # COBOL line structure (shared with mep-cobol-lsp) and mep.format_cobol,
+    # mep's own COBOL formatter. (Highlighting is grammars/tree-sitter-cobol.)
     src/cobol_syntax.cpp
+    src/cobol_format.cpp
     src/math_tex.cpp
     src/math_speech.cpp
     src/math_markup.cpp
@@ -2644,7 +2670,7 @@ add_dependencies(tests mep-fish-lsp-test)
 # `--gfortran-check FILE...`) over the analysis half (src/fortran_lsp.cpp)
 # and mep's Fortran reader (src/fortran_parse*.cpp: free and fixed form,
 # the preprocessor model). Same reasoning as mep-nix-lsp.
-set(MEP_FORTRAN_LSP_SOURCES src/fortran_lsp.cpp src/fortran_lsp_vocab.cpp src/fortran_parse.cpp
+set(MEP_FORTRAN_LSP_SOURCES src/fortran_lsp.cpp src/fortran_lsp_modules.cpp src/fortran_lsp_vocab.cpp src/fortran_parse.cpp
     src/fortran_parse_stmt.cpp ${MEP_FORTRAN_FORMAT_SOURCES})
 if(NOT EMSCRIPTEN)
     add_executable(mep-fortran-lsp src/fortran_lsp_server.cpp ${MEP_FORTRAN_LSP_SOURCES})
@@ -2756,7 +2782,7 @@ add_dependencies(tests mep-gap-lsp-test)
 # mep's own Go language server and linter: the wire half
 # (src/go_lsp_server.cpp, also `mep-go-lsp --lint FILE...`) over the
 # analysis half (src/go_lsp.cpp). Same reasoning as mep-nix-lsp above.
-set(MEP_GO_LSP_SOURCES src/go_lsp.cpp src/go_lsp_features.cpp src/go_lsp_vocab.cpp src/go_lsp_vocab_data.cpp ${MEP_GO_FORMAT_SOURCES})
+set(MEP_GO_LSP_SOURCES src/go_lsp.cpp src/go_lsp_features.cpp src/go_lsp_pkgdoc.cpp src/go_lsp_vocab.cpp src/go_lsp_vocab_data.cpp ${MEP_GO_FORMAT_SOURCES})
 if(NOT EMSCRIPTEN)
     add_executable(mep-go-lsp src/go_lsp_server.cpp ${MEP_GO_LSP_SOURCES})
     target_include_directories(mep-go-lsp PRIVATE src)
@@ -2838,7 +2864,7 @@ add_dependencies(tests mep-kotlin-lsp-test)
 # mep's own Java language server and linter: the wire half
 # (src/java_lsp_server.cpp, also `mep-java-lsp --lint FILE...`) over the
 # analysis half (src/java_lsp.cpp). Same reasoning as mep-nix-lsp above.
-set(MEP_JAVA_LSP_SOURCES src/java_lsp.cpp ${MEP_JAVA_FORMAT_SOURCES})
+set(MEP_JAVA_LSP_SOURCES src/java_lsp.cpp src/java_lsp_javadoc.cpp ${MEP_JAVA_FORMAT_SOURCES})
 if(NOT EMSCRIPTEN)
     add_executable(mep-java-lsp src/java_lsp_server.cpp ${MEP_JAVA_LSP_SOURCES})
     target_include_directories(mep-java-lsp PRIVATE src)
@@ -2874,11 +2900,11 @@ add_dependencies(tests mep-nim-lsp-test)
 # mep's own COBOL language server and linter: the wire half
 # (src/cobol_lsp_server.cpp, also `mep-cobol-lsp --lint FILE...` and
 # `--hover FILE LINE COL`) over the analysis half (src/cobol_lsp.cpp) and
-# the line structure it shares with the editor's highlighter
-# (src/cobol_syntax.cpp). It reads the copybooks a program COPYs -- with
+# the line structure it shares with the formatter (src/cobol_syntax.cpp);
+# textDocument/formatting is src/cobol_format.cpp. It reads the copybooks a program COPYs -- with
 # rosetta's `*>>` doc comments, hover on a `CALL "dm_x"` literal -- and
 # never runs cobc. Same reasoning as mep-nix-lsp above.
-set(MEP_COBOL_LSP_SOURCES src/cobol_lsp.cpp src/cobol_syntax.cpp)
+set(MEP_COBOL_LSP_SOURCES src/cobol_lsp.cpp src/cobol_syntax.cpp src/cobol_format.cpp)
 if(NOT EMSCRIPTEN)
     add_executable(mep-cobol-lsp src/cobol_lsp_server.cpp ${MEP_COBOL_LSP_SOURCES})
     target_include_directories(mep-cobol-lsp PRIVATE src)
@@ -2892,6 +2918,85 @@ target_include_directories(mep-cobol-lsp-test PRIVATE src)
 target_compile_options(mep-cobol-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-cobol-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-cobol-lsp-test)
+
+add_executable(mep-cobol-format-test EXCLUDE_FROM_ALL src/cobol_format_test.cpp ${MEP_COBOL_FORMAT_SOURCES})
+target_include_directories(mep-cobol-format-test PRIVATE src)
+target_compile_options(mep-cobol-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-cobol-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-cobol-format-test)
+
+# mep's own Ruby language server and linter: the wire half
+# (src/ruby_lsp_server.cpp, also `mep-ruby-lsp --lint FILE...` and
+# `--doc NAME`) over the analysis half (src/ruby_lsp.cpp: features;
+# ruby_lsp_index.cpp: definitions, the load path and require resolution;
+# ruby_lsp_yard.cpp: YARD doc comments; ruby_lsp_vocab.cpp: Ruby core).
+# Ruby is read with the vendored tree-sitter grammar (ts_ruby), the
+# formatter's parser too. No mep_core, like mep-nix-lsp above.
+set(MEP_RUBY_LSP_SOURCES src/ruby_lsp.cpp src/ruby_lsp_index.cpp src/ruby_lsp_yard.cpp src/ruby_lsp_vocab.cpp
+    ${MEP_RUBY_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-ruby-lsp src/ruby_lsp_server.cpp ${MEP_RUBY_LSP_SOURCES})
+    target_include_directories(mep-ruby-lsp PRIVATE src)
+    target_link_libraries(mep-ruby-lsp PRIVATE tree_sitter ts_ruby)
+    target_compile_options(mep-ruby-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-ruby-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-ruby-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-ruby-lsp-test EXCLUDE_FROM_ALL src/ruby_lsp_test.cpp ${MEP_RUBY_LSP_SOURCES})
+target_include_directories(mep-ruby-lsp-test PRIVATE src)
+target_link_libraries(mep-ruby-lsp-test PRIVATE tree_sitter ts_ruby)
+target_compile_definitions(mep-ruby-lsp-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mep-ruby-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-ruby-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-ruby-lsp-test)
+
+# mep's own APL language server and linter (GNU APL and Dyalog): the wire
+# half (src/apl_lsp_server.cpp, also `mep-apl-lsp --lint FILE...` and
+# `--doc NAME`, the APL UI mode's Help tab) over the analysis half
+# (src/apl_lsp.cpp), the glyph/⎕name vocabulary (src/apl_lsp_vocab.cpp) and
+# the workspace/MEP_APL_PATH index (src/apl_lsp_index.cpp); formatting is
+# src/apl_format.cpp (help/apl-lsp.org).
+set(MEP_APL_LSP_SOURCES src/apl_lsp.cpp src/apl_lsp_vocab.cpp src/apl_lsp_index.cpp ${MEP_APL_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-apl-lsp src/apl_lsp_server.cpp ${MEP_APL_LSP_SOURCES})
+    target_include_directories(mep-apl-lsp PRIVATE src)
+    target_compile_options(mep-apl-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-apl-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-apl-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-apl-lsp-test EXCLUDE_FROM_ALL src/apl_lsp_test.cpp ${MEP_APL_LSP_SOURCES})
+target_include_directories(mep-apl-lsp-test PRIVATE src)
+target_compile_options(mep-apl-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-apl-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-apl-lsp-test)
+
+# mep's own OCaml language server and linter: the wire half
+# (src/ocaml_lsp_server.cpp, also `mep-ocaml-lsp --lint FILE...` and
+# `--doc NAME`) over the analysis half (src/ocaml_lsp.cpp: features;
+# ocaml_lsp_index.cpp: modules, the load path, resolution; ocaml_lsp_odoc.cpp:
+# odoc comments; ocaml_lsp_vocab.cpp: keywords and the stdlib fallback).
+# OCaml is read with the vendored tree-sitter grammars (ts_ocaml for .ml,
+# ts_ocaml_interface for .mli). help/ocaml-lsp.org.
+set(MEP_OCAML_LSP_SOURCES src/ocaml_lsp.cpp src/ocaml_lsp_index.cpp src/ocaml_lsp_odoc.cpp src/ocaml_lsp_vocab.cpp
+    ${MEP_OCAML_FORMAT_SOURCES})
+if(NOT EMSCRIPTEN)
+    add_executable(mep-ocaml-lsp src/ocaml_lsp_server.cpp ${MEP_OCAML_LSP_SOURCES})
+    target_include_directories(mep-ocaml-lsp PRIVATE src)
+    target_link_libraries(mep-ocaml-lsp PRIVATE tree_sitter ts_ocaml ts_ocaml_interface)
+    target_compile_options(mep-ocaml-lsp PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+    target_link_options(mep-ocaml-lsp PRIVATE ${MEP_SANITIZE_FLAGS})
+    install(TARGETS mep-ocaml-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+add_executable(mep-ocaml-lsp-test EXCLUDE_FROM_ALL src/ocaml_lsp_test.cpp ${MEP_OCAML_LSP_SOURCES})
+target_include_directories(mep-ocaml-lsp-test PRIVATE src)
+target_link_libraries(mep-ocaml-lsp-test PRIVATE tree_sitter ts_ocaml ts_ocaml_interface)
+target_compile_definitions(mep-ocaml-lsp-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mep-ocaml-lsp-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-ocaml-lsp-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-ocaml-lsp-test)
 
 # mep's own Nix language server and linter: the wire half
 # (src/nix_lsp_server.cpp, also `mep-nix-lsp --lint FILE...` and
@@ -3389,6 +3494,32 @@ target_include_directories(mep-nim-format-test PRIVATE src)
 target_compile_options(mep-nim-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
 target_link_options(mep-nim-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
 add_dependencies(tests mep-nim-format-test)
+
+# The Ruby formatter (over the tree-sitter grammar); `--format FILE...`
+# prints each file formatted, `--check FILE...` verifies a corpus.
+add_executable(mep-ruby-format-test EXCLUDE_FROM_ALL src/ruby_format_test.cpp ${MEP_RUBY_FORMAT_SOURCES})
+target_include_directories(mep-ruby-format-test PRIVATE src)
+target_link_libraries(mep-ruby-format-test PRIVATE tree_sitter ts_ruby)
+target_compile_definitions(mep-ruby-format-test PRIVATE MEP_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_options(mep-ruby-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-ruby-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-ruby-format-test)
+
+# The APL formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-apl-format-test EXCLUDE_FROM_ALL src/apl_format_test.cpp ${MEP_APL_FORMAT_SOURCES})
+target_include_directories(mep-apl-format-test PRIVATE src)
+target_compile_options(mep-apl-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-apl-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-apl-format-test)
+
+# The OCaml formatter; `--format FILE...` prints each file formatted, for
+# tools/format_compare.py.
+add_executable(mep-ocaml-format-test EXCLUDE_FROM_ALL src/ocaml_format_test.cpp ${MEP_OCAML_FORMAT_SOURCES})
+target_include_directories(mep-ocaml-format-test PRIVATE src)
+target_compile_options(mep-ocaml-format-test PRIVATE ${MEP_STRICT_FLAGS} ${MEP_SANITIZE_FLAGS})
+target_link_options(mep-ocaml-format-test PRIVATE ${MEP_SANITIZE_FLAGS})
+add_dependencies(tests mep-ocaml-format-test)
 
 # The Nix formatter (nixfmt's layout); `--format FILE...` prints each file
 # formatted, for comparing with nixfmt on a corpus.
@@ -4325,7 +4456,7 @@ if(NOT EMSCRIPTEN)
         mep-fem-movie-test mep-num-sparse-test mep-fem-test mep-html-doc-test mep-svg-raster-test
         mep-web-ladder-test mep-math-tex-test mep-org-doc-test mep-mepml-doc-test mep-mepml-format-test mep-mepml-style-test
         mep-mepml-ts-test mep-mepml-convert-test mep-org-lsp-test mep-mepml-lsp-test mep-python-lsp-test
-        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-nix-format-test mep-nix-lsp-test mep-cobol-lsp-test mep-nim-lsp-test mep-nim-format-test mep-java-lsp-test mep-java-format-test mep-kotlin-lsp-test mep-kotlin-format-test mep-zig-lsp-test mep-zig-format-test mep-rust-lsp-test mep-rust-vocab-test mep-rust-format-test mep-rust-parse-test mep-go-lsp-test mep-go-format-test mep-gap-lsp-test mep-gap-format-test mep-julia-parse-test mep-julia-lsp-test mep-julia-format-test mep-tcl-lsp-test mep-tcl-format-test mep-octave-lsp-test mep-octave-format-test mep-fish-lsp-test mep-fish-format-test mep-fortran-lsp-test mep-fortran-format-test mep-scheme-lsp-test mep-scheme-format-test mep-lua-lsp-test mep-lua-format-test mep-js-parse-test mep-js-format-test mep-js-lsp-test mep-vterm-test mep-spell-test
+        mep-cpp-lsp-test mep-r-lsp-test mep-c-lsp-test mep-maxima-lsp-test mep-lisp-lsp-test mep-bash-lsp-test mep-sql-lsp-test mep-sql-format-test mep-nix-format-test mep-nix-lsp-test mep-ocaml-lsp-test mep-ocaml-format-test mep-apl-lsp-test mep-apl-format-test mep-ruby-lsp-test mep-ruby-format-test mep-cobol-lsp-test mep-cobol-format-test mep-nim-lsp-test mep-nim-format-test mep-java-lsp-test mep-java-format-test mep-kotlin-lsp-test mep-kotlin-format-test mep-zig-lsp-test mep-zig-format-test mep-rust-lsp-test mep-rust-vocab-test mep-rust-format-test mep-rust-parse-test mep-go-lsp-test mep-go-format-test mep-gap-lsp-test mep-gap-format-test mep-julia-parse-test mep-julia-lsp-test mep-julia-format-test mep-tcl-lsp-test mep-tcl-format-test mep-octave-lsp-test mep-octave-format-test mep-fish-lsp-test mep-fish-format-test mep-fortran-lsp-test mep-fortran-format-test mep-scheme-lsp-test mep-scheme-format-test mep-lua-lsp-test mep-lua-format-test mep-js-parse-test mep-js-format-test mep-js-lsp-test mep-vterm-test mep-spell-test
         mep-indent-test mep-treesitter-test mep-python-format-test mep-python-doc-format-test mep-r-format-test mep-cpp-format-test
         mep-maxima-format-test mep-notebook-doc-test mep-sheet-view-test mep-office-rtf-test mep-workspace-test mep-git-test mep-fold-test
         mep-editor-fold-test mep-editor-reload-test mep-editor-text-object-test mep-editor-block-settings-test mep-model3d-doc-test mep-blend-import-test mep-image-procgen-test

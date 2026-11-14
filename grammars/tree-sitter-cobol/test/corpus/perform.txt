@@ -1,0 +1,229 @@
+====================================
+perform label
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       perform aa.
+       aa.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (perform_statement_call_proc
+        (keyword)
+        procedure: (perform_procedure
+          (label
+            (qualified_word
+              (WORD)))))
+      (period)
+      (paragraph_header
+        name: (WORD)))))
+
+====================================
+perform label thru label
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       perform aa thru bb.
+       aa.
+       bb.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (perform_statement_call_proc
+        (keyword)
+        procedure: (perform_procedure
+          (label
+            (qualified_word
+              (WORD)))
+          (THRU
+            (keyword))
+          (label
+            (qualified_word
+              (WORD)))))
+      (period)
+      (paragraph_header
+        name: (WORD))
+      (paragraph_header
+        name: (WORD)))))
+
+====================================
+perform label FOREVER
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       perform aa forever.
+       aa.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (perform_statement_call_proc
+        (keyword)
+        procedure: (perform_procedure
+          (label
+            (qualified_word
+              (WORD))))
+        option: (perform_option
+          (FOREVER
+            (keyword))))
+      (period)
+      (paragraph_header
+        name: (WORD)))))
+
+====================================
+perform continue
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       perform forever
+         continue
+       end-perform.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (perform_statement_loop
+        (keyword)
+        option: (perform_option
+          (FOREVER
+            (keyword))))
+      (continue_statement
+        (keyword))
+      (END_PERFORM
+        (keyword))
+      (period))))
+
+====================================
+perform label times
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       perform aa 3 times.
+       aa.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (perform_statement_call_proc
+        (keyword)
+        procedure: (perform_procedure
+          (label
+            (qualified_word
+              (WORD))))
+        option: (perform_option
+          times: (number
+            (integer))
+          (keyword)))
+      (period)
+      (paragraph_header
+        name: (WORD)))))
+
+====================================
+perform label UNTIL
+====================================
+       identification division.
+       program-id. a.
+       data division.
+       working-storage section.
+       01 c PIC 9.
+       procedure division.
+       perform aa varying c FROM 1 BY 1 UNTIL c >= 1.
+       aa.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (data_division
+      (keyword)
+      (keyword)
+      (working_storage_section
+        (keyword)
+        (keyword)
+        (data_description
+          (level_number)
+          (entry_name)
+          (picture_clause
+            (keyword)
+            (picture_9)))))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (perform_statement_call_proc
+        (keyword)
+        procedure: (perform_procedure
+          (label
+            (qualified_word
+              (WORD))))
+        option: (perform_option
+          (keyword)
+          varying: (perform_varying
+            (qualified_word
+              (WORD))
+            (keyword)
+            from: (number
+              (integer))
+            (keyword)
+            by: (number
+              (integer))
+            (keyword)
+            until: (expr
+              (qualified_word
+                (WORD))
+              (ge)
+              (number
+                (integer))))))
+      (period)
+      (paragraph_header
+        name: (WORD)))))

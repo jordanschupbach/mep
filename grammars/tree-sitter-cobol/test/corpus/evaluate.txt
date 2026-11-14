@@ -1,0 +1,279 @@
+====================================
+evaluate when
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       evaluate 1
+       when 1
+         go to aa
+       end-evaluate.
+       aa.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (evaluate_header
+        (keyword)
+        (evaluate_subject
+          (expr
+            (number
+              (integer)))))
+      (when
+        (keyword)
+        (expr
+          (number
+            (integer))))
+      (goto_statement
+        (keyword)
+        (keyword)
+        to: (label
+          (qualified_word
+            (WORD))))
+      (END_EVALUATE
+        (keyword))
+      (period)
+      (paragraph_header
+        name: (WORD)))))
+
+====================================
+evaluate when 2
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       evaluate 1
+       when 1
+         go to aa
+       when 2
+         go to aa
+       end-evaluate.
+       aa.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (evaluate_header
+        (keyword)
+        (evaluate_subject
+          (expr
+            (number
+              (integer)))))
+      (when
+        (keyword)
+        (expr
+          (number
+            (integer))))
+      (goto_statement
+        (keyword)
+        (keyword)
+        to: (label
+          (qualified_word
+            (WORD))))
+      (when
+        (keyword)
+        (expr
+          (number
+            (integer))))
+      (goto_statement
+        (keyword)
+        (keyword)
+        to: (label
+          (qualified_word
+            (WORD))))
+      (END_EVALUATE
+        (keyword))
+      (period)
+      (paragraph_header
+        name: (WORD)))))
+
+====================================
+evaluate when other
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       evaluate 1
+       when 1
+         go to aa
+       when 2
+         go to aa
+       when other
+         go to aa
+       end-evaluate.
+       aa.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (evaluate_header
+        (keyword)
+        (evaluate_subject
+          (expr
+            (number
+              (integer)))))
+      (when
+        (keyword)
+        (expr
+          (number
+            (integer))))
+      (goto_statement
+        (keyword)
+        (keyword)
+        to: (label
+          (qualified_word
+            (WORD))))
+      (when
+        (keyword)
+        (expr
+          (number
+            (integer))))
+      (goto_statement
+        (keyword)
+        (keyword)
+        to: (label
+          (qualified_word
+            (WORD))))
+      (when_other
+        (keyword))
+      (goto_statement
+        (keyword)
+        (keyword)
+        to: (label
+          (qualified_word
+            (WORD))))
+      (END_EVALUATE
+        (keyword))
+      (period)
+      (paragraph_header
+        name: (WORD)))))
+
+====================================
+evaluate when when
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       evaluate 1
+       when 1
+       when 2
+         go to aa
+       end-evaluate.
+       aa.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (evaluate_header
+        (keyword)
+        (evaluate_subject
+          (expr
+            (number
+              (integer)))))
+      (when
+        (keyword)
+        (expr
+          (number
+            (integer)))
+        (keyword)
+        (expr
+          (number
+            (integer))))
+      (goto_statement
+        (keyword)
+        (keyword)
+        to: (label
+          (qualified_word
+            (WORD))))
+      (END_EVALUATE
+        (keyword))
+      (period)
+      (paragraph_header
+        name: (WORD)))))
+
+====================================
+evaluate when also
+====================================
+       identification division.
+       program-id. a.
+       procedure division.
+       evaluate 1 also 2
+       when 1 also 2
+         go to aa
+       end-evaluate.
+       aa.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (procedure_division
+      (keyword)
+      (keyword)
+      (evaluate_header
+        (keyword)
+        (evaluate_subject
+          (expr
+            (number
+              (integer))))
+        (keyword)
+        (evaluate_subject
+          (expr
+            (number
+              (integer)))))
+      (when
+        (keyword)
+        (expr
+          (number
+            (integer)))
+        (keyword)
+        (expr
+          (number
+            (integer))))
+      (goto_statement
+        (keyword)
+        (keyword)
+        to: (label
+          (qualified_word
+            (WORD))))
+      (END_EVALUATE
+        (keyword))
+      (period)
+      (paragraph_header
+        name: (WORD)))))

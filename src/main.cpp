@@ -133,10 +133,20 @@
 #include "language_ui_csharp.h"
 #include "language_ui_cpp.h"
 #include "language_ui_document.h"
+#include "language_ui_apl.h"
 #include "language_ui_cobol.h"
+#include "language_ui_fortran.h"
+#include "language_ui_go.h"
+#include "language_ui_java.h"
+#include "language_ui_javascript.h"
 #include "language_ui_julia.h"
+#include "language_ui_guile.h"
 #include "language_ui_lua.h"
+#include "language_ui_octave.h"
+#include "language_ui_ruby.h"
+#include "language_ui_ocaml.h"
 #include "language_ui_sql.h"
+#include "language_ui_tcl.h"
 
 namespace {
 
@@ -7791,7 +7801,10 @@ const char *kBuiltinLsp =
     // below). To use it instead, give it {'java'} and clear java_ls's
     // filetypes in init.lua (help/java-lsp.org).
     "  jdtls = {cmd = {'jdtls'}, filetypes = {}},\n"
-    "  solargraph = {cmd = {'solargraph', 'stdio'}, filetypes = {'rb'}},\n"
+    // solargraph is registered but claims nothing: Ruby is mep's own
+    // (ruby_ls below). To use it instead, give it {'rb'} and clear ruby_ls's
+    // filetypes in init.lua (help/ruby-lsp.org).
+    "  solargraph = {cmd = {'solargraph', 'stdio'}, filetypes = {}},\n"
     "  intelephense = {cmd = {'intelephense', '--stdio'}, filetypes = {'php'}},\n"
     // 'OmniSharp' (capitalized), not 'omnisharp' -- the binary nixpkgs'
     // own omnisharp-roslyn package (flake.nix) actually installs under
@@ -7802,7 +7815,10 @@ const char *kBuiltinLsp =
     // it back.
     "  omnisharp = {cmd = {'OmniSharp', '-lsp'}, filetypes = {}},\n"
     "  hls = {cmd = {'haskell-language-server-wrapper', '--lsp'}, filetypes = {'hs'}},\n"
-    "  ocamllsp = {cmd = {'ocamllsp'}, filetypes = {'ml', 'mli'}},\n"
+    // ocamllsp is registered but claims nothing: OCaml is mep's own
+    // (ocaml_ls below). To use it instead, give it {'ml', 'mli'} and clear
+    // ocaml_ls's filetypes in init.lua (help/ocaml-lsp.org).
+    "  ocamllsp = {cmd = {'ocamllsp'}, filetypes = {}},\n"
     // zls is registered but claims nothing: Zig is mep's own (zig_ls
     // below). To use it instead, give it {'zig'} and clear zig_ls's
     // filetypes in init.lua (help/zig-lsp.org).
@@ -8101,6 +8117,16 @@ const char *kBuiltinLsp =
     // (help/cobol-lsp.org). Also `mep-cobol-lsp --lint FILE...`.
     "  cobol_ls = {cmd = {mep.bundled_tool('mep-cobol-lsp')}, filetypes = {'cob', 'cbl', 'cobol', 'cpy', 'CBL', 'COB', 'CPY', 'COBOL'},\n"
     "    init_options = function(fname) return mep.cobol_lsp_init_options and mep.cobol_lsp_init_options(fname) end},\n"
+    // mep's own Ruby server (src/ruby_lsp_server.cpp), bundled the same way
+    // (help/ruby-lsp.org). Also `mep-ruby-lsp --lint FILE...`.
+    "  ruby_ls = {cmd = {mep.bundled_tool('mep-ruby-lsp')}, filetypes = {'rb', 'rake', 'gemspec', 'ru'}},\n"
+    // mep's own APL server, GNU APL and Dyalog (src/apl_lsp_server.cpp),
+    // bundled the same way (help/apl-lsp.org). Also `mep-apl-lsp --lint
+    // FILE...` and `--doc NAME` (the APL UI mode's Help tab).
+    "  apl_ls = {cmd = {mep.bundled_tool('mep-apl-lsp')}, filetypes = {'apl', 'apls', 'aplf', 'aplo', 'apln', 'aplc', 'apli', 'dyalog'}},\n"
+    // mep's own OCaml server (src/ocaml_lsp_server.cpp), bundled the same way
+    // (help/ocaml-lsp.org). Also `mep-ocaml-lsp --lint FILE...`.
+    "  ocaml_ls = {cmd = {mep.bundled_tool('mep-ocaml-lsp')}, filetypes = {'ml', 'mli'}},\n"
     "  nil_ls = {cmd = {'nil'}, filetypes = {}},\n"
     "  nixd = {cmd = {'nixd'}, filetypes = {}},\n"
     // mep's own Clojure server (src/clojure_lsp_server.cpp), bundled the
@@ -17837,8 +17863,6 @@ const char *kBuiltinSyntax =
     "    'export','extends','false','finally','for','function','if','import','in','instanceof','let',\n"
     "    'new','null','return','super','switch','this','throw','true','try','typeof','var','void','while'},\n"
     "}\n"
-    "mep.cobol_filetypes = mep.cobol_filetypes or {cob = true, cbl = true, cobol = true, cpy = true,\n"
-    "  COB = true, CBL = true, COBOL = true, CPY = true}\n"
     "mep.syntax_keywords.cpp = mep.syntax_keywords.c\n"
     "mep.syntax_keywords.hpp = mep.syntax_keywords.c\n"
     "mep.syntax_keywords.h = mep.syntax_keywords.c\n"
@@ -18113,14 +18137,6 @@ const char *kBuiltinSyntax =
     "  if not mep_syntax_ns then mep_syntax_ns = mep.ns_create('syntax') end\n"
     "  local ft = mep_lsp_filetype(mep.filename())\n"
     "  if not ft then mep.ns_clear(mep_syntax_ns) return end\n"
-    // COBOL: no tree-sitter grammar; its own line reader (fixed/free
-    // reference format, column-7 and `*>` comments, level numbers,
-    // PICTURE strings), shared with mep-cobol-lsp (src/cobol_syntax.cpp).
-    "  if mep.cobol_filetypes[ft] then\n"
-    "    mep.ns_clear(mep_syntax_ns)\n"
-    "    mep.cobol_highlight(mep_syntax_ns)\n"
-    "    return\n"
-    "  end\n"
     // A .csv shown as text (:MepSheetText): one colour per column.
     "  if ft == 'csv' then\n"
     "    mep.ns_clear(mep_syntax_ns)\n"
@@ -18900,6 +18916,21 @@ const char *kBuiltinFormat =
     // are nixfmt's options; mep.format_languages.nix = {'nixfmt', '-'} puts
     // nixfmt itself back.
     "  nix = {builtin = 'format_nix', name = \"mep's Nix formatter\", width = 100},\n"
+    // OCaml: mep's own (src/ocaml_format.cpp), ocamlformat's default
+    // profile (margin 80) for indentation and spacing; it only ever changes
+    // whitespace, and refuses when the token stream would change
+    // (help/formatting.org).
+    "  ml = {builtin = 'format_ocaml', name = \"mep's OCaml formatter\", width = 80},\n"
+    "  mli = {builtin = 'format_ocaml', name = \"mep's OCaml formatter\", width = 80},\n"
+    "  apl = {builtin = 'format_apl', name = \"mep's APL formatter\", width = 100},\n"
+    "  apls = {builtin = 'format_apl', name = \"mep's APL formatter\", width = 100},\n"
+    "  aplf = {builtin = 'format_apl', name = \"mep's APL formatter\", width = 100},\n"
+    "  aplo = {builtin = 'format_apl', name = \"mep's APL formatter\", width = 100},\n"
+    "  apln = {builtin = 'format_apl', name = \"mep's APL formatter\", width = 100},\n"
+    "  aplc = {builtin = 'format_apl', name = \"mep's APL formatter\", width = 100},\n"
+    "  apli = {builtin = 'format_apl', name = \"mep's APL formatter\", width = 100},\n"
+    "  dyalog = {builtin = 'format_apl', name = \"mep's APL formatter\", width = 100},\n"
+    "  rb = {builtin = 'format_ruby', name = \"mep's Ruby formatter\", width = 100},\n"
     // mep's Nim formatter (src/nim_format.cpp): a port of nimpretty (Nim
     // 2.2's compiler/layouter.nim), checked byte for byte against
     // `nimpretty` (default settings: indentation detected, maxLineLen 80)
@@ -18936,6 +18967,21 @@ const char *kBuiltinFormat =
     "  f03 = {builtin = 'format_fortran', name = \"mep's Fortran formatter\", width = 132},\n"
     "  f08 = {builtin = 'format_fortran', name = \"mep's Fortran formatter\", width = 132},\n"
     "  F90 = {builtin = 'format_fortran', name = \"mep's Fortran formatter\", width = 132},\n"
+    // COBOL: mep's own (src/cobol_format.cpp). Re-indents fixed or free
+    // format in a conservative GnuCOBOL layout (headers in Area A,
+    // statements in Area B, nested scopes and data levels indented, PICTURE
+    // clauses lined up at column 40) and changes nothing else; comment,
+    // continuation, COPY/REPLACE and directive lines, the sequence and
+    // identification areas, and lines that would pass column 72 stay as
+    // they are. `indent` (columns, default 4), `align_pic` (default true).
+    "  cob = {builtin = 'format_cobol', name = \"mep's COBOL formatter\"},\n"
+    "  cbl = {builtin = 'format_cobol', name = \"mep's COBOL formatter\"},\n"
+    "  cpy = {builtin = 'format_cobol', name = \"mep's COBOL formatter\"},\n"
+    "  cobol = {builtin = 'format_cobol', name = \"mep's COBOL formatter\"},\n"
+    "  COB = {builtin = 'format_cobol', name = \"mep's COBOL formatter\"},\n"
+    "  CBL = {builtin = 'format_cobol', name = \"mep's COBOL formatter\"},\n"
+    "  CPY = {builtin = 'format_cobol', name = \"mep's COBOL formatter\"},\n"
+    "  COBOL = {builtin = 'format_cobol', name = \"mep's COBOL formatter\"},\n"
     // GAP: mep's own (src/gap_format.cpp). GAP has no standard formatter; it
     // re-indents the way GAP's function printer lays code out and changes
     // nothing else. `indent` (columns, default 4).
@@ -37445,6 +37491,10 @@ const char *kBuiltinRunButton =
     // GnuCOBOL: -x builds an executable whose entry point is the program;
     // Setup's flags take -I/-L/-l for copybooks and bound libraries.
     "  cob = {compiler = 'cobc -x', flags = ''},\n"
+    // GNU APL (nixpkgs gnuapl): --script is --silent --noCIN --noCONT
+    // --noColor, --OFF leaves APL at the end of the file instead of
+    // waiting for input. Flags go between `apl` and these.
+    "  apl = {interpreter = 'apl --script --OFF -f {file}', flags = ''},\n"
     "}\n"
     "mep.opt.run_button_defaults.R = mep.opt.run_button_defaults.r\n"
     "mep.opt.run_button_defaults.cc = mep.opt.run_button_defaults.cpp\n"
@@ -37454,6 +37504,33 @@ const char *kBuiltinRunButton =
     "end\n"
     "for _, e in ipairs({'cbl', 'cobol', 'COB', 'CBL', 'COBOL'}) do\n"
     "  mep.opt.run_button_defaults[e] = mep.opt.run_button_defaults.cob\n"
+    "end\n"
+    // Dyalog scripts (.apls, .dyalog) run with Dyalog when it is on PATH
+    // (dyalogscript, Dyalog 18.2+, else `dyalog -script`), otherwise with
+    // GNU APL like .apl. Dyalog isn't in nixpkgs, so this is decided the
+    // first time Run asks, not at startup (no fork until then).
+    "do\n"
+    "  local d = mep.opt.run_button_defaults\n"
+    "  local function dyalog_default()\n"
+    "    local function on_path(exe) return os.execute('command -v ' .. exe .. ' >/dev/null 2>&1') == true end\n"
+    "    if on_path('dyalogscript') then return {interpreter = 'dyalogscript {file}', flags = ''} end\n"
+    "    if on_path('dyalog') then return {interpreter = 'dyalog -script {file}', flags = ''} end\n"
+    "    return {interpreter = d.apl.interpreter, flags = ''}\n"
+    "  end\n"
+    "  local lazy = {apls = true, dyalog = true}\n"
+    "  local mt = getmetatable(d) or {}\n"
+    "  local prev = mt.__index\n"
+    "  mt.__index = function(t, k)\n"
+    "    if lazy[k] and rawget(t, k) == nil and t.apl then\n"
+    "      local v = dyalog_default()\n"
+    "      rawset(t, k, v)\n"
+    "      return v\n"
+    "    end\n"
+    "    if type(prev) == 'function' then return prev(t, k) end\n"
+    "    if type(prev) == 'table' then return prev[k] end\n"
+    "    return nil\n"
+    "  end\n"
+    "  setmetatable(d, mt)\n"
     "end\n"
     "for alias, ext in pairs({bash = 'sh', mjs = 'js', cjs = 'js', mts = 'ts', ex = 'exs', ss = 'scm', pm = 'pl', gap = 'g', max = 'mac', lsp = 'lisp', cl = 'lisp'}) do\n"
     "  mep.opt.run_button_defaults[alias] = mep.opt.run_button_defaults[ext]\n"
@@ -72834,7 +72911,17 @@ int main(int argc, char **argv) {
     lua->DoString(BuiltinLanguageUiSql());
     lua->DoString(BuiltinLanguageUiLua());
     lua->DoString(BuiltinLanguageUiJulia());
+    lua->DoString(BuiltinLanguageUiRuby());
+    lua->DoString(BuiltinLanguageUiOcaml());
+    lua->DoString(BuiltinLanguageUiJavascript());
     lua->DoString(BuiltinLanguageUiCobol());
+    lua->DoString(BuiltinLanguageUiApl());
+    lua->DoString(BuiltinLanguageUiFortran());
+    lua->DoString(BuiltinLanguageUiJava());
+    lua->DoString(BuiltinLanguageUiGo());
+    lua->DoString(BuiltinLanguageUiOctave());
+    lua->DoString(BuiltinLanguageUiTcl());
+    lua->DoString(BuiltinLanguageUiGuile());
     lua->DoString(kBuiltinCompletion);
     lua->DoString(kBuiltinMenubarBindings);
     // After kBuiltinLsp: reuses its mep_lsp_uri/mep_lsp_result helpers.

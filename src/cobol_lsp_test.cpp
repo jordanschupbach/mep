@@ -493,30 +493,38 @@ void TestOutline(const Fixture &f) {
     CHECK(record_fold && doc_fold);
 }
 
-void TestHighlight() {
-    const auto spans = CobolHighlight(L(std::string(kProgram) + "\n" + "000300 01 WS-NAME PIC X(10)."));
-    auto has = [&spans](int row, int a, int b, const std::string &group) {
-        for (const auto &s : spans[static_cast<size_t>(row)]) {
-            if (s.col_start == a && s.col_end == b && group == s.group) return true;
-        }
-        return false;
-    };
-    CHECK(has(0, 0, 6, "Comment"));           // sequence area
-    CHECK(has(0, 7, 21, "Purple"));           // IDENTIFICATION
-    CHECK(has(5, 6, 39, "Comment"));          // *>> doc line
-    CHECK(has(6, 7, 9, "Orange"));            // level 77
-    CHECK(has(6, 15, 18, "Purple"));          // PIC
-    CHECK(has(6, 19, 23, "Cyan"));            // 9(4)
-    CHECK(has(9, 7, 16, "Blue"));             // MAIN-PARA.
-    CHECK(has(11, 16, 31, "Green"));          // "dm_kmeans_fit"
-    CHECK(has(18, 26, 45, "Comment"));        // *> trailing comment
-    const auto data = CobolHighlight(L("       01 WS-NAME PIC X(10).\n          88 WS-EMPTY VALUE SPACES."));
-    CHECK(data[0].size() == 4 && data[0][1].col_start == 10 && data[0][1].col_end == 17 && std::string(data[0][1].group) == "Blue");
-    CHECK(data[0][3].col_start == 22 && data[0][3].col_end == 27 && std::string(data[0][3].group) == "Cyan");
-    CHECK(std::string(data[1][0].group) == "Orange" && std::string(data[1][1].group) == "Cyan");
-    // Free format: `*>` anywhere, no sequence area.
-    const auto free = CobolHighlight(L(">>SOURCE FREE\nMOVE 1 TO X *> c"));
-    CHECK(std::string(free[0][0].group) == "Purple" && free[1].size() == 4 && free[1][3].col_start == 12);
+void TestLineFormats() {
+    // Code in the sequence area makes a file free format; a sequence number, or a word filling the
+    // area with an indicator after it, does not.
+    auto formats = CobolLineFormats(L("000100 IDENTIFICATION DIVISION.\nrogerw     DISPLAY \"x\".\n000300     STOP RUN."));
+    CHECK(formats[0] == CobolFormat::Fixed && formats[2] == CobolFormat::Fixed);
+    formats = CobolLineFormats(L("*> free\nIDENTIFICATION DIVISION.\n    STOP RUN."));
+    CHECK(formats[0] == CobolFormat::Free && formats[2] == CobolFormat::Free);
+    formats = CobolLineFormats(L("       IDENTIFICATION DIVISION.\n      >>SOURCE FORMAT FREE\nMOVE 1 TO X."));
+    CHECK(formats[0] == CobolFormat::Fixed && formats[1] == CobolFormat::Fixed && formats[2] == CobolFormat::Free);
+}
+
+void TestFormatting() {
+    // One edit per changed line, the whole line replaced.
+    const std::vector<std::string> lines = L("       PROCEDURE DIVISION.\n       IF X\n       DISPLAY X\n       END-IF.");
+    std::string error;
+    std::vector<CobolLspTextEdit> edits = CobolLspFormat(lines, 0, -1, &error);
+    CHECK(error.empty());
+    CHECK(edits.size() == 3);
+    CHECK(edits[0].range.line == 1 && edits[0].range.col == 0 && edits[0].range.end_col == 11);
+    CHECK(edits[0].new_text == "           IF X");
+    CHECK(edits[1].new_text == "               DISPLAY X");
+    CHECK(edits[2].range.line == 3 && edits[2].new_text == "           END-IF.");
+    // A range: only its lines (formatted in the whole document's context).
+    edits = CobolLspFormat(lines, 2, 2, &error);
+    CHECK(error.empty() && edits.size() == 1 && edits[0].range.line == 2);
+    // Formatted text: no edits.
+    std::vector<std::string> done = lines;
+    for (const CobolLspTextEdit &e : CobolLspFormat(lines, 0, -1, &error)) done[static_cast<size_t>(e.range.line)] = e.new_text;
+    CHECK(CobolLspFormat(done, 0, -1, &error).empty() && error.empty());
+    // A refusal: no edits, the reason.
+    edits = CobolLspFormat(L("000100 PROCEDURE DIVISION.\nDISPLAY-IT. DISPLAY 1."), 0, -1, &error);
+    CHECK(edits.empty() && !error.empty());
 }
 
 void TestRobustness(const Fixture &f) {
@@ -535,7 +543,6 @@ void TestRobustness(const Fixture &f) {
         CobolLspSignatureAt(*doc, last, col);
         CobolLspSymbols(*doc);
         CobolLspFolds(*doc);
-        CobolHighlight(lines);
     }
 }
 
@@ -757,7 +764,8 @@ int main() {
     TestDefinition(f);
     TestCompletion(f);
     TestOutline(f);
-    TestHighlight();
+    TestLineFormats();
+    TestFormatting();
     TestRobustness(f);
     TestRosettaSamples();
     std::filesystem::remove_all(f.root);

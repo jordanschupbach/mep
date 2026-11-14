@@ -23,6 +23,7 @@
 #include <sstream>
 #include <system_error>
 
+#include "cobol_format.h"
 #include "cobol_syntax.h"
 
 namespace {
@@ -1268,6 +1269,44 @@ std::vector<CobolLspReference> CobolLspReferences(const CobolLspDocument &doc, i
         out.push_back(r);
     }
     return out;
+}
+
+std::vector<CobolLspTextEdit> CobolLspFormat(const std::vector<std::string> &lines, int first, int last,
+                                             std::string *error) {
+    std::vector<CobolLspTextEdit> edits;
+    std::string text;
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (i) text += '\n';
+        text += lines[i];
+    }
+    const cobolfmt::Result r = cobolfmt::Format(text);
+    if (!r.ok) {
+        if (error) *error = r.error_line > 0 ? "line " + std::to_string(r.error_line) + ": " + r.error : r.error;
+        return edits;
+    }
+    std::vector<std::string> out;
+    size_t pos = 0;
+    while (true) {
+        const size_t nl = r.text.find('\n', pos);
+        out.push_back(r.text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos));
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
+    if (out.size() != lines.size()) {
+        if (error) *error = "formatting changed the number of lines";
+        return edits;
+    }
+    for (size_t i = 0; i < lines.size(); i++) {
+        const int row = static_cast<int>(i);
+        if (row < first || (last >= 0 && row > last) || out[i] == lines[i]) continue;
+        CobolLspTextEdit e;
+        e.range.line = e.range.end_line = row;
+        e.range.col = 0;
+        e.range.end_col = static_cast<int>(lines[i].size());
+        e.new_text = out[i];
+        edits.push_back(std::move(e));
+    }
+    return edits;
 }
 
 CobolLspRenameTarget CobolLspPrepareRename(const CobolLspDocument &doc, int line, int col) {

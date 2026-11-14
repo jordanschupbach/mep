@@ -5,6 +5,8 @@
 //   mep-js-lsp                    the language server on stdio
 //   mep-js-lsp --lint FILE...     diagnostics as path:line:col: severity: message [code];
 //                                    exit 1 on any error or warning ('-' reads stdin)
+//   mep-js-lsp --dts-doc FILE.d.ts [NAME]
+//                                 the hover FILE gives NAME (Class.member, ns.fn), as markdown
 //
 // Single-threaded and synchronous; Content-Length framing via
 // rpc_framing.h, full text sync. Positions are UTF-8 byte columns
@@ -33,6 +35,7 @@
 
 #include "js_format.h"
 #include "js_lsp.h"
+#include "js_lsp_dts.h"
 #include "json.h"
 #include "rpc_framing.h"
 
@@ -662,6 +665,76 @@ int Lint(const std::vector<std::string> &paths) {
     return failed ? 1 : 0;
 }
 
+// `mep-js-lsp --dts-doc FILE.d.ts [NAME]`: the hover a declaration file gives NAME
+// (`fn`, `Class`, `Class.method`, `ns.Class.member`; an `export =` module's members
+// directly), as markdown on stdout; with no NAME, the file's exports. Exit 1 when the
+// file declares no such name. The JavaScript language UI console (src/language_ui_javascript.h)
+// calls it for `gh` / `:help` on a name from a package with TypeScript declarations.
+int DtsDoc(const std::vector<std::string> &args) {
+    if (args.empty()) {
+        std::fprintf(stderr, "mep-js-lsp: --dts-doc needs a declaration file\n");
+        return 2;
+    }
+    const auto m = JsDtsLoad(args[0]);
+    if (!m) {
+        std::fprintf(stderr, "mep-js-lsp: cannot read %s\n", args[0].c_str());
+        return 2;
+    }
+    const JsDtsScope *scope = &m->root;
+    if (args.size() < 2 || args[1].empty()) {
+        std::printf("%s\n", JsDtsModuleNote(*m, *scope).c_str());
+        return 0;
+    }
+    std::vector<std::string> parts;
+    std::stringstream ss(args[1]);
+    for (std::string part; std::getline(ss, part, '.');) {
+        if (!part.empty()) parts.push_back(part);
+    }
+    if (parts.empty()) return 1;
+    const JsDtsDecl *decl = scope->Export(parts[0]);
+    if (!decl) {
+        // `export = X`: X's own members and namespace are the module's.
+        if (const JsDtsDecl *eq = scope->ExportEquals()) {
+            if (eq->ns) decl = eq->ns->Export(parts[0]);
+            if (!decl) {
+                const JsDtsDecl *owner = nullptr;
+                const JsDtsMember *mm = m->Member(eq, parts[0], true, &owner);
+                if (!mm) mm = m->Member(eq, parts[0], false, &owner);
+                if (mm && parts.size() == 1) {
+                    std::printf("%s\n", JsDtsMemberHover(*m, owner ? *owner : *eq, *mm).c_str());
+                    return 0;
+                }
+            }
+        }
+    }
+    if (!decl) decl = scope->Find(parts[0]);
+    for (size_t i = 1; decl && i < parts.size(); i++) {
+        const std::string &name = parts[i];
+        const JsDtsDecl *next = decl->ns ? decl->ns->Export(name) : nullptr;
+        if (next) {
+            decl = next;
+            continue;
+        }
+        if (i + 1 != parts.size()) return 1;
+        const JsDtsDecl *owner = nullptr;
+        const JsDtsMember *mm = nullptr;
+        if (decl->kind == JsDtsDecl::Enum) {
+            for (const JsDtsMember &em : decl->members) {
+                if (em.name == name) mm = &em;
+            }
+        } else {
+            mm = m->Member(decl, name, true, &owner);
+            if (!mm) mm = m->Member(decl, name, false, &owner);
+        }
+        if (!mm) return 1;
+        std::printf("%s\n", JsDtsMemberHover(*m, owner ? *owner : *decl, *mm).c_str());
+        return 0;
+    }
+    if (!decl) return 1;
+    std::printf("%s\n", JsDtsDeclHover(*m, *decl).c_str());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -677,9 +750,11 @@ int main(int argc, char **argv) {
             if (rest.empty()) rest.emplace_back("-");
             return Lint(rest);
         }
+        if (first == "--dts-doc") return DtsDoc(rest);
         if (first == "--help" || first == "-h") {
             std::printf("usage: mep-js-lsp                  run the language server on stdio\n"
-                        "       mep-js-lsp --lint FILE...   print diagnostics (FILE '-' reads stdin)\n");
+                        "       mep-js-lsp --lint FILE...   print diagnostics (FILE '-' reads stdin)\n"
+                        "       mep-js-lsp --dts-doc FILE.d.ts [NAME]   documentation NAME has in a declaration file\n");
             return 0;
         }
         if (first != "--stdio") {

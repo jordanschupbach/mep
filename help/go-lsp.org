@@ -61,7 +61,15 @@ test package using its package's test hooks is left alone.
 - *Hover* shows a declaration and its doc comment: for the standard library,
   the signature, Go's documentation and a link to pkg.go.dev; for a variable
   declared with =:==, its type where it can be worked out (=x, err :=
-  strconv.Atoi(s)= gives =var x int=).
+  strconv.Atoi(s)= gives =var x int=). For =pkg.Name= of a package outside
+  the standard library -- the module's own packages, a =replace= directory,
+  =vendor/=, the module cache -- it reads that package's doc comments.
+  Methods and fields of such a package's values work too: =df.Select= after
+  =df, err := datamunge.NewDataFrame()= or =df :=
+  datamunge.Must(datamunge.NewDataFrame())= (the type is the first result of
+  the documented function), through =var x *pkg.T=, parameters, call chains
+  (=datamunge.Must(df.Select(cols)).SortBy=, continued over lines) and
+  methods promoted from embedded types (=RPlot= embedding =Plot=).
 - *Completion* offers the names in scope (locals, parameters, this file's
   declarations, imports), builtins and keywords; after =pkg.=, the package's
   members; after =x.=, the fields and methods of =x='s type, for types
@@ -92,6 +100,14 @@ prints every diagnostic as =path:line:col: severity: message [code]= --
 =hint=), the message and the code. It exits 1 if anything printed is an
 error or a warning, 2 if a file could not be read, and 0 otherwise. With no
 arguments, =mep-go-lsp= is the language server on stdio.
+
+=mep-go-lsp --doc NAME [--dir DIR] [--file FILE]...= prints the doc comment
+of =NAME= as Markdown, in =go doc='s forms (=pkg=, =pkg.Name=,
+=pkg.Type.Method=, =Name=, an import path), resolving =pkg= through the
+files' imports; it exits 1 when nothing matches. =mep-go-lsp --exports [PKG]
+[--dir DIR] [--all]= lists a package's exported names, one per line: kind,
+name, signature, =file:line=. The Go UI mode uses both (see
+[[file:go-mode.html][Go mode]]).
 
 =mep-go-lsp --parse-check FILE...= prints only the parser's errors, one line
 per file, in the form =just go-parse-check= compares against =go/parser=.

@@ -85,6 +85,29 @@ tests' own deliberate mistakes (<code>catch {set}</code>), each with Tcl's messa
 <li><b>Folding</b> covers braced bodies and runs of comment lines.</li>
 <li><b>Formatting</b> is mep's own Tcl formatter, the one <code>gf</code> runs: tclint's <code>tclfmt</code>, byte for byte. Only the lines that change are edited. See <a href="formatting.html">Formatting</a>.</li>
 </ul>
+<h1>Procs of other files</h1>
+<p>Hover and signature help on a command the file neither defines nor finds
+among Tcl's built-ins look for a proc of that name -- its documentation is
+the comment block above it -- in the files the file =source=s (a literal
+path, or <code>[file join [file dirname [info script]] ...]</code>), the <code>.tcl</code> files
+of its directory, of <code>lappend auto_path DIR</code> literals, of the workspace,
+<code>TCLLIBPATH</code> and <code>MEP_TCL_PATH</code> (each with its package subdirectories).</p>
+<p>TclOO classes count too. Hover on a class command (=datamunge::DataFrame
+new=) shows the comment block above its <code>oo::class create</code>; hover on a
+method call <code>$df sort_by ...</code> shows the method's comment block when the file
+sets <code>df</code> from <code>[CLASS new ...]</code> or <code>[CLASS create NAME ...]</code> (with or
+without <code>namespace import</code>). The method is looked up in the class, then
+its <code>superclass=es; =new</code> and <code>create</code> show the constructor, and
+<code>CLASS method</code> covers static methods (<code>oo::objdefine CLASS method</code>). When
+the object's class is unknown (<code>set b [$a select ...]</code>), hover lists that
+method of every class that defines it. This is how the documented stubs of
+a generated binding's package file (Rosetta's <code>datamunge.tcl</code>, found
+through <code>MEP_TCL_PATH</code>) reach its examples.</p>
+<p><code>mep-tcl-lsp --doc NAME [-L DIR]... [--file FILE]...</code> prints a proc's doc
+comment, a class's (with its superclasses and methods), a method's (=--doc
+"DataFrame sort_by"= or <code>--doc datamunge::DataFrame sort_by</code>), or a
+built-in's usage and manual text, for the [[file:tcl-mode.html][Tcl
+mode]]'s Help tab.</p>
 <h1>Linting from the command line</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-tcl-lsp</span> <span class="tok-red">--lint</span> *.tcl
 <span class="tok-blue">cat</span> app.tcl | <span class="tok-blue">mep-tcl-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>

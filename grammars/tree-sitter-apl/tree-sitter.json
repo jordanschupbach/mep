@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "apl",
+      "camelcase": "Apl",
+      "scope": "source.apl",
+      "path": ".",
+      "file-types": ["apl", "apls", "aplf", "aplo", "apln", "aplc", "apli", "dyalog"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "APL (GNU APL and Dyalog APL), mep's own grammar",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

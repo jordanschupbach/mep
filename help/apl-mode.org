@@ -1,0 +1,102 @@
+#+TITLE: APL mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="47">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]])
+in a =.apl=, =.apls=, =.aplf=, =.aplo=, =.apln=, =.aplc=, =.apli= or
+=.dyalog= file. The tab becomes an APL workspace: your file, an APL session
+below it, Help and Glyphs tabs top-right, and the file's Functions
+bottom-right.
+
+* The console
+
+The console is GNU APL's own interactive session, started as
+=apl --silent --noCONT --noColor= (=mep.opt.apl_ui_cmd=). GNU APL is
+=nixpkgs#gnuapl=; in a shell without it, start mep from
+=nix shell nixpkgs#gnuapl=. When =apl= isn't on =PATH= but =dyalog= is,
+Dyalog is the console.
+
+A =REPL:= comment replaces the command, as in the other modes:
+
+#+begin_src apl
+⍝ REPL: dyalog
+#+end_src
+
+A command naming =dyalog= makes the mode talk Dyalog (see below).
+
+* Working in it
+
+| Key           | Does                                                                     |
+|---------------+--------------------------------------------------------------------------|
+| =<leader>re=  | send the statement at the cursor (or the Visual selection) to the session |
+| =<leader>rr=  | run the whole file in the session                                        |
+| =gh=          | the documentation of the glyph or name under the cursor, in the Help tab |
+
+Code is never pasted into the prompt line by line -- GNU APL's ∇-editor
+would take a tradfn's lines one at a time. Instead:
+
+- =<leader>rr= writes the buffer (unsaved edits too) to =run.apl= in the
+  session directory and types =)COPY …/run.apl=. GNU APL runs a file
+  given to =)COPY= as a script when it starts with =#!=, so the copy gets
+  one, and loses any =)OFF= line (which would end the session).
+- =<leader>re= sends the top-level statement around the cursor. A
+  one-line statement is typed as it is, without its comment, so its value
+  prints as at the prompt (=Mean 1 2 3= answers =2=). A whole tradfn
+  (=∇= ... =∇=), a multi-line dfn or a control structure goes through
+  =eval.apl= and =)COPY= the same way. A Visual selection of one line is
+  typed; of several, goes through =eval.apl=.
+
+With Dyalog as the console, both write the plain source and type
+=2 ⎕FIX= of the file's =file://= name instead.
+
+The Run button outside the mode runs =.apl= files with
+=apl --script --OFF -f FILE=, and =.apls= / =.dyalog= files with
+=dyalogscript= or =dyalog -script= when Dyalog is installed (GNU APL
+otherwise). A =⍝ CMD: …= line overrides it (see
+[[file:run-button.html][Run button]]).
+
+* The panels
+
+| Panel     | Shows                                                                                   |
+|-----------+-----------------------------------------------------------------------------------------|
+| Help      | =gh='s documentation                                                                    |
+| Glyphs    | the language bar: every primitive function, operator and syntax glyph with its backtick key, name and meanings; clicking one inserts it at the cursor |
+| Functions | the namespaces, classes, functions, operators and variables the file defines; refreshed on save; clicking one jumps to it |
+
+=gh= looks the symbol under the cursor up with =mep-apl-lsp --doc=:
+
+- a glyph: its monadic and dyadic meanings and the key that types it;
+- a =⎕name=, =:Keyword= or =)command=: its meaning;
+- a function or operator (=Mean=, =datamunge.Mean=): its header and the
+  =⍝= lines after it -- for a Rosetta-generated binding, the C++
+  documentation. It is looked up in the buffer, then the files under the
+  buffer's directory and =MEP_APL_PATH=.
+
+Glyphs are typed with a backtick and a key (=`r= ⍴, =`i= ⍳ ...) through
+the language server's completion, or picked by name with =<leader>as=;
+see [[file:apl-lsp.html][The APL language server]].
+
+* Options
+
+| Option                           | Default                                    |
+|----------------------------------+--------------------------------------------|
+| =mep.opt.apl_ui_cmd=             | ={'apl', '--silent', '--noCONT', '--noColor'}= |
+| =mep.opt.apl_ui_info_share=      | =0.34= (the right column's width)          |
+| =mep.opt.apl_ui_bottom_share=    | =0.35= (the console's height)              |
+| =mep.opt.apl_ui_bottom_info_share= | =0.4= (the Functions panel's height)     |
+
+* Limits
+
+- Only GNU APL has been tried as the console; the Dyalog path (=2 ⎕FIX=)
+  follows Dyalog's documentation but is untested.
+- The panels don't read the session: Functions shows the file, not what
+  the workspace holds (=)FNS= and =)VARS= in the console do).
+
+* See also
+
+- [[file:apl-lsp.html][The APL language server]] -- diagnostics, completion, the glyph keys, the doc convention.
+- [[file:formatting.html][Formatting]] -- what =gf= changes in APL.
+- [[file:language-ui.html][Language UI modes]] -- the shared layout and the =REPL:= comment.

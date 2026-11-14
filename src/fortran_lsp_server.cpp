@@ -8,9 +8,19 @@
 //   mep-fortran-lsp --gfortran-check FILE...  the reader's first syntax error per file as
 //                                     `LINE: message`, or "ok" -- the shape fortran_check.py
 //                                     prints gfortran's in (tools/fortran_parse_check.py)
+//   mep-fortran-lsp --intrinsic NAME   the vocabulary's entries for NAME (an intrinsic procedure,
+//                                     an intrinsic module's entity, a keyword) as plain text;
+//                                     exit 1 when it has none -- the Fortran UI console's
+//                                     help for gfortran's intrinsics (language_ui_fortran.h)
 //
 // A file's source form comes from its name (.f/.for fixed, the rest free;
 // upper-case suffixes run the preprocessor model), as gfortran decides it.
+//
+// A USE of a module from another file is resolved by fortran_lsp_modules.h:
+// the workspace's Fortran files (indexed on initialize) and open files, then
+// MEP_FORTRAN_PATH, the -I directories of FFLAGS/FCFLAGS, and the file's own
+// directory. Hover, completion, signature help and definition then reach
+// into that module, with its FORD documentation.
 //
 // Single-threaded and synchronous; Content-Length framing via
 // rpc_framing.h, full text sync, `positionEncoding: "utf-8"`.
@@ -34,6 +44,8 @@
 #endif
 
 #include "fortran_lsp.h"
+#include "fortran_lsp_modules.h"
+#include "fortran_lsp_vocab.h"
 #include "fortran_parse.h"
 #include "json.h"
 #include "rpc_framing.h"
@@ -102,6 +114,9 @@ public:
 
         if (method == "initialize") {
             Reply(msg.get("id"), Capabilities());
+            std::string root = params.get("rootUri").as_string();
+            if (root.empty()) root = params.get("rootPath").as_string();
+            if (!root.empty()) index_.SetRoot(PathOfUri(root));
             return;
         }
         if (method == "shutdown") {
@@ -114,8 +129,11 @@ public:
             running_ = false;
             return;
         }
-        if (method == "initialized" || method == "workspace/didChangeConfiguration" || method == "$/setTrace" ||
-            method == "textDocument/didSave") {
+        if (method == "initialized" || method == "workspace/didChangeConfiguration" || method == "$/setTrace") {
+            return;
+        }
+        if (method == "textDocument/didSave") {
+            index_.Refresh(PathOfUri(UriOf(params)));
             return;
         }
         if (method == "textDocument/didOpen") {
@@ -134,6 +152,7 @@ public:
         if (method == "textDocument/didClose") {
             const std::string uri = UriOf(params);
             docs_.erase(uri);
+            index_.Close(PathOfUri(uri));
             Json note = Json::Object();
             note["uri"] = uri;
             note["diagnostics"] = Json::Array();
@@ -192,6 +211,7 @@ private:
         std::shared_ptr<const FortranLspDocument> analysis;
     };
     std::map<std::string, OpenDoc> docs_;
+    FortranModuleIndex index_;
     bool running_ = true;
     bool shutting_down_ = false;
     int exit_code_ = 1;
@@ -277,7 +297,9 @@ private:
     void Set(const std::string &uri, const std::string &text) {
         OpenDoc &d = docs_[uri];
         d.lines = SplitLines(text);
-        d.analysis = FortranLspAnalyze(d.lines, PathOfUri(uri));
+        const std::string path = PathOfUri(uri);
+        d.analysis = index_.Analyze(d.lines, path);
+        index_.SetOpen(path, d.analysis);
     }
 
     const OpenDoc &Doc(const std::string &uri) {
@@ -286,14 +308,51 @@ private:
         Set(uri, std::string());
         return docs_[uri];
     }
-    const FortranLspDocument &Analysis(const Json &params) { return *Doc(UriOf(params)).analysis; }
+    // A query's analysis, made again first when a module it USEs from another file has changed.
+    const FortranLspDocument &Analysis(const Json &params) {
+        const std::string uri = UriOf(params);
+        const OpenDoc &d = Doc(uri);
+        if (index_.Stale(*d.analysis)) {
+            OpenDoc &m = docs_[uri];
+            m.analysis = index_.Analyze(m.lines, PathOfUri(uri));
+            index_.SetOpen(PathOfUri(uri), m.analysis);
+        }
+        return *docs_[uri].analysis;
+    }
 
     static std::string UriOf(const Json &params) { return params.get("textDocument").get("uri").as_string(); }
-    // file:///a/b.f -> /a/b.f (only the suffix matters: it picks the source form)
+    // file:///a/b%20c.f -> /a/b c.f (the suffix picks the source form; the directory is
+    // searched for modules)
     static std::string PathOfUri(const std::string &uri) {
         std::string p = uri.compare(0, 7, "file://") == 0 ? uri.substr(7) : uri;
         const size_t q = p.find_first_of("?#");
-        return q == std::string::npos ? p : p.substr(0, q);
+        if (q != std::string::npos) p = p.substr(0, q);
+        std::string out;
+        for (size_t i = 0; i < p.size(); i++) {
+            if (p[i] == '%' && i + 2 < p.size() && std::isxdigit(static_cast<unsigned char>(p[i + 1])) &&
+                std::isxdigit(static_cast<unsigned char>(p[i + 2]))) {
+                out += static_cast<char>(std::stoi(p.substr(i + 1, 2), nullptr, 16));
+                i += 2;
+            } else {
+                out += p[i];
+            }
+        }
+        return out;
+    }
+    static std::string UriOfPath(const std::string &path) {
+        static const char *const kHex = "0123456789ABCDEF";
+        std::string out = "file://";
+        for (char ch : path) {
+            const unsigned char c = static_cast<unsigned char>(ch);
+            if (std::isalnum(c) || c == '/' || c == '-' || c == '_' || c == '.' || c == '~') {
+                out += ch;
+            } else {
+                out += '%';
+                out += kHex[c >> 4];
+                out += kHex[c & 15];
+            }
+        }
+        return out;
     }
     static int LineOf(const Json &params) { return params.get("position").get("line").as_int(); }
     static int ColOf(const Json &params) { return params.get("position").get("character").as_int(); }
@@ -411,7 +470,7 @@ private:
         Json arr = Json::Array();
         for (const FortranLspLocation &loc : FortranLspDefinition(Analysis(params), LineOf(params), ColOf(params))) {
             Json j = Json::Object();
-            j["uri"] = uri;
+            j["uri"] = loc.path.empty() ? uri : UriOfPath(loc.path);
             j["range"] = RangeOf(loc.range);
             arr.push_back(j);
         }
@@ -469,26 +528,30 @@ private:
     Json SignatureHelp(const Json &params) {
         const FortranLspSignatureHelp sh = FortranLspSignatureAt(Analysis(params), LineOf(params), ColOf(params));
         if (!sh.found) return Json();
-        Json parameters = Json::Array();
-        for (const std::string &param : sh.params) {
-            Json p = Json::Object();
-            p["label"] = param;
-            parameters.push_back(p);
-        }
-        Json signature = Json::Object();
-        signature["label"] = sh.label;
-        if (!sh.documentation.empty()) {
+        auto markdown = [](const std::string &text) {
             Json doc = Json::Object();
             doc["kind"] = "markdown";
-            doc["value"] = sh.documentation;
-            signature["documentation"] = doc;
-        }
-        signature["parameters"] = parameters;
+            doc["value"] = text;
+            return doc;
+        };
         Json signatures = Json::Array();
-        signatures.push_back(signature);
+        for (const FortranLspSignature &sg : sh.signatures) {
+            Json parameters = Json::Array();
+            for (size_t i = 0; i < sg.params.size(); i++) {
+                Json p = Json::Object();
+                p["label"] = sg.params[i];
+                if (i < sg.param_docs.size() && !sg.param_docs[i].empty()) p["documentation"] = markdown(sg.param_docs[i]);
+                parameters.push_back(p);
+            }
+            Json signature = Json::Object();
+            signature["label"] = sg.label;
+            if (!sg.documentation.empty()) signature["documentation"] = markdown(sg.documentation);
+            signature["parameters"] = parameters;
+            signatures.push_back(signature);
+        }
         Json out = Json::Object();
         out["signatures"] = signatures;
-        out["activeSignature"] = 0;
+        out["activeSignature"] = sh.active_signature;
         out["activeParameter"] = sh.active_param;
         return out;
     }
@@ -520,6 +583,30 @@ int Lint(const std::vector<std::string> &paths) {
     return failed ? 1 : 0;
 }
 
+// --intrinsic NAME: every vocabulary entry named NAME (an intrinsic and the keyword
+// it shares a name with, or the same name in two intrinsic modules), blank-line separated.
+int DescribeIntrinsic(const std::string &name) {
+    std::string lower;
+    for (char c : name) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    size_t count = 0;
+    const FortranVocabEntry *all = FortranVocab(&count);
+    const FortranVocabEntry *e = FortranVocabFind(lower.c_str(), lower.size());
+    if (!e) return 1;
+    static const char *const kKinds[] = {"function", "subroutine", "constant", "type", "module", "keyword"};
+    for (bool first = true; e < all + count && lower == e->name; ++e, first = false) {
+        if (!first) std::printf("\n");
+        if (e->signature[0]) std::printf("%s\n\n", e->signature);
+        else std::printf("%s\n\n", e->name);
+        const std::string what = e->klass[0] ? e->klass : kKinds[static_cast<int>(e->kind)];
+        std::printf("%s", what.c_str());
+        if (e->module[0]) std::printf(" from module %s", e->module);
+        if (e->standard[0]) std::printf(" (%s)", e->standard);
+        if (e->generic[0]) std::printf(", a specific name of %s", e->generic);
+        std::printf("\n%s\n", e->summary);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -545,10 +632,18 @@ int main(int argc, char **argv) {
             }
             return 0;
         }
+        if (first == "--intrinsic") {
+            if (rest.size() != 1) {
+                std::fprintf(stderr, "usage: mep-fortran-lsp --intrinsic NAME\n");
+                return 2;
+            }
+            return DescribeIntrinsic(rest[0]);
+        }
         if (first == "--help" || first == "-h") {
             std::printf("usage: mep-fortran-lsp                        run the language server on stdio\n"
                         "       mep-fortran-lsp --lint FILE...         print diagnostics (FILE '-' reads stdin)\n"
-                        "       mep-fortran-lsp --gfortran-check FILE...  the reader's first syntax error, or ok\n");
+                        "       mep-fortran-lsp --gfortran-check FILE...  the reader's first syntax error, or ok\n"
+                        "       mep-fortran-lsp --intrinsic NAME       documentation of an intrinsic or keyword\n");
             return 0;
         }
         if (first != "--stdio") {

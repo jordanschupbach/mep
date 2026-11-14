@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tcl mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="52">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Tcl mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.tcl</code> or <code>.tm</code>
+file. The tab becomes a Tcl workspace: your file, an interactive <code>tclsh</code>
+below it, and panels showing what that session holds.</p>
+<p>The console is <code>tclsh</code> running mep's init script, which ends in the same
+read-eval-print loop <code>tclsh</code> runs on its own: a <code>%</code> prompt (or your
+<code>tcl_prompt1</code>), <code>&gt;</code> while a command is incomplete, results and error
+messages printed, and the event loop serviced while it waits. Tcl 8.6 and
+9 both work. It starts with mep's environment, so <code>TCLLIBPATH</code> fills
+<code>auto_path</code> as usual, and the init script appends the directories in
+<code>MEP_TCL_PATH</code> and your file's directory: <code>package require datamunge</code>
+loads what it would in a terminal in that project.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>run the whole file in the console</td></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the command at the cursor (or the selection)</td></tr>
+<tr><td><code>gh</code></td><td>help for the command under the cursor, in the Help panel</td></tr>
+<tr><td><code>::mep::help name</code></td><td>the same, from the console</td></tr>
+<tr><td><code>::mep::view var</code></td><td>a variable -- value, list, dict or array elements -- in Inspect</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> finds the top-level command around the cursor: from the
+line that starts it to the line where it is complete, so a whole <code>proc</code>,
+<code>namespace eval</code> or <code>if {...}</code> block, or a line continued with <code>\</code> or by
+an open brace, bracket or quote.</p>
+<p>Neither key pastes your code into the prompt. The code is written to a
+file padded to your file's line numbers and run with one
+<code>::mep::eval_file</code> line at the global level, with <code>[info script]</code> naming
+your file, so <code>[file dirname [info script]]</code> finds its siblings. Errors
+count your file's lines. <code>&lt;leader&gt;rr</code> runs the buffer as it is in the
+editor, unsaved changes included. A file with a <code># CMD:</code> line still runs
+that line on the Run button.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Variables</td><td>the global variables the session set: a scalar's value, an array's size</td></tr>
+<tr><td>Procs</td><td><code>info procs</code>: global procs and those of the namespaces the session made, with their arguments</td></tr>
+<tr><td>Packages</td><td>the packages loaded, and <code>auto_path</code> (folded)</td></tr>
+<tr><td>Inspect</td><td><code>::mep::view</code> of a variable</td></tr>
+<tr><td>Help</td><td>a proc's or a built-in's documentation</td></tr>
+</table>
+<p>Clicking a Variables row inspects it; clicking a Procs row shows its Help.
+What <code>tclsh</code> starts with, and Tcl's own library procs, are left out. The
+panels refresh before every prompt.</p>
+<h1>Help</h1>
+<p>For a proc, <code>::mep::help name</code> -- and <code>gh</code> -- resolves the name in the
+session (<code>namespace which</code>), then has <code>mep-tcl-lsp --doc</code> (see
+<a href="tcl-lsp.html">The Tcl language server</a>) read the comment block
+above the proc's definition. It looks in every file the session sourced
+(<code>source</code> is wrapped to record them, so files <code>package require</code> loads
+count) and in the <code>.tcl</code> files of the <code>auto_path</code> directories. A
+Rosetta-generated Tcl binding's <code>.tcl</code> files carry the C++ library's
+documentation as such comments. Below come the arguments with their
+defaults and the start of the body, as the session has them.</p>
+<p>For a built-in command, the Help tab shows its usage line and the text of
+its manual page; for an ensemble, its subcommands too. =::mep::help
+{string map}= shows one subcommand. For a namespace, its procs and
+exports.</p>
+<p>In a <code>.tcl</code> buffer <code>gh</code> also opens the language server's hover, which
+finds procs of sourced files and packages without a running session.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.tcl_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'tclsh9.0'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- the console's command</span>
+<span class="tok-cyan">mep</span>.opt.tcl_ui_info_share = <span class="tok-cyan">0.3</span>     <span class="tok-comment">-- the panels' width</span></code></pre></div>
+<p>A <code># REPL: nix develop .#tcl --command tclsh</code> line in the file overrides
+<code>tcl_ui_cmd</code> for that file. The mode appends its init script's path.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="tcl-lsp.html">The Tcl language server</a>.</li>
+<li><a href="run-button.html">Run button</a> -- a <code># CMD:</code> line runs a file another way.</li>
+</ul>
+</body>
+</html>

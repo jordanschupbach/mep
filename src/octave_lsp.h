@@ -142,6 +142,81 @@ struct OctaveLspFold {
 
 std::vector<OctaveLspFold> OctaveLspFolds(const OctaveLspDocument &doc);
 
+// --- Help text and the load path -----------------------------------------------------
+//
+// Octave's `help NAME` text for functions the document does not define: a
+// NAME.m on the search path -- the document's own directory, the literal
+// directories its addpath(...) calls name, and the server-wide directories
+// (the workspace, $MEP_OCTAVE_PATH) set with OctaveLspSetSearchPath. Hover
+// and signature help use it, and so does `mep-octave-lsp --doc NAME`, which
+// the Octave UI mode's Help tab falls back on (a Rosetta-generated .oct
+// library ships .m stubs that carry the help text).
+
+/** @brief A file:// URI as a path (percent-decoded); anything else unchanged. */
+std::string OctaveLspUriToPath(const std::string &uri);
+
+/**
+ * @brief The help text of the function whose `function` line is `function_line` (0-based), as
+ * Octave finds it: the comment block above (blank lines between allowed, copyright blocks skipped),
+ * a function file's leading block, else the block right below. Texinfo is rendered as plain text.
+ */
+std::string OctaveLspHelpText(const std::vector<std::string> &lines, int function_line, bool first_in_file);
+
+struct OctaveLspDocLookup {
+    bool found = false;
+    std::string path;       // the .m file
+    std::string signature;  // "function y = f (x)", "" for a script
+    std::string help;       // plain text, "" when undocumented
+    int line = 0;           // the function line, 0-based
+    std::string kind;       // "function", "script", "class", "method", "static method", "property"
+    std::string qualified;  // pkg.Class, pkg.Class.method ("" for plain names)
+    std::string note;       // e.g. other classes with a method of that name
+};
+
+/** @brief A classdef member, for completion. */
+struct OctaveLspClassMember {
+    std::string name;
+    std::string signature;  // "function r = select (obj, cols)", "property"
+    bool is_static = false;
+    bool is_property = false;
+    bool in_package = false;  // a package's function, class or subpackage ("package")
+};
+
+/** @brief The server-wide search directories (searched after the document's own). */
+void OctaveLspSetSearchPath(const std::vector<std::string> &dirs);
+/** @brief The directories a document's names are looked up in, in order. */
+std::vector<std::string> OctaveLspSearchPath(const OctaveLspDocument &doc);
+/** @brief `name` (a function, or `pkg.fn` in `+pkg/`) as NAME.m in the first of `dirs` that has it. */
+OctaveLspDocLookup OctaveLspFindOnPath(const std::string &name, const std::vector<std::string> &dirs);
+/** @brief The function `name` defined in the file `path` (a script's command-line function too). */
+OctaveLspDocLookup OctaveLspFindInFile(const std::string &name, const std::string &path);
+/** @brief A method or property of a classdef found on the path (superclasses searched too). */
+OctaveLspDocLookup OctaveLspFindMember(const std::string &class_name, const std::string &member,
+                                       const std::vector<std::string> &dirs, int depth = 0);
+/** @brief The methods (constructor excluded) and visible properties of a class and its superclasses. */
+std::vector<OctaveLspClassMember> OctaveLspClassMembers(const std::string &class_name,
+                                                        const std::vector<std::string> &dirs);
+/** @brief Every package function and class under `+pkg` directories of `dirs`, as `pkg.sub.Name`. */
+std::vector<std::string> OctaveLspPackageNames(const std::vector<std::string> &dirs);
+/** @brief The `import` arguments of a document (`pkg.*`, `pkg.Name`). */
+std::vector<std::string> OctaveLspImports(const OctaveLspDocument &doc);
+/** @brief `name` on the path, else (its first part) through `imports`, else the one package member so
+ * named; `candidates` gets every package member of that name. */
+OctaveLspDocLookup OctaveLspResolveName(const std::string &name, const std::vector<std::string> &dirs,
+                                        const std::vector<std::string> &imports, std::vector<std::string> *candidates);
+/** @brief Methods called `method` in the classdefs under package directories (at most `limit`). */
+std::vector<OctaveLspDocLookup> OctaveLspMethodsNamed(const std::string &method, const std::vector<std::string> &dirs,
+                                                      size_t limit);
+/** @brief The member named by StructElt token `tok` (`obj.m`, `pkg.Class.m`, `pkg.fn`), the receiver typed
+ * from the file's assignments; an unknown receiver gives the methods of that name across known classes. */
+OctaveLspDocLookup OctaveLspMemberAt(const OctaveLspDocument &doc, int tok, bool *instance_call);
+/** @brief The members after `receiver.` at `line`: package contents, a class's static methods, an instance's. */
+std::vector<OctaveLspClassMember> OctaveLspMembersOf(const OctaveLspDocument &doc, int line, const std::string &receiver);
+/** @brief The class of variable token `tok` as of its position ("" when unknown). */
+std::string OctaveLspVariableClass(const OctaveLspDocument &doc, int tok);
+/** @brief A lookup as hover markdown: signature, help text, file. */
+std::string OctaveLspDocMarkdown(const OctaveLspDocLookup &d);
+
 // --- Formatting ------------------------------------------------------------------------------
 
 /** @brief The formatter as one edit over the changed lines; none when already formatted. */

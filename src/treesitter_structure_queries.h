@@ -24,13 +24,6 @@
 // dedups by exact byte span and keeps the more specific (non-"type") kind
 // when two patterns land on the identical node.
 
-static const char *kStructureRuby = R"TSQ(
-(module name: (constant) @name) @definition.namespace
-(class name: (constant) @name) @definition.class
-(method name: (identifier) @name) @definition.method
-(singleton_method name: (identifier) @name) @definition.method
-)TSQ";
-
 static const char *kStructurePhp = R"TSQ(
 (namespace_definition name: (_) @name) @definition.namespace
 (interface_declaration name: (name) @name) @definition.interface

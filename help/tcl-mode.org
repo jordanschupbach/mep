@@ -1,0 +1,92 @@
+#+TITLE: Tcl mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="52">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.tcl= or =.tm=
+file. The tab becomes a Tcl workspace: your file, an interactive =tclsh=
+below it, and panels showing what that session holds.
+
+The console is =tclsh= running mep's init script, which ends in the same
+read-eval-print loop =tclsh= runs on its own: a =%= prompt (or your
+=tcl_prompt1=), =>= while a command is incomplete, results and error
+messages printed, and the event loop serviced while it waits. Tcl 8.6 and
+9 both work. It starts with mep's environment, so =TCLLIBPATH= fills
+=auto_path= as usual, and the init script appends the directories in
+=MEP_TCL_PATH= and your file's directory: =package require datamunge=
+loads what it would in a terminal in that project.
+
+* Working in it
+
+| Key / call            | Does                                                      |
+|-----------------------+-----------------------------------------------------------|
+| =<leader>rr=          | run the whole file in the console                         |
+| =<leader>re=          | run the command at the cursor (or the selection)          |
+| =gh=                  | help for the command under the cursor, in the Help panel  |
+| =::mep::help name=    | the same, from the console                                |
+| =::mep::view var=     | a variable -- value, list, dict or array elements -- in Inspect |
+
+=<leader>re= finds the top-level command around the cursor: from the
+line that starts it to the line where it is complete, so a whole =proc=,
+=namespace eval= or =if {...}= block, or a line continued with =\= or by
+an open brace, bracket or quote.
+
+Neither key pastes your code into the prompt. The code is written to a
+file padded to your file's line numbers and run with one
+=::mep::eval_file= line at the global level, with =[info script]= naming
+your file, so =[file dirname [info script]]= finds its siblings. Errors
+count your file's lines. =<leader>rr= runs the buffer as it is in the
+editor, unsaved changes included. A file with a =# CMD:= line still runs
+that line on the Run button.
+
+* The panels
+
+| Panel    | Shows                                                               |
+|----------+---------------------------------------------------------------------|
+| Variables | the global variables the session set: a scalar's value, an array's size |
+| Procs    | =info procs=: global procs and those of the namespaces the session made, with their arguments |
+| Packages | the packages loaded, and =auto_path= (folded)                       |
+| Inspect  | =::mep::view= of a variable                                         |
+| Help     | a proc's or a built-in's documentation                              |
+
+Clicking a Variables row inspects it; clicking a Procs row shows its Help.
+What =tclsh= starts with, and Tcl's own library procs, are left out. The
+panels refresh before every prompt.
+
+* Help
+
+For a proc, =::mep::help name= -- and =gh= -- resolves the name in the
+session (=namespace which=), then has =mep-tcl-lsp --doc= (see
+[[file:tcl-lsp.html][The Tcl language server]]) read the comment block
+above the proc's definition. It looks in every file the session sourced
+(=source= is wrapped to record them, so files =package require= loads
+count) and in the =.tcl= files of the =auto_path= directories. A
+Rosetta-generated Tcl binding's =.tcl= files carry the C++ library's
+documentation as such comments. Below come the arguments with their
+defaults and the start of the body, as the session has them.
+
+For a built-in command, the Help tab shows its usage line and the text of
+its manual page; for an ensemble, its subcommands too. =::mep::help
+{string map}= shows one subcommand. For a namespace, its procs and
+exports.
+
+In a =.tcl= buffer =gh= also opens the language server's hover, which
+finds procs of sourced files and packages without a running session.
+
+* Options
+
+#+begin_src lua
+mep.opt.tcl_ui_cmd = {'tclsh9.0'}   -- the console's command
+mep.opt.tcl_ui_info_share = 0.3     -- the panels' width
+#+end_src
+
+A =# REPL: nix develop .#tcl --command tclsh= line in the file overrides
+=tcl_ui_cmd= for that file. The mode appends its init script's path.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:tcl-lsp.html][The Tcl language server]].
+- [[file:run-button.html][Run button]] -- a =# CMD:= line runs a file another way.

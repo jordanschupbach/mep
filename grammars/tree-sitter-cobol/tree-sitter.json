@@ -1,0 +1,20 @@
+{
+  "grammars": [
+    {
+      "name": "cobol",
+      "camelcase": "Cobol",
+      "scope": "source.cobol",
+      "path": ".",
+      "file-types": ["cob", "cbl", "cobol", "cpy", "COB", "CBL", "COBOL", "CPY"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "COBOL, mep's own grammar (from yutaro-sakamoto/tree-sitter-cobol)",
+    "links": {
+      "repository": "https://github.com/jordanschupbach/mep"
+    }
+  }
+}

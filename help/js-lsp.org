@@ -353,6 +353,15 @@ module or script as above, and TypeScript for =.ts=, =.tsx=, =.mts=,
 a warning, 2 if a file could not be read, and 0 otherwise. With no
 arguments, =mep-js-lsp= is the language server on stdio.
 
+#+begin_src sh
+mep-js-lsp --dts-doc index.d.ts Polynomial.degree
+#+end_src
+
+prints the hover a declaration file gives a name (a function, a class,
+=Class.member=, =Enum.member=, =namespace.name=) as markdown, and with no
+name the file's exports. It exits 1 if the file declares no such name.
+The [[file:javascript-mode.html][JavaScript mode]]'s console uses it for =gh=.
+
 * Using typescript-language-server instead
 
 =typescript-language-server= is still registered, with no filetypes of

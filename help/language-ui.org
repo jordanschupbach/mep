@@ -51,7 +51,17 @@ console, preview or panels, the toggle closes the layout.
 | SQL (SQLite) | [[file:sql-mode.html][SQL mode]]           |
 | Lua         | [[file:lua-mode.html][Lua mode]]            |
 | Julia       | [[file:julia-mode.html][Julia mode]]        |
+| Ruby        | [[file:ruby-mode.html][Ruby mode]]          |
+| JavaScript (Node.js) | [[file:javascript-mode.html][JavaScript mode]] |
 | COBOL       | [[file:cobol-lsp.html][The COBOL language server]] (its /COBOL mode/ section) |
+| Fortran     | [[file:fortran-mode.html][Fortran mode]]    |
+| Java (jshell) | [[file:java-mode.html][Java mode]]        |
+| Go          | [[file:go-mode.html][Go mode]]              |
+| APL (GNU APL, Dyalog) | [[file:apl-mode.html][APL mode]] |
+| Octave      | [[file:octave-mode.html][Octave mode]]      |
+| Tcl         | [[file:tcl-mode.html][Tcl mode]]            |
+| Guile Scheme | [[file:guile-mode.html][Guile Scheme mode]] |
+| OCaml (utop, ocaml) | [[file:ocaml-mode.html][OCaml mode]] |
 | MEPML       | [[file:mepml.html][Document preview and navigation]] |
 
 The programming language modes share the same shape: a console, a Help
@@ -76,7 +86,8 @@ Only the interpreter is replaced. The mode still adds its own startup
 arguments, for example the Python mode's init script or the Bash mode's
 =--rcfile=, after your command. So the command must accept them, as
 =python= or =nix develop ... --command python= does. This works in the R,
-Python, C++, Common Lisp, Bash, Clojure, Lua and Julia modes. Crystal, C# and SQL start
+Python, C++, Common Lisp, Bash, Clojure, Lua, Julia, Ruby, JavaScript, Fortran, Go, APL, Octave, Tcl, Guile Scheme and OCaml modes; in the Java mode it
+names the java command. Crystal, C# and SQL start
 their consoles through their own launchers and ignore the comment.
 
 * =gh=, in context
@@ -91,7 +102,23 @@ answers depends on where you are:
   schema (and mep's SQL documentation for functions and keywords) for SQL,
   a function's signature, doc comment and source (with the language
   server's hover alongside) for Lua, the docstring and methods (with the
-  language server's hover alongside) for Julia;
+  language server's hover alongside) for Julia, the YARD documentation of
+  the method the live session resolves the name to and the runtime's
+  signature (with the language server's hover alongside) for Ruby, the
+  JSDoc of a package's
+  TypeScript declarations and the runtime's signature (with the language
+  server's hover alongside) for JavaScript, the =!>= documentation
+  of the procedure or type in the modules the session uses (or the
+  intrinsic's summary) for Fortran, the Javadoc of a class or member from
+  the workspace, the source path or the JDK for Java, the doc comment of a
+  package member from the workspace, the module's dependencies or =go doc=
+  for Go, a glyph's monadic and dyadic meanings,
+  a =⎕name='s meaning or a function's header and =⍝= doc lines (from
+  =mep-apl-lsp --doc=) for APL, Octave's =help= (or the =.m= stubs'
+  comment blocks) for Octave, a proc's doc comment or a built-in's manual
+  text for Tcl, =procedure-documentation= with the source's docstring
+  for Guile Scheme, and the =.mli='s odoc documentation (from
+  =mep-ocaml-lsp --doc=) with the session's type for OCaml;
 - otherwise, the LSP hover popup, the same one =K= opens.
 
 =<leader>hs= and =:MepGoHelp= do the same thing.

@@ -71,6 +71,48 @@ all values never used, most of them outputs of a multiple assignment
 </ul>
 <p>While a file is broken, completion and navigation keep working on the rest
 of it: the server re-reads it with the offending line set aside.</p>
+<h1>Help text from other files</h1>
+<p>Hover and signature help show a function's help text, found as Octave
+finds it: the comment block above the <code>function</code> line (copyright blocks
+skipped), a function file's leading block, or the block right below.
+Texinfo help is rendered as Octave's <code>help</code> shows it. A function the file
+does not define is looked up as <code>NAME.m</code> (or <code>+pkg/NAME.m</code>) in the file's
+directory, the directories its literal <code>addpath ('dir')</code> calls name, the
+workspace and <code>MEP_OCTAVE_PATH</code>.</p>
+<h2>Classes and packages</h2>
+<p>A <code>classdef</code> file's help is the comment block after the <code>classdef</code> line
+(not the constructor's), followed by the class's properties and methods
+unless the help text lists them already. A method's help is the block after
+its <code>function</code> line inside <code>methods ... end</code>. <code>pkg.Class</code> is
+<code>+pkg/Class.m</code>, and <code>pkg.Class.method</code> is a method of that class or of its
+superclasses. Properties in <code>Hidden</code> or <code>Access</code> blocks are left out.</p>
+<p>A variable's class is worked out from the assignments before it, for
+example <code>df = datamunge.DataFrame ()</code>. A call's result is typed from the
+<code>Output:</code> block in the method's help (the class named after the output
+variable, as Rosetta writes it). With that:</p>
+<ul>
+<li>hovering <code>df</code> shows its class;</li>
+<li>hovering <code>df.select</code> shows <code>DataFrame</code>'s <code>select</code>, and chains like <code>df.select (c).sort_by (k)</code> work too;</li>
+<li>signature help on <code>df.select (</code> drops the <code>obj</code> parameter;</li>
+<li>completion after <code>df.</code> lists the instance's methods and properties. After <code>pkg.Class.</code> it lists the static methods, and after <code>pkg.</code> the package's functions, classes and subpackages.</li>
+</ul>
+<p>If the receiver's class is unknown, hover shows the first class's method of
+that name and lists the other classes that have one.</p>
+<p>A bare name the file doesn't define is resolved through the file's
+<code>import pkg.*</code> / <code>import pkg.Name</code> lines first. Otherwise it is the one
+package member of that name; when several packages have it, hover lists
+them all.</p>
+<h2>From the command line</h2>
+<p><code>mep-octave-lsp --doc NAME [--path DIR]... [--file FILE]...</code> prints the same
+help text, for the <a href="octave-mode.html">Octave mode</a>'s Help tab. NAME
+can be any of these:</p>
+<ul>
+<li>a function;</li>
+<li><code>pkg.fn</code>;</li>
+<li>a class (<code>pkg.Class</code>);</li>
+<li>a method (<code>pkg.Class.method</code>);</li>
+<li>a bare package member such as <code>DataFrame</code>. It is resolved through the imports of the <code>--file</code> files. If none matches, it is the unique package member of that name, unless Octave has a function by that name.</li>
+</ul>
 <h1>Linting from the command line</h1>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-blue">mep-octave-lsp</span> <span class="tok-red">--lint</span> *.m
 <span class="tok-blue">cat</span> f.m | <span class="tok-blue">mep-octave-lsp</span> <span class="tok-red">--lint</span> -</code></pre></div>

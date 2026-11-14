@@ -1,0 +1,156 @@
+#+TITLE: The APL language server
+#+HTML_HEAD: <meta name="help-section" content="Code">
+#+HTML_HEAD: <meta name="help-order" content="14">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* What it is
+
+APL files get a language server of their own, =mep-apl-lsp=, built and
+shipped with mep. Open a =.apl=, =.apls=, =.aplf=, =.aplo=, =.apln=,
+=.aplc=, =.apli= or =.dyalog= file and it attaches by itself -- nothing to
+install, and it never runs an interpreter. It reads both GNU APL and Dyalog
+APL source: tradfns (=∇ R←A Fn B;locals=), dfns and dops (=f←{...}= with
+=⍺ ⍵ ∇ ⍺⍺ ⍵⍵= and guards), =:Namespace= / =:Class= scripts, Dyalog's
+control structures, labels, =⎕names=, =)commands=, GNU's =◊= diamond and
+double-quoted strings, and =.aplf= / =.aplo= files that hold one function.
+
+It is made for namespaces like the ones Rosetta generates: a function's
+documentation is the =⍝= lines right after its header, and the server
+shows them -- in the hover, in completion and in the APL UI mode's Help tab.
+
+The same binary is a command-line linter and documentation printer; see
+/From the command line/ below. mep's syntax highlighting -- the
+compiled-in =tree-sitter-apl= grammar -- highlights glyphs by role,
+numbers (=¯2.5E¯3J1=), strings, comments, =⎕names=, keywords and labels,
+folds tradfns, dfns, namespaces and control structures, and fills the
+structure sidebar.
+
+* Documentation comments
+
+#+begin_src apl
+:Namespace datamunge
+    ∇ R←A Add B
+    ⍝ Adds two arrays elementwise.
+    ⍝
+    ⍝ - `A`: left array
+      R←A+B
+    ∇
+
+    ⍝ The mean of a vector.
+    Mean←{(+/⍵)÷≢⍵}
+:EndNamespace
+#+end_src
+
+- A tradfn's doc is the run of =⍝= lines right after its header (and
+  after the =∇= line of an =.aplf= file).
+- A dfn's doc is the =⍝= lines at the top of its body, else the
+  comment block right above =name←{=, else a trailing comment on the
+  same line.
+- A variable's doc is the trailing comment of its first assignment, else
+  the comment block above it.
+
+The text after =⍝= and its space is shown verbatim as Markdown, so Rosetta's
+=`code`=, lists and fenced blocks render as written.
+
+* What it reports
+
+| Code | Severity | What it means |
+|------+----------+---------------|
+| =syntax-error= | error | an unterminated string, a character APL has no use for, a =∇= header that doesn't parse, a stray =)= |
+| =unbalanced= | error | a =( [ {= without its partner, or the wrong partner |
+| =control-structure= | error | a =:EndIf= with no =:If=, the wrong =:End=, an =:Else= outside an =:If= / =:Select=, a structure left open, a =∇= left open |
+| =unknown-keyword= | error | a =:Word= that is no control word |
+| =outside-dfn= | warning | =⍺ ⍵ ⍺⍺ ⍵⍵= outside braces and tradfns |
+| =unknown-system-name= | warning | a =⎕NAME= neither GNU APL nor Dyalog defines |
+| =unknown-command= | warning | a =)COMMAND= neither defines (=]user commands= are not checked) |
+
+* What else it does
+
+- *Hover* (=K=): a glyph's monadic and dyadic meanings and its backtick
+  key; a =⎕name=, control word or =)command='s meaning; a user
+  function's header with its =⍝= doc; a local's role (result, left
+  argument, right argument, local, label). Functions are found in the
+  document, then in every other APL file of the workspace.
+- *Completion*:
+  - A backtick followed by a key types a glyph: the Dyalog US keyboard
+    layout, the same keys as mep's =<leader>as= glyph picker. Some common
+    ones: =`r= ⍴, =`i= ⍳, =`e= ∊, =`w= ⍵, =`a= ⍺, =`[= ←, =`]= →,
+    =`l= ⎕, =`g= ∇, =`1= ¨, =`T= ⍨, =`o= ○, =`z= ⊂, =`x= ⊃,
+    =`y= ↑, =`u= ↓, =`-= ×, =`== ÷, =`s= ⌈, =`d= ⌊, =`j= ∘, =`J= ⍤,
+    =`<= ⍪, =`:= ≡, =`2= ¯, =`}= ⍬; a backtick then a comma
+    types ⍝, then a double quote ≢, and two backticks ⋄. The menu
+    after a bare backtick lists them all; =mep-apl-lsp --glyphs= prints
+    the table.
+  - A glyph's name of two letters or more completes to the glyph: =rho=
+    -> ⍴, =iota= -> ⍳, =each= -> ¨, =reduce= -> =/=, =tally= -> ≢.
+  - =⎕= completes system names (GNU APL's and Dyalog's), =)= system
+    commands, =:= control words, =ns.= a namespace's members.
+  - Plain names complete the current function's arguments, locals and
+    labels, then every function, operator, namespace and variable of the
+    document and the workspace. A function in another file's namespace
+    inserts its qualified name (=datamunge.Mean=) while you type =Mean=.
+- *Signature help* after a space or =(= past a function name: its header,
+  with the right argument active when the cursor is right of the
+  function and the left one when it is left of it.
+- *Go to definition* (=gd=) of a function, operator, namespace, variable,
+  local or label, across files; *references* and *rename* of a name in
+  the document.
+- *Outline* (structure sidebar, document symbols) of namespaces,
+  classes, tradfns, dfns, operators and variables, and *folds* of
+  every function, namespace and control structure.
+- *Formatting* (=gf= and the server's formatting request): see
+  [[file:formatting.html][Formatting]].
+
+* The workspace
+
+On start the server scans the workspace root and every entry of
+=MEP_APL_PATH= (colon-separated directories or files) for APL files,
+skipping hidden and build directories, and indexes their definitions.
+Saved files are re-read; open documents always use the editor's text.
+Set =MEP_APL_PATH= to the directory of a Rosetta-generated binding to get
+its functions' docs everywhere.
+
+* From the command line
+
+#+begin_src sh
+mep-apl-lsp --lint FILE...
+mep-apl-lsp --doc [--root DIR] NAME [FILE...]
+mep-apl-lsp --hover FILE LINE COL
+mep-apl-lsp --outline FILE
+mep-apl-lsp --glyphs
+#+end_src
+
+- =--lint= prints every diagnostic as
+  =path:line:col: severity: message [code]= -- 1-based line and column.
+  It exits 1 if anything printed is an error or a warning, 2 if a file
+  could not be read, and 0 otherwise. =-= reads stdin.
+- =--doc= prints NAME's documentation as Markdown: a glyph (=⍴= or
+  =rho=), a =⎕name=, a control word, a =)command=, or a function, looked
+  up in the FILEs, then under DIR (default: the current directory) and
+  =MEP_APL_PATH=. =ns.fn= finds a namespace member. It exits 1 when there
+  is none. The APL UI mode's =gh= uses it.
+- =--hover= prints the hover at a 1-based line and column.
+- =--outline= prints one definition per line:
+  =line<TAB>depth<TAB>kind<TAB>qualified name<TAB>header=.
+- =--glyphs= prints the glyph table:
+  =glyph<TAB>kind<TAB>key<TAB>names<TAB>monadic / dyadic=.
+
+With no arguments, =mep-apl-lsp= is the language server on stdio.
+
+* Limits
+
+- Expressions are not parsed beyond tokens: whether a name is a function
+  or an array is known only from its definition, so no type or valence
+  checking is done.
+- References and rename stay in the current document.
+- The workspace is scanned once at start (with a file budget); files
+  changed outside the editor are seen when saved or reopened.
+- Dyalog Link's directory-to-namespace mapping is not modelled: a file's
+  =:Namespace= gives its members' qualified names, a loose =.aplf= file's
+  function is top-level.
+
+* See also
+
+- [[file:apl-mode.html][APL language UI]] -- the console, Help, Glyphs and Functions panels.
+- [[file:formatting.html][Formatting]] -- what =gf= changes in APL.
+- [[file:lsp.html][Language servers]] -- the keys, the diagnostics popup, and the other servers.

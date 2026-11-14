@@ -1,0 +1,113 @@
+==================
+dfn with guard
+==================
+fact←{⍵≤1:1 ⋄ ⍵×∇ ⍵-1}
+---
+
+(source_file
+  (assignment
+    (identifier)
+    (dfn
+      (guard
+        (special_name)
+        (primitive)
+        (number)
+        (number))
+      (diamond)
+      (special_name)
+      (primitive)
+      (self_reference)
+      (special_name)
+      (primitive)
+      (number))))
+
+==================
+multi-line dfn
+==================
+mean←{
+    ⍝ the mean
+    (+/⍵)÷≢⍵
+}
+---
+
+(source_file
+  (assignment
+    (identifier)
+    (dfn
+      (comment)
+      (parenthesized
+        (primitive)
+        (operator)
+        (special_name))
+      (primitive)
+      (primitive)
+      (special_name))))
+
+==================
+dop with operands
+==================
+twice←{⍺⍺ ⍺⍺ ⍵} ⋄ pow←{⍺←2 ⋄ ⍺*⍵}
+---
+
+(source_file
+  (assignment
+    (identifier)
+    (dfn
+      (special_name)
+      (special_name)
+      (special_name)))
+  (diamond)
+  (assignment
+    (identifier)
+    (dfn
+      (assignment
+        (special_name)
+        (number))
+      (diamond)
+      (special_name)
+      (primitive)
+      (special_name))))
+
+==================
+error guard and recursion operator
+==================
+safe←{0::'failed' ⋄ ⍺⍺ ⍵} ⋄ r←{∇∇ ⍵}
+---
+
+(source_file
+  (assignment
+    (identifier)
+    (dfn
+      (error_guard
+        (number)
+        (string))
+      (diamond)
+      (special_name)
+      (special_name)))
+  (diamond)
+  (assignment
+    (identifier)
+    (dfn
+      (self_reference)
+      (special_name))))
+
+==================
+nested dfns
+==================
+f←{g←{⍵+1} ⋄ g ⍵}
+---
+
+(source_file
+  (assignment
+    (identifier)
+    (dfn
+      (assignment
+        (identifier)
+        (dfn
+          (special_name)
+          (primitive)
+          (number)))
+      (diamond)
+      (identifier)
+      (special_name))))
+

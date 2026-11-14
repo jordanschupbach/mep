@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ruby mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="46">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Ruby mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.rb</code> file.
+The tab becomes a Ruby workspace: your file, an interactive <code>irb</code> below
+it, and panels showing what that session holds.</p>
+<p>The console is the stock <code>irb</code>, so line editing, history, completion and
+the display of an expression's value are its own. It starts with mep's
+environment: the <code>ruby</code> on <code>PATH</code>, <code>RUBYLIB</code>, <code>GEM_HOME</code>, <code>GEM_PATH</code> and
+<code>BUNDLE_GEMFILE</code>, as a project's dev shell or direnv set them, so
+=require 'gem'= loads the same library it would in a terminal in that
+project. In a Rosetta-generated binding such as datamunge's, that is the
+gem whose <code>.rb</code> stubs carry the C++ documentation as YARD comments.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>run the whole file in the console</td></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the top-level statement at the cursor (or the selection)</td></tr>
+<tr><td><code>gh</code></td><td>help for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>MepUI.help('name')</code></td><td>the same, from the console</td></tr>
+<tr><td><code>MepUI.view(x)</code></td><td>a value -- pretty-printed, with its class and fields -- in Inspect</td></tr>
+<tr><td><code>MepUI.run(file)</code></td><td>run a file the way <code>&lt;leader&gt;rr</code> does</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> finds the statement around the cursor: from the nearest line
+above that starts one at column 0 to just before the next. That is a whole
+<code>class</code>, <code>module</code> or <code>def</code>, a <code>do ... end</code> call, or a single line. <code>end</code>,
+<code>else</code>, <code>elsif</code>, <code>when</code>, <code>rescue</code>, <code>ensure</code>, closing brackets and a line
+starting with <code>.</code> never start a statement, and neither does a line that
+continues the previous one (a trailing operator, comma, <code>\</code> or open
+bracket), a heredoc's body or a <code>=begin</code> block.</p>
+<p>Neither key pastes your code into the prompt. The code is written to a
+file and run with a single <code>MepUI.eval_file(...)</code> line, in irb's own
+binding, under your file's name and padded to its line numbers. Local
+variables it assigns stay in the session; a backtrace names the right
+line; <code>__FILE__</code>, <code>__dir__</code> and <code>require_relative</code> work as they would
+running the file. irb displays the value as for anything typed.</p>
+<p><code>&lt;leader&gt;rr</code> runs the buffer as it is in the editor, unsaved changes
+included. mod1+Enter still pastes the current line or the selection
+straight into the prompt (see <a href="repl.html">REPL and send-to-terminal</a>).</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Variables</td><td>the session's local variables, instance variables of <code>main</code>, the constants (classes, modules, values) and top-level methods it defined, with class and value</td></tr>
+<tr><td>Features</td><td>the files <code>require=d since the console started, then the =$LOAD_PATH</code> (folded)</td></tr>
+<tr><td>Inspect</td><td><code>MepUI.view</code> of a value: <code>pretty_inspect</code>, its ancestors, instance variables and own methods</td></tr>
+<tr><td>Help</td><td>the YARD documentation of a class, module or method, then the runtime's view of it</td></tr>
+</table>
+<p>Clicking a Variables row inspects it; clicking a Features row opens the
+file. What existed when the console started -- Ruby's core and what irb
+loaded -- is left out.</p>
+<p>The panels refresh after every command: the init script hooks irb's
+evaluation. Under a console that is not irb (a <code>REPL:</code> line that starts
+plain <code>ruby</code>, say), they refresh once a second.</p>
+<h1>Help from the live session</h1>
+<p><code>MepUI.help('frame.filter')</code> -- and <code>gh</code> over <code>frame.filter</code> in your file
+-- first asks the running session what the name is: <code>frame</code> is a
+<code>Datamunge::Frame</code>, and <code>filter</code> is defined by <code>Datamunge::Frame</code> in
+<code>lib/datamunge.rb</code>. It then has <code>mep-ruby-lsp --doc</code> (see
+<a href="ruby-lsp.html">The Ruby language server</a>) read that method's YARD
+comments from the source, with the session's <code>$LOAD_PATH</code> and the files
+it loaded, and shows them rendered: signature, parameters with their
+types, options, return value, exceptions, examples and overloads. Below
+comes what Ruby itself knows: the parameters, the owner and the source
+location, or for a class its ancestors and methods.</p>
+<p>Names resolve the way you would write them: <code>Foo</code>, <code>Foo::Bar</code>,
+<code>Foo#method</code> (an instance method), <code>Foo.method</code>, <code>obj.method</code> for a local
+or instance variable <code>obj</code>, and a bare method name. Nothing beyond
+constants and variables is evaluated to find a receiver, so <code>gh</code> never
+runs code. A method defined in C (most of Ruby's core) shows its runtime
+signature only.</p>
+<p>In a <code>.rb</code> buffer <code>gh</code> also opens the language server's hover, which
+needs no running session. Without the mode open, <code>gh</code> is that hover alone.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.ruby_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'irb'</span>, <span class="tok-green">'--nocolorize'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- the console's command</span>
+<span class="tok-cyan">mep</span>.opt.ruby_ui_info_share = <span class="tok-cyan">0.3</span>                <span class="tok-comment">-- the panels' width</span></code></pre></div>
+<p>A <code># REPL: bundle exec irb</code> line in the file overrides <code>ruby_ui_cmd</code> for
+that file. The mode appends <code>-r</code> and its init script, so the command must
+accept them, as <code>irb</code> does.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="ruby-lsp.html">The Ruby language server</a>.</li>
+<li><a href="run-button.html">Run button</a> -- a <code># CMD:</code> line runs a file another way.</li>
+</ul>
+</body>
+</html>

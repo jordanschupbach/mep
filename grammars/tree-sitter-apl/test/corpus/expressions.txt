@@ -1,0 +1,196 @@
+==================
+numbers
+==================
+1 ¯2 3.5 ¯.5 1E3 2.5e¯4 1J2 ¯1.5J¯2 0
+---
+
+(source_file
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number)
+  (number))
+
+==================
+strings and comments
+==================
+'it''s' "gnu\n" ⍝ a comment
+---
+
+(source_file
+  (string)
+  (string)
+  (comment))
+
+==================
+assignment and primitives
+==================
+x←⍳10
+---
+
+(source_file
+  (assignment
+    (identifier)
+    (primitive)
+    (number)))
+
+==================
+modified and indexed assignment
+==================
+x+←1 ⋄ y[2 3]←0
+---
+
+(source_file
+  (assignment
+    (identifier)
+    (primitive)
+    (number))
+  (diamond)
+  (assignment
+    (identifier)
+    (index
+      (number)
+      (number))
+    (number)))
+
+==================
+operators
+==================
++/⍳10 ⋄ +.×⍨M ⋄ ∘.×⍨⍳5 ⋄ f⍣≡ x ⋄ (+⌿÷≢)v
+---
+
+(source_file
+  (primitive)
+  (operator)
+  (primitive)
+  (number)
+  (diamond)
+  (primitive)
+  (operator)
+  (primitive)
+  (operator)
+  (identifier)
+  (diamond)
+  (operator)
+  (operator)
+  (primitive)
+  (operator)
+  (primitive)
+  (number)
+  (diamond)
+  (identifier)
+  (operator)
+  (primitive)
+  (identifier)
+  (diamond)
+  (parenthesized
+    (primitive)
+    (operator)
+    (primitive)
+    (primitive))
+  (identifier))
+
+==================
+indexing and axis
+==================
+M[1;] ⋄ ,[1]A ⋄ M[;2]
+---
+
+(source_file
+  (identifier)
+  (index
+    (number))
+  (diamond)
+  (primitive)
+  (index
+    (number))
+  (identifier)
+  (diamond)
+  (identifier)
+  (index
+    (number)))
+
+==================
+system names and roots
+==================
+⎕IO←0 ⋄ ⎕←⍬ ⋄ #.ns.fn 1 ⋄ ##.x ⋄ ⎕SE.UCMD 'box on'
+---
+
+(source_file
+  (assignment
+    (system_name)
+    (number))
+  (diamond)
+  (assignment
+    (system_name)
+    (zilde))
+  (diamond)
+  (qualified_name)
+  (number)
+  (diamond)
+  (qualified_name)
+  (diamond)
+  (qualified_name)
+  (string))
+
+==================
+qualified names
+==================
+datamunge.Tensor.zeros 2 3
+---
+
+(source_file
+  (qualified_name)
+  (number)
+  (number))
+
+==================
+branch
+==================
+→(x>0)/L1 ⋄ →0
+---
+
+(source_file
+  (branch)
+  (parenthesized
+    (identifier)
+    (primitive)
+    (number))
+  (operator)
+  (identifier)
+  (diamond)
+  (branch)
+  (number))
+
+==================
+shebang
+==================
+#!/usr/bin/apl --script
+⎕←1
+---
+
+(source_file
+  (comment)
+  (assignment
+    (system_name)
+    (number)))
+
+==================
+GNU APL lozenge diamond
+==================
+a←1 ◊ b←2
+---
+
+(source_file
+  (assignment
+    (identifier)
+    (number))
+  (diamond)
+  (assignment
+    (identifier)
+    (number)))
+

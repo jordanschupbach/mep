@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -240,6 +242,182 @@ void TestRobustness() {
     OctaveLspDefinition(*doc, 0, 99);
 }
 
+// Help text: Octave's rules for where a function's comment block sits, and
+// NAME.m found on the search path (the document's own directory, addpath
+// literals, the server-wide directories) for hover, signature help and --doc.
+void TestHelpTextAndPath() {
+    // Above the function line, copyright skipped.
+    CHECK(OctaveLspHelpText(L("% BEFORE  Help above.\n%   y = f (x)\nfunction y = f (x)\n  y = x;\nend"), 2, true) ==
+          "BEFORE  Help above.\n  y = f (x)\n");
+    CHECK(OctaveLspHelpText(L("function y = g (x)\n  % G doubles x.\n  %\n  %   y = g (x)\n  y = 2*x;\nend"), 0, true) ==
+          "G doubles x.\n\n  y = g (x)\n");
+    CHECK(OctaveLspHelpText(L("## Copyright (C) 2024 A\n\nfunction y = h (x)\n  ## H after.\n  y = x;\nend"), 2,
+                            true) == "H after.\n");
+    CHECK(OctaveLspHelpText(L("function y = n (x)\n  y = x;\nend"), 0, true).empty());
+    CHECK(OctaveLspHelpText(L("%{\nBlock help.\n%}\nfunction k ()\nend"), 3, true) == "Block help.\n");
+    // Texinfo, rendered as Octave's help does.
+    const std::string tex = OctaveLspHelpText(
+        L("## -*- texinfo -*-\n## @deftypefn {} {@var{y} =} t (@var{x})\n## Returns @var{x} as @code{double}.\n"
+          "## @seealso{d, e}\n## @end deftypefn\n\nfunction y = t (x)\nend"),
+        6, true);
+    CHECK(tex.find(" -- Y = t (X)") != std::string::npos);
+    CHECK(tex.find("Returns X as 'double'.") != std::string::npos);
+    CHECK(tex.find("See also: d, e.") != std::string::npos);
+    CHECK(tex.find("@") == std::string::npos);
+    // A command-line function of a script: the block above it.
+    const auto script = OctaveLspAnalyze(L("1;\n% HELPER adds one.\nfunction r = helper (a)\n  r = a + 1;\nend\nhelper (2)"));
+    const OctaveLspHoverInfo hs = OctaveLspHover(*script, 5, 2);
+    CHECK(hs.found && hs.text.find("HELPER adds one.") != std::string::npos);
+    CHECK(OctaveLspSignatureAt(*script, 5, 8).documentation.find("HELPER adds one.") != std::string::npos);
+
+    // The search path.
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("mep-octave-lsp-test-" + std::to_string(std::rand()));
+    fs::create_directories(root / "lib" / "+pkg");
+    fs::create_directories(root / "proj");
+    auto write = [](const fs::path &p, const std::string &text) {
+        std::ofstream out(p);
+        out << text;
+    };
+    write(root / "lib" / "Dual_add.m",
+          "## -*- texinfo -*-\n## @deftypefn {} {@var{r} =} Dual_add (@var{a}, @var{b})\n## Adds two duals.\n"
+          "## @end deftypefn\nfunction r = Dual_add (a, b)\n  error ('stub');\nend\n");
+    write(root / "lib" / "+pkg" / "inner.m", "function inner ()\n  % INNER lives in a package.\nend\n");
+    write(root / "proj" / "local_fn.m", "% LOCAL_FN is next to the script.\nfunction local_fn (x)\nend\n");
+    const std::string script_path = (root / "proj" / "main.m").string();
+    const auto doc = OctaveLspAnalyze(L("addpath ('../lib');\nr = Dual_add (1, 2);\nlocal_fn (r);\npkg.inner ();"),
+                                      "file://" + script_path);
+    const std::vector<std::string> dirs = OctaveLspSearchPath(*doc);
+    CHECK(dirs.size() >= 2 && dirs[0] == (root / "proj").string() + "/../lib" && dirs[1] == (root / "proj").string());
+    const OctaveLspHoverInfo h = OctaveLspHover(*doc, 1, 6);
+    CHECK(h.found && h.text.find("function r = Dual_add (a, b)") != std::string::npos);
+    CHECK(h.text.find("Adds two duals.") != std::string::npos && h.text.find("Dual_add.m") != std::string::npos);
+    const OctaveLspSignatureHelp sh = OctaveLspSignatureAt(*doc, 1, 15);
+    CHECK(sh.found && sh.label == "r = Dual_add (a, b)" && sh.params.size() == 2);
+    CHECK(sh.documentation.find("Adds two duals.") != std::string::npos);
+    CHECK(OctaveLspHover(*doc, 2, 2).text.find("LOCAL_FN is next to the script.") != std::string::npos);
+    // Without the addpath, only the server-wide directories find it.
+    const auto bare = OctaveLspAnalyze(L("Dual_add (1, 2)"), script_path);
+    CHECK(OctaveLspHover(*bare, 0, 2).text.find("Adds two duals.") == std::string::npos);
+    OctaveLspSetSearchPath({(root / "lib").string()});
+    CHECK(OctaveLspHover(*bare, 0, 2).text.find("Adds two duals.") != std::string::npos);
+    OctaveLspSetSearchPath({});
+    // pkg.fn -> +pkg/fn.m; a missing name; a builtin still comes from the vocabulary.
+    const OctaveLspDocLookup in = OctaveLspFindOnPath("pkg.inner", {(root / "lib").string()});
+    CHECK(in.found && in.help == "INNER lives in a package.\n");
+    CHECK(!OctaveLspFindOnPath("nope_nothing", {(root / "lib").string()}).found);
+    CHECK(OctaveLspHover(*OctaveLspAnalyze(L("disp (1)"), script_path), 0, 1).text.find("Octave") != std::string::npos);
+    // A command-line function inside a script file.
+    write(root / "proj" / "script1.m", "1;\nfunction r = helper (a)\n  % helper doc after\n  r = a;\nend\n");
+    const OctaveLspDocLookup sf = OctaveLspFindInFile("helper", (root / "proj" / "script1.m").string());
+    CHECK(sf.found && sf.signature == "function r = helper (a)" && sf.help == "helper doc after\n" && sf.line == 1);
+    CHECK(OctaveLspUriToPath("file:///a%20b/c.m") == "/a b/c.m");
+    fs::remove_all(root);
+}
+
+bool HasItem(const std::vector<OctaveLspCompletionItem> &items, const std::string &label) {
+    for (const OctaveLspCompletionItem &i : items)
+        if (i.label == label) return true;
+    return false;
+}
+
+// Classdef files in +package directories: class and method help, members of
+// typed variables, imports and bare names.
+void TestClassdefPackages() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("mep-octave-lsp-cls-" + std::to_string(std::rand()));
+    fs::create_directories(root / "+geo" / "+sub");
+    fs::create_directories(root / "+other");
+    auto write = [](const fs::path &p, const std::string &text) {
+        std::ofstream out(p);
+        out << text;
+    };
+    write(root / "+geo" / "Shape.m",
+          "classdef Shape < handle\n  % SHAPE  The base of every shape.\n  properties (Hidden)\n    ptr\n  end\n"
+          "  properties\n    label\n  end\n  methods\n    function obj = Shape ()\n      % The constructor.\n    end\n"
+          "    function r = area (obj)\n      % AREA  The shape's area.\n      %\n      % Output:\n      %   r  double\n"
+          "      r = 0;\n    end\n  end\n  methods (Static)\n    function r = unit ()\n      % UNIT  A unit circle.\n"
+          "      %\n      % Output:\n      %   r  geo.Circle\n      r = geo.Circle (1);\n    end\n  end\nend\n");
+    write(root / "+geo" / "Circle.m",
+          "classdef Circle < geo.Shape\n  % CIRCLE  A round shape.\n  properties\n    radius\n  end\n  methods\n"
+          "    function obj = Circle (r)\n      % Makes a circle.\n      obj.radius = r;\n    end\n"
+          "    function r = scaled (obj, k)\n      % SCALED  A bigger circle.\n      %\n      % Output:\n"
+          "      %   r  geo.Circle or []\n      r = geo.Circle (obj.radius * k);\n    end\n  end\nend\n");
+    write(root / "+geo" / "scale.m", "function y = scale (x, k)\n  % SCALE  Multiplies.\n  y = x * k;\nend\n");
+    write(root / "+geo" / "+sub" / "deep.m", "function deep ()\n  % DEEP  In a subpackage.\nend\n");
+    write(root / "+other" / "scale.m", "function y = scale (x)\n  % Another scale.\nend\n");
+    const std::vector<std::string> dirs = {root.string()};
+
+    // The class: its own help block (not the constructor's), then members.
+    const OctaveLspDocLookup c = OctaveLspFindOnPath("geo.Circle", dirs);
+    CHECK(c.found && c.kind == "class" && c.qualified == "geo.Circle");
+    CHECK(c.signature == "classdef Circle < geo.Shape");
+    CHECK(c.help.find("CIRCLE  A round shape.") == 0 && c.help.find("Makes a circle") == std::string::npos);
+    CHECK(c.help.find("Properties:\n  radius\n") != std::string::npos);
+    CHECK(c.help.find("Methods:\n  r = scaled (obj, k)\n") != std::string::npos);
+    const OctaveLspDocLookup sh = OctaveLspFindOnPath("geo.Shape", dirs);
+    CHECK(sh.help.find("Static methods:\n  r = unit ()") != std::string::npos);
+    CHECK(sh.help.find("ptr") == std::string::npos);  // Hidden
+    // Methods: the block after their function line; inherited ones through the superclass.
+    const OctaveLspDocLookup m = OctaveLspFindOnPath("geo.Circle.scaled", dirs);
+    CHECK(m.found && m.kind == "method" && m.signature == "function r = scaled (obj, k)");
+    CHECK(m.help.find("SCALED  A bigger circle.") == 0);
+    const OctaveLspDocLookup inh = OctaveLspFindOnPath("geo.Circle.area", dirs);
+    CHECK(inh.found && inh.qualified == "geo.Shape.area" && inh.help.find("AREA") == 0);
+    CHECK(OctaveLspFindOnPath("geo.Shape.unit", dirs).kind == "static method");
+    CHECK(!OctaveLspFindOnPath("geo.Circle.nope", dirs).found);
+    CHECK(OctaveLspDocMarkdown(m).find("method `geo.Circle.scaled`") != std::string::npos);
+
+    // Bare names: through imports, else the one package member so named.
+    std::vector<std::string> cand;
+    CHECK(OctaveLspResolveName("Circle", dirs, {}, &cand).qualified == "geo.Circle");
+    CHECK(!OctaveLspResolveName("scale", dirs, {}, &cand).found && cand.size() == 2);
+    CHECK(OctaveLspResolveName("scale", dirs, {"other.*"}, nullptr).qualified == "other.scale");
+    CHECK(OctaveLspResolveName("scale", dirs, {"geo.scale"}, nullptr).qualified == "geo.scale");
+    CHECK(OctaveLspResolveName("Circle.scaled", dirs, {"geo.*"}, nullptr).qualified == "geo.Circle.scaled");
+
+    // In a document: variables typed by their assignments, chained calls by `Output:` blocks.
+    OctaveLspSetSearchPath(dirs);
+    const auto doc = OctaveLspAnalyze(
+        L("import geo.*\nc = geo.Circle (2);\nd = c.scaled (3).scaled (2);\nu = geo.Shape.unit ();\nu.area ()\n"
+          "x.scaled\ng = Circle (1);\nn = geo.scale (1, 2);"),
+        (root / "main.m").string());
+    CHECK(OctaveLspImports(*doc) == std::vector<std::string>{"geo.*"});
+    CHECK(OctaveLspHover(*doc, 1, 9).text.find("CIRCLE  A round shape.") != std::string::npos);
+    CHECK(OctaveLspHover(*doc, 1, 5).text.find("package `geo`") != std::string::npos);
+    CHECK(OctaveLspHover(*doc, 1, 0).text == "(variable) `c`: `geo.Circle`");
+    CHECK(OctaveLspHover(*doc, 2, 8).text.find("SCALED  A bigger circle.") != std::string::npos);
+    CHECK(OctaveLspHover(*doc, 2, 20).text.find("method `geo.Circle.scaled`") != std::string::npos);
+    CHECK(OctaveLspHover(*doc, 2, 0).text == "(variable) `d`: `geo.Circle`");
+    CHECK(OctaveLspHover(*doc, 3, 0).text == "(variable) `u`: `geo.Circle`");
+    CHECK(OctaveLspHover(*doc, 4, 3).text.find("AREA  The shape's area.") != std::string::npos);
+    // An untyped receiver: the methods of that name across the known classes.
+    CHECK(OctaveLspHover(*doc, 5, 4).text.find("SCALED") != std::string::npos);
+    CHECK(OctaveLspHover(*doc, 6, 6).text.find("CIRCLE") != std::string::npos);  // via the import
+    CHECK(OctaveLspHover(*doc, 6, 0).text == "(variable) `g`: `geo.Circle`");
+    // Signature help: an instance call drops obj; a package function keeps its parameters.
+    const OctaveLspSignatureHelp s1 = OctaveLspSignatureAt(*doc, 2, 15);
+    CHECK(s1.found && s1.label == "r = scaled (k)" && s1.params.size() == 1);
+    const OctaveLspSignatureHelp s2 = OctaveLspSignatureAt(*doc, 7, 17);
+    CHECK(s2.found && s2.label == "y = scale (x, k)" && s2.active_param == 1);
+    OctaveLspSetSearchPath({});
+
+    // Completion after a dot: instance members, static methods, package contents.
+    const auto comp = OctaveLspAnalyze(L("c = geo.Circle (2);\nc.\ngeo.Shape.\ngeo.\nc.scaled (2)."),
+                                       (root / "main.m").string());
+    OctaveLspSetSearchPath(dirs);
+    const auto i1 = OctaveLspCompletions(*comp, 1, 2);
+    CHECK(HasItem(i1, "scaled") && HasItem(i1, "area") && HasItem(i1, "radius") && HasItem(i1, "label"));
+    CHECK(!HasItem(i1, "Circle") && !HasItem(i1, "ptr"));
+    const auto i2 = OctaveLspCompletions(*comp, 2, 10);
+    CHECK(HasItem(i2, "unit") && !HasItem(i2, "area"));
+    const auto i3 = OctaveLspCompletions(*comp, 3, 4);
+    CHECK(HasItem(i3, "Circle") && HasItem(i3, "scale") && HasItem(i3, "sub") && !HasItem(i3, "deep"));
+    CHECK(HasItem(OctaveLspCompletions(*comp, 4, 13), "radius"));
+    OctaveLspSetSearchPath({});
+    fs::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
@@ -251,6 +429,8 @@ int main() {
     TestNavigation();
     TestSymbolsAndFolds();
     TestRobustness();
+    TestHelpTextAndPath();
+    TestClassdefPackages();
     std::printf("octave_lsp_test: %d checks passed\n", g_checks);
     return 0;
 }

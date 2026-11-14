@@ -26,6 +26,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <set>
 #include <string_view>
@@ -88,6 +90,27 @@ struct Arity {
     }
 };
 
+// A string literal's value: quotes dropped, escapes decoded.
+std::string SchemeStringValue(const std::string &lit) {
+    std::string out;
+    size_t i = lit.size() >= 2 && lit[0] == '"' ? 1 : 0;
+    const size_t end = lit.size() >= 2 && lit.back() == '"' ? lit.size() - 1 : lit.size();
+    for (; i < end; i++) {
+        if (lit[i] != '\\' || i + 1 >= end) {
+            out += lit[i];
+            continue;
+        }
+        const char c = lit[++i];
+        if (c == 'n') out += '\n';
+        else if (c == 't') out += '\t';
+        else if (c == 'r') out += '\r';
+        else if (c == '\n') {  // a line continuation: the next line's leading blanks go too
+            while (i + 1 < end && (lit[i + 1] == ' ' || lit[i + 1] == '\t')) i++;
+        } else out += c;
+    }
+    return out;
+}
+
 struct Binding {
     std::string name;
     BK kind = BK::Lexical;
@@ -102,6 +125,7 @@ struct Binding {
     Arity arity;
     std::string sig;     // "(f a b . rest)" for a procedure
     std::string origin;  // "let", "parameter of f", ...
+    std::string doc;     // a procedure's docstring: (define (f x) "doc" body...)
 };
 
 struct Scope {
@@ -127,6 +151,7 @@ bool IsIgnoredName(const std::string &n) { return n.empty() || n[0] == '_' || n.
 
 class SchemeLspDocument {
 public:
+    std::string path;  // the file's path (a file:// URI decoded), "" when unknown
     std::vector<std::string> lines;
     SchemeReadResult read;
     std::vector<Scope> scopes;
@@ -143,6 +168,7 @@ public:
     // that declares nothing may be another Scheme's, or included by one.
     bool declares_imports = false;
     std::vector<std::string> modules;  // in import order
+    std::vector<std::string> other_modules;  // imported modules the vocabulary does not know (the user's)
     std::vector<int> export_nodes;     // names a module form exports
 };
 
@@ -192,7 +218,37 @@ private:
     std::string HeadName(int n) const {
         if (!IsList(n) || N(n).kids.empty()) return {};
         const int h = N(n).kids[0];
-        return IsSym(h) ? N(h).name : std::string();
+        if (!IsSym(h)) return {};
+        // GOOPS imported with `#:prefix goops:` (as Rosetta's generated modules do):
+        // (goops:define-class ...) is define-class.
+        const std::string &name = N(h).name;
+        const size_t colon = name.rfind(':');
+        if (colon != std::string::npos && colon > 0 && colon + 1 < name.size()) {
+            const std::string base = name.substr(colon + 1);
+            if (base == "define-class" || base == "define-generic" || base == "define-accessor" ||
+                base == "define-method")
+                return base;
+        }
+        return name;
+    }
+
+    // The `;` comment lines directly above a form (no blank line between), without
+    // their semicolons: the documentation of a define-class or define-generic,
+    // which take no docstring.
+    std::string LeadingComment(int form) const {
+        const int first = N(form).range.line;
+        std::vector<std::string> text;
+        for (int l = first - 1; l >= 0 && l < static_cast<int>(d_.lines.size()); l--) {
+            const std::string &line = d_.lines[static_cast<size_t>(l)];
+            size_t i = line.find_first_not_of(" \t");
+            if (i == std::string::npos || line[i] != ';') break;
+            while (i < line.size() && line[i] == ';') i++;
+            if (i < line.size() && line[i] == ' ') i++;
+            text.push_back(line.substr(i));
+        }
+        std::string out;
+        for (auto it = text.rbegin(); it != text.rend(); ++it) out += (out.empty() ? "" : "\n") + *it;
+        return out;
     }
 
     // Past the reader's first error the tree is a guess (a recovered list
@@ -437,6 +493,8 @@ private:
         }
         if (!TheVocab().modules.count(key)) {
             d_.unknown_imports = true;
+            if (std::find(d_.other_modules.begin(), d_.other_modules.end(), key) == d_.other_modules.end())
+                d_.other_modules.push_back(key);
             return;
         }
         if (std::find(d_.modules.begin(), d_.modules.end(), key) == d_.modules.end()) d_.modules.push_back(key);
@@ -682,13 +740,28 @@ private:
                 const FormalsInfo fi = Formals(t.formals, 1, false);
                 b.arity = fi.arity;
                 b.sig = Text(N(t.formals).range);
+                // A docstring: a string first in a body that has more after it.
+                if (NKids(form) >= 4 && N(Kid(form, 2)).kind == NK::String) b.doc = SchemeStringValue(N(Kid(form, 2)).text);
             } else {
                 ValueShape(Kid(form, 2), &b);
+                const int value = Kid(form, 2);
+                if (IsLambda(HeadName(value)) && NKids(value) >= 4 && N(Kid(value, 2)).kind == NK::String)
+                    b.doc = SchemeStringValue(N(Kid(value, 2)).text);
             }
         } else if (IsMacroDefine(h)) {
             int name = Kid(form, 1);
             if (IsList(name) && NKids(name) > 0) name = Kid(name, 0);
             DeclareBinding(name, form, scope, BK::Macro, "macro", nullptr);
+            // (define-syntax-rule (name args) "doc" template)
+            auto it = d_.def_binding.find(name);
+            if (h == "define-syntax-rule" && it != d_.def_binding.end() && NKids(form) >= 4 &&
+                N(Kid(form, 2)).kind == NK::String) {
+                Binding &b = d_.bindings[static_cast<size_t>(it->second)];
+                if (b.node == name) {
+                    b.doc = SchemeStringValue(N(Kid(form, 2)).text);
+                    if (IsList(Kid(form, 1))) b.sig = Text(N(Kid(form, 1)).range);
+                }
+            }
         } else if (h == "define-values") {
             const FormalsInfo fi = Formals(Kid(form, 1), 0, false);
             for (int n : fi.names) DeclareBinding(n, form, scope, top ? BK::Global : BK::Destructured, "define-values", nullptr);
@@ -704,6 +777,7 @@ private:
                 if (IsList(Kid(form, k))) DeclareFn(Kid(Kid(form, k), 1), form, scope, 1, 1);
         } else if (h == "define-class") {
             DeclareBinding(Kid(form, 1), form, scope, BK::Record, "class", nullptr);
+            DocumentFromComments(Kid(form, 1), form);
             for (size_t k = 3; k < NKids(form); k++) {
                 const int slot = Kid(form, k);
                 if (!IsList(slot)) continue;
@@ -714,6 +788,7 @@ private:
             }
         } else if (h == "define-generic" || h == "define-accessor") {
             DeclareBinding(Kid(form, 1), form, scope, BK::Global, "generic", nullptr);
+            DocumentFromComments(Kid(form, 1), form);
         } else if (h == "define-method") {
             int head = Kid(form, 1);
             if (IsList(head) && NKids(head) > 0) {
@@ -727,6 +802,16 @@ private:
                 }
             }
         }
+    }
+
+    // The comments above a define-class / define-generic document the name it defines
+    // (unless an earlier definition of the name already has documentation).
+    void DocumentFromComments(int name, int form) {
+        if (!IsSym(name)) return;
+        auto it = d_.def_binding.find(name);
+        if (it == d_.def_binding.end()) return;
+        Binding &b = d_.bindings[static_cast<size_t>(it->second)];
+        if (b.doc.empty()) b.doc = LeadingComment(form);
     }
 
     void DeclareFn(int name, int form, int scope, int min, int max, const std::string &origin = "record") {
@@ -1571,7 +1656,7 @@ const char *KindWord(SchemeVocabKind k) {
 
 std::string BindingTitle(const Binding &b) {
     switch (b.kind) {
-        case BK::Global: return "variable";
+        case BK::Global: return b.origin == "generic" || b.origin == "slot accessor" ? b.origin : "variable";
         case BK::Function: return b.origin.empty() ? "procedure" : b.origin;
         case BK::Macro: return "macro";
         case BK::Record: return b.origin.empty() ? "record type" : b.origin;
@@ -1647,8 +1732,10 @@ std::vector<std::string> SplitSignature(const std::string &sig) {
 
 }  // namespace
 
-std::shared_ptr<const SchemeLspDocument> SchemeLspAnalyze(const std::vector<std::string> &lines) {
+std::shared_ptr<const SchemeLspDocument> SchemeLspAnalyze(const std::vector<std::string> &lines,
+                                                          const std::string &path) {
     auto doc = std::make_shared<SchemeLspDocument>();
+    doc->path = SchemeLspUriToPath(path);
     doc->lines = lines;
     std::string text;
     for (size_t i = 0; i < lines.size(); i++) {
@@ -1751,12 +1838,23 @@ SchemeLspHoverInfo SchemeLspHover(const SchemeLspDocument &doc, int line, int co
     if (b >= 0) {
         const Binding &bd = doc.bindings[static_cast<size_t>(b)];
         h.found = true;
-        h.text = "```scheme\n" + (bd.sig.empty() ? bd.name : bd.sig) + "\n```\n\n*" + BindingTitle(bd) + "*";
+        h.text = "```scheme\n" + (bd.sig.empty() ? bd.name : bd.sig) + "\n```\n\n";
+        if (!bd.doc.empty()) h.text += bd.doc + "\n\n";
+        h.text += "*" + BindingTitle(bd) + "*";
         if (bd.scope == 0) h.text += " — line " + std::to_string(bd.range.line + 1);
         return h;
     }
     std::vector<const SchemeVocabEntry *> es = VisibleVocab(doc, sym.name);
-    if (es.empty()) es = AnyVocab(sym.name);
+    if (es.empty()) {
+        // A definition of a module the file uses, or of a file it loads.
+        const SchemeLspDefDoc dd = SchemeLspFindDefinition(sym.name, SchemeLspSearchFiles(doc));
+        if (dd.found) {
+            h.found = true;
+            h.text = SchemeLspDefMarkdown(dd);
+            return h;
+        }
+        es = AnyVocab(sym.name);
+    }
     if (es.empty()) return h;
     h.found = true;
     h.text = VocabHover(es);
@@ -1777,12 +1875,20 @@ SchemeLspSignatureHelp SchemeLspSignatureAt(const SchemeLspDocument &doc, int li
             const Binding &b = doc.bindings[static_cast<size_t>(doc.occs[static_cast<size_t>(it->second)].binding)];
             sig = b.sig;
             if (sig.empty()) return sh;
+            sh.documentation = b.doc;
         } else {
             for (const SchemeVocabEntry *e : VisibleVocab(doc, head.name))
                 if (e->signature[0]) {
                     sig = e->signature;
                     break;
                 }
+            if (sig.empty()) {
+                const SchemeLspDefDoc dd = SchemeLspFindDefinition(head.name, SchemeLspSearchFiles(doc));
+                if (dd.found) {
+                    sig = dd.sig;
+                    sh.documentation = dd.doc;
+                }
+            }
         }
         if (sig.empty()) return sh;
         sh.found = true;
@@ -2100,4 +2206,176 @@ std::vector<SchemeLspTextEdit> SchemeLspFormat(const std::vector<std::string> &l
     }
     edits.push_back(e);
     return edits;
+}
+
+// --- Definitions of other files ------------------------------------------------------
+
+std::string SchemeLspUriToPath(const std::string &uri) {
+    if (uri.compare(0, 7, "file://") != 0) return uri;
+    const std::string p = uri.substr(7);
+    std::string out;
+    for (size_t i = 0; i < p.size(); i++) {
+        if (p[i] == '%' && i + 2 < p.size() && std::isxdigit(static_cast<unsigned char>(p[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(p[i + 2]))) {
+            out += static_cast<char>(std::stoi(p.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += p[i];
+        }
+    }
+#if defined(_WIN32)
+    if (out.size() > 2 && out[0] == '/' && out[2] == ':') out.erase(0, 1);
+#endif
+    return out;
+}
+
+namespace {
+
+std::vector<std::string> &ServerSearchPath() {
+    static std::vector<std::string> dirs;
+    return dirs;
+}
+
+std::string DirOf(const std::string &path) {
+    const size_t slash = path.find_last_of("/\\");
+    if (slash == std::string::npos) return std::string();
+    return slash == 0 ? std::string("/") : path.substr(0, slash);
+}
+
+std::string JoinPath(const std::string &dir, const std::string &rel) {
+    if (rel.empty() || rel[0] == '/' || dir.empty()) return rel;
+    return dir + "/" + rel;
+}
+
+// The top-level definitions of one file, analysed once per modification time.
+const std::vector<SchemeLspDefDoc> &DefsOf(const std::string &path) {
+    struct Entry {
+        std::filesystem::file_time_type mtime;
+        std::vector<SchemeLspDefDoc> defs;
+    };
+    static std::map<std::string, Entry> cache;
+    static const std::vector<SchemeLspDefDoc> none;
+    std::error_code ec;
+    const auto mtime = std::filesystem::last_write_time(path, ec);
+    if (ec) return none;
+    auto it = cache.find(path);
+    if (it != cache.end() && it->second.mtime == mtime) return it->second.defs;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return none;
+    std::vector<std::string> lines;
+    std::string l;
+    while (std::getline(in, l)) {
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        lines.push_back(l);
+    }
+    const auto doc = SchemeLspAnalyze(lines, path);
+    Entry e;
+    e.mtime = mtime;
+    for (int bi : doc->scopes[0].bindings) {
+        const Binding &b = doc->bindings[static_cast<size_t>(bi)];
+        SchemeLspDefDoc d;
+        d.found = true;
+        d.name = b.name;
+        d.sig = b.sig;
+        d.doc = b.doc;
+        d.kind = BindingTitle(b);
+        d.path = path;
+        d.line = b.range.line;
+        d.exported = b.exported;
+        e.defs.push_back(d);
+    }
+    return (cache[path] = std::move(e)).defs;
+}
+
+// The string literal of `(head "x")` / `(head (dirname (current-filename)))` forms, by line scan.
+void LiteralForms(const std::vector<std::string> &lines, const std::string &head, const std::string &own,
+                  std::vector<std::string> *out) {
+    const std::string open = "(" + head + " ";
+    for (const std::string &line : lines) {
+        size_t at = line.find(open);
+        while (at != std::string::npos) {
+            size_t i = at + open.size();
+            while (i < line.size() && line[i] == ' ') i++;
+            if (i < line.size() && line[i] == '"') {
+                const size_t e = line.find('"', i + 1);
+                if (e != std::string::npos) out->push_back(JoinPath(own, line.substr(i + 1, e - i - 1)));
+            } else if (line.compare(i, 29, "(dirname (current-filename)))") == 0 && !own.empty()) {
+                out->push_back(own);
+            }
+            at = line.find(open, at + 1);
+        }
+    }
+}
+
+}  // namespace
+
+void SchemeLspSetSearchPath(const std::vector<std::string> &dirs) { ServerSearchPath() = dirs; }
+
+std::string SchemeLspModuleFile(const std::string &module, const std::vector<std::string> &dirs) {
+    // "a b c" or "(a b c)" -> a/b/c.scm (or .sls / .ss / .sld).
+    std::string rel;
+    std::string cur;
+    for (char c : module + " ") {
+        if (c == '(' || c == ')') continue;
+        if (c == ' ' || c == '\t') {
+            if (!cur.empty()) rel += (rel.empty() ? "" : "/") + cur;
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    if (rel.empty()) return std::string();
+    for (const std::string &d : dirs) {
+        for (const char *ext : {".scm", ".sls", ".sld", ".ss"}) {
+            const std::string p = JoinPath(d, rel + ext);
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(p, ec)) return p;
+        }
+    }
+    return std::string();
+}
+
+std::vector<std::string> SchemeLspSearchFiles(const SchemeLspDocument &doc) {
+    const std::string own = DirOf(doc.path);
+    std::vector<std::string> dirs, files;
+    LiteralForms(doc.lines, "add-to-load-path", own, &dirs);
+    if (!own.empty()) dirs.push_back(own);
+    for (const std::string &d : ServerSearchPath()) dirs.push_back(d);
+    for (const std::string &m : doc.other_modules) {
+        const std::string f = SchemeLspModuleFile(m, dirs);
+        if (!f.empty() && f != doc.path && std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
+    }
+    std::vector<std::string> loaded;
+    LiteralForms(doc.lines, "load", own, &loaded);
+    LiteralForms(doc.lines, "include", own, &loaded);
+    LiteralForms(doc.lines, "primitive-load", own, &loaded);
+    for (const std::string &f : loaded)
+        if (std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
+    return files;
+}
+
+SchemeLspDefDoc SchemeLspFindDefinition(const std::string &name, const std::vector<std::string> &files) {
+    for (const std::string &f : files)
+        for (const SchemeLspDefDoc &d : DefsOf(f))
+            if (d.name == name) return d;
+    return SchemeLspDefDoc();
+}
+
+std::string SchemeLspDefMarkdown(const SchemeLspDefDoc &d) {
+    std::string s = "```scheme\n" + (d.sig.empty() ? d.name : d.sig) + "\n```\n\n";
+    if (!d.doc.empty()) s += d.doc + "\n\n";
+    s += "*" + d.kind + "* — " + d.path + ":" + std::to_string(d.line + 1);
+    return s;
+}
+
+std::string SchemeLspVocabDoc(const std::string &name) {
+    std::vector<const SchemeVocabEntry *> es;
+    for (const SchemeVocabEntry *e = SchemeVocabBegin(); e != SchemeVocabEnd(); ++e)
+        if (name == e->name) es.push_back(e);
+    if (es.empty()) return std::string();
+    std::string out = VocabHover(es);
+    size_t at;
+    while ((at = out.find("```scheme\n")) != std::string::npos) out.erase(at, 10);
+    while ((at = out.find("```\n")) != std::string::npos) out.erase(at, 4);
+    return out + "\n";
 }

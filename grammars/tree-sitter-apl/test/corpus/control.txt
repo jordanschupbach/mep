@@ -1,0 +1,247 @@
+==================
+if elseif else
+==================
+:If x>0
+    y←1
+:ElseIf x<0
+    y←¯1
+:Else
+    y←0
+:EndIf
+---
+
+(source_file
+  (if_statement
+    (keyword)
+    (identifier)
+    (primitive)
+    (number)
+    (assignment
+      (identifier)
+      (number))
+    (elseif_clause
+      (keyword)
+      (identifier)
+      (primitive)
+      (number)
+      (assignment
+        (identifier)
+        (number)))
+    (else_clause
+      (keyword)
+      (assignment
+        (identifier)
+        (number)))
+    (keyword)))
+
+==================
+for in
+==================
+:For i :In ⍳10
+    s+←i
+:EndFor
+---
+
+(source_file
+  (for_statement
+    (keyword)
+    (identifier)
+    (keyword)
+    (primitive)
+    (number)
+    (assignment
+      (identifier)
+      (primitive)
+      (identifier))
+    (keyword)))
+
+==================
+while until repeat
+==================
+:While x>0
+    x-←1
+:EndWhile
+:Repeat
+    x+←1
+:Until x>5
+---
+
+(source_file
+  (while_statement
+    (keyword)
+    (identifier)
+    (primitive)
+    (number)
+    (assignment
+      (identifier)
+      (primitive)
+      (number))
+    (keyword))
+  (repeat_statement
+    (keyword)
+    (assignment
+      (identifier)
+      (primitive)
+      (number))
+    (keyword)
+    (identifier)
+    (primitive)
+    (number)))
+
+==================
+select case
+==================
+:Select c
+:Case 1
+    a
+:CaseList 2 3
+    b
+:Else
+    d
+:EndSelect
+---
+
+(source_file
+  (select_statement
+    (keyword)
+    (identifier)
+    (case_clause
+      (keyword)
+      (number)
+      (identifier))
+    (case_clause
+      (keyword)
+      (number)
+      (number)
+      (identifier))
+    (else_clause
+      (keyword)
+      (identifier))
+    (keyword)))
+
+==================
+trap and generic words
+==================
+:Trap 0
+    :Leave
+:Else
+    :Return
+:EndTrap
+---
+
+(source_file
+  (trap_statement
+    (keyword)
+    (number)
+    (control_statement
+      (keyword))
+    (else_clause
+      (keyword)
+      (control_statement
+        (keyword)))
+    (keyword)))
+
+==================
+lower case control words and :End
+==================
+:if x
+    :for i :in y
+    :end
+:endif
+---
+
+(source_file
+  (if_statement
+    (keyword)
+    (identifier)
+    (for_statement
+      (keyword)
+      (identifier)
+      (keyword)
+      (identifier)
+      (keyword))
+    (keyword)))
+
+==================
+namespace with members
+==================
+:Namespace datamunge
+    ∇ R←Add Y
+      R←Y+1
+    ∇
+    Mean←{(+/⍵)÷≢⍵}
+    :Namespace inner
+        k←3
+    :EndNamespace
+:EndNamespace
+---
+
+(source_file
+  (namespace
+    (keyword)
+    (identifier)
+    (tradfn
+      (tradfn_header
+        (identifier)
+        (identifier)
+        (identifier))
+      (assignment
+        (identifier)
+        (identifier)
+        (primitive)
+        (number)))
+    (assignment
+      (identifier)
+      (dfn
+        (parenthesized
+          (primitive)
+          (operator)
+          (special_name))
+        (primitive)
+        (primitive)
+        (special_name)))
+    (namespace
+      (keyword)
+      (identifier)
+      (assignment
+        (identifier)
+        (number))
+      (keyword))
+    (keyword)))
+
+==================
+class
+==================
+:Class Point : Base
+    :Field Public x←0
+:EndClass
+---
+
+(source_file
+  (class_definition
+    (keyword)
+    (identifier)
+    (identifier)
+    (control_statement
+      (keyword)
+      (assignment
+        (identifier)
+        (identifier)
+        (number)))
+    (keyword)))
+
+==================
+system commands
+==================
+)LOAD myws
+]box on
+x←1
+---
+
+(source_file
+  (system_command)
+  (system_command)
+  (assignment
+    (identifier)
+    (number)))
+

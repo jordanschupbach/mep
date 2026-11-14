@@ -1,0 +1,19 @@
+====================================
+comment
+====================================
+aaaaaa identification division.
+aaaaaa program-id. a.  ,,, ;;;                                          aaaaa
+      *aaaa
+---
+
+(start
+  (sequence_area)
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (sequence_area)
+      (keyword)
+      (program_name)))
+  (identification_area)
+  (comment))

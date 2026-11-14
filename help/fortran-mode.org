@@ -1,0 +1,175 @@
+#+TITLE: Fortran mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="45">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.f90=, =.f95=,
+=.f03=, =.f08=, =.f= or =.for= file. The tab becomes a Fortran workspace:
+your file, a console below it, and panels showing what the console's
+session holds.
+
+It needs =gfortran= and =python3= on =PATH=. In a shell without gfortran,
+start mep from =nix shell nixpkgs#gfortran=, or put a =REPL:= line in the
+file (see Options below).
+
+* The console
+
+There is no Fortran REPL to drive (LFortran is not packaged), so the
+console is mep's own, built the way C++ "REPLs" are: *each input
+recompiles the session and runs it from the start*, and only what the new
+input printed is shown.
+
+- The session is the =use= statements, declarations, derived types,
+  interfaces, procedures and modules entered so far, plus every executable
+  input that ran. Each input becomes part of one generated program:
+  modules ahead of it, procedures after its =contains=, the executable
+  inputs in order.
+- =implicit none= is the default. A declaration such as =integer :: n = 3=
+  takes effect right away; declaring a name again replaces it.
+- A lone expression is printed: =f> n * 14= answers =42=.
+- Constructs continue until their =end=: after =do i = 1, 3= the prompt
+  becomes =..= until =end do=. So do =&= continuations, and procedures,
+  types and modules typed in full. =:begin= ... =:end= takes any block of
+  lines as one input.
+- An input that does not compile is dropped, with gfortran's message naming
+  where it came from: =input7:1:5:= is console input 7, line 1, column 5;
+  for code sent from a file, the file and its own line numbers.
+- An input that fails at run time (a non-zero exit status, a
+  =-fcheck=bounds= error, =error stop=) is dropped too, with gfortran's
+  runtime message. One that runs longer than a minute is stopped.
+- Because the program reruns from the start each time, earlier inputs run
+  again on every input. Their output is hidden; keep slow or random work in
+  one input, and do not read standard input (it is empty).
+
+| Command          | Does                                                          |
+|------------------+---------------------------------------------------------------|
+| =:help NAME=     | the documentation of =NAME=, in the Help panel                |
+| =:help=          | the list of commands                                          |
+| =:vars=          | the declared variables and their values                       |
+| =:show=          | the generated program                                         |
+| =:undo=          | drop the last executable input                                |
+| =:reset=         | start over with an empty session                              |
+| =:flags=         | the compiler flags and where modules are looked for           |
+| =:run FILE=      | what =<leader>rr= does                                        |
+| =:quit=          | leave                                                         |
+
+* Modules and flags
+
+The compiler and its flags are the Run button's (right-click it, Setup;
+see [[file:run-button.html][Run button]]): =gfortran= unless Setup says
+otherwise, then Setup's flags, =$FFLAGS= and =mep.opt.fortran_ui_flags=.
+
+=use mymod= works without building anything first when a Fortran source
+on the search path defines =mymod=: the console compiles it (and the
+modules it uses in turn) into the session and recompiles it when it
+changes. The search path is, in order:
+
+1. the directories in =$MEP_FORTRAN_PATH= (=:=-separated);
+2. the =-I= directories in the flags;
+3. the source file's directory;
+4. mep's working directory.
+
+A module whose =.mod= file is already in an =-I= directory is taken as
+built: give its library in the flags too (=-I build/mod -L build -lmylib=).
+
+* Working in it
+
+| Key / call      | Does                                                                |
+|-----------------+---------------------------------------------------------------------|
+| =<leader>re=    | send the piece of code at the cursor to the console                 |
+| =<leader>rr=    | run the file (see below)                                            |
+| =gh=            | help for the name under the cursor, in the Help panel               |
+
+=<leader>re= picks the piece around the cursor:
+
+- in a module, procedure, derived type or interface: the whole unit, with
+  the =!>= comments above it;
+- inside a =program=: the statement at the cursor, or the whole construct
+  (=do=, =if=, =select case=, =block= ...) it is part of; a procedure after
+  =contains= as a whole. The program's own =use= statements come along;
+- on the =program= line or its =end=: the program's body.
+
+Walking down a program with =<leader>re= runs it a piece at a time, with
+the Variables panel showing what each piece changed. A Visual selection is
+sent as it is.
+
+=<leader>rr= (and the Run button) uses the buffer as it is in the editor,
+unsaved changes included:
+
+- a file with a =program= is compiled with the same compiler and flags,
+  plus the modules it uses from the search path, and run in the console;
+- a file with a =CMD:= line runs that command instead, as the Run button
+  does (=! CMD: make run=); the file is saved first;
+- a file of modules is loaded into the session: =use= them next;
+- anything else is sent to the console as one input.
+
+* The panels
+
+| Panel     | Shows                                                                       |
+|-----------+-----------------------------------------------------------------------------|
+| Variables | every declared variable, its type and its value after the last input        |
+| Session   | the =use= statements, modules, types, interfaces and procedures             |
+| History   | the inputs the session kept; clicking one runs it again                     |
+| Help      | =:help= and =gh=                                                            |
+
+Values are printed by statements the console adds after the last input: a
+scalar as list-directed output, an array as its shape and first eight
+elements, an unallocated array as =(not allocated)=, a derived type as its
+components when list-directed output can print them. Clicking a row shows
+the variable in Help.
+
+* Help
+
+=gh= and =:help NAME= look for =NAME=:
+
+1. among the session's own procedures, types, modules and variables;
+2. in the modules the session and the file =use=, and the modules those
+   use, found on the search path above;
+3. among gfortran's intrinsic procedures and the intrinsic modules'
+   entities (=iso_fortran_env=, =iso_c_binding=, the IEEE modules), from
+   the same table as the [[file:fortran-lsp.html][Fortran language server]].
+
+For a definition in source, Help shows the declaration, its FORD
+documentation -- the =!>= lines above it and any =!!= lines below it or
+trailing it -- and then a procedure's dummy arguments, a type's
+components or a module's contents, each with its own =!!= comment, and
+the file and line.
+
+#+begin_src fortran
+!> Euclidean distance between two points.
+pure function distance(a, b) result(d)
+  type(point), intent(in) :: a  !! first point
+  type(point), intent(in) :: b  !! second point
+#+end_src
+
+* Options
+
+#+begin_src lua
+mep.opt.fortran_ui_cmd = {'python3'}        -- what runs the console script
+mep.opt.fortran_ui_flags = '-fcheck=all'    -- added to Setup's flags
+mep.opt.fortran_ui_timeout = 60             -- seconds an input may run
+mep.opt.fortran_ui_info_share = 0.34        -- the panels' width
+#+end_src
+
+A =! REPL: nix shell nixpkgs#gfortran nixpkgs#python3 --command python3=
+line in the file replaces =fortran_ui_cmd= for that file; the mode appends
+its console script and arguments. =:MepFortranRestart= starts a fresh
+session.
+
+* Limits
+
+- The session is free form. Statements from a fixed-form file that use
+  column 1 comments or column 6 continuations do not evaluate; =<leader>rr=
+  compiles fixed-form programs as they are.
+- Values come from rerunning the program: a variable that is not
+  initialized shows whatever the run left in it.
+- =read= from standard input sees an empty file in the console session;
+  =<leader>rr= runs a program in the terminal, where it can read.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:fortran-lsp.html][The Fortran language server]].
+- [[file:run-button.html][Run button]] -- Setup and =CMD:=.

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Octave mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="51">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Octave mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.m</code> file.
+The tab becomes an Octave workspace: your file, an interactive
+<code>octave-cli</code> below it, and panels showing what that session holds.</p>
+<p>The console is the stock <code>octave-cli</code> (no GUI), so line editing, history,
+completion and value display are Octave's own. It starts with mep's
+environment (<code>OCTAVE_PATH</code> included), and its load path gets:</p>
+<ul>
+<li>the directory of your file, so functions in sibling <code>.m</code> files resolve;</li>
+<li>every directory in <code>MEP_OCTAVE_PATH</code>;</li>
+<li>the <code>--path DIR</code> / <code>-p DIR</code> directories of an <code>octave</code> command in the file's <code>% CMD:</code> line (see <a href="run-button.html">Run button</a>), with <code>$(pwd)</code> read as mep's working directory.</li>
+</ul>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>run the whole file in the console</td></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the statement at the cursor (or the selection)</td></tr>
+<tr><td><code>gh</code></td><td>help for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>mep_help ('name')</code></td><td>the same, from the console</td></tr>
+<tr><td><code>mep_view (x)</code></td><td>a value -- its <code>disp</code>, class, size and fields -- in Inspect</td></tr>
+<tr><td><code>mep_run (file)</code></td><td>run a file the way <code>&lt;leader&gt;rr</code> does</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> finds the top-level statement around the cursor: a whole
+<code>function</code>, <code>if</code>, <code>for</code>, <code>while</code>, <code>switch</code>, <code>try</code> or <code>unwind_protect</code> block up
+to its <code>end</code>, or a single line with its <code>...</code> continuations and open
+brackets. <code>end</code> inside an index (<code>x(end)</code>) and keywords inside strings and
+comments do not count.</p>
+<p>Neither key pastes your code into the prompt. The code is written to a
+file in the session directory, named after your file and padded to its
+line numbers, and run with one <code>source (...)</code> line in the base workspace.
+Variables it assigns stay in the workspace, and an error names your line.
+<code>&lt;leader&gt;rr</code> runs the buffer as it is in the editor, unsaved changes
+included, through <code>mep_run</code>: like Octave's <code>run</code>, it changes to the file's
+directory for the run and adds it to the load path.</p>
+<p>A file with a <code>% CMD:</code> line still runs that line on the Run button, as
+without the mode.</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Workspace</td><td><code>whos</code> of the base workspace: name, class, size and a short value</td></tr>
+<tr><td>Path</td><td>the directories added to the load path, and the loaded packages</td></tr>
+<tr><td>Inspect</td><td><code>mep_view</code> of a value</td></tr>
+<tr><td>Help</td><td>the help text of a function</td></tr>
+</table>
+<p>Clicking a Workspace row inspects it. The panels refresh after every
+command, through an input-event hook that runs while the prompt waits.</p>
+<h1>Help</h1>
+<p><code>mep_help ('name')</code> -- and <code>gh</code> over a name in your file -- first asks
+Octave: <code>help name</code> shows a <code>.m</code> file's comment block or a built-in's
+documentation (Texinfo rendered), and <code>which</code> where the function comes
+from.</p>
+<p>When Octave has no help text -- a compiled <code>.oct</code> function without a
+docstring, or a command-line function -- the Help tab reads the comment
+blocks of the <code>.m</code> files instead, with <code>mep-octave-lsp --doc</code> (see
+<a href="octave-lsp.html">The Octave language server</a>): <code>NAME.m</code> in the
+directories on the session's load path, and the functions of the scripts
+the session ran. A Rosetta-generated Octave binding ships such <code>.m</code>
+stubs, carrying the C++ library's documentation, next to its <code>.oct</code>
+functions.</p>
+<p>In a <code>.m</code> buffer <code>gh</code> also opens the language server's hover, which shows
+the same help text without a running session.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.octave_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'octave'</span>, <span class="tok-green">'--no-gui'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- the console's command</span>
+<span class="tok-cyan">mep</span>.opt.octave_ui_info_share = <span class="tok-cyan">0.3</span>               <span class="tok-comment">-- the panels' width</span></code></pre></div>
+<p>A <code>% REPL: nix develop --command octave-cli</code> line in the file overrides
+<code>octave_ui_cmd</code> for that file. The mode appends =-q --persist --eval
+"source (...)"=, so the command must accept them, as <code>octave-cli</code> and
+<code>octave</code> do.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="octave-lsp.html">The Octave language server</a>.</li>
+<li><a href="run-button.html">Run button</a> -- a <code>% CMD:</code> line runs a file another way.</li>
+</ul>
+</body>
+</html>

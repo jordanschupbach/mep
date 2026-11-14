@@ -68,7 +68,6 @@ extern char **environ;
 #include "music_decode.h"
 #include "persist.h"
 #include "collab_session.h"
-#include "cobol_syntax.h"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -36715,24 +36714,6 @@ void Editor::SyntaxHighlightCsv(int ns) {
             }
         }
         add(row, field_start, len, kColumnHl[col % kColumnHlCount]);
-    }
-}
-
-void Editor::SyntaxHighlightCobol(int ns) {
-    // Recoloured on every edit: a generated copybook can be long, so only
-    // as far as anyone reads it as text (the CSV highlighter's limit).
-    const int n = std::min(Buf().LineCount(), 50000);
-    const std::vector<std::string> lines(Buf().lines.begin(), Buf().lines.begin() + n);
-    const std::vector<std::vector<CobolHighlightSpan>> spans = CobolHighlight(lines);
-    for (int row = 0; row < n; row++) {
-        for (const CobolHighlightSpan &s : spans[static_cast<size_t>(row)]) {
-            Decoration d;
-            d.row = row;
-            d.col_start = s.col_start;
-            d.col_end = s.col_end;
-            d.hl_group = s.group;
-            AddDecoration(ns, d);
-        }
     }
 }
 

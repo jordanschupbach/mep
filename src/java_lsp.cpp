@@ -11,21 +11,167 @@
 #include <set>
 
 #include "java_format.h"
+#include "java_lsp_javadoc.h"
 
 class JavaLspDocument {
 public:
     std::vector<std::string> lines;
+    std::string text;
+    std::vector<javadoc::Decl> decls;
 };
 
 namespace {
 
 bool IsWordChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
+bool IsSpace(char c) { return c == ' ' || c == '\t'; }
+
+std::string Trim(const std::string &s) {
+    size_t a = 0, b = s.size();
+    while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) a++;
+    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) b--;
+    return s.substr(a, b - a);
+}
+
+// S with the insides of its string and char literals blanked (same length), so brackets and dots in
+// them don't count.
+std::string MaskLiterals(const std::string &s) {
+    std::string out = s;
+    char quote = 0;
+    for (size_t i = 0; i < out.size(); i++) {
+        if (!quote) {
+            if (out[i] == '"' || out[i] == '\'') quote = out[i];
+            continue;
+        }
+        if (out[i] == '\\' && i + 1 < out.size()) {
+            out[i] = out[i + 1] = ' ';
+            i++;
+        } else if (out[i] == quote) {
+            quote = 0;
+        } else {
+            out[i] = ' ';
+        }
+    }
+    return out;
+}
+
+// The index of the '(' that the ')' at CLOSE in S closes, or npos.
+size_t MatchingOpen(const std::string &s, size_t close) {
+    int depth = 0;
+    for (size_t i = close + 1; i-- > 0;) {
+        if (s[i] == ')') {
+            depth++;
+        } else if (s[i] == '(' && --depth == 0) {
+            return i;
+        }
+    }
+    return std::string::npos;
+}
+
+// A type without its type arguments: `List<String>` -> `List`.
+std::string BaseType(const std::string &type) {
+    const size_t lt = type.find('<');
+    return Trim(lt == std::string::npos ? type : type.substr(0, lt));
+}
+
+// The receiver expression that ends PREFIX (the text before a member's '.'): a name, a dotted chain,
+// calls with their argument lists, `new T(...)`; whitespace (a chain continued over lines) may sit
+// around the dots. "" when PREFIX ends in something else.
+std::string ReceiverAtEnd(const std::string &text) {
+    const std::string prefix = MaskLiterals(text);
+    size_t e = prefix.size();
+    while (e > 0 && IsSpace(prefix[e - 1])) e--;
+    size_t b = e;
+    while (b > 0) {
+        if (prefix[b - 1] == ')') {
+            const size_t open = MatchingOpen(prefix, b - 1);
+            if (open == std::string::npos) return "";
+            b = open;
+            continue;  // the callee's name comes next
+        }
+        if (!IsWordChar(prefix[b - 1])) break;
+        while (b > 0 && IsWordChar(prefix[b - 1])) b--;
+        size_t k = b;
+        while (k > 0 && IsSpace(prefix[k - 1])) k--;
+        if (k >= 3 && k < b && prefix.compare(k - 3, 3, "new") == 0 && (k == 3 || !IsWordChar(prefix[k - 4]))) {
+            b = k - 3;
+            break;
+        }
+        if (k > 0 && prefix[k - 1] == '.') {
+            b = k - 1;
+            while (b > 0 && IsSpace(prefix[b - 1])) b--;
+            continue;
+        }
+        break;
+    }
+    return Trim(text.substr(b, e - b));
+}
+
+// The initializer of `var NAME = <expression>;` in LINES (up to the ';' or an unbalanced closing
+// bracket, as in `try (var x = new T()) {`), or "".
+std::string VarInitializer(const std::vector<std::string> &lines, const std::string &name) {
+    for (size_t li = 0; li < lines.size(); li++) {
+        const std::string &l = lines[li];
+        for (size_t pos = l.find("var"); pos != std::string::npos; pos = l.find("var", pos + 1)) {
+            if (pos > 0 && IsWordChar(l[pos - 1])) continue;
+            size_t k = pos + 3;
+            if (k >= l.size() || !IsSpace(l[k])) continue;
+            while (k < l.size() && IsSpace(l[k])) k++;
+            if (l.compare(k, name.size(), name) != 0) continue;
+            k += name.size();
+            if (k < l.size() && IsWordChar(l[k])) continue;
+            while (k < l.size() && IsSpace(l[k])) k++;
+            if (k >= l.size() || l[k] != '=' || (k + 1 < l.size() && l[k + 1] == '=')) continue;
+            std::string rhs;
+            int depth = 0;
+            bool in_string = false;
+            size_t start = k + 1;
+            for (size_t lj = li; lj < lines.size() && lj < li + 8; lj++, start = 0) {
+                const std::string &t = lines[lj];
+                for (size_t i = start; i < t.size(); i++) {
+                    const char c = t[i];
+                    if (in_string) {
+                        rhs += c;
+                        if (c == '\\' && i + 1 < t.size()) {
+                            rhs += t[++i];
+                        } else if (c == '"') {
+                            in_string = false;
+                        }
+                        continue;
+                    }
+                    if (c == '"') {
+                        in_string = true;
+                    } else if (c == '(' || c == '[' || c == '{') {
+                        depth++;
+                    } else if (c == ')' || c == ']' || c == '}') {
+                        if (depth == 0) return Trim(rhs);
+                        depth--;
+                    } else if (c == ';' && depth == 0) {
+                        return Trim(rhs);
+                    }
+                    rhs += c;
+                }
+                rhs += ' ';
+            }
+            return "";
+        }
+    }
+    return "";
+}
+
+std::string TypeOfExpressionAt(const std::vector<std::string> &lines, const std::string &expr,
+                               const JavaLspMethodType &method_type, int depth);
+
 }  // namespace
 
 std::shared_ptr<const JavaLspDocument> JavaLspAnalyze(const std::vector<std::string> &lines) {
     auto doc = std::make_shared<JavaLspDocument>();
     doc->lines = lines;
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (i) doc->text += '\n';
+        doc->text += lines[i];
+    }
+    doc->decls = javadoc::IndexSource(doc->text);
     return doc;
 }
 
@@ -82,9 +228,222 @@ std::vector<JavaLspCompletionItem> JavaLspCompletions(const JavaLspDocument &doc
     return out;
 }
 
+const std::string &JavaLspText(const JavaLspDocument &doc) { return doc.text; }
+
+std::string JavaLspTypeOfVariable(const std::vector<std::string> &lines, const std::string &name) {
+    if (name.empty()) return "";
+    for (const std::string &l : lines) {
+        for (size_t pos = l.find(name); pos != std::string::npos; pos = l.find(name, pos + 1)) {
+            const size_t e = pos + name.size();
+            if ((pos > 0 && IsWordChar(l[pos - 1])) || (e < l.size() && IsWordChar(l[e]))) continue;
+            size_t k = e;
+            while (k < l.size() && l[k] == ' ') k++;
+            if (k < l.size() && l[k] != '=' && l[k] != ';' && l[k] != ',' && l[k] != ')' && l[k] != ':') continue;
+            if (k + 1 < l.size() && l[k] == '=' && l[k + 1] == '=') continue;
+            // Back over the space, array brackets and type arguments to the type's name.
+            size_t b = pos;
+            if (b == 0 || l[b - 1] != ' ') continue;
+            while (b > 0 && l[b - 1] == ' ') b--;
+            while (b >= 2 && l[b - 1] == ']' && l[b - 2] == '[') b -= 2;
+            if (b > 0 && l[b - 1] == '>') {
+                int depth = 0;
+                while (b > 0) {
+                    b--;
+                    if (l[b] == '>') depth++;
+                    if (l[b] == '<' && --depth == 0) break;
+                }
+            }
+            size_t a = b;
+            while (a > 0 && (IsWordChar(l[a - 1]) || l[a - 1] == '.')) a--;
+            if (a == b || !std::isupper(static_cast<unsigned char>(l[a]))) {
+                // A qualified type (org.x.Frame) starts lower case: its last part must not.
+                const size_t dot = l.rfind('.', b - 1);
+                if (a == b || dot == std::string::npos || dot < a ||
+                    !std::isupper(static_cast<unsigned char>(l[dot + 1])))
+                    continue;
+            }
+            const std::string type = l.substr(a, b - a);
+            if (type == "return" || type == "new") continue;
+            return type;
+        }
+    }
+    return "";
+}
+
+std::string JavaLspReturnType(const std::string &signature, const std::string &name) {
+    size_t p = std::string::npos;
+    for (size_t at = signature.find(name); at != std::string::npos; at = signature.find(name, at + 1)) {
+        if (at > 0 && IsWordChar(signature[at - 1])) continue;
+        size_t k = at + name.size();
+        while (k < signature.size() && IsSpace(signature[k])) k++;
+        if (k < signature.size() && signature[k] == '(') {
+            p = at;
+            break;
+        }
+    }
+    if (p == std::string::npos) return "";
+    const std::string before = Trim(signature.substr(0, p));
+    size_t b = before.size();
+    std::string array;
+    while (b >= 2 && before[b - 1] == ']' && before[b - 2] == '[') {
+        b -= 2;
+        array += "[]";
+    }
+    if (b > 0 && before[b - 1] == '>') {
+        int depth = 0;
+        while (b > 0) {
+            b--;
+            if (before[b] == '>') depth++;
+            if (before[b] == '<' && --depth == 0) break;
+        }
+    }
+    size_t a = b;
+    while (a > 0 && (IsWordChar(before[a - 1]) || before[a - 1] == '.')) a--;
+    if (a == b) return "";
+    const std::string type = before.substr(a, b - a);
+    static const std::set<std::string> kModifiers = {"public", "protected", "private", "static", "final", "abstract",
+                                                      "synchronized", "native", "default", "strictfp"};
+    if (kModifiers.count(type)) return "";  // a constructor
+    return type + array;
+}
+
+std::string JavaLspSuperclass(const std::string &signature) {
+    const std::string masked = " " + signature;
+    const size_t at = masked.find(" extends ");
+    if (at == std::string::npos) return "";
+    size_t a = at + 9;
+    while (a < masked.size() && IsSpace(masked[a])) a++;
+    size_t b = a;
+    while (b < masked.size() && (IsWordChar(masked[b]) || masked[b] == '.')) b++;
+    return masked.substr(a, b - a);
+}
+
+namespace {
+
+std::string TypeOfExpressionAt(const std::vector<std::string> &lines, const std::string &expr,
+                               const JavaLspMethodType &method_type, int depth) {
+    if (depth > 8) return "";
+    const std::string e = MaskLiterals(Trim(expr));
+    if (e.empty()) return "";
+    if (e.back() == ')') {
+        const size_t open = MatchingOpen(e, e.size() - 1);
+        if (open == std::string::npos) return "";
+        const std::string callee = Trim(e.substr(0, open));
+        if (callee.compare(0, 4, "new ") == 0) {
+            const std::string type = BaseType(callee.substr(4));
+            for (char c : type)
+                if (!IsWordChar(c) && c != '.') return "";
+            return type;
+        }
+        int parens = 0;
+        size_t dot = std::string::npos;
+        for (size_t i = callee.size(); i-- > 0;) {
+            if (callee[i] == ')') {
+                parens++;
+            } else if (callee[i] == '(') {
+                parens--;
+            } else if (callee[i] == '.' && parens == 0) {
+                dot = i;
+                break;
+            }
+        }
+        if (dot == std::string::npos || !method_type) return "";
+        const std::string method = Trim(callee.substr(dot + 1));
+        const std::string receiver = TypeOfExpressionAt(lines, callee.substr(0, dot), method_type, depth + 1);
+        if (method.empty() || receiver.empty()) return "";
+        return BaseType(method_type(receiver, method));
+    }
+    for (char c : e)
+        if (!IsWordChar(c) && c != '.') return "";
+    const size_t last_dot = e.rfind('.');
+    const std::string last = last_dot == std::string::npos ? e : e.substr(last_dot + 1);
+    if (last.empty() || std::isdigit(static_cast<unsigned char>(last[0]))) return "";
+    if (std::isupper(static_cast<unsigned char>(last[0]))) return e;  // a type, maybe qualified
+    if (last_dot != std::string::npos) return "";                     // a field: unknown
+    const std::string declared = JavaLspTypeOfVariable(lines, e);
+    if (!declared.empty()) return BaseType(declared);
+    const std::string init = VarInitializer(lines, e);
+    return init.empty() ? "" : TypeOfExpressionAt(lines, init, method_type, depth + 1);
+}
+
+// LINES[LINE] up to column END, after up to 8 lines above it (their `//` comments dropped), so that a
+// call chain continued over lines ends it as one expression.
+std::string TextBefore(const std::vector<std::string> &lines, int line, int end) {
+    std::string out;
+    for (int i = std::max(0, line - 8); i < line; i++) {
+        std::string l = lines[static_cast<size_t>(i)];
+        const size_t comment = l.find("//");
+        if (comment != std::string::npos) l.erase(comment);
+        out += l;
+        out += ' ';
+    }
+    return out + lines[static_cast<size_t>(line)].substr(0, static_cast<size_t>(end));
+}
+
+}  // namespace
+
+std::string JavaLspTypeOfExpression(const std::vector<std::string> &lines, const std::string &expr,
+                                    const JavaLspMethodType &method_type) {
+    return TypeOfExpressionAt(lines, expr, method_type, 0);
+}
+
+JavaLspDocQuery JavaLspDocQueryAt(const JavaLspDocument &doc, int line, int col) {
+    return JavaLspDocQueryAt(doc, line, col, nullptr);
+}
+
+JavaLspDocQuery JavaLspDocQueryAt(const JavaLspDocument &doc, int line, int col, const JavaLspMethodType &method_type) {
+    JavaLspDocQuery q;
+    if (line < 0 || static_cast<size_t>(line) >= doc.lines.size()) return q;
+    const std::string &l = doc.lines[static_cast<size_t>(line)];
+    int s = std::max(0, std::min(col, static_cast<int>(l.size())));
+    int e = s;
+    while (s > 0 && IsWordChar(l[static_cast<size_t>(s - 1)])) s--;
+    while (e < static_cast<int>(l.size()) && IsWordChar(l[static_cast<size_t>(e)])) e++;
+    if (s == e || std::isdigit(static_cast<unsigned char>(l[static_cast<size_t>(s)]))) return q;
+    std::string word = l.substr(static_cast<size_t>(s), static_cast<size_t>(e - s));
+    std::string qualifier;
+    bool chained = false;  // the receiver is more than one name (a.b.C, f().g, new T())
+    if (s > 0 && l[static_cast<size_t>(s - 1)] == '.') {
+        int qs = s - 1;
+        while (qs > 0 && IsWordChar(l[static_cast<size_t>(qs - 1)])) qs--;
+        qualifier = l.substr(static_cast<size_t>(qs), static_cast<size_t>(s - 1 - qs));
+        chained = qualifier.empty() || (qs > 0 && l[static_cast<size_t>(qs - 1)] == '.');
+    }
+    bool resolved = !qualifier.empty() && std::isupper(static_cast<unsigned char>(qualifier[0]));
+    if (!qualifier.empty() && !resolved) {
+        const std::string type = JavaLspTypeOfVariable(doc.lines, qualifier);
+        if (!type.empty()) {
+            qualifier = type;
+            resolved = true;
+        }
+    }
+    if (s > 0 && l[static_cast<size_t>(s - 1)] == '.' && (chained || !resolved)) {
+        // Any other receiver: `var x = new T()`, a call chain (also from the lines above), a.b.C.
+        const std::string receiver = ReceiverAtEnd(TextBefore(doc.lines, line, s - 1));
+        const std::string type = TypeOfExpressionAt(doc.lines, receiver, method_type, 0);
+        if (!type.empty()) qualifier = type;
+    }
+    q.found = true;
+    q.name = qualifier.empty() ? word : qualifier + "." + word;
+    q.range = {line, s, line, e};
+    return q;
+}
+
 JavaLspHoverInfo JavaLspHover(const JavaLspDocument &doc, int line, int col) {
-    (void)doc, (void)line, (void)col;
-    return {};
+    JavaLspHoverInfo info;
+    const JavaLspDocQuery q = JavaLspDocQueryAt(doc, line, col);
+    if (!q.found) return info;
+    std::vector<const javadoc::Decl *> hits;
+    for (const javadoc::Decl &d : doc.decls)
+        if (javadoc::Matches(d, q.name)) hits.push_back(&d);
+    if (hits.empty()) return info;
+    for (size_t i = 0; i < hits.size() && i < 4; i++) {
+        if (i) info.text += "\n\n---\n\n";
+        info.text += javadoc::RenderDecl(*hits[i], false);
+    }
+    info.found = true;
+    info.range = q.range;
+    return info;
 }
 
 JavaLspSignatureHelp JavaLspSignatureAt(const JavaLspDocument &doc, int line, int col) {

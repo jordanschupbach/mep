@@ -92,6 +92,60 @@ all values never used, most of them outputs of a multiple assignment
 While a file is broken, completion and navigation keep working on the rest
 of it: the server re-reads it with the offending line set aside.
 
+* Help text from other files
+
+Hover and signature help show a function's help text, found as Octave
+finds it: the comment block above the =function= line (copyright blocks
+skipped), a function file's leading block, or the block right below.
+Texinfo help is rendered as Octave's =help= shows it. A function the file
+does not define is looked up as =NAME.m= (or =+pkg/NAME.m=) in the file's
+directory, the directories its literal =addpath ('dir')= calls name, the
+workspace and =MEP_OCTAVE_PATH=.
+
+** Classes and packages
+
+A =classdef= file's help is the comment block after the =classdef= line
+(not the constructor's), followed by the class's properties and methods
+unless the help text lists them already. A method's help is the block after
+its =function= line inside =methods ... end=. =pkg.Class= is
+=+pkg/Class.m=, and =pkg.Class.method= is a method of that class or of its
+superclasses. Properties in =Hidden= or =Access= blocks are left out.
+
+A variable's class is worked out from the assignments before it, for
+example =df = datamunge.DataFrame ()=. A call's result is typed from the
+=Output:= block in the method's help (the class named after the output
+variable, as Rosetta writes it). With that:
+
+- hovering =df= shows its class;
+- hovering =df.select= shows =DataFrame='s =select=, and chains like
+  =df.select (c).sort_by (k)= work too;
+- signature help on =df.select (= drops the =obj= parameter;
+- completion after =df.= lists the instance's methods and properties.
+  After =pkg.Class.= it lists the static methods, and after =pkg.= the
+  package's functions, classes and subpackages.
+
+If the receiver's class is unknown, hover shows the first class's method of
+that name and lists the other classes that have one.
+
+A bare name the file doesn't define is resolved through the file's
+=import pkg.*= / =import pkg.Name= lines first. Otherwise it is the one
+package member of that name; when several packages have it, hover lists
+them all.
+
+** From the command line
+
+=mep-octave-lsp --doc NAME [--path DIR]... [--file FILE]...= prints the same
+help text, for the [[file:octave-mode.html][Octave mode]]'s Help tab. NAME
+can be any of these:
+
+- a function;
+- =pkg.fn=;
+- a class (=pkg.Class=);
+- a method (=pkg.Class.method=);
+- a bare package member such as =DataFrame=. It is resolved through the
+  imports of the =--file= files. If none matches, it is the unique package
+  member of that name, unless Octave has a function by that name.
+
 * Linting from the command line
 
 #+begin_src sh

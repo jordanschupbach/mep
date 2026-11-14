@@ -1,0 +1,365 @@
+====================================
+source computer
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       source-computer.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (source_computer_paragraph
+          (keyword))))))
+
+====================================
+source computer linux
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       source-computer. linux.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (source_computer_paragraph
+          (keyword)
+          (WORD))))))
+
+====================================
+source computer debugging mode
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       source-computer. debugging mode.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (source_computer_paragraph
+          (keyword)
+          (with_debugging_mode
+            (keyword)
+            (keyword)))))))
+
+====================================
+source computer with debugging mode
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       source-computer. with debugging mode.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (source_computer_paragraph
+          (keyword)
+          (with_debugging_mode
+            (keyword)
+            (keyword)
+            (keyword)))))))
+
+====================================
+source computer linux debugging mode
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       source-computer. linux debugging mode.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (source_computer_paragraph
+          (keyword)
+          (WORD)
+          (with_debugging_mode
+            (keyword)
+            (keyword)))))))
+
+====================================
+source computer linux with debugging mode
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       source-computer. linux with debugging mode.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (source_computer_paragraph
+          (keyword)
+          (WORD)
+          (with_debugging_mode
+            (keyword)
+            (keyword)
+            (keyword)))))))
+
+====================================
+object computer
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       object-computer.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (object_computer_paragraph
+          (keyword))))))
+
+====================================
+object computer linux
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       object-computer. linux.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (object_computer_paragraph
+          (keyword)
+          (WORD))))))
+
+====================================
+object computer memory size is 2 words
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       object-computer. memory size is 2 words.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (object_computer_paragraph
+          (keyword)
+          (object_computer_memory
+            (keyword)
+            (keyword)
+            (keyword)
+            (integer)
+            (WORDS
+              (keyword))))))))
+
+====================================
+object computer memory size 2 characters
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       object-computer. memory size 2 characters.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (object_computer_paragraph
+          (keyword)
+          (object_computer_memory
+            (keyword)
+            (keyword)
+            (integer)
+            (CHARACTERS
+              (keyword))))))))
+
+====================================
+object computer program collating sequence is ebcdic-code
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       object-computer.
+         program collating sequence is ebcdic-code.
+       special-names.
+           alphabet ebcdic-code is ebcdic.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (object_computer_paragraph
+          (keyword)
+          (object_computer_sequence
+            (keyword)
+            (keyword)
+            (keyword)
+            (keyword)
+            (qualified_word
+              (WORD))))
+        (special_names_paragraph
+          (keyword)
+          (special_name
+            (alphabet_name_clause
+              (keyword)
+              word: (WORD)
+              (keyword)
+              value: (EBCDIC
+                (keyword)))))))))
+
+====================================
+object computer segment-limit is 2.
+====================================
+       identification division.
+       program-id. a.
+       environment division.
+       configuration section.
+       object-computer. segment-limit is 2.
+---
+
+(start
+  (program_definition
+    (identification_division
+      (keyword)
+      (keyword)
+      (keyword)
+      (program_name))
+    (environment_division
+      (keyword)
+      (keyword)
+      (configuration_section
+        (keyword)
+        (keyword)
+        (object_computer_paragraph
+          (keyword)
+          (object_computer_segment
+            (keyword)
+            (keyword)
+            (integer)))))))

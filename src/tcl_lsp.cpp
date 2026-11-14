@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <cctype>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -77,6 +79,16 @@ struct ProcInfo {
     std::string doc;
     int scope = -1;
     bool method = false;
+    std::string klass;  // a method's class, qualified (::ns::Class); "" for a proc
+};
+
+// A class definition (`oo::class create NAME {...}`), for other files' hover and --doc.
+struct ClassInfo {
+    std::string qname;  // ::ns::Name
+    std::string doc;    // the comment block above it
+    std::vector<std::string> supers;  // `superclass` words, as written
+    int cmd_start = 0;
+    std::string ns;  // the namespace the definition runs in (resolves the superclasses)
 };
 
 struct CallInfo {
@@ -237,6 +249,7 @@ std::vector<std::string> UsageParams(const std::string &usage, int skip) {
 
 class TclLspDocument {
 public:
+    std::string path;  // the file's path (a file:// URI decoded), "" when unknown
     std::vector<std::string> lines;
     std::string text;
     std::vector<int> line_starts;
@@ -244,6 +257,7 @@ public:
     std::vector<Region> regions;
     std::map<std::string, int> ns_scope;  // namespace -> scope index
     std::vector<ProcInfo> procs;
+    std::vector<ClassInfo> classes;
     std::vector<CallInfo> calls;
     std::vector<CmdRec> cmds;
     std::vector<SymRec> syms;
@@ -327,6 +341,7 @@ private:
     int class_ctx_ = 0;     // inside a class definition script: 1 TclOO, 2 itcl/snit
     std::string class_name_;
     std::vector<std::string> class_vars_;
+    int class_rec_ = -1;  // the ClassInfo an `oo::class create` body adds `superclass`es to
     int sym_parent_ = -1;
     bool plain_def_ = false;
 
@@ -604,6 +619,7 @@ private:
         ps.body_end = body.cend;
         ProcInfo pi;
         pi.method = method;
+        if (method && !class_name_.empty()) pi.klass = Qualify(outer.ns, class_name_);
         if (name && name->literal) {
             pi.written = name->value;
             pi.qname = method ? class_name_ + " " + name->value : Qualify(outer.ns, name->value);
@@ -725,6 +741,11 @@ private:
             tclparse::Script s = tclparse::ParseScript(t, w.cstart, w.cend, false);
             for (const tclparse::Command &cc : s.commands) {
                 std::vector<Word> ws = Words(cc);
+                if (ws.size() >= 2 && ws[0].literal && ws[0].value == "superclass" && class_rec_ >= 0) {
+                    for (size_t i = 1; i < ws.size(); i++)
+                        if (ws[i].literal && ws[i].value.compare(0, 1, "-") != 0)
+                            d.classes[static_cast<size_t>(class_rec_)].supers.push_back(ws[i].value);
+                }
                 if (ws.size() >= 2 && ws[0].literal && ws[0].value == "variable") {
                     for (size_t i = 1; i < ws.size(); i++) {
                         const std::string &v = ws[i].value;
@@ -902,7 +923,18 @@ private:
                        (name != "class" || class_ctx_ == 0)) {
                 if (name == "oo::class" && w[1].value == "create" && n >= 3) {
                     H(2);
-                    if (w[2].literal) Symbol(w[2].value, "", TclLspSymbolKind::Class, c, w[2]);
+                    const int save_rec = class_rec_;
+                    class_rec_ = -1;
+                    if (w[2].literal) {
+                        Symbol(w[2].value, "", TclLspSymbolKind::Class, c, w[2]);
+                        ClassInfo ci;
+                        ci.ns = d.scopes[static_cast<size_t>(scope)].ns;
+                        ci.qname = Qualify(ci.ns, w[2].value);
+                        ci.doc = CommentAbove(c.command_start);
+                        ci.cmd_start = c.command_start;
+                        d.classes.push_back(ci);
+                        class_rec_ = static_cast<int>(d.classes.size()) - 1;
+                    }
                     if (n == 4) {
                         H(3);
                         const int save = sym_parent_;
@@ -910,6 +942,7 @@ private:
                         ClassBody(c, w[3], scope, depth, 1, w[2].literal ? w[2].value : "");
                         sym_parent_ = save;
                     }
+                    class_rec_ = save_rec;
                 } else if (name != "oo::class" && n == 3) {
                     H(1), H(2);
                     Symbol(w[1].value, "", TclLspSymbolKind::Class, c, w[1]);
@@ -1537,8 +1570,9 @@ TclLspKind KindOf(const TclLspApi &a) {
 
 }  // namespace
 
-std::shared_ptr<const TclLspDocument> TclLspAnalyze(const std::vector<std::string> &lines) {
+std::shared_ptr<const TclLspDocument> TclLspAnalyze(const std::vector<std::string> &lines, const std::string &path) {
     auto doc = std::make_shared<TclLspDocument>();
+    doc->path = TclLspUriToPath(path);
     doc->lines = lines;
     int off = 0;
     for (size_t i = 0; i < lines.size(); i++) {
@@ -1697,6 +1731,82 @@ std::vector<TclLspCompletionItem> TclLspCompletions(const TclLspDocument &doc, i
     return out;
 }
 
+namespace {
+
+// The class `$var` holds at offset `off`, from the last `set var [CLASS new|create ...]` before it (or,
+// failing that, after it) in this file; "" when unknown.
+std::string VarClassAt(const TclLspDocument &doc, const std::string &var, int off) {
+    std::string best;
+    int best_start = -1;
+    bool before = false;
+    for (const CmdRec &c : doc.cmds) {
+        if (c.name != "set" || c.words.size() != 3) continue;
+        const Span &n = c.words[1], &v = c.words[2];
+        if (std::string(doc.text, static_cast<size_t>(n.start), static_cast<size_t>(n.end - n.start)) != var) continue;
+        // [CLASS new ...] or [CLASS create NAME ...]: the first two words of the bracketed command.
+        std::string val(doc.text, static_cast<size_t>(v.start), static_cast<size_t>(v.end - v.start));
+        if (val.size() < 3 || val.front() != '[' || val.back() != ']') continue;
+        std::vector<std::string> w;
+        std::string cur;
+        for (size_t i = 1; i + 1 < val.size() && w.size() < 2; i++) {
+            const char ch = val[i];
+            if (std::isspace(static_cast<unsigned char>(ch))) {
+                if (!cur.empty()) w.push_back(cur);
+                cur.clear();
+            } else {
+                cur += ch;
+            }
+        }
+        if (!cur.empty() && w.size() < 2) w.push_back(cur);
+        if (w.size() != 2 || (w[1] != "new" && w[1] != "create") || w[0].find_first_of("$[\"{") != std::string::npos)
+            continue;
+        const bool is_before = c.start < off;
+        // Prefer the nearest assignment before the use; else the first one after it.
+        if ((is_before && (!before || c.start > best_start)) || (!is_before && !before && best_start < 0)) {
+            best = w[0];
+            best_start = c.start;
+            before = is_before;
+        }
+    }
+    return best;
+}
+
+// `$name` or `${name}` as a variable name; "" for anything else.
+std::string SimpleVarRef(const std::string &w) {
+    if (w.size() < 2 || w[0] != '$') return std::string();
+    std::string n = w.substr(1);
+    if (n.size() >= 2 && n.front() == '{' && n.back() == '}') return n.substr(1, n.size() - 2);
+    for (char ch : n)
+        if (!(std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == ':')) return std::string();
+    return n;
+}
+
+// Docs of method `word` called as `OBJ word ...`: OBJ a class command (static methods, `new`) or `$var`
+// set from `[CLASS new ...]`; else every known class's method of that name.
+std::string MethodHoverText(const TclLspDocument &doc, const CmdRec &c, const std::string &word) {
+    const Span &w0 = c.words[0];
+    const std::string obj(doc.text, static_cast<size_t>(w0.start), static_cast<size_t>(w0.end - w0.start));
+    const std::string ns = doc.scopes[static_cast<size_t>(c.scope)].ns;
+    const std::vector<std::string> files = TclLspSearchFiles(doc);
+    std::string klass = c.name;
+    const std::string var = SimpleVarRef(obj);
+    if (klass.empty() && !var.empty()) klass = VarClassAt(doc, var, c.start);
+    if (!klass.empty()) {
+        const TclLspProcDoc m = TclLspFindMethod(klass, word, files, ns);
+        if (m.found) return TclLspProcMarkdown(m);
+        if (var.empty()) return std::string();  // a command that is no known class, or no such method
+    }
+    if (var.empty()) return std::string();
+    const std::vector<TclLspProcDoc> all = TclLspFindMethods(word, files);
+    std::string s;
+    const size_t shown = std::min<size_t>(all.size(), 5);
+    for (size_t i = 0; i < shown; i++) s += (i ? "\n\n---\n\n" : "") + TclLspProcMarkdown(all[i]);
+    if (all.size() > shown) s += "\n\n(" + std::to_string(all.size() - shown) + " more classes define `" + word + "`)";
+    return s;
+}
+
+}  // namespace
+
 TclLspHoverInfo TclLspHover(const TclLspDocument &doc, int line, int col) {
     TclLspHoverInfo h;
     const int off = doc.Off(line, col);
@@ -1742,6 +1852,22 @@ TclLspHoverInfo TclLspHover(const TclLspDocument &doc, int line, int col) {
             } else if (const TclLspApi *a = Api(BuiltinName(c->name))) {
                 h.found = true;
                 h.text = ApiHover(*a);
+            } else if (!c->name.empty()) {
+                // A proc another file defines: one this file sources, or on the package path.
+                const std::string ns = doc.scopes[static_cast<size_t>(c->scope)].ns;
+                const std::vector<std::string> files = TclLspSearchFiles(doc);
+                const TclLspProcDoc pd = TclLspFindProc(c->name, files, ns);
+                if (pd.found) {
+                    h.found = true;
+                    h.text = TclLspProcMarkdown(pd);
+                } else {
+                    // A TclOO class another file defines (`CLASS new ...`, `CLASS staticmethod ...`).
+                    const TclLspClassDoc cd = TclLspFindClass(c->name, files, ns);
+                    if (cd.found) {
+                        h.found = true;
+                        h.text = TclLspClassMarkdown(cd);
+                    }
+                }
             }
         } else {
             const std::string ens = BuiltinName(c->name);
@@ -1750,6 +1876,14 @@ TclLspHoverInfo TclLspHover(const TclLspDocument &doc, int line, int col) {
             if (const TclLspApi *a = sub.empty() ? nullptr : Api(ens + " " + sub)) {
                 h.found = true;
                 h.text = ApiHover(*a);
+            } else if ((c->name.empty() || (!Api(ens) && !ResolveProc(doc, c->name, doc.scopes[static_cast<size_t>(c->scope)].ns))) &&
+                       !word.empty() && std::isalpha(static_cast<unsigned char>(word[0]))) {
+                // A method call on an object of a class another file defines.
+                const std::string text = MethodHoverText(doc, *c, word);
+                if (!text.empty()) {
+                    h.found = true;
+                    h.text = text;
+                }
             }
         }
         if (h.found) h.range = doc.Range(w.start, w.end);
@@ -1782,7 +1916,17 @@ TclLspSignatureHelp TclLspSignatureAt(const TclLspDocument &doc, int line, int c
         return out;
     }
     const TclLspApi *a = Api(name);
-    if (!a) return out;
+    if (!a) {
+        const TclLspProcDoc pd = TclLspFindProc(best->name, TclLspSearchFiles(doc),
+                                                doc.scopes[static_cast<size_t>(best->scope)].ns);
+        if (!pd.found) return out;
+        out.found = true;
+        out.label = pd.written + (pd.params_label.empty() ? "" : " " + pd.params_label);
+        out.params = pd.params;
+        out.documentation = pd.doc;
+        out.active_param = arg;
+        return out;
+    }
     int skip = 1;
     if (std::string(a->kind) == "ensemble" && best->words.size() >= 2) {
         const Span &w = best->words[1];
@@ -1995,4 +2139,334 @@ std::vector<TclLspTextEdit> TclLspFormat(const std::vector<std::string> &lines, 
     }
     edits.push_back(e);
     return edits;
+}
+
+// --- Procs of other files -----------------------------------------------------------
+
+std::string TclLspUriToPath(const std::string &uri) {
+    if (uri.compare(0, 7, "file://") != 0) return uri;
+    const std::string p = uri.substr(7);
+    std::string out;
+    for (size_t i = 0; i < p.size(); i++) {
+        if (p[i] == '%' && i + 2 < p.size() && std::isxdigit(static_cast<unsigned char>(p[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(p[i + 2]))) {
+            out += static_cast<char>(std::stoi(p.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += p[i];
+        }
+    }
+#if defined(_WIN32)
+    if (out.size() > 2 && out[0] == '/' && out[2] == ':') out.erase(0, 1);
+#endif
+    return out;
+}
+
+namespace {
+
+std::vector<std::string> &ServerSearchPath() {
+    static std::vector<std::string> dirs;
+    return dirs;
+}
+
+std::string DirOf(const std::string &path) {
+    const size_t slash = path.find_last_of("/\\");
+    if (slash == std::string::npos) return std::string();
+    return slash == 0 ? std::string("/") : path.substr(0, slash);
+}
+
+std::string JoinPath(const std::string &dir, const std::string &rel) {
+    if (rel.empty() || rel[0] == '/' || dir.empty()) return rel;
+    return dir + "/" + rel;
+}
+
+// The procs, methods and classes one file defines, analysed once per modification time.
+struct FileDefs {
+    std::filesystem::file_time_type mtime;
+    std::vector<TclLspProcDoc> procs;  // methods too (method set, qname "::ns::Class name")
+    std::vector<TclLspClassDoc> classes;
+};
+
+const FileDefs &DefsOf(const std::string &path) {
+    static std::map<std::string, FileDefs> cache;
+    static const FileDefs none;
+    std::error_code ec;
+    const auto mtime = std::filesystem::last_write_time(path, ec);
+    if (ec) return none;
+    auto it = cache.find(path);
+    if (it != cache.end() && it->second.mtime == mtime) return it->second;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return none;
+    std::vector<std::string> lines;
+    std::string l;
+    while (std::getline(in, l)) {
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        lines.push_back(l);
+    }
+    const auto doc = TclLspAnalyze(lines, path);
+    FileDefs e;
+    e.mtime = mtime;
+    for (const ProcInfo &p : doc->procs) {
+        // Methods count only when their class is known (oo::class create / oo::define NAME).
+        if (p.method && p.klass.empty()) continue;
+        TclLspProcDoc d;
+        d.found = true;
+        d.method = p.method;
+        d.klass = p.klass;
+        d.qname = p.method ? p.klass + " " + p.written : p.qname;
+        d.written = p.written;
+        d.params_label = p.params_label;
+        d.params = p.params;
+        d.doc = p.doc;
+        d.path = path;
+        int col = 0;
+        doc->Pos(p.cmd_start, &d.line, &col);
+        e.procs.push_back(d);
+    }
+    for (const ClassInfo &c : doc->classes) {
+        TclLspClassDoc d;
+        d.found = true;
+        d.qname = c.qname;
+        d.doc = c.doc;
+        d.path = path;
+        // Superclasses resolve like command names: qualified, else relative to the definition's namespace.
+        for (const std::string &s : c.supers)
+            d.supers.push_back(s.compare(0, 2, "::") == 0 ? s : (c.ns == "::" ? "::" : c.ns + "::") + s);
+        int col = 0;
+        doc->Pos(c.cmd_start, &d.line, &col);
+        e.classes.push_back(d);
+    }
+    return cache[path] = std::move(e);
+}
+
+const std::vector<TclLspProcDoc> &ProcsOf(const std::string &path) { return DefsOf(path).procs; }
+
+// The candidates for `name` written in namespace `ns`: qualified as is, else ns::name and ::name.
+std::vector<std::string> NameCandidates(const std::string &name, const std::string &ns) {
+    std::vector<std::string> exact;
+    if (name.compare(0, 2, "::") == 0) {
+        exact.push_back(name);
+    } else {
+        if (!ns.empty() && ns != "::") exact.push_back(ns + "::" + name);
+        exact.push_back("::" + name);
+    }
+    return exact;
+}
+
+bool EndsWithTail(const std::string &qname, const std::string &name) {
+    const std::string tail = "::" + (name.compare(0, 2, "::") == 0 ? name.substr(2) : name);
+    return qname.size() > tail.size() && qname.compare(qname.size() - tail.size(), tail.size(), tail) == 0;
+}
+
+TclLspProcDoc MethodOf(const std::string &klass, const std::string &method, const std::vector<std::string> &files,
+                       std::set<std::string> *seen) {
+    if (!seen->insert(klass).second) return TclLspProcDoc();
+    for (const std::string &f : files)
+        for (const TclLspProcDoc &p : ProcsOf(f))
+            if (p.method && p.klass == klass && p.written == method) return p;
+    // Inherited: the superclasses of every definition of the class, depth first.
+    for (const std::string &f : files)
+        for (const TclLspClassDoc &c : DefsOf(f).classes)
+            if (c.qname == klass)
+                for (const std::string &s : c.supers) {
+                    const TclLspProcDoc p = MethodOf(s, method, files, seen);
+                    if (p.found) return p;
+                }
+    return TclLspProcDoc();
+}
+
+}  // namespace
+
+void TclLspSetSearchPath(const std::vector<std::string> &dirs) { ServerSearchPath() = dirs; }
+
+std::vector<std::string> TclLspTclFilesIn(const std::vector<std::string> &dirs) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    auto take = [&](const fs::path &p) {
+        const std::string ext = p.extension().string();
+        if ((ext == ".tcl" || ext == ".tm") && seen.insert(p.string()).second) out.push_back(p.string());
+    };
+    for (const std::string &dir : dirs) {
+        std::error_code ec;
+        if (dir.empty() || !fs::is_directory(dir, ec)) continue;
+        std::vector<fs::path> subdirs;
+        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            if (it->is_directory(ec)) subdirs.push_back(it->path());
+            else take(it->path());
+        }
+        // A package directory: dir/pkgname/*.tcl (as TCLLIBPATH / auto_path list them).
+        std::sort(subdirs.begin(), subdirs.end());
+        for (const fs::path &sd : subdirs) {
+            std::error_code ec2;
+            for (fs::directory_iterator it(sd, ec2), end; !ec2 && it != end; it.increment(ec2))
+                if (!it->is_directory(ec2)) take(it->path());
+        }
+        if (out.size() > 2000) break;
+    }
+    return out;
+}
+
+std::vector<std::string> TclLspSearchFiles(const TclLspDocument &doc) {
+    std::vector<std::string> files, dirs;
+    const std::string own = DirOf(doc.path);
+    // source FILE, source [file join [file dirname [info script]] a b ...], lappend auto_path DIR
+    for (const std::string &line : doc.lines) {
+        size_t i = 0;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) i++;
+        const std::string rest = line.substr(i);
+        auto words_after = [&](const std::string &prefix) {
+            std::vector<std::string> w;
+            std::string cur;
+            for (size_t k = prefix.size(); k < rest.size(); k++) {
+                const char c = rest[k];
+                if (c == ' ' || c == '\t' || c == '[' || c == ']' || c == '"' || c == '{' || c == '}' || c == ';') {
+                    if (!cur.empty()) w.push_back(cur);
+                    cur.clear();
+                    if (c == ';') break;
+                } else {
+                    cur += c;
+                }
+            }
+            if (!cur.empty()) w.push_back(cur);
+            return w;
+        };
+        if (rest.compare(0, 7, "source ") == 0) {
+            const std::vector<std::string> w = words_after("source ");
+            if (w.size() == 1 && w[0][0] != '$') {
+                files.push_back(JoinPath(own, w[0]));
+            } else if (w.size() >= 6 && w[0] == "file" && w[1] == "join" && w[2] == "file" && w[3] == "dirname" &&
+                       w[4] == "info" && w[5] == "script") {
+                std::string p = own;
+                for (size_t k = 6; k < w.size(); k++) p = JoinPath(p, w[k]);
+                files.push_back(p);
+            }
+        } else if (rest.compare(0, 17, "lappend auto_path") == 0) {
+            const std::vector<std::string> w = words_after("lappend auto_path");
+            if (w.size() == 1 && w[0][0] != '$') {
+                dirs.push_back(JoinPath(own, w[0]));
+            } else if (w.size() >= 6 && w[0] == "file" && w[1] == "join" && w[2] == "file" && w[3] == "dirname" &&
+                       w[4] == "info" && w[5] == "script") {
+                std::string p = own;
+                for (size_t k = 6; k < w.size(); k++) p = JoinPath(p, w[k]);
+                dirs.push_back(p);
+            }
+        }
+    }
+    if (!own.empty()) dirs.push_back(own);
+    for (const std::string &d : ServerSearchPath()) dirs.push_back(d);
+    for (const std::string &f : TclLspTclFilesIn(dirs))
+        if (f != doc.path && std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
+    return files;
+}
+
+TclLspProcDoc TclLspFindProc(const std::string &name, const std::vector<std::string> &files, const std::string &ns) {
+    if (name.empty()) return TclLspProcDoc();
+    std::vector<std::string> exact;
+    if (name.compare(0, 2, "::") == 0) {
+        exact.push_back(name);
+    } else {
+        if (!ns.empty() && ns != "::") exact.push_back(ns + "::" + name);
+        exact.push_back("::" + name);
+    }
+    for (const std::string &q : exact)
+        for (const std::string &f : files)
+            for (const TclLspProcDoc &p : ProcsOf(f))
+                if (!p.method && p.qname == q) return p;
+    // `name` as the tail of a namespaced proc (one `namespace import`ed, or the Help tab's bare name).
+    for (const std::string &f : files)
+        for (const TclLspProcDoc &p : ProcsOf(f))
+            if (!p.method && EndsWithTail(p.qname, name)) return p;
+    return TclLspProcDoc();
+}
+
+TclLspClassDoc TclLspFindClass(const std::string &name, const std::vector<std::string> &files, const std::string &ns) {
+    if (name.empty()) return TclLspClassDoc();
+    for (const std::string &q : NameCandidates(name, ns))
+        for (const std::string &f : files)
+            for (const TclLspClassDoc &c : DefsOf(f).classes)
+                if (c.qname == q) return c;
+    for (const std::string &f : files)
+        for (const TclLspClassDoc &c : DefsOf(f).classes)
+            if (EndsWithTail(c.qname, name)) return c;
+    return TclLspClassDoc();
+}
+
+TclLspProcDoc TclLspFindMethod(const std::string &klass, const std::string &method,
+                               const std::vector<std::string> &files, const std::string &ns) {
+    const TclLspClassDoc c = TclLspFindClass(klass, files, ns);
+    if (!c.found || method.empty()) return TclLspProcDoc();
+    std::set<std::string> seen;
+    TclLspProcDoc p = MethodOf(c.qname, method, files, &seen);
+    // `Class new ...` / `Class create name ...` run the constructor.
+    if (!p.found && (method == "new" || method == "create")) {
+        seen.clear();
+        p = MethodOf(c.qname, "constructor", files, &seen);
+    }
+    return p;
+}
+
+std::vector<TclLspProcDoc> TclLspFindMethods(const std::string &method, const std::vector<std::string> &files) {
+    std::vector<TclLspProcDoc> out;
+    std::set<std::string> seen;
+    for (const std::string &f : files)
+        for (const TclLspProcDoc &p : ProcsOf(f))
+            if (p.method && p.written == method && seen.insert(p.qname).second) out.push_back(p);
+    return out;
+}
+
+std::vector<std::string> TclLspClassMethods(const std::string &qname, const std::vector<std::string> &files) {
+    std::vector<std::string> out;
+    for (const std::string &f : files)
+        for (const TclLspProcDoc &p : ProcsOf(f))
+            if (p.method && p.klass == qname && std::find(out.begin(), out.end(), p.written) == out.end())
+                out.push_back(p.written);
+    return out;
+}
+
+std::string TclLspClassMarkdown(const TclLspClassDoc &c) {
+    std::string s = "```tcl\noo::class create " + c.qname;
+    if (!c.supers.empty()) {
+        s += " {superclass";
+        for (const std::string &x : c.supers) s += " " + x;
+        s += "}";
+    }
+    s += "\n```";
+    if (!c.doc.empty()) s += "\n\n" + c.doc;
+    if (!c.path.empty()) s += "\n\n*" + c.path + ":" + std::to_string(c.line + 1) + "*";
+    return s;
+}
+
+std::string TclLspProcMarkdown(const TclLspProcDoc &p) {
+    std::string s = "```tcl\n" + std::string(p.method ? "method " : "proc ") + p.qname + " {" + p.params_label + "}\n```";
+    if (!p.doc.empty()) s += "\n\n" + p.doc;
+    if (!p.path.empty()) s += "\n\n*" + p.path + ":" + std::to_string(p.line + 1) + "*";
+    return s;
+}
+
+std::string TclLspBuiltinDoc(const std::string &name) {
+    std::string n = name.compare(0, 2, "::") == 0 ? name.substr(2) : name;
+    const TclLspApi *a = Api(n);
+    if (!a) {
+        // "string map" written as one word list, or an abbreviated subcommand.
+        const size_t sp = n.find(' ');
+        if (sp != std::string::npos) {
+            const std::string sub = ResolveSub(n.substr(0, sp), n.substr(sp + 1));
+            if (!sub.empty()) a = Api(n.substr(0, sp) + " " + sub);
+        }
+    }
+    if (!a) return std::string();
+    std::string s = std::string(a->usage) + "\n";
+    if (a->doc && *a->doc) s += "\n" + std::string(a->doc) + "\n";
+    if (std::string(a->kind) == "ensemble") {
+        std::string subs;
+        const std::string prefix = n + " ";
+        size_t count = 0;
+        const TclLspApi *t = TclLspApiTable(&count);
+        for (size_t i = 0; i < count; i++)
+            if (std::string(t[i].name).compare(0, prefix.size(), prefix) == 0)
+                subs += "  " + std::string(t[i].usage) + "\n";
+        if (!subs.empty()) s += "\nSubcommands:\n" + subs;
+    }
+    return s;
 }

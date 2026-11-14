@@ -223,4 +223,15 @@ struct CobolLspFold {
 
 std::vector<CobolLspFold> CobolLspFolds(const CobolLspDocument &doc);
 
+// --- Formatting -------------------------------------------------------------------------
+
+/**
+ * @brief textDocument/formatting and rangeFormatting: mep's COBOL formatter (cobol_format.h) over
+ * the whole document, one edit per changed line (the formatter never adds or removes lines), only
+ * for lines first..last (0-based, inclusive; last < 0 means to the end). A refusal gives no edits
+ * and sets *error.
+ */
+std::vector<CobolLspTextEdit> CobolLspFormat(const std::vector<std::string> &lines, int first, int last,
+                                             std::string *error);
+
 #endif  // MEP_COBOL_LSP_H

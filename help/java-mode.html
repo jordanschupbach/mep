@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Java mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="48">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Java mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.java</code> or
+<code>.jsh</code> file. The tab becomes a Java workspace: your file, a jshell console
+below it, a Variables and a History panel at the top right and Help at the
+bottom right.</p>
+<p>It needs a JDK (<code>java</code> and <code>javac</code>, with the <code>jdk.jshell</code> module that
+every JDK ships) on <code>PATH</code>. mep's dev shell has one; elsewhere, start mep
+from <code>nix shell nixpkgs#jdk</code>, or name the java command in a <code>REPL:</code> line
+(see Options below).</p>
+<h1>The console</h1>
+<p>The console is jshell's own engine (the <code>jdk.jshell</code> API that the <code>jshell</code>
+tool is built on), driven by mep. Input is split into snippets the way
+jshell splits it, values print the way jshell prints them, and state
+persists from input to input:</p>
+<pre>jshell&gt; int x = 5;
+x ==&gt; 5
+jshell&gt; int twice(int a) {
+   ...&gt;     return 2 * a;
+   ...&gt; }
+|  created method twice(int)
+jshell&gt; twice(x)
+$2 ==&gt; 10</pre>
+<p>The first start compiles mep's small console program into
+<code>~/.cache/mep/java-ui/</code> (once per JDK). It runs under <code>rlwrap</code> when
+there is one, for line editing and history.</p>
+<table>
+<tr><th>Command</th><th>Does</th></tr>
+<tr><td><code>/vars</code> <code>/methods</code> <code>/types</code> <code>/imports</code></td><td>what the session declared</td></tr>
+<tr><td><code>/list</code></td><td>the snippets the session kept</td></tr>
+<tr><td><code>/drop NAME</code></td><td>drop a declaration</td></tr>
+<tr><td><code>/reset</code></td><td>start over with an empty session</td></tr>
+<tr><td><code>/open FILE</code></td><td>load a file's snippets into the session</td></tr>
+<tr><td><code>/run FILE</code></td><td>what <code>&lt;leader&gt;rr</code> does</td></tr>
+<tr><td><code>/env --class-path CP</code></td><td>restart with this class path; the session's snippets replay</td></tr>
+<tr><td><code>/help NAME</code>, <code>/doc NAME</code></td><td>Javadoc of <code>NAME</code> in the Help panel</td></tr>
+<tr><td><code>/history</code></td><td>the inputs so far</td></tr>
+<tr><td><code>/?</code></td><td>the list of commands</td></tr>
+<tr><td><code>/exit</code></td><td>leave</td></tr>
+</table>
+<p>Ctrl-C stops a snippet that is still running.</p>
+<h1>Sending code</h1>
+<ul>
+<li><code>&lt;leader&gt;re</code> sends the Visual selection, or else the line at the cursor. The console extends that line downwards for as long as jshell considers it incomplete, so on <code>for (...) {</code> it takes the whole loop, and on a method's or class's first line (or its Javadoc) the whole declaration. The file's <code>import</code> lines are brought along. Errors name the file and its own line numbers, as in <code>Main.java:13:19: error: cannot find symbol</code>.</li>
+<li><code>&lt;leader&gt;rr</code> (or the Run button) runs the file:</li>
+<li>with a <code>CMD:</code> line (see <a href="run-button.html">Run button</a>), that command, after saving the file;</li>
+<li>with a <code>main</code> method, a single-file source launch, <code>java File.java</code>, with the class path below;</li>
+<li>otherwise (a <code>.jsh</code> file, a file of declarations), <code>/open</code> loads it into the session.</li>
+</ul>
+<h1>The class path</h1>
+<p>jshell takes its class path when it starts. Its entries come from:</p>
+<ol>
+<li>the <code>-cp</code>, <code>-classpath</code> or <code>--class-path</code> in the file's <code>CMD:</code> line, for example <code>// CMD: java -cp build:lib/datamunge.jar Main.java</code>;</li>
+<li><code>$MEP_JAVA_CLASSPATH</code>;</li>
+<li><code>$CLASSPATH</code>.</li>
+</ol>
+<p>Relative entries are taken from mep's working directory, where the Run
+button runs its command; a <code>dir/*</code> entry means the jars in <code>dir</code>. Each time
+code is sent, mep checks the <code>CMD:</code> line again. When its class path has
+changed, the console restarts its engine with the new one and replays the
+session's snippets (jshell's <code>/env</code> does the same). The Variables panel
+lists the class path in use.</p>
+<h1>Panels</h1>
+<ul>
+<li><b>Variables</b>: <code>/vars</code>, <code>/methods</code> and <code>/types</code> as sections, with the imports and the class path folded below. They are rewritten after every input. Clicking a row shows its Help.</li>
+<li><b>History</b>: the inputs. Clicking one sends it again.</li>
+<li><b>Help</b>: what <code>gh</code> and <code>/help</code> show.</li>
+</ul>
+<h1>Help</h1>
+<p><code>gh</code> over a name (or <code>/help NAME</code>) shows its Javadoc. <code>NAME</code> can be
+<code>DataFrame</code>, <code>DataFrame.filter</code>, <code>org.datamunge.DataFrame#filter(double)</code>, or
+<code>frame.filter</code> when <code>frame</code> is a session variable (its type is used). The
+Help panel looks in this order:</p>
+<ol>
+<li>the session's own variables, methods and classes (with their source);</li>
+<li>Javadoc <code>/** */</code> comments in Java source, read by mep's Java server (<code>mep-java-lsp --doc</code>): your file's package root and directory, the source path (<code>$MEP_JAVA_SOURCEPATH</code>, and <code>-sourcepath</code> or <code>--source-path</code> in the <code>CMD:</code> line) and the class path's directories;</li>
+<li>the JDK's own Javadoc (from its <code>src.zip</code>), through jshell.</li>
+</ol>
+<p>Rosetta's Java binding of datamunge carries its documentation as Javadoc in
+its generated <code>.java</code> files. Point <code>MEP_JAVA_SOURCEPATH</code> at them, and both
+<code>gh</code> here and the language server's hover show it.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.java_ui_java = <span class="tok-green">'java'</span>      <span class="tok-comment">-- the java command that runs the console</span>
+<span class="tok-cyan">mep</span>.opt.java_ui_rlwrap = <span class="tok-cyan">true</span>      <span class="tok-comment">-- run it under rlwrap when there is one</span>
+<span class="tok-cyan">mep</span>.opt.java_ui_info_share = <span class="tok-cyan">0.34</span>  <span class="tok-comment">-- the panels' share of the width</span></code></pre></div>
+<p>A <code>REPL:</code> comment replaces the java command, for example
+<code>// REPL: nix shell nixpkgs#jdk --command java</code>. Any command other than
+plain <code>java</code> runs the console by source launch, so no <code>javac</code> is needed.
+<code>:MepJavaRestart</code> starts a fresh console.</p>
+<h1>Checking it</h1>
+<p><code>just test-java-ui</code> runs <code>tools/java_ui_check.py</code>: the mode's Lua on stubs,
+the console with a real JDK (snippets, panels, errors, <code>/evalat</code> line
+numbers, the class path and its restart, <code>/run</code>, Javadoc from a source
+path and from the JDK), and the console under a pty. It skips when java or
+javac is missing.</p>
+</body>
+</html>

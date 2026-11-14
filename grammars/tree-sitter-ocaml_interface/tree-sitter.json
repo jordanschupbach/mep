@@ -1,0 +1,22 @@
+{
+  "grammars": [
+    {
+      "name": "ocaml_interface",
+      "camelcase": "OCamlInterface",
+      "scope": "source.ocaml.interface",
+      "path": ".",
+      "external-files": ["../tree-sitter-ocaml/common/scanner.h"],
+      "file-types": ["mli"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "^ocaml_interface$"
+    }
+  ],
+  "metadata": {
+    "version": "0.26.0",
+    "license": "MIT",
+    "description": "OCaml grammar for tree-sitter (tree-sitter/tree-sitter-ocaml, vendored in mep)",
+    "links": {
+      "repository": "https://github.com/tree-sitter/tree-sitter-ocaml"
+    }
+  }
+}

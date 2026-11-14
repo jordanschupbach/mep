@@ -1,0 +1,133 @@
+#+TITLE: Java mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="48">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.java= or
+=.jsh= file. The tab becomes a Java workspace: your file, a jshell console
+below it, a Variables and a History panel at the top right and Help at the
+bottom right.
+
+It needs a JDK (=java= and =javac=, with the =jdk.jshell= module that
+every JDK ships) on =PATH=. mep's dev shell has one; elsewhere, start mep
+from =nix shell nixpkgs#jdk=, or name the java command in a =REPL:= line
+(see Options below).
+
+* The console
+
+The console is jshell's own engine (the =jdk.jshell= API that the =jshell=
+tool is built on), driven by mep. Input is split into snippets the way
+jshell splits it, values print the way jshell prints them, and state
+persists from input to input:
+
+#+begin_example
+jshell> int x = 5;
+x ==> 5
+jshell> int twice(int a) {
+   ...>     return 2 * a;
+   ...> }
+|  created method twice(int)
+jshell> twice(x)
+$2 ==> 10
+#+end_example
+
+The first start compiles mep's small console program into
+=~/.cache/mep/java-ui/= (once per JDK). It runs under =rlwrap= when
+there is one, for line editing and history.
+
+| Command                  | Does                                                         |
+|--------------------------+--------------------------------------------------------------|
+| =/vars= =/methods= =/types= =/imports= | what the session declared                      |
+| =/list=                  | the snippets the session kept                                |
+| =/drop NAME=             | drop a declaration                                           |
+| =/reset=                 | start over with an empty session                             |
+| =/open FILE=             | load a file's snippets into the session                     |
+| =/run FILE=              | what =<leader>rr= does                                       |
+| =/env --class-path CP=   | restart with this class path; the session's snippets replay |
+| =/help NAME=, =/doc NAME= | Javadoc of =NAME= in the Help panel                         |
+| =/history=               | the inputs so far                                            |
+| =/?=                     | the list of commands                                         |
+| =/exit=                  | leave                                                        |
+
+Ctrl-C stops a snippet that is still running.
+
+* Sending code
+
+- =<leader>re= sends the Visual selection, or else the line at the cursor.
+  The console extends that line downwards for as long as jshell considers
+  it incomplete, so on =for (...) {= it takes the whole loop, and on a
+  method's or class's first line (or its Javadoc) the whole declaration.
+  The file's =import= lines are brought along. Errors name the file and
+  its own line numbers, as in =Main.java:13:19: error: cannot find symbol=.
+- =<leader>rr= (or the Run button) runs the file:
+  - with a =CMD:= line (see [[file:run-button.html][Run button]]), that
+    command, after saving the file;
+  - with a =main= method, a single-file source launch, =java File.java=,
+    with the class path below;
+  - otherwise (a =.jsh= file, a file of declarations), =/open= loads it
+    into the session.
+
+* The class path
+
+jshell takes its class path when it starts. Its entries come from:
+
+1. the =-cp=, =-classpath= or =--class-path= in the file's =CMD:= line,
+   for example =// CMD: java -cp build:lib/datamunge.jar Main.java=;
+2. =$MEP_JAVA_CLASSPATH=;
+3. =$CLASSPATH=.
+
+Relative entries are taken from mep's working directory, where the Run
+button runs its command; a =dir/*= entry means the jars in =dir=. Each time
+code is sent, mep checks the =CMD:= line again. When its class path has
+changed, the console restarts its engine with the new one and replays the
+session's snippets (jshell's =/env= does the same). The Variables panel
+lists the class path in use.
+
+* Panels
+
+- *Variables*: =/vars=, =/methods= and =/types= as sections, with the
+  imports and the class path folded below. They are rewritten after every
+  input. Clicking a row shows its Help.
+- *History*: the inputs. Clicking one sends it again.
+- *Help*: what =gh= and =/help= show.
+
+* Help
+
+=gh= over a name (or =/help NAME=) shows its Javadoc. =NAME= can be
+=DataFrame=, =DataFrame.filter=, =org.datamunge.DataFrame#filter(double)=, or
+=frame.filter= when =frame= is a session variable (its type is used). The
+Help panel looks in this order:
+
+1. the session's own variables, methods and classes (with their source);
+2. Javadoc =/** */= comments in Java source, read by mep's Java server
+   (=mep-java-lsp --doc=): your file's package root and directory, the
+   source path (=$MEP_JAVA_SOURCEPATH=, and =-sourcepath= or
+   =--source-path= in the =CMD:= line) and the class path's directories;
+3. the JDK's own Javadoc (from its =src.zip=), through jshell.
+
+Rosetta's Java binding of datamunge carries its documentation as Javadoc in
+its generated =.java= files. Point =MEP_JAVA_SOURCEPATH= at them, and both
+=gh= here and the language server's hover show it.
+
+* Options
+
+#+begin_src lua
+mep.opt.java_ui_java = 'java'      -- the java command that runs the console
+mep.opt.java_ui_rlwrap = true      -- run it under rlwrap when there is one
+mep.opt.java_ui_info_share = 0.34  -- the panels' share of the width
+#+end_src
+
+A =REPL:= comment replaces the java command, for example
+=// REPL: nix shell nixpkgs#jdk --command java=. Any command other than
+plain =java= runs the console by source launch, so no =javac= is needed.
+=:MepJavaRestart= starts a fresh console.
+
+* Checking it
+
+=just test-java-ui= runs =tools/java_ui_check.py=: the mode's Lua on stubs,
+the console with a real JDK (snippets, panels, errors, =/evalat= line
+numbers, the class path and its restart, =/run=, Javadoc from a source
+path and from the JDK), and the console under a pty. It skips when java or
+javac is missing.

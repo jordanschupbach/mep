@@ -1,10 +1,12 @@
 #ifndef MEP_COBOL_SYNTAX_H
 #define MEP_COBOL_SYNTAX_H
 
-// COBOL line structure shared by the editor's highlighter
-// (Editor::SyntaxHighlightCobol, mep.cobol_highlight) and mep-cobol-lsp
-// (cobol_lsp.cpp): which reference format a line is in, where its code
-// area is, where a comment starts, and what a doc comment says.
+// COBOL line structure shared by mep-cobol-lsp (cobol_lsp.cpp) and mep's
+// COBOL formatter (cobol_format.cpp): which reference format a line is in,
+// where its code area is, where a comment starts, and what a doc comment
+// says. (Highlighting is the tree-sitter grammar's,
+// grammars/tree-sitter-cobol, whose scanner tells the formats apart the
+// same way.)
 //
 // Formats, as GnuCOBOL reads them:
 //   - fixed: columns 1-6 are the sequence area (ignored), column 7 the
@@ -15,7 +17,8 @@
 // `>>SOURCE [FORMAT] [IS] FREE|FIXED` (and `$SET SOURCEFORMAT"FREE"`)
 // switch format from the next line on. Without a directive the format is
 // guessed: fixed (GnuCOBOL's default) unless some line has code in the
-// sequence area that is not a sequence number.
+// sequence area that is not a sequence number (six characters of anything
+// followed by an indicator are a sequence area: GnuCOBOL ignores them).
 //
 // A doc comment is a line whose comment text starts with `*>>` (rosetta's
 // convention; see cobol_lsp.h). It is recognized the same way in both
@@ -57,23 +60,5 @@ inline bool CobolWordChar(char c) {
 
 /** @brief Upper-cases ASCII letters (COBOL names compare case-insensitively). */
 std::string CobolUpper(const std::string &s);
-
-/** @brief One highlighted span on a line: [col_start, col_end) in mep highlight group `group`. */
-struct CobolHighlightSpan {
-    int col_start = 0;
-    int col_end = 0;
-    const char *group = "";
-};
-
-/**
- * @brief The highlight spans of a whole buffer, one vector per line.
- *
- * Groups: Comment (comments, the fixed-format sequence area), Green
- * (literals), Cyan (numbers, PICTURE strings, 78/88 names), Purple
- * (reserved words, directives, indicators), Orange (level numbers) and
- * Blue (paragraph and section names, the name a data entry declares at
- * level 01/77).
- */
-std::vector<std::vector<CobolHighlightSpan>> CobolHighlight(const std::vector<std::string> &lines);
 
 #endif  // MEP_COBOL_SYNTAX_H

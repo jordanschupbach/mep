@@ -1,0 +1,140 @@
+==================
+niladic tradfn
+==================
+∇ Hello
+⎕←'hi'
+∇
+---
+
+(source_file
+  (tradfn
+    (tradfn_header
+      (identifier))
+    (assignment
+      (system_name)
+      (string))))
+
+==================
+dyadic tradfn with locals
+==================
+∇Z←A PLUS B;T;⎕IO
+⍝ Adds A and B.
+T←A
+Z←T+B
+∇
+---
+
+(source_file
+  (tradfn
+    (tradfn_header
+      (identifier)
+      (identifier)
+      (identifier)
+      (identifier)
+      (local
+        (identifier))
+      (local
+        (system_name)))
+    (comment)
+    (assignment
+      (identifier)
+      (identifier))
+    (assignment
+      (identifier)
+      (identifier)
+      (primitive)
+      (identifier))))
+
+==================
+optional left and shy result
+==================
+∇ {R}←{L} Fn Y
+R←Y
+∇
+---
+
+(source_file
+  (tradfn
+    (tradfn_header
+      (optional_name
+        (identifier))
+      (optional_name
+        (identifier))
+      (identifier)
+      (identifier))
+    (assignment
+      (identifier)
+      (identifier))))
+
+==================
+operator tradfn
+==================
+∇ R←(F Each2 G) Y
+R←F¨G Y
+∇
+---
+
+(source_file
+  (tradfn
+    (tradfn_header
+      (identifier)
+      (operator_spec
+        (identifier)
+        (identifier)
+        (identifier))
+      (identifier))
+    (assignment
+      (identifier)
+      (identifier)
+      (operator)
+      (identifier)
+      (identifier))))
+
+==================
+labels and branch
+==================
+∇ R←Loop N
+R←0
+L1:R←R+1
+→(R<N)/L1
+∇
+---
+
+(source_file
+  (tradfn
+    (tradfn_header
+      (identifier)
+      (identifier)
+      (identifier))
+    (assignment
+      (identifier)
+      (number))
+    (label
+      (identifier))
+    (assignment
+      (identifier)
+      (identifier)
+      (primitive)
+      (number))
+    (branch)
+    (parenthesized
+      (identifier)
+      (primitive)
+      (identifier))
+    (operator)
+    (identifier)))
+
+==================
+locked tradfn
+==================
+∇ X
+1
+∇⍫
+---
+
+(source_file
+  (tradfn
+    (tradfn_header
+      (identifier))
+    (number)))
+

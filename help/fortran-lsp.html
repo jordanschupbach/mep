@@ -88,14 +88,72 @@ reports gfortran makes too; it finds about half of gfortran's, missing
 those that need an <code>INCLUDE</code> or another file to decide.</p>
 <h1>What else it does</h1>
 <ul>
-<li><b>Hover</b> on a name shows its declaration -- type, attributes, kind (dummy argument, parameter, function result, component, ...) and line; on an intrinsic, its argument lists, a one-line summary, its class (elemental function, subroutine, ...) and standard.</li>
-<li><b>Completion</b> offers the names in scope (the unit's own, its host's, and those of modules in the same file that it =USE=s), intrinsics and keywords; after <code>var%</code>, the components and bindings of <code>var</code>'s derived type; after <code>use</code>, the modules in the file and the intrinsic modules.</li>
-<li><b>Signature help</b> shows the dummy arguments of the file's own subroutines and functions, and the argument list of an intrinsic.</li>
-<li><b>Go to definition</b>, <b>references</b> and <b>rename</b> follow Fortran's scoping: host association into internal and module procedures, <code>USE</code> of modules in the same file (renames included), components through <code>a%b</code>, kind parameters in literals (<code>1.0_dp</code>), and <code>END SUBROUTINE name</code>. Rename refuses a name that is not a Fortran name or that is taken in the scope.</li>
+<li><b>Hover</b> on a name shows its declaration -- type, attributes, kind (dummy argument, parameter, function result, component, ...), a parameter's value, a procedure's dummy arguments, a derived type's components and bindings, a generic interface's specific procedures -- then its FORD documentation as Markdown, and where it is declared; on an intrinsic, its argument lists, a one-line summary, its class (elemental function, subroutine, ...) and standard.</li>
+<li><b>Completion</b> offers the names in scope (the unit's own, its host's, and those of the modules it =USE=s, from the same file or another), with their documentation, intrinsics and keywords; after <code>var%</code>, the components and bindings of <code>var</code>'s derived type, inherited ones included; after <code>use</code>, the modules it can find and the intrinsic modules; in a <code>use m, only:</code> list, what <code>m</code> exports.</li>
+<li><b>Signature help</b> shows the dummy arguments of subroutines and functions (each with its declaration and documentation), one signature per specific procedure of a generic interface -- the one that fits the arguments written so far is active, and <code>name=</code> picks the dummy -- the bindings of a type-bound generic (without the passed object), a type's constructor, and the argument list of an intrinsic.</li>
+<li><b>Go to definition</b>, <b>references</b> and <b>rename</b> follow Fortran's scoping: host association into internal and module procedures, <code>USE</code> of modules (renames included), components and bindings through <code>a%b</code>, kind parameters in literals (<code>1.0_dp</code>), and <code>END SUBROUTINE name</code>. Definition goes into the file of a module from elsewhere; references and rename stay in the file. Rename refuses a name that is not a Fortran name, that is taken in the scope, or that belongs to another file's module.</li>
 <li>The <b>outline</b> lists programs, modules, submodules, subroutines, functions, derived types with their components and bindings, named interfaces, and module variables and parameters.</li>
 <li><b>Folding</b> covers program units, interfaces, derived types, every block construct and runs of comments.</li>
 <li><b>Formatting</b> is mep's own Fortran formatter, the one <code>gf</code> runs: fprettify's layout at its defaults, byte for byte, with no Python installed. Fixed-form files are left alone. See <a href="formatting.html">Formatting</a>.</li>
 </ul>
+<h1>Modules in other files</h1>
+<p>A <code>use datamunge</code> of a module the file does not define sends the server
+looking for the file that does: a file with a <code>module datamunge</code>
+statement (names are case-insensitive), searched in this order:</p>
+<ol>
+<li>the workspace -- the Fortran files (<code>.f90</code>, <code>.F90</code>, <code>.f</code>, <code>.for</code>, <code>.f95</code>, <code>.f03</code>, <code>.f08</code>, ...) under the directory the editor opened, indexed when the server starts, skipping hidden directories and build output (<code>build*</code>, <code>cmake-build-*</code>, <code>CMakeFiles</code>, <code>_build</code>, <code>_deps</code>, <code>bin</code>, <code>obj</code>, <code>target</code>, <code>node_modules</code>, ...) -- and the files open in the editor, whose unsaved text counts;</li>
+<li>the directories in <code>MEP_FORTRAN_PATH</code>, separated by colons;</li>
+<li>the <code>-I</code> directories in the <code>FFLAGS</code> and <code>FCFLAGS</code> environment variables (<code>-Idir</code> or <code>-I dir</code>; a relative one is taken from the workspace root);</li>
+<li>the directory of the file doing the <code>USE</code>.</li>
+</ol>
+<p>A module generated into a build directory -- a binding generator's
+output, say -- is found by putting that directory on <code>MEP_FORTRAN_PATH</code>,
+or in <code>FFLAGS</code> as the compiler sees it:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">sh</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="sh"><span class="tok-purple">export</span> MEP_FORTRAN_PATH=$<span class="tok-cyan">PWD</span>/build/generated</code></pre></div>
+<p>Then hover, completion, signature help and go to definition work on its
+names as on the file's own: everything it exports, its <code>PRIVATE</code> names
+left out, <code>only:</code> lists and renames (<code>use datamunge, only: f =&gt; fit</code>)
+honoured, and what it re-exports from modules it =USE=s followed in turn.
+After <code>obj%</code>, when <code>obj</code>'s declared type comes from the module, the
+completions are its components and type-bound procedures, those it
+inherits through <code>extends(...)</code> included.</p>
+<p>A module's file is read once and kept until it changes on disk (its
+modification time or size), so a generated module of tens of thousands of
+lines costs one parse: on a 70,000-line module with 4,000 procedures and
+1,000 generic interfaces, the first parse takes about 0.15 s and a hover
+afterwards well under a millisecond. Lints stay per file: <code>undeclared</code> is
+still quiet in a scope that =USE=s a module from another file.</p>
+<h2>FORD documentation</h2>
+<p>Comments in <a href="https://forddocs.readthedocs.io">FORD</a>'s style document the entity they sit by -- a
+module, procedure, derived type, component, type-bound procedure,
+generic interface, parameter or variable:</p>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">fortran</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="fortran"><span class="tok-comment">!&gt; Fit a model to the data.</span>
+<span class="tok-comment">!!</span>
+<span class="tok-comment">!! Least squares, weighted when weights are given.</span>
+<span class="tok-purple">interface</span> fit
+   <span class="tok-purple">module</span> <span class="tok-purple">procedure</span> fit_1, fit_2
+<span class="tok-purple">end</span> <span class="tok-purple">interface</span> fit
+
+<span class="tok-purple">subroutine</span> <span class="tok-blue">fit_2</span>(<span class="tok-red">x</span>, <span class="tok-red">n</span>, <span class="tok-red">out</span>)
+   <span class="tok-comment">!! Fit with a scalar.</span>
+   <span class="tok-orange">real(c_double)</span>, <span class="tok-orange">intent</span>(<span class="tok-orange">in</span>) :: x   <span class="tok-comment">!! the scalar</span>
+   <span class="tok-orange">integer</span>, <span class="tok-orange">intent</span>(<span class="tok-orange">in</span>) :: n          <span class="tok-comment">!! how many</span>
+   <span class="tok-orange">real(c_double)</span>, <span class="tok-orange">intent</span>(<span class="tok-orange">out</span>) :: out
+<span class="tok-purple">end</span> <span class="tok-purple">subroutine</span> <span class="tok-blue">fit_2</span></code></pre></div>
+<ul>
+<li><code>!&gt;</code> lines directly above an entity's statement document it, and so do the <code>!!</code> lines continuing such a block (Doxygen's convention);</li>
+<li><code>!!</code> at the end of the statement's line, and <code>!!</code> lines directly below it, document it too (FORD's convention; <code>!&lt;</code> trails as well);</li>
+<li>a dummy argument is documented by <code>!!</code> on its declaration or by a <code>@param name text</code> line in its procedure's block (<code>@param[in]</code> too).</li>
+</ul>
+<p>The text is Markdown and is shown as Markdown. Doxygen's tags, as
+documentation converted from C++ carries them, are turned into it:
+<code>@brief</code> and <code>@details</code> are dropped, <code>@param</code> lines become an
+<b>Arguments</b> list and <code>@return</code> a <b>Returns</b> line, <code>@note</code>, <code>@warning</code>,
+<code>@see</code>, <code>@deprecated</code> and their kind become labelled paragraphs,
+<code>@code</code> / <code>@endcode</code> a code block, and <code>@p name</code> becomes <code>name</code>.
+Hover on a generic interface lists its specific procedures with their
+summaries; a type-bound procedure with no documentation of its own shows
+its procedure's.</p>
 <h1>Using fortls instead</h1>
 <p><code>fortls</code> stays registered but claims no files. To use it, in <code>init.lua</code>:</p>
 <div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.lsp_servers.fortran_ls.filetypes = <span class="tok-blue">{</span><span class="tok-blue">}</span>
@@ -110,7 +168,11 @@ those that need an <code>INCLUDE</code> or another file to decide.</p>
 is an error or a warning, 2 if a file could not be read, and 0 otherwise.
 Standard input is read as free form. =mep-fortran-lsp --gfortran-check
 FILE...= prints just the first syntax error for each file, as =LINE:
-message= (line 0 for the end of the file), or <code>ok</code>. With no arguments,
+message= (line 0 for the end of the file), or <code>ok</code>. =mep-fortran-lsp
+--intrinsic NAME= prints what the server knows about an intrinsic
+procedure, an intrinsic module's entity or a keyword -- its forms, class,
+standard and summary -- and exits 1 when it knows nothing; the
+<a href="fortran-mode.html">Fortran mode</a>'s Help uses it. With no arguments,
 <code>mep-fortran-lsp</code> is the language server on stdio.</p>
 <h1>See also</h1>
 <ul>

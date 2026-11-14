@@ -22,7 +22,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 
 #include "octave_format.h"
@@ -101,6 +104,7 @@ const char *const kKeywords[] = {"break", "case", "catch", "classdef", "continue
 
 class OctaveLspDocument {
 public:
+    std::string path;  // the file's path (a file:// URI is decoded), "" when unknown
     std::vector<std::string> lines;
     std::string text;
     std::vector<int> line_start;
@@ -534,6 +538,7 @@ std::string Repair(const std::string &text, const ParseResult &r) {
 std::shared_ptr<const OctaveLspDocument> OctaveLspAnalyze(const std::vector<std::string> &lines,
                                                           const std::string &path) {
     auto doc = std::make_shared<OctaveLspDocument>();
+    doc->path = OctaveLspUriToPath(path);
     doc->lines = lines;
     for (size_t i = 0; i < lines.size(); i++) {
         doc->line_start.push_back(static_cast<int>(doc->text.size()));
@@ -754,6 +759,983 @@ bool IsKeywordWord(const std::string &w) {
 
 }  // namespace
 
+// --- Help text and the load path --------------------------------------------------
+
+std::string OctaveLspUriToPath(const std::string &uri) {
+    if (uri.compare(0, 7, "file://") != 0) return uri;
+    std::string p = uri.substr(7);
+    std::string out;
+    for (size_t i = 0; i < p.size(); i++) {
+        if (p[i] == '%' && i + 2 < p.size() && std::isxdigit(static_cast<unsigned char>(p[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(p[i + 2]))) {
+            out += static_cast<char>(std::stoi(p.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += p[i];
+        }
+    }
+#if defined(_WIN32)
+    if (out.size() > 2 && out[0] == '/' && out[2] == ':') out.erase(0, 1);
+#endif
+    return out;
+}
+
+namespace {
+
+std::string TrimLeft(const std::string &s) {
+    size_t i = 0;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) i++;
+    return s.substr(i);
+}
+
+bool IsCommentLine(const std::string &l) {
+    const std::string t = TrimLeft(l);
+    return !t.empty() && (t[0] == '%' || t[0] == '#');
+}
+bool IsBlankLine(const std::string &l) { return TrimLeft(l).empty(); }
+bool IsBlockOpen(const std::string &l) {
+    std::string t = TrimLeft(l);
+    while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r')) t.pop_back();
+    return t == "%{" || t == "#{";
+}
+bool IsBlockClose(const std::string &l) {
+    std::string t = TrimLeft(l);
+    while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r')) t.pop_back();
+    return t == "%}" || t == "#}";
+}
+
+// A comment line's text: the leading `%`/`#` run and one space dropped.
+std::string CommentText(const std::string &l) {
+    std::string t = TrimLeft(l);
+    size_t i = 0;
+    while (i < t.size() && (t[i] == '%' || t[i] == '#')) i++;
+    if (i < t.size() && t[i] == ' ') i++;
+    t = t.substr(i);
+    while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r')) t.pop_back();
+    return t;
+}
+
+// The comment block starting at (or, backwards, ending at) `at`: line
+// comments or one %{ ... %} block. Returns its text lines, empty when there is none.
+std::vector<std::string> BlockForward(const std::vector<std::string> &lines, size_t at) {
+    std::vector<std::string> out;
+    if (at >= lines.size()) return out;
+    if (IsBlockOpen(lines[at])) {
+        for (size_t i = at + 1; i < lines.size() && !IsBlockClose(lines[i]); i++) out.push_back(lines[i]);
+        return out;
+    }
+    for (size_t i = at; i < lines.size() && IsCommentLine(lines[i]) && !IsBlockOpen(lines[i]); i++)
+        out.push_back(CommentText(lines[i]));
+    return out;
+}
+std::vector<std::string> BlockBackward(const std::vector<std::string> &lines, size_t at) {
+    std::vector<std::string> out;
+    if (at >= lines.size()) return out;
+    if (IsBlockClose(lines[at])) {
+        size_t i = at;
+        while (i > 0 && !IsBlockOpen(lines[i - 1])) i--;
+        if (i == 0) return out;
+        for (size_t k = i; k < at; k++) out.push_back(lines[k]);
+        return out;
+    }
+    size_t i = at + 1;
+    while (i > 0 && IsCommentLine(lines[i - 1]) && !IsBlockClose(lines[i - 1])) i--;
+    for (size_t k = i; k <= at; k++) out.push_back(CommentText(lines[k]));
+    return out;
+}
+
+bool IsCopyright(const std::vector<std::string> &block) {
+    for (const std::string &l : block) {
+        const std::string t = TrimLeft(l);
+        if (t.empty()) continue;
+        return t.compare(0, 9, "Copyright") == 0 || t.compare(0, 7, "Author:") == 0 ||
+               t.compare(0, 4, "SPDX") == 0;
+    }
+    return false;
+}
+
+std::string Upper(std::string s) {
+    for (char &c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// The argument of `@cmd{...}` starting at text[open] == '{' (nesting aware); `*end` past the '}'.
+std::string BraceArg(const std::string &t, size_t open, size_t *end) {
+    int depth = 0;
+    std::string arg;
+    for (size_t i = open; i < t.size(); i++) {
+        const char c = t[i];
+        if (c == '@' && i + 1 < t.size() && std::strchr("{}@", t[i + 1])) {
+            if (depth > 0) arg += t.substr(i, 2);
+            i++;
+            continue;
+        }
+        if (c == '{') {
+            if (depth++ > 0) arg += c;
+        } else if (c == '}') {
+            if (--depth == 0) {
+                *end = i + 1;
+                return arg;
+            }
+            arg += c;
+        } else {
+            arg += c;
+        }
+    }
+    *end = t.size();
+    return arg;
+}
+
+// Texinfo inline markup to plain text, the way Octave's `help` shows it.
+std::string TexinfoInline(const std::string &t) {
+    std::string out;
+    for (size_t i = 0; i < t.size(); i++) {
+        if (t[i] != '@') {
+            out += t[i];
+            continue;
+        }
+        if (i + 1 < t.size() && std::strchr("{}@", t[i + 1])) {
+            out += t[i + 1];
+            i++;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < t.size() && std::isalpha(static_cast<unsigned char>(t[j]))) j++;
+        const std::string cmd = t.substr(i + 1, j - i - 1);
+        if (j < t.size() && t[j] == '{') {
+            size_t end = j;
+            const std::string arg = TexinfoInline(BraceArg(t, j, &end));
+            if (cmd == "var") out += Upper(arg);
+            else if (cmd == "code" || cmd == "samp" || cmd == "command" || cmd == "env" || cmd == "file")
+                out += "'" + arg + "'";
+            else if (cmd == "seealso") out += "See also: " + arg + ".";
+            else if (cmd == "dots") out += "...";
+            else if (cmd == "result") out += "=>";
+            else if (cmd == "print") out += "-|";
+            else if (cmd == "error") out += "error:";
+            else out += arg;
+            i = end - 1;
+        } else {
+            i = j - 1;  // unknown bare @cmd: dropped
+        }
+    }
+    return out;
+}
+
+// A whole help block that starts with `-*- texinfo -*-`, as plain text.
+std::vector<std::string> TexinfoToText(const std::vector<std::string> &block) {
+    std::vector<std::string> out;
+    bool in_example = false;
+    for (size_t i = 0; i < block.size(); i++) {
+        const std::string &l = block[i];
+        if (l.find("-*- texinfo -*-") != std::string::npos) continue;
+        const std::string t = TrimLeft(l);
+        if (t.compare(0, 10, "@deftypefn") == 0) {
+            // @deftypefn[x] {Category} {RET =} name (args)
+            size_t p = t.find(' ');
+            std::string rest = p == std::string::npos ? std::string() : TrimLeft(t.substr(p));
+            if (!rest.empty() && rest[0] == '{') {  // the category
+                size_t end = 0;
+                BraceArg(rest, 0, &end);
+                rest = TrimLeft(rest.substr(end));
+            }
+            std::string ret;
+            if (!rest.empty() && rest[0] == '{') {
+                size_t end = 0;
+                ret = TexinfoInline(BraceArg(rest, 0, &end));
+                rest = TrimLeft(rest.substr(end));
+            }
+            out.push_back(" -- " + (ret.empty() ? std::string() : ret + " ") + TexinfoInline(rest));
+            continue;
+        }
+        if (t.compare(0, 4, "@end") == 0) {
+            if (t.find("example") != std::string::npos) in_example = false;
+            if (t.find("deftypefn") != std::string::npos) continue;
+            continue;
+        }
+        if (t.compare(0, 8, "@example") == 0 || t.compare(0, 8, "@display") == 0 ||
+            t.compare(0, 11, "@smallexample") == 0) {
+            in_example = true;
+            continue;
+        }
+        if (t.compare(0, 5, "@item") == 0) {
+            out.push_back("     * " + TexinfoInline(TrimLeft(t.substr(5))));
+            continue;
+        }
+        if (!t.empty() && t[0] == '@' && t.find('{') == std::string::npos) continue;  // @noindent, @table ...
+        out.push_back((in_example ? "          " : "     ") + TexinfoInline(l));
+    }
+    while (!out.empty() && TrimLeft(out.back()).empty()) out.pop_back();
+    return out;
+}
+
+std::string JoinHelp(std::vector<std::string> block) {
+    while (!block.empty() && TrimLeft(block.front()).empty()) block.erase(block.begin());
+    while (!block.empty() && TrimLeft(block.back()).empty()) block.pop_back();
+    if (!block.empty() && block.front().find("-*- texinfo -*-") != std::string::npos) block = TexinfoToText(block);
+    std::string s;
+    for (const std::string &l : block) s += l + "\n";
+    return s;
+}
+
+std::vector<std::string> ReadLines(const std::string &path, bool *ok) {
+    std::ifstream in(path, std::ios::binary);
+    *ok = static_cast<bool>(in);
+    std::vector<std::string> lines;
+    std::string l;
+    while (std::getline(in, l)) {
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        lines.push_back(l);
+    }
+    return lines;
+}
+
+bool FileExists(const std::string &path) {
+    std::ifstream in(path, std::ios::binary);
+    return static_cast<bool>(in);
+}
+
+std::vector<std::string> &ServerSearchPath() {
+    static std::vector<std::string> dirs;
+    return dirs;
+}
+
+std::string DirOf(const std::string &path) {
+    const size_t slash = path.find_last_of("/\\");
+    if (slash == std::string::npos) return std::string();
+    return slash == 0 ? std::string("/") : path.substr(0, slash);
+}
+
+}  // namespace
+
+std::string OctaveLspHelpText(const std::vector<std::string> &lines, int function_line, bool first_in_file) {
+    if (function_line < 0 || static_cast<size_t>(function_line) >= lines.size()) return std::string();
+    const size_t fl = static_cast<size_t>(function_line);
+    // Above the function line (blank lines between allowed), skipping copyright blocks.
+    size_t i = fl;
+    while (i > 0) {
+        size_t k = i;
+        while (k > 0 && IsBlankLine(lines[k - 1])) k--;
+        if (k == 0 || !(IsCommentLine(lines[k - 1]) || IsBlockClose(lines[k - 1]))) break;
+        std::vector<std::string> block = BlockBackward(lines, k - 1);
+        size_t top = k - 1;
+        if (IsBlockClose(lines[k - 1])) {
+            while (top > 0 && !IsBlockOpen(lines[top])) top--;
+        } else {
+            while (top > 0 && IsCommentLine(lines[top - 1]) && !IsBlockClose(lines[top - 1])) top--;
+        }
+        if (!IsCopyright(block)) {
+            const std::string s = JoinHelp(block);
+            if (!s.empty()) return s;
+        }
+        i = top;
+    }
+    // A function file's leading block (Octave reads it even when code separates them).
+    if (first_in_file) {
+        for (size_t k = 0; k < fl; k++) {
+            if (IsBlankLine(lines[k])) continue;
+            if (!(IsCommentLine(lines[k]) || IsBlockOpen(lines[k]))) break;
+            std::vector<std::string> block = BlockForward(lines, k);
+            if (!IsCopyright(block)) {
+                const std::string s = JoinHelp(block);
+                if (!s.empty()) return s;
+            }
+            if (IsBlockOpen(lines[k])) {
+                while (k < fl && !IsBlockClose(lines[k])) k++;
+            } else {
+                while (k + 1 < fl && IsCommentLine(lines[k + 1])) k++;
+            }
+        }
+    }
+    // Below the function line (a signature continued with `...` first).
+    size_t k = fl;
+    while (k + 1 < lines.size() && lines[k].find("...") != std::string::npos && !IsCommentLine(lines[k])) k++;
+    k++;
+    while (k < lines.size() && IsBlankLine(lines[k])) k++;
+    if (k < lines.size() && (IsCommentLine(lines[k]) || IsBlockOpen(lines[k]))) {
+        std::vector<std::string> block = BlockForward(lines, k);
+        if (!IsCopyright(block)) return JoinHelp(block);
+    }
+    return std::string();
+}
+
+void OctaveLspSetSearchPath(const std::vector<std::string> &dirs) { ServerSearchPath() = dirs; }
+
+std::vector<std::string> OctaveLspSearchPath(const OctaveLspDocument &doc) {
+    std::vector<std::string> dirs;
+    auto add = [&dirs](const std::string &d) {
+        if (!d.empty() && std::find(dirs.begin(), dirs.end(), d) == dirs.end()) dirs.push_back(d);
+    };
+    const std::string own = DirOf(doc.path);
+    // addpath('dir') / addpath("dir") / addpath dir with a literal argument.
+    for (size_t i = 0; i < doc.tree.tokens.size(); i++) {
+        const Token &t = doc.tree.tokens[i];
+        if (t.kind != Tok::Name || (t.text != "addpath" && t.text != "path")) continue;
+        for (size_t j = i + 1; j < doc.tree.tokens.size() && j < i + 12; j++) {
+            const Token &a = doc.tree.tokens[j];
+            if (a.kind == Tok::Newline || a.kind == Tok::Semi || (a.kind == Tok::Op && a.text == ")")) break;
+            if (a.kind != Tok::DqString && a.kind != Tok::SqString) continue;
+            const std::string dir = a.text;
+            size_t start = 0;
+            while (start <= dir.size()) {  // "a:b" (pathsep) adds both
+                size_t sep = dir.find(':', start);
+#if defined(_WIN32)
+                sep = dir.find(';', start);
+#endif
+                std::string one = dir.substr(start, sep == std::string::npos ? std::string::npos : sep - start);
+                if (!one.empty() && one[0] != '/' && !own.empty()) one = own + "/" + one;
+                add(one);
+                if (sep == std::string::npos) break;
+                start = sep + 1;
+            }
+        }
+    }
+    add(own);
+    for (const std::string &d : ServerSearchPath()) add(d);
+    return dirs;
+}
+
+namespace {
+
+// A classdef's outline: methods (with their signature and Static attribute) and properties.
+struct ClassMember {
+    std::string name, signature;
+    int line = 0;
+    bool is_static = false;
+};
+struct ClassOutline {
+    bool found = false;
+    std::string name;
+    std::vector<std::string> supers;
+    int line = 0;
+    std::vector<ClassMember> methods;
+    std::vector<std::string> properties;  // not Hidden
+};
+
+// Whether a block's attribute list sets `attr` (Static, Hidden): `(Static)`, `(Static = true)`.
+bool BlockHasAttr(const OctaveLspDocument &d, const AstNode &block, const char *attr) {
+    for (int k : block.kids) {
+        const AstNode &a = d.N(k);
+        if (a.kind != Node::Attr || a.kids.empty() || d.N(a.kids[0]).tok < 0) continue;
+        if (d.T(d.N(a.kids[0]).tok).text != attr) continue;
+        if (a.kids.size() > 1 && d.N(a.kids[1]).tok >= 0 && d.T(d.N(a.kids[1]).tok).text == "false") return false;
+        return true;
+    }
+    return false;
+}
+
+ClassOutline OutlineOf(const OctaveLspDocument &d) {
+    ClassOutline c;
+    if (d.tree.root < 0) return c;
+    int cls = -1;
+    for (size_t i = 0; i < d.tree.nodes.size() && cls < 0; i++)
+        if (d.tree.nodes[i].kind == Node::Classdef) cls = static_cast<int>(i);
+    if (cls < 0) return c;
+    const AstNode &a = d.N(cls);
+    if (a.name < 0 || d.N(a.name).tok < 0) return c;
+    c.found = true;
+    c.name = d.T(d.N(a.name).tok).text;
+    OctaveLspRange g;
+    if (d.NodeRange(cls, &g)) c.line = g.line;
+    for (int k : a.kids) {
+        const AstNode &b = d.N(k);
+        if (b.kind == Node::Superclass && b.tok >= 0) c.supers.push_back(d.T(b.tok).text);
+        if (b.kind != Node::ClassBlock || b.tok < 0) continue;
+        const std::string kw = d.T(b.tok).text;
+        const bool is_static = BlockHasAttr(d, b, "Static");
+        const bool hidden = BlockHasAttr(d, b, "Hidden") || BlockHasAttr(d, b, "Access");
+        for (int e : b.kids) {
+            const AstNode &x = d.N(e);
+            if (kw == "methods" && x.kind == Node::Function) {
+                for (const FunctionInfo &f : d.functions) {
+                    if (f.node != e) continue;
+                    ClassMember m;
+                    m.name = f.name;
+                    m.signature = "function " + FunctionSignature(d, f);
+                    if (d.NodeRange(e, &g)) m.line = g.line;
+                    m.is_static = is_static;
+                    c.methods.push_back(m);
+                }
+            } else if (kw == "properties" && x.kind == Node::Property && !hidden && !x.kids.empty() &&
+                       d.N(x.kids[0]).tok >= 0) {
+                c.properties.push_back(d.T(d.N(x.kids[0]).tok).text);
+            }
+        }
+    }
+    return c;
+}
+
+// A file read and analysed once per modification time.
+struct CachedFile {
+    std::vector<std::string> lines;
+    std::shared_ptr<const OctaveLspDocument> doc;
+    ClassOutline outline;
+};
+const CachedFile *Cached(const std::string &path) {
+    struct Entry {
+        std::filesystem::file_time_type mtime;
+        CachedFile file;
+    };
+    static std::map<std::string, Entry> cache;
+    std::error_code ec;
+    const auto mtime = std::filesystem::last_write_time(path, ec);
+    if (ec) return nullptr;
+    auto it = cache.find(path);
+    if (it != cache.end() && it->second.mtime == mtime) return &it->second.file;
+    bool ok = false;
+    Entry e;
+    e.mtime = mtime;
+    e.file.lines = ReadLines(path, &ok);
+    if (!ok) return nullptr;
+    e.file.doc = OctaveLspAnalyze(e.file.lines, path);
+    e.file.outline = OutlineOf(*e.file.doc);
+    return &(cache[path] = std::move(e)).file;
+}
+
+std::vector<std::string> SplitDots(const std::string &s) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (true) {
+        const size_t d = s.find('.', start);
+        out.push_back(s.substr(start, d == std::string::npos ? std::string::npos : d - start));
+        if (d == std::string::npos) break;
+        start = d + 1;
+    }
+    return out;
+}
+
+// parts[0..n) as a path: +a/+b/c (the last part plain).
+std::string PackagePath(const std::vector<std::string> &parts, size_t n) {
+    std::string rel;
+    for (size_t i = 0; i < n; i++) rel += (i + 1 < n ? "+" : "") + parts[i] + (i + 1 < n ? "/" : "");
+    return rel;
+}
+
+// Whether help text has a line that starts (after indentation) with `heading`.
+bool HasHeading(const std::string &help, const std::string &heading) {
+    size_t at = 0;
+    while (at < help.size()) {
+        const size_t nl = help.find('\n', at);
+        const std::string l = TrimLeft(help.substr(at, nl == std::string::npos ? std::string::npos : nl - at));
+        if (l.compare(0, heading.size(), heading) == 0) return true;
+        if (nl == std::string::npos) break;
+        at = nl + 1;
+    }
+    return false;
+}
+
+// The class's help block, then its properties and methods unless the help lists them already.
+std::string ClassHelp(const CachedFile &f) {
+    const ClassOutline &c = f.outline;
+    std::string help = OctaveLspHelpText(f.lines, c.line, true);
+    const std::string written = help;
+    if (!c.properties.empty() && !HasHeading(written, "Properties")) {
+        help += (help.empty() ? "" : "\n") + std::string("Properties:\n");
+        for (const std::string &p : c.properties) help += "  " + p + "\n";
+    }
+    std::string inst, stat;
+    for (const ClassMember &m : c.methods) {
+        if (m.name == c.name) continue;  // the constructor is the class's own signature
+        (m.is_static ? stat : inst) += "  " + m.signature.substr(9) + "\n";
+    }
+    if (!inst.empty() && !HasHeading(written, "Methods")) help += (help.empty() ? "" : "\n") + std::string("Methods:\n") + inst;
+    if (!stat.empty() && !HasHeading(written, "Static methods"))
+        help += (help.empty() ? "" : "\n") + std::string("Static methods:\n") + stat;
+    return help;
+}
+
+}  // namespace
+
+OctaveLspDocLookup OctaveLspFindMember(const std::string &class_name, const std::string &member,
+                                       const std::vector<std::string> &dirs, int depth) {
+    OctaveLspDocLookup r;
+    const OctaveLspDocLookup cls = OctaveLspFindOnPath(class_name, dirs);
+    if (!cls.found || cls.kind != "class" || depth > 8) return r;
+    const CachedFile *f = Cached(cls.path);
+    if (!f) return r;
+    for (const ClassMember &m : f->outline.methods) {
+        if (m.name != member || m.name == f->outline.name) continue;
+        r.found = true;
+        r.kind = m.is_static ? "static method" : "method";
+        r.path = cls.path;
+        r.line = m.line;
+        r.signature = m.signature;
+        r.help = OctaveLspHelpText(f->lines, m.line, false);
+        r.qualified = cls.qualified + "." + member;
+        return r;
+    }
+    for (const std::string &p : f->outline.properties) {
+        if (p != member) continue;
+        r.found = true;
+        r.kind = "property";
+        r.path = cls.path;
+        r.qualified = cls.qualified + "." + member;
+        r.signature = "property " + r.qualified;
+        return r;
+    }
+    // Inherited: the superclasses, in order.
+    for (const std::string &s : f->outline.supers) {
+        r = OctaveLspFindMember(s, member, dirs, depth + 1);
+        if (r.found) return r;
+    }
+    return OctaveLspDocLookup();
+}
+
+std::vector<OctaveLspClassMember> OctaveLspClassMembers(const std::string &class_name,
+                                                        const std::vector<std::string> &dirs) {
+    std::vector<OctaveLspClassMember> out;
+    std::set<std::string> seen;
+    std::vector<std::string> todo = {class_name};
+    for (size_t i = 0; i < todo.size() && i < 16; i++) {
+        const OctaveLspDocLookup cls = OctaveLspFindOnPath(todo[i], dirs);
+        if (!cls.found || cls.kind != "class") continue;
+        const CachedFile *f = Cached(cls.path);
+        if (!f) continue;
+        for (const ClassMember &m : f->outline.methods) {
+            if (m.name == f->outline.name || !seen.insert(m.name).second) continue;
+            out.push_back({m.name, m.signature, m.is_static, false});
+        }
+        for (const std::string &p : f->outline.properties)
+            if (seen.insert(p).second) out.push_back({p, "property", false, true});
+        for (const std::string &s : f->outline.supers) todo.push_back(s);
+    }
+    return out;
+}
+
+OctaveLspDocLookup OctaveLspFindInFile(const std::string &name, const std::string &path) {
+    OctaveLspDocLookup r;
+    const CachedFile *cf = Cached(path);
+    if (!cf) return r;
+    const std::vector<std::string> &lines = cf->lines;
+    const OctaveLspDocument &doc = *cf->doc;
+    const std::string stem = Basename(path);
+    r.path = path;
+    if (cf->outline.found) {
+        // A classdef file: the class itself, or one of its methods.
+        if (name == stem || name == cf->outline.name) {
+            r.found = true;
+            r.kind = "class";
+            r.line = cf->outline.line;
+            r.signature = "classdef " + cf->outline.name;
+            for (size_t i = 0; i < cf->outline.supers.size(); i++)
+                r.signature += (i ? " & " : " < ") + cf->outline.supers[i];
+            r.help = ClassHelp(*cf);
+            return r;
+        }
+        for (const ClassMember &m : cf->outline.methods) {
+            if (m.name != name) continue;
+            r.found = true;
+            r.kind = m.is_static ? "static method" : "method";
+            r.line = m.line;
+            r.signature = m.signature;
+            r.help = OctaveLspHelpText(lines, m.line, false);
+            return r;
+        }
+        return OctaveLspDocLookup();
+    }
+    const FunctionInfo *f = nullptr;
+    for (const FunctionInfo &g : doc.functions)
+        if (g.name == name && !f) f = &g;
+    if (!f && name == stem && !doc.functions.empty()) f = &doc.functions[0];
+    if (!f) {
+        // A script file named NAME: its leading comment block.
+        if (name != stem) return r;
+        r.found = true;
+        r.kind = "script";
+        size_t k = 0;
+        while (k < lines.size() && IsBlankLine(lines[k])) k++;
+        while (k < lines.size() && (IsCommentLine(lines[k]) || IsBlockOpen(lines[k]))) {
+            std::vector<std::string> block = BlockForward(lines, k);
+            if (!IsCopyright(block)) {
+                r.help = JoinHelp(block);
+                break;
+            }
+            while (k < lines.size() && IsCommentLine(lines[k])) k++;
+            while (k < lines.size() && IsBlankLine(lines[k])) k++;
+        }
+        return r;
+    }
+    OctaveLspRange g;
+    if (doc.NodeRange(f->node, &g)) r.line = g.line;
+    r.found = true;
+    r.kind = "function";
+    r.signature = "function " + FunctionSignature(doc, *f);
+    r.help = OctaveLspHelpText(lines, r.line, f == &doc.functions[0]);
+    return r;
+}
+
+OctaveLspDocLookup OctaveLspFindOnPath(const std::string &name, const std::vector<std::string> &dirs) {
+    const std::vector<std::string> parts = SplitDots(name);
+    for (const std::string &p : parts)
+        if (!IsIdentifier(p)) return OctaveLspDocLookup();
+    const size_t n = parts.size();
+    // pkg.fn / pkg.Class -> +pkg/fn.m
+    for (const std::string &dir : dirs) {
+        const std::string p = dir + "/" + PackagePath(parts, n) + ".m";
+        if (FileExists(p)) {
+            OctaveLspDocLookup r = OctaveLspFindInFile(parts.back(), p);
+            if (r.found) r.qualified = name;
+            return r;
+        }
+    }
+    // pkg.Class.method -> a method of +pkg/Class.m (or of its superclasses).
+    if (n >= 2) {
+        std::string cls;
+        for (size_t i = 0; i + 1 < n; i++) cls += (i ? "." : "") + parts[i];
+        for (const std::string &dir : dirs) {
+            if (!FileExists(dir + "/" + PackagePath(parts, n - 1) + ".m")) continue;
+            return OctaveLspFindMember(cls, parts.back(), dirs);
+        }
+    }
+    return OctaveLspDocLookup();
+}
+
+std::vector<std::string> OctaveLspPackageNames(const std::vector<std::string> &dirs) {
+    namespace fs = std::filesystem;
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    struct Walk {
+        std::vector<std::string> &out;
+        std::set<std::string> &seen;
+        void Dir(const fs::path &dir, const std::string &prefix, int depth) {
+            std::error_code ec;
+            for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+                const std::string fn = it->path().filename().string();
+                if (it->is_directory(ec)) {
+                    if (fn.size() > 1 && fn[0] == '+' && depth < 6) Dir(it->path(), prefix + fn.substr(1) + ".", depth + 1);
+                } else if (!prefix.empty() && fn.size() > 2 && fn.compare(fn.size() - 2, 2, ".m") == 0) {
+                    const std::string q = prefix + fn.substr(0, fn.size() - 2);
+                    if (seen.insert(q).second) out.push_back(q);
+                }
+            }
+        }
+    } w{out, seen};
+    for (const std::string &d : dirs) {
+        std::error_code ec;
+        if (!d.empty() && fs::is_directory(d, ec)) w.Dir(d, "", 0);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::vector<std::string> OctaveLspImports(const OctaveLspDocument &doc) {
+    std::vector<std::string> out;
+    const auto &toks = doc.tree.tokens;
+    for (size_t i = 0; i < toks.size(); i++) {
+        if (toks[i].kind != Tok::Name || toks[i].text != "import") continue;
+        for (size_t j = i + 1; j < toks.size() && toks[j].kind != Tok::Newline && toks[j].kind != Tok::Semi; j++) {
+            if (toks[j].kind != Tok::SqString && toks[j].kind != Tok::DqString) continue;
+            if (!toks[j].text.empty()) out.push_back(toks[j].text);
+        }
+    }
+    return out;
+}
+
+OctaveLspDocLookup OctaveLspResolveName(const std::string &name, const std::vector<std::string> &dirs,
+                                        const std::vector<std::string> &imports, std::vector<std::string> *candidates) {
+    OctaveLspDocLookup r = OctaveLspFindOnPath(name, dirs);
+    if (r.found) return r;
+    const std::vector<std::string> parts = SplitDots(name);
+    const std::string head = parts[0];
+    const std::string rest = name.size() > head.size() ? name.substr(head.size()) : std::string();
+    // import pkg.* / import pkg.Name
+    for (const std::string &imp : imports) {
+        std::string q;
+        if (imp.size() > 2 && imp.compare(imp.size() - 2, 2, ".*") == 0) q = imp.substr(0, imp.size() - 2) + "." + head;
+        else if (imp.size() > head.size() && imp.compare(imp.size() - head.size() - 1, std::string::npos, "." + head) == 0)
+            q = imp;
+        if (q.empty()) continue;
+        r = OctaveLspFindOnPath(q + rest, dirs);
+        if (r.found) return r;
+    }
+    // The one package member of that name.
+    std::vector<std::string> matches;
+    for (const std::string &q : OctaveLspPackageNames(dirs)) {
+        const size_t dot = q.rfind('.');
+        if (q.compare(dot + 1, std::string::npos, head) == 0) matches.push_back(q);
+    }
+    if (candidates) *candidates = matches;
+    if (matches.size() == 1) return OctaveLspFindOnPath(matches[0] + rest, dirs);
+    return OctaveLspDocLookup();
+}
+
+std::vector<OctaveLspDocLookup> OctaveLspMethodsNamed(const std::string &method, const std::vector<std::string> &dirs,
+                                                      size_t limit) {
+    std::vector<OctaveLspDocLookup> out;
+    for (const std::string &q : OctaveLspPackageNames(dirs)) {
+        if (out.size() >= limit) break;
+        const OctaveLspDocLookup cls = OctaveLspFindOnPath(q, dirs);
+        if (!cls.found || cls.kind != "class") continue;
+        const CachedFile *f = Cached(cls.path);
+        if (!f) continue;
+        for (const ClassMember &m : f->outline.methods) {
+            if (m.name != method || m.name == f->outline.name) continue;
+            OctaveLspDocLookup r;
+            r.found = true;
+            r.kind = m.is_static ? "static method" : "method";
+            r.path = cls.path;
+            r.line = m.line;
+            r.signature = m.signature;
+            r.help = OctaveLspHelpText(f->lines, m.line, false);
+            r.qualified = q + "." + method;
+            out.push_back(r);
+            break;
+        }
+    }
+    return out;
+}
+
+// --- What an expression is: a package, a class, an instance of one, a callable ----
+
+namespace {
+
+struct ExprType {
+    enum Kind { None, Package, ClassRef, Instance, Callable } kind = None;
+    std::string q;  // the package / class / callable's qualified name
+};
+
+// The class a method's or function's help says it returns: Rosetta's
+// "Output:\n  r  pkg.Class or []" (or a class-named first word of the next line).
+std::string OutputClass(const OctaveLspDocLookup &d, const std::vector<std::string> &dirs) {
+    std::vector<std::string> lines;
+    std::string cur;
+    for (char c : d.help + "\n") {
+        if (c == '\n') {
+            lines.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    for (size_t i = 0; i + 1 < lines.size(); i++) {
+        const std::string t = TrimLeft(lines[i]);
+        if (t.compare(0, 7, "Output:") != 0 && t.compare(0, 8, "Outputs:") != 0) continue;
+        std::string words = TrimLeft(lines[i + 1]);
+        // "r  datamunge.DataFrame or []": the second word.
+        const size_t sp = words.find_first_of(" \t");
+        if (sp == std::string::npos) return std::string();
+        words = TrimLeft(words.substr(sp));
+        const std::string w = words.substr(0, words.find_first_of(" \t,"));
+        const OctaveLspDocLookup c = OctaveLspFindOnPath(w, dirs);
+        return c.found && c.kind == "class" ? c.qualified : std::string();
+    }
+    return std::string();
+}
+
+class Typer {
+public:
+    // Types names as of position (line, col) of `d`.
+    Typer(const OctaveLspDocument &d, int line, int col) : d_(d), line_(line), col_(col) {
+        dirs_ = OctaveLspSearchPath(d);
+        imports_ = OctaveLspImports(d);
+        for (size_t i = 0; i < d.tree.nodes.size(); i++) {
+            const AstNode &a = d.tree.nodes[i];
+            if (a.kind != Node::Assign || a.kids.size() < 2) continue;
+            const AstNode &lhs = d.N(a.kids[0]);
+            if (lhs.kind != Node::Identifier || lhs.tok < 0) continue;
+            OctaveLspRange g;
+            if (!d.NodeRange(static_cast<int>(i), &g)) continue;
+            assigns_.push_back({g.end_line, g.end_col, a.last, d.T(lhs.tok).text, a.kids[1]});
+        }
+        std::sort(assigns_.begin(), assigns_.end(), [](const Assign &x, const Assign &y) { return x.last < y.last; });
+    }
+
+    // The type of node `n` of `e` (`d` itself, or an expression parsed apart and typed at the position).
+    ExprType Of(const OctaveLspDocument &e, int n, int guard = 0) {
+        ExprType t;
+        if (n < 0 || guard > 32) return t;
+        const AstNode &a = e.N(n);
+        switch (a.kind) {
+        case Node::Paren:
+            return a.kids.empty() ? t : Of(e, a.kids[0], guard + 1);
+        case Node::Identifier: {
+            if (a.tok < 0) return t;
+            const std::string name = e.T(a.tok).text;
+            // The last assignment to it before this point decides.
+            for (size_t i = assigns_.size(); i-- > 0;) {
+                const Assign &as = assigns_[i];
+                if (as.name != name) continue;
+                const bool before = &e == &d_ ? as.last < a.tok
+                                              : (as.end_line < line_ || (as.end_line == line_ && as.end_col <= col_));
+                if (!before) continue;
+                return Value(Of(d_, as.rhs, guard + 1));
+            }
+            return Named(name, true);
+        }
+        case Node::Field: {
+            if (a.kids.empty() || a.tok < 0) return t;
+            const std::string member = e.T(a.tok).text;
+            const ExprType base = Of(e, a.kids[0], guard + 1);
+            if (base.kind == ExprType::Package) return Named(base.q + "." + member, false);
+            if (base.kind == ExprType::ClassRef || base.kind == ExprType::Instance) {
+                const OctaveLspDocLookup m = OctaveLspFindMember(base.q, member, dirs_);
+                if (!m.found || m.kind == "property") return t;
+                t.kind = ExprType::Callable;
+                t.q = m.qualified;
+            }
+            return t;
+        }
+        case Node::Index:
+            return a.kids.empty() ? t : Value(Of(e, a.kids[0], guard + 1));
+        default:
+            return t;
+        }
+    }
+
+    // What a name, class or callable gives as a value: a class's instance, a callable's output class.
+    ExprType Value(const ExprType &f) {
+        ExprType t;
+        if (f.kind == ExprType::ClassRef || f.kind == ExprType::Instance) {
+            t.kind = ExprType::Instance;
+            t.q = f.q;
+        } else if (f.kind == ExprType::Callable) {
+            const std::string c = OutputClass(OctaveLspFindOnPath(f.q, dirs_), dirs_);
+            if (!c.empty()) {
+                t.kind = ExprType::Instance;
+                t.q = c;
+            }
+        }
+        return t;
+    }
+
+    // A dotted name: a package directory, a class, a function or method; bare
+    // names also through the file's imports.
+    ExprType Named(const std::string &q, bool bare) {
+        ExprType t;
+        std::string pkg;
+        for (const std::string &p : SplitDots(q)) pkg += "/+" + p;
+        for (const std::string &dir : dirs_) {
+            std::error_code ec;
+            if (std::filesystem::is_directory(dir + pkg, ec)) {
+                t.kind = ExprType::Package;
+                t.q = q;
+                return t;
+            }
+        }
+        const OctaveLspDocLookup r = bare ? OctaveLspResolveName(q, dirs_, imports_, nullptr) : OctaveLspFindOnPath(q, dirs_);
+        if (!r.found) return t;
+        t.q = r.qualified.empty() ? q : r.qualified;
+        t.kind = r.kind == "class" ? ExprType::ClassRef : ExprType::Callable;
+        return t;
+    }
+
+    const std::vector<std::string> &dirs() const { return dirs_; }
+    const std::vector<std::string> &imports() const { return imports_; }
+
+private:
+    struct Assign {
+        int end_line, end_col, last;
+        std::string name;
+        int rhs;
+    };
+    const OctaveLspDocument &d_;
+    int line_, col_;
+    std::vector<std::string> dirs_, imports_;
+    std::vector<Assign> assigns_;
+};
+
+// The Field node whose member name is token `tok`, or -1.
+int FieldOfToken(const OctaveLspDocument &d, int tok) {
+    for (size_t i = 0; i < d.tree.nodes.size(); i++)
+        if (d.tree.nodes[i].kind == Node::Field && d.tree.nodes[i].tok == tok) return static_cast<int>(i);
+    return -1;
+}
+
+}  // namespace
+
+OctaveLspDocLookup OctaveLspMemberAt(const OctaveLspDocument &doc, int tok, bool *instance_call) {
+    OctaveLspDocLookup r;
+    if (instance_call) *instance_call = false;
+    const int field = FieldOfToken(doc, tok);
+    if (field < 0 || doc.N(field).kids.empty()) return r;
+    const std::string member = doc.T(tok).text;
+    Typer typer(doc, doc.T(tok).line, doc.T(tok).col);
+    const ExprType base = typer.Of(doc, doc.N(field).kids[0]);
+    if (base.kind == ExprType::Package) {
+        r = OctaveLspFindOnPath(base.q + "." + member, typer.dirs());
+    } else if (base.kind == ExprType::ClassRef || base.kind == ExprType::Instance) {
+        r = OctaveLspFindMember(base.q, member, typer.dirs());
+        if (instance_call) *instance_call = base.kind == ExprType::Instance && r.kind == "method";
+    } else if (base.kind == ExprType::None) {
+        // Unknown receiver: the methods of that name across the classes on the path.
+        const std::vector<OctaveLspDocLookup> all = OctaveLspMethodsNamed(member, typer.dirs(), 12);
+        if (all.empty()) return r;
+        r = all[0];
+        if (instance_call) *instance_call = r.kind == "method";
+        if (all.size() > 1) {
+            std::string others;
+            for (size_t i = 1; i < all.size(); i++) others += (i > 1 ? ", " : "") + all[i].qualified;
+            r.note = "the receiver's class is unknown: also a method of " + others;
+        }
+    }
+    return r;
+}
+
+std::vector<OctaveLspClassMember> OctaveLspMembersOf(const OctaveLspDocument &doc, int line, const std::string &receiver) {
+    std::vector<OctaveLspClassMember> out;
+    // The receiver text, parsed apart and typed with this document's assignments before `line`.
+    const auto expr = OctaveLspAnalyze({"__mep_recv__ = " + receiver + ";"});
+    int rhs = -1;
+    for (const AstNode &a : expr->tree.nodes)
+        if (a.kind == Node::Assign && a.kids.size() > 1 && rhs < 0) rhs = a.kids[1];
+    if (rhs < 0) return out;
+    Typer typer(doc, line, 0);
+    const ExprType t = typer.Of(*expr, rhs);
+    if (t.kind == ExprType::Package) {
+        const std::string prefix = t.q + ".";
+        std::set<std::string> seen;
+        for (const std::string &q : OctaveLspPackageNames(typer.dirs())) {
+            if (q.compare(0, prefix.size(), prefix) != 0) continue;
+            std::string rest = q.substr(prefix.size());
+            const size_t dot = rest.find('.');
+            const bool sub = dot != std::string::npos;
+            if (sub) rest = rest.substr(0, dot);
+            if (!seen.insert(rest).second) continue;
+            if (sub) {
+                out.push_back({rest, "package", false, false, true});
+                continue;
+            }
+            const OctaveLspDocLookup d = OctaveLspFindOnPath(q, typer.dirs());
+            out.push_back({rest, d.signature, false, false, true});
+        }
+    } else if (t.kind == ExprType::ClassRef || t.kind == ExprType::Instance) {
+        for (const OctaveLspClassMember &m : OctaveLspClassMembers(t.q, typer.dirs()))
+            if (t.kind == ExprType::Instance || m.is_static) out.push_back(m);
+    }
+    return out;
+}
+
+// The type of variable token `tok` as of its position, e.g. "datamunge.DataFrame" ("" when unknown).
+std::string OctaveLspVariableClass(const OctaveLspDocument &doc, int tok) {
+    for (size_t i = 0; i < doc.tree.nodes.size(); i++) {
+        const AstNode &a = doc.tree.nodes[i];
+        if (a.kind != Node::Identifier || a.tok != tok) continue;
+        Typer typer(doc, doc.T(tok).line, doc.T(tok).col);
+        // A write: the value assigned.
+        for (const AstNode &b : doc.tree.nodes)
+            if (b.kind == Node::Assign && b.kids.size() > 1 && b.kids[0] == static_cast<int>(i)) {
+                const ExprType v = typer.Value(typer.Of(doc, b.kids[1]));
+                return v.kind == ExprType::Instance ? v.q : std::string();
+            }
+        const ExprType v = typer.Of(doc, static_cast<int>(i));
+        return v.kind == ExprType::Instance ? v.q : std::string();
+    }
+    return std::string();
+}
+
+std::string OctaveLspDocMarkdown(const OctaveLspDocLookup &d) {
+    std::string s;
+    if (!d.signature.empty()) s += "```octave\n" + d.signature + "\n```\n";
+    if (!d.help.empty()) s += (s.empty() ? "" : "\n") + std::string("```text\n") + d.help + "```\n";
+    if (!d.note.empty()) s += (s.empty() ? "" : "\n") + std::string("(") + d.note + ")\n";
+    std::string where;
+    if (!d.kind.empty() && d.kind != "function" && d.kind != "script")
+        where = d.kind + (d.qualified.empty() ? std::string() : " `" + d.qualified + "`") + (d.path.empty() ? "" : " -- ");
+    if (!d.path.empty()) where += "*" + d.path + "*";
+    if (!where.empty()) s += (s.empty() ? "" : "\n") + where;
+    return s;
+}
+
 std::vector<OctaveLspCompletionItem> OctaveLspCompletions(const OctaveLspDocument &doc, int line, int col) {
     std::vector<OctaveLspCompletionItem> out;
     if (line < 0 || static_cast<size_t>(line) >= doc.lines.size()) return out;
@@ -797,7 +1779,34 @@ std::vector<OctaveLspCompletionItem> OctaveLspCompletions(const OctaveLspDocumen
         out.push_back(it);
     };
     const bool after_dot = start > 0 && cur[static_cast<size_t>(start - 1)] == '.';
-    if (after_dot) {  // a field: every field name the document uses
+    if (after_dot) {
+        // A package's contents, a class's static methods, an instance's methods and properties.
+        int rs = start - 1;
+        int depth = 0;
+        while (rs > 0) {
+            const char c = cur[static_cast<size_t>(rs - 1)];
+            if (c == ')') depth++;
+            else if (c == '(' && depth > 0) depth--;
+            else if (depth == 0 && !(IsWordChar(c) || c == '.')) break;
+            rs--;
+            // `obj.f (x).`: the call's name may stand apart from its parentheses.
+            if (c == '(' && depth == 0)
+                while (rs > 0 && cur[static_cast<size_t>(rs - 1)] == ' ') rs--;
+        }
+        const std::string receiver = cur.substr(static_cast<size_t>(rs), static_cast<size_t>(start - 1 - rs));
+        if (!receiver.empty() && receiver.back() != '.') {
+            const std::vector<OctaveLspClassMember> ms = OctaveLspMembersOf(doc, line, receiver);
+            for (const OctaveLspClassMember &m : ms) {
+                OctaveLspKind k = m.is_property ? OctaveLspKind::Property : OctaveLspKind::Method;
+                if (m.in_package)
+                    k = m.signature == "package"                         ? OctaveLspKind::Module
+                        : m.signature.compare(0, 9, "classdef ") == 0 ? OctaveLspKind::Class
+                                                                         : OctaveLspKind::Function;
+                add(m.name, k, m.signature.compare(0, 9, "function ") == 0 ? m.signature.substr(9) : m.signature);
+            }
+            if (!ms.empty()) return out;
+        }
+        // Otherwise a field: every field name the document uses.
         for (size_t i = 0; i < doc.tree.tokens.size(); i++) {
             const Token &t = doc.tree.tokens[i];
             if (t.kind != Tok::StructElt) continue;
@@ -843,7 +1852,8 @@ OctaveLspHoverInfo OctaveLspHover(const OctaveLspDocument &doc, int line, int co
     h.range = doc.TokRange(tok);
     if (t.kind == Tok::StructElt) {
         h.found = true;
-        h.text = "field `" + t.text + "`";
+        const OctaveLspDocLookup m = OctaveLspMemberAt(doc, tok, nullptr);
+        h.text = m.found ? OctaveLspDocMarkdown(m) : "field `" + t.text + "`";
         return h;
     }
     const std::string &nm = t.text;
@@ -859,14 +1869,46 @@ OctaveLspHoverInfo OctaveLspHover(const OctaveLspDocument &doc, int line, int co
             else if (s.globals.count(nm)) what = "global or persistent variable";
             h.found = true;
             h.text = "(" + what + ") `" + nm + "`";
+            const std::string cls = OctaveLspVariableClass(doc, tok);
+            if (!cls.empty()) h.text += ": `" + cls + "`";
             return h;
         }
     }
     if (const FunctionInfo *f = doc.FindFunction(nm)) {
         h.found = true;
-        h.text = "```octave\nfunction " + FunctionSignature(doc, *f) + "\n```\n" +
-                 (f->method ? "method in this file" : "function in this file");
+        h.text = "```octave\nfunction " + FunctionSignature(doc, *f) + "\n```\n";
+        OctaveLspRange g;
+        if (doc.NodeRange(f->node, &g)) {
+            const std::string help = OctaveLspHelpText(doc.lines, g.line, f == &doc.functions[0]);
+            if (!help.empty()) h.text += "\n```text\n" + help + "```\n\n";
+        }
+        h.text += f->method ? "method in this file" : "function in this file";
         return h;
+    }
+    // A function file on the search path (the user's shadow Octave's own).
+    if (t.kind == Tok::Name || t.kind == Tok::FcnHandle) {
+        const std::vector<std::string> dirs = OctaveLspSearchPath(doc);
+        std::vector<std::string> candidates;
+        const OctaveLspDocLookup d = OctaveLspResolveName(nm, dirs, OctaveLspImports(doc), &candidates);
+        if (d.found) {
+            h.found = true;
+            h.text = OctaveLspDocMarkdown(d);
+            return h;
+        }
+        // A package name (`datamunge` of `datamunge.f`).
+        for (const std::string &dir : dirs) {
+            std::error_code ec;
+            if (!std::filesystem::is_directory(dir + "/+" + nm, ec)) continue;
+            h.found = true;
+            h.text = "package `" + nm + "` -- *" + dir + "/+" + nm + "*";
+            return h;
+        }
+        if (candidates.size() > 1 && !OctaveVocabFind(nm.c_str(), nm.size())) {
+            h.found = true;
+            h.text = "`" + nm + "` is ambiguous:";
+            for (const std::string &c : candidates) h.text += " `" + c + "`";
+            return h;
+        }
     }
     if (const OctaveVocabEntry *v = OctaveVocabFind(nm.c_str(), nm.size())) {
         h.found = true;
@@ -901,12 +1943,35 @@ OctaveLspSignatureHelp OctaveLspSignatureAt(const OctaveLspDocument &doc, int li
     }
     while (!stack.empty() && toks[static_cast<size_t>(stack.back().first)].text != "(") stack.pop_back();
     if (stack.empty() || stack.back().first == 0) return sh;
-    const Token &callee = toks[static_cast<size_t>(stack.back().first - 1)];
-    if (callee.kind != Tok::Name) return sh;
+    const int callee_tok = stack.back().first - 1;
+    const Token &callee = toks[static_cast<size_t>(callee_tok)];
+    if (callee.kind != Tok::Name && callee.kind != Tok::StructElt) return sh;
     const std::string &nm = callee.text;
     std::string label;
-    if (const FunctionInfo *f = doc.FindFunction(nm)) {
+    OctaveLspDocLookup on_path;
+    if (callee.kind == Tok::StructElt) {
+        // obj.method( / pkg.fn( / pkg.Class.static(: an instance call passes obj itself.
+        bool instance = false;
+        on_path = OctaveLspMemberAt(doc, callee_tok, &instance);
+        if (!on_path.found || on_path.signature.compare(0, 9, "function ") != 0) return sh;
+        label = on_path.signature.substr(9);
+        if (instance) {
+            const size_t lp = label.find('(');
+            const size_t first_end = label.find_first_of(",)", lp == std::string::npos ? 0 : lp);
+            if (lp != std::string::npos && first_end != std::string::npos)
+                label.erase(lp + 1, label[first_end] == ',' ? first_end + 1 - lp : first_end - lp - 1);
+            while (lp != std::string::npos && lp + 1 < label.size() && label[lp + 1] == ' ') label.erase(lp + 1, 1);
+        }
+        if (!on_path.help.empty()) sh.documentation = "```text\n" + on_path.help + "```";
+    } else if (const FunctionInfo *f = doc.FindFunction(nm)) {
         label = FunctionSignature(doc, *f);
+        OctaveLspRange g;
+        if (doc.NodeRange(f->node, &g)) sh.documentation = OctaveLspHelpText(doc.lines, g.line, f == &doc.functions[0]);
+        if (!sh.documentation.empty()) sh.documentation = "```text\n" + sh.documentation + "```";
+    } else if ((on_path = OctaveLspResolveName(nm, OctaveLspSearchPath(doc), OctaveLspImports(doc), nullptr)).found &&
+               on_path.signature.compare(0, 9, "function ") == 0) {
+        label = on_path.signature.substr(9);  // past "function "
+        if (!on_path.help.empty()) sh.documentation = "```text\n" + on_path.help + "```";
     } else if (const OctaveVocabEntry *v = OctaveVocabFind(nm.c_str(), nm.size())) {
         // The first usage line with enough parameters for the commas typed.
         const std::vector<std::string> us = SplitUsage(v->usage);

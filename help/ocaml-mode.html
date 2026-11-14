@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCaml mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="54">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>OCaml mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.ml</code> or <code>.mli</code> file.
+The tab becomes an OCaml workspace: your file, a toplevel below it, and
+panels showing what that session holds.</p>
+<p>The console is <code>utop</code> when it is on <code>PATH</code>, else the stock <code>ocaml</code>
+toplevel, so line editing, history, completion and the display of a
+phrase's value are its own. It starts with mep's environment (<code>OCAMLPATH</code>,
+<code>OPAM_SWITCH_PREFIX</code>, <code>CAML_LD_LIBRARY_PATH</code>, as an opam switch, a dev
+shell or direnv set them), so <code>#require "pkg"= and =#load</code> find what they
+would in a terminal in that project.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>run the whole file in the console</td></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the top-level phrase at the cursor (or the selection)</td></tr>
+<tr><td><code>gh</code></td><td>help for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>MepUI.help "List.map";;</code></td><td>the same, from the console</td></tr>
+<tr><td><code>MepUI.view "x";;</code></td><td>a value -- its type and the whole value -- or a module's signature, in Inspect</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> finds the phrase around the cursor: from the nearest line
+above that starts one at column 0 to just before the next. That is a whole
+<code>let</code> (with its <code>and</code> bindings), <code>type</code>, <code>module ... end</code> or <code>open</code>.
+A line starting with <code>and</code>, <code>in</code>, <code>end</code>, <code>done</code>, <code>then</code>, <code>else</code>, <code>with</code>,
+<code>|</code> or a closing bracket never starts a phrase, and neither does a line
+that continues the previous one (one ending in <code>=</code>, another operator, a
+comma, an open bracket, or a keyword such as <code>in</code>, <code>then</code>, <code>match</code> or
+<code>fun</code>), nor one inside a comment or a string. Comments after the
+phrase are left out, and <code>;;</code> is added when the phrase lacks it.</p>
+<p>Neither key pastes your code into the prompt. The code is written to a
+file after a line-number directive (=# 12 "/path/main.ml"=) and loaded
+with a single <code>#use "...";;</code> line, so the toplevel's type errors and
+exceptions name your file and line. <code>&lt;leader&gt;rr</code> runs the buffer as it is
+in the editor, unsaved changes included. mod1+Enter still pastes the
+current line or the selection straight into the prompt (see
+<a href="repl.html">REPL and send-to-terminal</a>).</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Variables</td><td>the values the session defined, with their type and a short value, then its types</td></tr>
+<tr><td>Modules</td><td>the modules the session defined, then the directories it added with <code>#directory</code> (folded)</td></tr>
+<tr><td>Inspect</td><td><code>MepUI.view</code>: the value printed in full, as the toplevel prints it, or a module's signature</td></tr>
+<tr><td>Help</td><td>the odoc documentation of a value, type or module, then the session's view of it</td></tr>
+</table>
+<p>Clicking a value in Variables inspects it; clicking a module shows its
+help. The standard library, the predefined types and mep's own <code>MepUI</code>
+module are left out.</p>
+<p>The panels refresh before each phrase is read: the init script hooks the
+toplevel's phrase reader (and <code>UTop.at_new_command</code> under utop). They need
+the compiler libraries (<code>+compiler-libs</code>, part of every OCaml install);
+without them the panels stay empty and the rest still works.</p>
+<h1>Help from the live session</h1>
+<p><code>MepUI.help "Datamunge.Stats.mean"= -- and =gh</code> over that name in your
+file -- has <code>mep-ocaml-lsp --doc</code> (see
+<a href="ocaml-lsp.html">The OCaml language server</a>) read the name's odoc
+comments from the <code>.mli</code> it is declared in, resolving it from inside your
+file (its <code>open=s) with the session's =#directory</code> directories added to
+the search, and shows them rendered: signature, text, <code>@param</code>,
+<code>@return</code>, <code>@raise</code> and the rest. That is how a Rosetta-generated
+binding's interface shows the C++ documentation. Below comes the
+session's own view: the value's type as the toplevel inferred it, or the
+module's signature -- so a value you defined in the session, which no
+<code>.mli</code> documents, still gets a type.</p>
+<p>In an OCaml buffer <code>gh</code> also opens the language server's hover, which
+needs no running session. Without the mode open, <code>gh</code> is that hover alone.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.ocaml_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'utop'</span><span class="tok-blue">}</span>     <span class="tok-comment">-- the console's command (default: utop if on PATH, else ocaml)</span>
+<span class="tok-cyan">mep</span>.opt.ocaml_ui_info_share = <span class="tok-cyan">0.3</span>   <span class="tok-comment">-- the panels' width</span></code></pre></div>
+<p>A <code>(* REPL: dune utop lib *)</code> line in the file overrides <code>ocaml_ui_cmd</code> for
+that file. The mode appends <code>-init</code> and its init script, so the command
+must accept them, as <code>ocaml</code>, <code>utop</code> and <code>dune utop DIR --</code> do.</p>
+<h1>Limits</h1>
+<ul>
+<li><code>#require</code> (findlib's topfind) adds directories without going through <code>#directory</code>, so they are not listed in Modules or passed to <code>mep-ocaml-lsp --doc</code>; the session's view in Help still covers what the packages define. <code>#directory</code> the package's directory to get its odoc docs too.</li>
+<li>Values are shown with the toplevel's printer, abstract types as <code>&lt;abstr&gt;</code> and functions as <code>&lt;fun&gt;</code>, as the toplevel prints them.</li>
+</ul>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="ocaml-lsp.html">The OCaml language server</a>.</li>
+<li><a href="formatting.html">Formatting</a> -- <code>gf</code> formats OCaml in ocamlformat's default style.</li>
+<li><a href="run-button.html">Run button</a> -- a <code>(* CMD: ... *)</code> line runs a file another way.</li>
+</ul>
+</body>
+</html>

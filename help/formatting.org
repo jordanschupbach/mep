@@ -27,15 +27,19 @@ stale copy from disk.
 | Nix (=.nix=)         | *built in* -- mep's own, nothing to install |
 | Fish (=.fish=)       | *built in* -- mep's own, nothing to install |
 | Fortran (=.f90=, =.f95=, =.f03=, =.f08=, =.F90=) | *built in* -- fprettify's output, nothing to install |
+| COBOL (=.cob=, =.cbl=, =.cpy=, =.cobol=) | *built in* -- mep's own, nothing to install |
 | Tcl (=.tcl=, =.tk=, =.tm=) | *built in* -- mep's own, nothing to install |
 | Octave, MATLAB (=.m=) | *built in* -- mep's own, nothing to install |
 | GAP (=.g=, =.gi=, =.gd=, =.gap=) | *built in* -- mep's own, nothing to install |
 | Scheme (=.scm=, =.ss=, =.sld=, =.sls=, =.sps=) | *built in* -- mep's own, nothing to install |
 | Lua (=.lua=)         | *built in* -- mep's own, nothing to install |
 | Julia (=.jl=)        | *built in* -- mep's own, nothing to install |
+| Ruby (=.rb=)         | *built in* -- mep's own (rubocop's default layout), nothing to install |
+| OCaml (=.ml=, =.mli=) | *built in* -- mep's own (ocamlformat's default style, margin 80), nothing to install |
 | Go (=.go=)           | *built in* -- gofmt's output, nothing to install |
 | JavaScript (=.js=, =.jsx=, =.mjs=, =.cjs=) | *built in* -- mep's own, nothing to install |
 | TypeScript (=.ts=, =.tsx=, =.mts=, =.cts=) | *built in* -- the JavaScript formatter, nothing to install |
+| APL (=.apl=, =.apls=, =.aplf=, =.aplo=, =.apln=, =.aplc=, =.apli=, =.dyalog=) | *built in* -- mep's own, nothing to install |
 | mepml (=.mepml=)     | *built in* -- see /mepml documents/ below |
 | anything else        | =mep.lsp_format=, if a server is attached |
 
@@ -1171,6 +1175,78 @@ The same entries exist for =f95=, =f03=, =f08= and =F90=.
 mep.format_languages.f90 = {'fprettify', '-'}
 #+end_src
 
+* The COBOL formatter
+
+COBOL gets a conservative GnuCOBOL layout, in fixed format (sequence area
+in columns 1-6, indicator in column 7, Area A from column 8, Area B from
+column 12, identification area from column 73) and free format alike; the
+format is read the way the [[file:cobol-lsp.html][COBOL language server]]
+reads it (=>>SOURCE FORMAT=, =$SET SOURCEFORMAT=, else a guess from the
+sequence area). It only re-indents -- no line is split, joined, re-cased
+or re-worded:
+
+- division, section and paragraph headers, =FD= / =SD= entries, level
+  01, 66, 77 and 78 entries, =DECLARATIVES= and =END PROGRAM= go in Area A
+  (column 1 in free format);
+- data entries are indented by their place in the record's hierarchy (one
+  step per nesting level, whatever the level numbers are; an 88 one step
+  under its item), and a =PICTURE= clause right after the name lines up
+  at column 40 (Area A + 32) when it fits;
+- statements go in Area B (one step in, in free format), with the bodies
+  of =IF= / =ELSE=, =EVALUATE= ... =WHEN=, inline =PERFORM= ...
+  =END-PERFORM=, =SEARCH= ... =WHEN= and the conditional phrases (=AT
+  END=, =ON SIZE ERROR=, =INVALID KEY=, =ON EXCEPTION=, =ON OVERFLOW= and
+  their =NOT= forms) one step further in; =END-IF= and friends and =ELSE=
+  go back to their statement, and a period closes every open scope;
+- a statement or entry continued over several lines keeps its later lines
+  where they were relative to its first (in the procedure division at
+  least one step in).
+
+#+begin_src cobol
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+       PERFORM VARYING I FROM 1 BY 1 UNTIL I > 3
+       IF I = 2
+       DISPLAY "TWO"
+       END-IF
+       END-PERFORM
+       STOP RUN.
+#+end_src
+
+becomes
+
+#+begin_src cobol
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           PERFORM VARYING I FROM 1 BY 1 UNTIL I > 3
+               IF I = 2
+                   DISPLAY "TWO"
+               END-IF
+           END-PERFORM
+           STOP RUN.
+#+end_src
+
+It leaves exactly as they are: comment and blank lines, compiler
+directives, =COPY= and =REPLACE= statements, =EXEC= ... =END-EXEC=
+blocks, debugging lines (=D= in column 7), comment entries (=AUTHOR.= and
+the like), continued literals and their continuation lines, lines with a
+tab before the code, the sequence and identification areas, and in fixed
+format any line that would no longer fit in columns 8-72. Every changed
+line is checked to hold the same words and literals as before; a file
+whose format is unclear (free-format code next to fixed-format sequence
+numbers) is refused, and =gf= says on which line. Formatting a formatted
+file changes nothing. The same formatter answers the language server's
+=textDocument/formatting=.
+
+** Options
+
+#+begin_src lua
+mep.format_languages.cob.indent = 3         -- columns per level (default 4)
+mep.format_languages.cob.align_pic = false  -- leave PICTURE clauses where they are
+#+end_src
+
+The same entries exist for =cbl=, =cpy=, =cobol= and their upper-case forms.
+
 * The GAP formatter
 
 GAP has no standard formatter, so mep's re-indents and changes nothing
@@ -1641,6 +1717,178 @@ the buffer alone.
 mep.format_languages.jl = {'runic'}
 #+end_src
 
+* The Ruby formatter
+
+Ruby files get the community layout -- what rubocop's and standardrb's
+default =Layout= cops ask for -- from mep itself, with no Ruby installed.
+It works on the tree-sitter-ruby syntax tree and changes only whitespace:
+
+#+begin_src ruby
+module Shapes
+    class Circle<Shape
+        def initialize(r,scale=1, unit:"cm")
+            @r=r*scale
+            @unit = unit
+        end
+        def area
+            Math::PI*@r**2
+        end
+    end
+end
+#+end_src
+
+becomes
+
+#+begin_src ruby
+module Shapes
+  class Circle < Shape
+    def initialize(r, scale = 1, unit: "cm")
+      @r = r * scale
+      @unit = unit
+    end
+
+    def area
+      Math::PI * @r**2
+    end
+  end
+end
+#+end_src
+
+- *Indentation*: two spaces per level -- modules, classes, methods,
+  blocks, =if=/=unless=/=case=/=while=/=begin=, and brackets whose contents
+  start on the next line. =else=, =elsif=, =when=, =in=, =rescue=,
+  =ensure= and the closing =end= or bracket line up with the line that
+  opened them. =x = if ...= keeps its =end= under =if= when it already was
+  there (rubocop's default) or under =x= (standardrb's). A line that
+  continues an expression -- a method chain, arguments aligned under the
+  first one, a condition split after =&&= -- keeps its offset from the line
+  the expression starts on.
+- *Spacing*: one space around binary and assignment operators and =<= in
+  =class A < B=, after commas, after =key:=, before a block's ={= and
+  inside its braces (={ |x| x }=); none before a comma or inside
+  parentheses and brackets. =**= and ranges are left tight. Extra spaces
+  that align a column of === or trailing comments stay. =a -b= (a space
+  before an operator but none after) is left exactly as written, because
+  Ruby may read it as =a(-b)=.
+- *Blank lines*: no trailing whitespace, no runs of blank lines, none at
+  the start or end of a class, method or block body, one blank line
+  between two multi-line method definitions (above the second one's doc
+  comment), and one newline at the end of the file.
+- *Never touched*: strings and their quotes, heredocs, =%w[]= and the other
+  percent literals, regexps, comments, =begin=/=end= blocks and everything
+  after =__END__=. Long lines are not wrapped.
+
+** It will not rewrite a file it cannot prove it preserved
+
+A file with a syntax error is left as it was, and =gf= gives the error's
+line. The result is parsed again and must have the same syntax tree, the
+same string, comment and heredoc texts, and the same non-blank characters
+as the input; otherwise the buffer is left alone. Over the 981 files of
+Ruby 3.4's standard library, it formats 979 (the other two hit gaps in the
+tree-sitter grammar and are refused as syntax errors); every result is
+idempotent and parses, under Ruby's own parser, to the same abstract syntax
+tree as the original (up to the values of =__LINE__=, where blank lines
+were removed).
+
+=mep-ruby-lsp= uses the same formatter for =textDocument/formatting=.
+
+** Using rubocop instead
+
+#+begin_src lua
+mep.format_languages.rb = {'rubocop', '--autocorrect', '--stderr', '--stdin', '{}'}
+#+end_src
+
+* The OCaml formatter
+
+OCaml files (=.ml= and =.mli=) are laid out the way ocamlformat's default
+profile lays them out, by mep itself, with no OCaml or opam installed:
+
+#+begin_src ocaml
+let rec fact n = if n<=1 then 1 else n*fact (n-1)
+let describe = function
+| [] -> "empty"
+| [x] -> "one: "^string_of_int x
+| _ -> "many"
+module Shape = struct
+type t = Circle of float | Square of float
+let area s = match s with
+| Circle r -> 3.14*.r*.r
+| Square a -> a*.a
+end
+#+end_src
+
+becomes
+
+#+begin_src ocaml
+let rec fact n = if n <= 1 then 1 else n * fact (n - 1)
+let describe = function
+  | [] -> "empty"
+  | [ x ] -> "one: " ^ string_of_int x
+  | _ -> "many"
+module Shape = struct
+  type t = Circle of float | Square of float
+  let area s = match s with
+    | Circle r -> 3.14 *. r *. r
+    | Square a -> a *. a
+end
+#+end_src
+
+- *Indentation*: two columns per level. =struct=, =sig=, =begin=,
+  =object= and bracket contents go two in and their =end= or closer back
+  out; a =let ... in= body stays at the =let='s column; match and
+  =function= arms line up with their =match= (or two in from the =let=
+  that holds them), and an arm's body on its own line goes four in from
+  its =|=; =then= and =else= go under their =if=; a binding's body on the
+  next line goes two in; a doc comment keeps its place with the item.
+- *Spacing*: one space around binary operators (=+=, =*.=, =^=, =|>=,
+  =::=, ===, =->= ...) and after =,= and =;=, none before them; =x:int=
+  labels and =~f:= arguments stay tight; one space inside =[ ]=, =[| |]=,
+  ={ }= and ={< >}=. Runs of spaces collapse to one, except the gap before
+  a trailing comment.
+- *Long lines* (over the margin, 80) are broken where ocamlformat breaks
+  them first: after a binding's ===, after an arm's =->=, before =else=,
+  before =|>=, and after =;= in a sequence or a list.
+- *Never touched*: strings, quoted strings (={id|...|id}=), character
+  literals, comment contents (a multi-line comment moves as a whole),
+  =#= directives. It does not join lines or move code across lines other
+  than for over-long ones, so it is not a full reprinter: a =match= that
+  ocamlformat would put on its own line stays where it is.
+
+** It will not rewrite a file it cannot prove it preserved
+
+It changes only the whitespace between tokens. Its result must lex to the
+same token stream as the input (comments compared with their continuation
+lines' indentation ignored), every bracket, =begin=/=end= and
+=struct=/=sig=/=end= must balance, and the result must be a fixed point --
+formatting it again changes nothing. Otherwise the buffer is left alone and
+=gf= reports why, with the line for an unterminated string or comment.
+Over the 144 =.ml= and =.mli= files of OCaml 5.4's standard library it
+refuses none, keeps 94.5% of the lines ocamlformat itself writes exactly
+as ocamlformat writes them, and ocamlformat formats mep's output to the
+same text as the original in 131 files (the other 13 differ only inside
+comments).
+
+=mep-ocaml-lsp= uses the same formatter for =textDocument/formatting=;
+=textDocument/rangeFormatting= re-indents the selected lines without
+breaking any.
+
+** Options
+
+#+begin_src lua
+mep.format_languages.ml = {builtin = 'format_ocaml', name = "mep's OCaml formatter", width = 100}
+#+end_src
+
+=width= is the margin (default 80). =mep.format_ocaml(text, width,
+{indent = 2})= is the formatter as a Lua function: the formatted text, or
+=nil=, an error message and a line.
+
+** Using ocamlformat instead
+
+#+begin_src lua
+mep.format_languages.ml = {'ocamlformat', '--enable-outside-detected-project', '--name={}', '-'}
+mep.format_languages.mli = mep.format_languages.ml
+#+end_src
+
 * The C# formatter
 
 mep lays C# out the way =dotnet format whitespace= does with no
@@ -1806,6 +2054,76 @@ mep.format_languages.R = {mode = 'file', 'Rscript', '-e',
 
 Both need the tool installed, and =air= takes its own margin from the
 nearest =air.toml= rather than from =width= above.
+
+* The APL formatter
+
+GNU APL and Dyalog APL source gets a conservative layout: it re-indents
+structures and tidies the spaces around three glyphs, and touches nothing
+inside an expression -- a space next to a function can change what an APL
+line means (=x f←1=), so it is never removed.
+
+- the bodies of control structures (=:If= ... =:EndIf=, =:For=,
+  =:While=, =:Repeat=, =:Select= / =:Case=, =:Trap=, =:With=, =:Hold=)
+  and of =:Namespace=, =:Class= and =:Interface= scripts are indented one
+  level (four columns) past their opener; =:Else=, =:ElseIf=, =:Case=
+  and =:EndXxx= line up with it;
+- the body of a dfn whose braces span lines is indented one level past
+  the line that opens it, and a line starting with =}= lines up with that
+  line;
+- a tradfn's body sits two columns past its =∇=;
+- =←= loses the spaces around it (=x←1=), =⋄= (and GNU's =◊=) gets one
+  space on each side, a trailing comment gets a space before =⍝= when it
+  has none (more are kept, so aligned comments stay aligned), and
+  =⍝text= becomes =⍝ text= (more spaces after =⍝= are kept: they may be
+  indented code in a doc block);
+- trailing whitespace goes.
+
+#+begin_src apl
+:Namespace stats
+∇ R←Mean X
+R ← (+/X)÷≢X   ⍝the mean
+∇
+sd←{
+m←Mean ⍵
+((+/(⍵-m)*2)÷≢⍵)*0.5}
+:EndNamespace
+#+end_src
+
+becomes
+
+#+begin_src apl
+:Namespace stats
+    ∇ R←Mean X
+      R←(+/X)÷≢X   ⍝ the mean
+    ∇
+    sd←{
+        m←Mean ⍵
+        ((+/(⍵-m)*2)÷≢⍵)*0.5}
+:EndNamespace
+#+end_src
+
+Lines outside any structure keep their indentation, and so do the
+continuation lines of a =(= or =[= left open, =)commands= and a =#!= line.
+No line is split or joined.
+
+** It will not rewrite code it cannot prove it preserved
+
+Every line is re-tokenized after formatting and must hold exactly the same
+tokens as before (comments compared without the spaces after =⍝=); an
+unterminated string, an unbalanced or mismatched control structure, a
+structure left open at the end of the file, or a =∇= inside an open
+structure makes =gf= refuse and say on which line. Formatting a formatted
+file changes nothing. The same formatter answers the
+[[file:apl-lsp.html][APL language server]]'s =textDocument/formatting=.
+
+** Options
+
+#+begin_src lua
+mep.format_languages.apl.indent = 2   -- columns per level (default 4)
+#+end_src
+
+The same entries exist for =apls=, =aplf=, =aplo=, =apln=, =aplc=, =apli=
+and =dyalog=.
 
 * Line width
 

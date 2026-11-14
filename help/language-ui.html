@@ -53,7 +53,17 @@ console, preview or panels, the toggle closes the layout.</p>
 <tr><td>SQL (SQLite)</td><td><a href="sql-mode.html">SQL mode</a></td></tr>
 <tr><td>Lua</td><td><a href="lua-mode.html">Lua mode</a></td></tr>
 <tr><td>Julia</td><td><a href="julia-mode.html">Julia mode</a></td></tr>
+<tr><td>Ruby</td><td><a href="ruby-mode.html">Ruby mode</a></td></tr>
+<tr><td>JavaScript (Node.js)</td><td><a href="javascript-mode.html">JavaScript mode</a></td></tr>
 <tr><td>COBOL</td><td><a href="cobol-lsp.html">The COBOL language server</a> (its <i>COBOL mode</i> section)</td></tr>
+<tr><td>Fortran</td><td><a href="fortran-mode.html">Fortran mode</a></td></tr>
+<tr><td>Java (jshell)</td><td><a href="java-mode.html">Java mode</a></td></tr>
+<tr><td>Go</td><td><a href="go-mode.html">Go mode</a></td></tr>
+<tr><td>APL (GNU APL, Dyalog)</td><td><a href="apl-mode.html">APL mode</a></td></tr>
+<tr><td>Octave</td><td><a href="octave-mode.html">Octave mode</a></td></tr>
+<tr><td>Tcl</td><td><a href="tcl-mode.html">Tcl mode</a></td></tr>
+<tr><td>Guile Scheme</td><td><a href="guile-mode.html">Guile Scheme mode</a></td></tr>
+<tr><td>OCaml (utop, ocaml)</td><td><a href="ocaml-mode.html">OCaml mode</a></td></tr>
 <tr><td>MEPML</td><td><a href="mepml.html">Document preview and navigation</a></td></tr>
 </table>
 <p>The programming language modes share the same shape: a console, a Help
@@ -71,13 +81,14 @@ mep's working directory.</p>
 arguments, for example the Python mode's init script or the Bash mode's
 <code>--rcfile</code>, after your command. So the command must accept them, as
 <code>python</code> or <code>nix develop ... --command python</code> does. This works in the R,
-Python, C++, Common Lisp, Bash, Clojure, Lua and Julia modes. Crystal, C# and SQL start
+Python, C++, Common Lisp, Bash, Clojure, Lua, Julia, Ruby, JavaScript, Fortran, Go, APL, Octave, Tcl, Guile Scheme and OCaml modes; in the Java mode it
+names the java command. Crystal, C# and SQL start
 their consoles through their own launchers and ignore the comment.</p>
 <h1><code>gh</code>, in context</h1>
 <p><code>gh</code> ("go help") opens documentation for the symbol under the cursor. What
 answers depends on where you are:</p>
 <ul>
-<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++ (with live C++ object inspection in Data), <code>DESCRIBE</code> for Common Lisp, <code>help</code> and <code>man</code> for Bash, <code>doc</code> for Clojure, the standard library's doc comments for Crystal, the .NET reference documentation for C#, the database's own schema (and mep's SQL documentation for functions and keywords) for SQL, a function's signature, doc comment and source (with the language server's hover alongside) for Lua, the docstring and methods (with the language server's hover alongside) for Julia;</li>
+<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++ (with live C++ object inspection in Data), <code>DESCRIBE</code> for Common Lisp, <code>help</code> and <code>man</code> for Bash, <code>doc</code> for Clojure, the standard library's doc comments for Crystal, the .NET reference documentation for C#, the database's own schema (and mep's SQL documentation for functions and keywords) for SQL, a function's signature, doc comment and source (with the language server's hover alongside) for Lua, the docstring and methods (with the language server's hover alongside) for Julia, the YARD documentation of the method the live session resolves the name to and the runtime's signature (with the language server's hover alongside) for Ruby, the JSDoc of a package's TypeScript declarations and the runtime's signature (with the language server's hover alongside) for JavaScript, the <code>!&gt;</code> documentation of the procedure or type in the modules the session uses (or the intrinsic's summary) for Fortran, the Javadoc of a class or member from the workspace, the source path or the JDK for Java, the doc comment of a package member from the workspace, the module's dependencies or <code>go doc</code> for Go, a glyph's monadic and dyadic meanings, a <code>⎕name</code>'s meaning or a function's header and <code>⍝</code> doc lines (from <code>mep-apl-lsp --doc</code>) for APL, Octave's <code>help</code> (or the <code>.m</code> stubs' comment blocks) for Octave, a proc's doc comment or a built-in's manual text for Tcl, <code>procedure-documentation</code> with the source's docstring for Guile Scheme, and the <code>.mli</code>'s odoc documentation (from <code>mep-ocaml-lsp --doc</code>) with the session's type for OCaml;</li>
 <li>otherwise, the LSP hover popup, the same one <code>K</code> opens.</li>
 </ul>
 <p><code>&lt;leader&gt;hs</code> and <code>:MepGoHelp</code> do the same thing.</p>

@@ -119,6 +119,7 @@ that it does nothing.
 | =mep.format_nix= | formats Nix source the way nixfmt does |
 | =mep.format_python= | formats Python with mep's own in-house formatter, or returns nil plus a reason |
 | =mep.format_r= | the text formatted as R, or nil plus an error message |
+| =mep.format_ruby= | mep's Ruby formatter (rubocop's default layout), or nil plus an error message |
 | =mep.format_rust= | -- |
 | =mep.format_scheme= | -- |
 | =mep.format_sql= | the text formatted as SQL, or nil plus an error message |

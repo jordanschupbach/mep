@@ -5,6 +5,13 @@
 //   mep-java-lsp                    the language server on stdio
 //   mep-java-lsp --lint FILE...     diagnostics as path:line:col: severity: message [code];
 //                                     exit 1 on any error or warning ('-' reads stdin)
+//   mep-java-lsp --doc NAME [--sourcepath PATHS]... [--file FILE]...
+//                                   NAME's Javadoc as Markdown (java_lsp_javadoc.h): from the
+//                                     files, their package roots, the source path and
+//                                     $MEP_JAVA_SOURCEPATH; exit 1 when nothing matches
+//
+// Hover reads the Javadoc of declarations in the document, then in the
+// document's package root, its directory and $MEP_JAVA_SOURCEPATH.
 //
 // Single-threaded and synchronous; Content-Length framing via
 // rpc_framing.h, full text sync, `positionEncoding: "utf-8"`.
@@ -12,6 +19,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -28,10 +36,110 @@
 #endif
 
 #include "java_lsp.h"
+#include "java_lsp_javadoc.h"
 #include "json.h"
 #include "rpc_framing.h"
 
 namespace {
+
+// A file:// URI's path ("" for any other scheme), %XX escapes decoded.
+std::string PathOfUri(const std::string &uri) {
+    if (uri.compare(0, 7, "file://") != 0) return "";
+    std::string out;
+    for (size_t i = 7; i < uri.size(); i++) {
+        if (uri[i] == '%' && i + 2 < uri.size() && std::isxdigit(static_cast<unsigned char>(uri[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(uri[i + 2]))) {
+            out += static_cast<char>(std::stoi(uri.substr(i + 1, 2), nullptr, 16));
+            i += 2;
+        } else {
+            out += uri[i];
+        }
+    }
+#if defined(_WIN32)
+    if (out.size() > 2 && out[0] == '/' && out[2] == ':') out.erase(0, 1);
+#endif
+    return out;
+}
+
+// Where Javadoc for FILE (text TEXT) is looked for besides the file itself.
+std::vector<std::string> SourceRoots(const std::string &file, const std::string &text,
+                                     const std::vector<std::string> &extra) {
+    std::vector<std::string> roots = extra;
+    if (const char *env = std::getenv("MEP_JAVA_SOURCEPATH")) {
+        for (const std::string &p : javadoc::SplitPathList(env)) roots.push_back(p);
+    }
+    if (!file.empty()) {
+        const std::string root = javadoc::PackageRoot(file, text);
+        if (!root.empty()) roots.push_back(root);
+        const size_t slash = file.find_last_of('/');
+        roots.push_back(slash == std::string::npos ? "." : file.substr(0, slash));
+    }
+    return roots;
+}
+
+// Where type NAME's file may sit under a source root, given the importing file's TEXT: Name.java,
+// then pkg/Name.java for `import pkg.Name;`, `import pkg.*;` and the file's own package.
+std::vector<std::string> TypeFileCandidates(const std::string &text, const std::string &name) {
+    std::vector<std::string> out = {name + ".java"};
+    const auto add_package = [&](std::string package) {
+        for (char &c : package)
+            if (c == '.') c = '/';
+        const std::string candidate = package + "/" + name + ".java";
+        for (const std::string &o : out)
+            if (o == candidate) return;
+        out.push_back(candidate);
+    };
+    std::istringstream lines(text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        size_t a = 0;
+        while (a < line.size() && (line[a] == ' ' || line[a] == '\t')) a++;
+        if (line.compare(a, 7, "import ") != 0) continue;
+        const size_t semi = line.find(';', a);
+        if (semi == std::string::npos) continue;
+        std::string imported;
+        for (size_t i = a + 7; i < semi; i++)
+            if (line[i] != ' ' && line[i] != '\t') imported += line[i];
+        if (imported.compare(0, 7, "static") == 0) continue;
+        const size_t dot = imported.rfind('.');
+        if (dot == std::string::npos) continue;
+        const std::string last = imported.substr(dot + 1);
+        if (last == "*" || last == name) add_package(imported.substr(0, dot));
+    }
+    const std::string package = javadoc::PackageOf(text);
+    if (!package.empty()) add_package(package);
+    return out;
+}
+
+// The declarations of member MEMBER of type TYPE, else of the classes it extends (up to 8 levels).
+std::vector<javadoc::Decl> FindMember(std::string type, const std::string &member, const javadoc::SearchPath &where,
+                                      size_t max) {
+    for (int level = 0; level < 8 && !type.empty(); level++) {
+        std::vector<javadoc::Decl> decls = javadoc::Find(type + "." + member, where, max);
+        if (!decls.empty()) return decls;
+        std::string super;
+        for (const javadoc::Decl &d : javadoc::Find(type, where, 4)) {
+            if (d.kind != "class") continue;
+            super = JavaLspSuperclass(d.signature);
+            // A superclass named simply lives in the subclass's package, unless it's on the path anyway.
+            if (!super.empty() && super.find('.') == std::string::npos && !d.package.empty() &&
+                !javadoc::Find(d.package + "." + super, where, 1).empty())
+                super = d.package + "." + super;
+            break;
+        }
+        type = super;
+    }
+    return {};
+}
+
+std::string RenderAll(const std::vector<javadoc::Decl> &decls, size_t max, bool with_location) {
+    std::string out;
+    for (size_t i = 0; i < decls.size() && i < max; i++) {
+        if (i) out += "\n\n---\n\n";
+        out += javadoc::RenderDecl(decls[i], with_location);
+    }
+    return out;
+}
 
 std::vector<std::string> SplitLines(const std::string &text) {
     std::vector<std::string> lines;
@@ -345,7 +453,55 @@ private:
     }
 
     Json HoverAt(const Json &params) {
-        const JavaLspHoverInfo info = JavaLspHover(Analysis(params), LineOf(params), ColOf(params));
+        JavaLspHoverInfo info = JavaLspHover(Analysis(params), LineOf(params), ColOf(params));
+        if (!info.found) {
+            // Another file's declaration: the package root, the directory, $MEP_JAVA_SOURCEPATH.
+            const std::string path = PathOfUri(UriOf(params));
+            const std::string &text = JavaLspText(Analysis(params));
+            const std::vector<std::string> roots = SourceRoots(path, text, {});
+            // A receiver's type from the return types in the Javadoc'd declarations
+            // (`df.select(...).sortBy`, `var x = Data.iris()`).
+            const JavaLspMethodType method_type = [&roots](const std::string &type, const std::string &method) {
+                javadoc::SearchPath where;
+                where.sourcepath = roots;
+                for (const javadoc::Decl &d : FindMember(type, method, where, 8)) {
+                    if (d.kind != "method") continue;
+                    const std::string ret = JavaLspReturnType(d.signature, d.name);
+                    if (!ret.empty()) return ret;
+                }
+                return std::string();
+            };
+            const JavaLspDocQuery q = JavaLspDocQueryAt(Analysis(params), LineOf(params), ColOf(params), method_type);
+            if (q.found && q.name.find('.') != std::string::npos) {
+                javadoc::SearchPath where;
+                where.sourcepath = roots;
+                const size_t dot = q.name.rfind('.');
+                const std::vector<javadoc::Decl> decls = FindMember(q.name.substr(0, dot), q.name.substr(dot + 1), where, 4);
+                if (!decls.empty()) {
+                    info.found = true;
+                    info.text = RenderAll(decls, 4, false);
+                    info.range = q.range;
+                }
+            } else if (q.found && !q.name.empty() && std::isupper(static_cast<unsigned char>(q.name[0]))) {
+                // A bare type name: only its own file (Name.java) on the roots -- at the root, in the
+                // file's package and in the imported packages -- never a full scan.
+                for (const std::string &relative : TypeFileCandidates(text, q.name)) {
+                    for (const std::string &root : roots) {
+                        javadoc::SearchPath where;
+                        std::ifstream probe(root + "/" + relative);
+                        if (!probe) continue;
+                        where.files.push_back(root + "/" + relative);
+                        const std::vector<javadoc::Decl> decls = javadoc::Find(q.name, where, 1);
+                        if (decls.empty()) continue;
+                        info.found = true;
+                        info.text = RenderAll(decls, 1, false);
+                        info.range = q.range;
+                        break;
+                    }
+                    if (info.found) break;
+                }
+            }
+        }
         if (!info.found) return Json();
         Json contents = Json::Object();
         contents["kind"] = "markdown";
@@ -507,6 +663,44 @@ int Lint(const std::vector<std::string> &paths) {
     return failed ? 1 : 0;
 }
 
+// --doc NAME: the Javadoc NAME means, printed as Markdown.
+int Doc(const std::vector<std::string> &args) {
+    std::string name;
+    javadoc::SearchPath where;
+    std::vector<std::string> sourcepath;
+    for (size_t i = 0; i < args.size(); i++) {
+        const std::string &a = args[i];
+        if ((a == "--sourcepath" || a == "-sourcepath" || a == "--source-path" || a == "-I") && i + 1 < args.size()) {
+            for (const std::string &p : javadoc::SplitPathList(args[++i])) sourcepath.push_back(p);
+        } else if (a == "--file" && i + 1 < args.size()) {
+            where.files.push_back(args[++i]);
+        } else if (name.empty()) {
+            name = a;
+        } else {
+            std::fprintf(stderr, "mep-java-lsp --doc: unexpected argument %s\n", a.c_str());
+            return 2;
+        }
+    }
+    if (name.empty()) {
+        std::fprintf(stderr, "usage: mep-java-lsp --doc NAME [--sourcepath PATHS]... [--file FILE]...\n");
+        return 2;
+    }
+    where.sourcepath = sourcepath;
+    if (const char *env = std::getenv("MEP_JAVA_SOURCEPATH")) {
+        for (const std::string &p : javadoc::SplitPathList(env)) where.sourcepath.push_back(p);
+    }
+    for (const std::string &f : where.files) {
+        bool ok = false;
+        const std::string text = ReadFile(f, &ok);
+        const std::string root = ok ? javadoc::PackageRoot(f, text) : "";
+        if (!root.empty()) where.sourcepath.push_back(root);
+    }
+    const std::vector<javadoc::Decl> decls = javadoc::Find(name, where, 12);
+    if (decls.empty()) return 1;
+    std::printf("%s\n", RenderAll(decls, 12, true).c_str());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -522,9 +716,12 @@ int main(int argc, char **argv) {
             if (rest.empty()) rest.emplace_back("-");
             return Lint(rest);
         }
+        if (first == "--doc") return Doc(rest);
         if (first == "--help" || first == "-h") {
             std::printf("usage: mep-java-lsp                  run the language server on stdio\n"
-                        "       mep-java-lsp --lint FILE...   print diagnostics (FILE '-' reads stdin)\n");
+                        "       mep-java-lsp --lint FILE...   print diagnostics (FILE '-' reads stdin)\n"
+                        "       mep-java-lsp --doc NAME [--sourcepath PATHS]... [--file FILE]...\n"
+                        "                                     NAME's Javadoc (Foo, Foo.bar, pkg.Foo#bar(int), bar)\n");
             return 0;
         }
         if (first != "--stdio") {

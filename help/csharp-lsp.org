@@ -20,7 +20,11 @@ extension methods included.
 On start it indexes the workspace's =.cs= files -- =bin/=, =obj/= and
 hidden directories skipped -- for the types and members each one declares,
 so definition, hover, completion and signature help reach across files. An
-open file is re-indexed as you type.
+open file is re-indexed as you type. A source declaration's documentation is
+its whole doc comment as Markdown: the =<summary>=, then =<remarks>= (with
+=<para>= paragraphs and =<code>= blocks), the documented =<param>=s,
+=<returns>=, =<value>= and =<exception>=s -- what a generated binding (such
+as Rosetta's =--csharp-api full= output) carries over from Doxygen.
 
 The same binary is a command-line linter; see /Linting from the command line/ below.
 
@@ -96,7 +100,7 @@ nullability. =dotnet build= is the check for those.
 
 * What else it does
 
-- *Hover* shows a member's signature (every overload) and doc summary --
+- *Hover* shows a member's signature (every overload) and documentation --
   the file's, the workspace's or the base library's -- a type's declaration
   and doc, a local's or parameter's type (written, or inferred from
   =var x = new T()=, a literal, a call whose return type is known, a

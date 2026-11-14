@@ -273,7 +273,23 @@ private:
     void Set(const std::string &uri, const std::string &text) {
         OpenDoc &d = docs_[uri];
         d.lines = SplitLines(text);
-        d.analysis = JuliaLspAnalyze(d.lines);
+        d.analysis = JuliaLspAnalyze(d.lines, PathOf(uri));
+    }
+
+    /** @brief A file:// URI's path (percent-escapes decoded); "" for other schemes. */
+    static std::string PathOf(const std::string &uri) {
+        if (uri.compare(0, 7, "file://") != 0) return "";
+        std::string out;
+        for (size_t k = 7; k < uri.size(); k++) {
+            if (uri[k] == '%' && k + 2 < uri.size() && std::isxdigit(static_cast<unsigned char>(uri[k + 1])) &&
+                std::isxdigit(static_cast<unsigned char>(uri[k + 2]))) {
+                out += static_cast<char>(std::stoi(uri.substr(k + 1, 2), nullptr, 16));
+                k += 2;
+            } else {
+                out += uri[k];
+            }
+        }
+        return out;
     }
 
     const OpenDoc &Doc(const std::string &uri) {
@@ -401,7 +417,7 @@ private:
         Json arr = Json::Array();
         for (const JuliaLspLocation &loc : JuliaLspDefinition(Analysis(params), LineOf(params), ColOf(params))) {
             Json j = Json::Object();
-            j["uri"] = uri;
+            j["uri"] = loc.path.empty() ? uri : "file://" + loc.path;
             j["range"] = RangeOf(loc.range);
             arr.push_back(j);
         }

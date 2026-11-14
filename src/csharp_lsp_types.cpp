@@ -741,13 +741,17 @@ std::vector<MemberInfo> Universe::Members(const ResolvedType &t, const std::stri
             }
         } else if (cur.source) {
             // The type's members from the layer that declares it (a type in the current file is also in the
-            // workspace's index, with stale positions: the first layer that has members wins).
+            // workspace's index, with stale positions: the first layer that has members wins). A declaration
+            // written the same way twice -- the same file copied elsewhere in the workspace, such as a generated
+            // binding and its installed copy -- counts once.
             for (const auto &layer : layers_) {
                 auto range = layer->by_owner.equal_range(cur.source->FullName());
                 if (range.first == range.second) continue;
+                std::set<std::string> declared;
                 for (auto it = range.first; it != range.second; ++it) {
                     const SourceMember &m = layer->members[it->second];
                     if (!name.empty() && name != m.name) continue;
+                    if (!declared.insert(m.kind + '\x1f' + m.signature).second) continue;
                     if (qi > 1 && m.kind == "constructor") continue;
                     if (qi > 1 && m.kind != "method" && hidden.count(m.name)) continue;
                     out.push_back(FromSourceMember(m, cur));

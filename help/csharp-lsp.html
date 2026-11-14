@@ -27,7 +27,11 @@ extension methods included.</p>
 <p>On start it indexes the workspace's <code>.cs</code> files -- <code>bin/</code>, <code>obj/</code> and
 hidden directories skipped -- for the types and members each one declares,
 so definition, hover, completion and signature help reach across files. An
-open file is re-indexed as you type.</p>
+open file is re-indexed as you type. A source declaration's documentation is
+its whole doc comment as Markdown: the <code>&lt;summary&gt;</code>, then <code>&lt;remarks&gt;</code> (with
+<code>&lt;para&gt;</code> paragraphs and <code>&lt;code&gt;</code> blocks), the documented =&lt;param&gt;=s,
+<code>&lt;returns&gt;</code>, <code>&lt;value&gt;</code> and =&lt;exception&gt;=s -- what a generated binding (such
+as Rosetta's <code>--csharp-api full</code> output) carries over from Doxygen.</p>
 <p>The same binary is a command-line linter; see <i>Linting from the command line</i> below.</p>
 <h1>Roslyn's own syntax errors</h1>
 <p>The parser is a translation of Roslyn's (<code>Lexer.cs</code>, <code>LanguageParser.cs</code>,
@@ -93,7 +97,7 @@ unknown name, a type mismatch, overload resolution, definite assignment,
 nullability. <code>dotnet build</code> is the check for those.</p>
 <h1>What else it does</h1>
 <ul>
-<li><b>Hover</b> shows a member's signature (every overload) and doc summary -- the file's, the workspace's or the base library's -- a type's declaration and doc, a local's or parameter's type (written, or inferred from <code>var x = new T()</code>, a literal, a call whose return type is known, a <code>foreach</code> over a typed collection).</li>
+<li><b>Hover</b> shows a member's signature (every overload) and documentation -- the file's, the workspace's or the base library's -- a type's declaration and doc, a local's or parameter's type (written, or inferred from <code>var x = new T()</code>, a literal, a call whose return type is known, a <code>foreach</code> over a typed collection).</li>
 <li><b>Completion</b>: after <code>x.</code>, the members of <code>x</code>'s type, walking its base types and interfaces, with the extension methods of the imported namespaces (<code>list.</code> offers LINQ's <code>Select</code> and <code>Where</code>, with their element type); after a type name, its static members and nested types; after a namespace, its namespaces and types. Otherwise the locals and parameters in scope, the enclosing types' members, the types the usings bring in, namespaces and keywords. Inside a comment or a string: nothing.</li>
 <li><b>Signature help</b> shows every overload of the method, constructor (<code>new T(</code>) or indexer being called, the argument being typed highlighted.</li>
 <li><b>Go to definition</b> follows a local or parameter to its declaration, a member or type to its declaration in this file or another of the workspace.</li>

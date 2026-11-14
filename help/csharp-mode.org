@@ -100,9 +100,14 @@ would run it:
 - A namespace (=namespace Demo { ... }= or =namespace Demo;=) is unwrapped:
   console code cannot declare one, so its types are declared at the top
   level, and a =using= of the file's own namespace is left out.
-- The directives of a file-based app (=#:package=, =#:sdk=, =#:property=)
-  are not supported: the console says so and ignores them. The same goes
-  for =#r "nuget: ..."=; =#r= a =.dll= by its path instead.
+- =#:project PATH= (a file-based app's project reference, relative to the
+  file) is honoured: the console builds the project once per session
+  (=dotnet build -c Debug=) and references its assembly, with its XML
+  documentation for =gh=, so a file that runs with =dotnet run= runs in
+  the console too. =<leader>re= honours it as well.
+- The other directives of a file-based app (=#:package=, =#:sdk=,
+  =#:property=) are not supported: the console says so and ignores them.
+  The same goes for =#r "nuget: ..."=; =#r= a =.dll= by its path instead.
 - Running the file again replaces its classes and methods for every later
   input; variables declared again start over.
 

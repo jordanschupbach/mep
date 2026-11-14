@@ -283,6 +283,43 @@ int main(int argc, char **argv) {
         CHECK(h.found && h.text.find("Says hi.") != std::string::npos);
     }
 
+    {
+        // The whole doc comment as Markdown (generated bindings document remarks, parameters and exceptions).
+        CsProject project;
+        CsProjectAddFile(&project, "/w/Lm.cs",
+                         L("namespace App;\npublic class Lm {\n"
+                           "  /// <summary>\n  /// Fits a <c>linear</c> model.\n  /// </summary>\n"
+                           "  /// <remarks>\n  /// <para>First paragraph\n  /// continues.</para>\n"
+                           "  /// <para><b>Example</b></para>\n  /// <code>\n  /// var m = new Lm();\n  ///   m.Fit(1);\n"
+                           "  /// </code>\n  /// </remarks>\n"
+                           "  /// <param name=\"level\">Coverage, in (0, 1).</param>\n  /// <param name=\"quiet\"></param>\n"
+                           "  /// <returns>The fitted value.</returns>\n"
+                           "  /// <exception cref=\"System.ArgumentException\">When <paramref name=\"level\"/> is out of range.</exception>\n"
+                           "  public double Fit(double level, bool quiet) => level;\n}\n"));
+        const CsLspHoverInfo h = CsLspHover(L("namespace App;\nclass P { void M(Lm m) { m.Fit(0.5, true); } }"), 1, 28, &project);
+        CHECK(h.found);
+        CHECK(h.text.find("Fits a `linear` model.\n\nFirst paragraph continues.\n\n**Example**\n\n```\nvar m = new Lm();\n  m.Fit(1);\n```") !=
+              std::string::npos);
+        CHECK(h.text.find("**Parameters**\n- `level`: Coverage, in (0, 1).\n\n**Returns:** The fitted value.") != std::string::npos);
+        CHECK(h.text.find("`quiet`") == std::string::npos);  // undocumented
+        CHECK(h.text.find("**Exceptions**\n- `System.ArgumentException`: When `level` is out of range.") != std::string::npos);
+    }
+
+    {
+        // The same file twice in the workspace (a generated binding and its installed copy): overloads once.
+        CsProject project;
+        const auto lib = L("namespace App;\npublic class Calc {\n  public int Add(int a) => a;\n  public int Add(int a, int b) => a + b;\n}\n");
+        CsProjectAddFile(&project, "/w/src/Calc.cs", lib);
+        CsProjectAddFile(&project, "/w/build/prefix/Calc.cs", lib);
+        const CsLspHoverInfo h = CsLspHover(L("namespace App;\nclass P { void M(Calc c) { c.Add(1); } }"), 1, 30, &project);
+        CHECK(h.found);
+        size_t n = 0;
+        for (size_t at = h.text.find("int Add("); at != std::string::npos; at = h.text.find("int Add(", at + 1)) n++;
+        CHECK(n == 2);
+        const CsLspSignatureHelp sh = CsLspSignatures(L("namespace App;\nclass P { void M(Calc c) { c.Add(1, "), 1, 36, &project);
+        CHECK(sh.found && sh.signatures.size() == 2);
+    }
+
     // --- hover, signatures ------------------------------------------------------------------
     {
         const auto lines = L("class C {\n  /// <summary>Adds two numbers.</summary>\n  int Add(int a, int b) => a + b;\n"

@@ -1160,6 +1160,18 @@ test-cpp-ui:
 test-lua-ui:
     python3 tools/lua_ui_check.py
 
+# The Julia UI mode without a window: the Lua chunk on stubs, the MepUI init
+# script in julia (panels, eval with source lines, help, inspect) and the
+# real REPL under a pty (the prompt hook refreshes the panels).
+test-julia-ui:
+    python3 tools/julia_ui_check.py
+
+# The C# UI mode's console without a window: built with the real SDK, then
+# :run / :evalat of a file-based app whose #:project it builds, and :help of
+# the referenced library (its XML documentation).
+test-csharp-ui:
+    python3 tools/csharp_ui_check.py
+
 # The Lua UI in the actual editor on a private X11 display: <leader>re, Run
 # (with a LUA_PATH-only module), gh, teardown.
 test-lua-ui-live: build-native

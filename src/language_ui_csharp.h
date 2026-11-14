@@ -395,11 +395,58 @@ static class Repl {
 
     // --- files ------------------------------------------------------------------
 
-    // A C# file as script code: `#:package`-style directives and a `#!` line
+    static readonly Dictionary<string, string> Projects = new();  // project file -> its built assembly
+
+    // `#:project PATH` (a .NET file-based app's project reference): `dotnet
+    // build` it (once per session; a directory means the project file in it)
+    // and reference its assembly, with its XML documentation for help, like
+    // `#r` would.
+    static void ReferenceProject(string project, List<string> notes) {
+        if (Directory.Exists(project)) project = Directory.GetFiles(project, "*.csproj").FirstOrDefault() ?? project;
+        if (!File.Exists(project)) { notes.Add($"#:project {project} -- no such project (ignored)"); return; }
+        if (Projects.ContainsKey(project)) return;
+        Console.WriteLine(Dim($"# building {project}"));
+        var info = new System.Diagnostics.ProcessStartInfo("dotnet") {
+            RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false),
+        };
+        foreach (var a in new[] { "build", project, "-nologo", "-v", "q", "-c", "Debug", "-t:Build", "-getProperty:TargetPath" }) info.ArgumentList.Add(a);
+        string output, errors;
+        int code;
+        try {
+            using var process = System.Diagnostics.Process.Start(info)!;
+            var stderr = process.StandardError.ReadToEndAsync();
+            output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+            errors = stderr.Result;
+            code = process.ExitCode;
+        } catch (Exception e) {
+            notes.Add($"#:project {project} -- cannot run dotnet build: {e.Message}");
+            return;
+        }
+        string dll = output.Replace("\uFEFF", "").Trim().Split('\n').LastOrDefault()?.Trim() ?? "";
+        if (code != 0 || !File.Exists(dll)) {
+            Console.WriteLine(Red($"#:project {project}: the build failed (dotnet build exited with {code})"));
+            var lines = (output + errors).Split('\n').Select(l => l.TrimEnd()).Where(l => l.Length > 0).ToList();
+            var shown = lines.Where(l => l.Contains("error", StringComparison.OrdinalIgnoreCase)).ToList();
+            foreach (var line in (shown.Count > 0 ? shown : lines.TakeLast(12).ToList()).Take(12)) Console.WriteLine(Red(line.Trim()));
+            return;
+        }
+        Projects[project] = dll;
+        string xml = Path.ChangeExtension(dll, ".xml");
+        DepPaths[AssemblyName.GetAssemblyName(dll).Name ?? Path.GetFileNameWithoutExtension(dll)] = dll;
+        Refs = Refs.Add(MetadataReference.CreateFromFile(dll, documentation: File.Exists(xml) ? new XmlDocs(xml) : null));
+        _base = null;
+        notes.Add($"#:project {project} -- referenced {dll}");
+    }
+
+    // A C# file as script code: `#:project` references built and referenced
+    // (ReferenceProject), other `#:package`-style directives and a `#!` line
     // dropped (with a note), namespace declarations unwrapped (a script cannot
     // declare a namespace) and `using`s of the file's own namespaces dropped.
-    // Blanked in place, so line and column numbers stay the file's.
-    public static string PrepareFile(string text, List<string> notes) {
+    // Blanked in place, so line and column numbers stay the file's. PATH is
+    // the file's (relative `#:project` paths are relative to it).
+    public static string PrepareFile(string text, List<string> notes, string? path = null) {
         var chars = text.ToCharArray();
         void Blank(int start, int end) {
             for (int i = start; i < end && i < chars.Length; i++)
@@ -409,7 +456,12 @@ static class Repl {
         foreach (var rawLine in text.Split('\n')) {
             string t = rawLine.TrimStart();
             if (t.StartsWith("#:") || (pos == 0 && t.StartsWith("#!"))) {
-                if (t.StartsWith("#:")) notes.Add($"{t.TrimEnd()} -- not supported in the console (ignored)");
+                if (t.StartsWith("#:project ") || t.StartsWith("#:project\t")) {
+                    string dir = path != null ? Path.GetDirectoryName(Path.GetFullPath(path))! : Environment.CurrentDirectory;
+                    ReferenceProject(Path.GetFullPath(Path.Combine(dir, t.Substring(9).Trim())), notes);
+                } else if (t.StartsWith("#:")) {
+                    notes.Add($"{t.TrimEnd()} -- not supported in the console (ignored)");
+                }
                 Blank(pos, pos + rawLine.Length);
             }
             pos += rawLine.Length + 1;
@@ -444,7 +496,7 @@ static class Repl {
         catch (Exception e) { Console.WriteLine(Red($"cannot read {path}: {e.Message}")); return; }
         RecordHistory($":run {path}");
         var notes = new List<string>();
-        string prepared = PrepareFile(text, notes);
+        string prepared = PrepareFile(text, notes, path);
         Counter++;
         Console.WriteLine(Dim($"# {path}"));
         foreach (var n in notes) Console.WriteLine(Dim($"# {n}"));
@@ -460,7 +512,8 @@ static class Repl {
         try { text = File.ReadAllText(path); }
         catch { Console.WriteLine(Red($"cannot read {path}")); return; }
         var notes = new List<string>();
-        string prepared = PrepareFile(text, notes);
+        string prepared = PrepareFile(text, notes, path);
+        foreach (var n in notes.Where(n => n.StartsWith("#:project"))) Console.WriteLine(Dim($"# {n}"));
         var tree = CSharpSyntaxTree.ParseText(prepared, ParseOpts);
         var root = tree.GetCompilationUnitRoot();
         var lines = tree.GetText().Lines;

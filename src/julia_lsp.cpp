@@ -1512,6 +1512,13 @@ struct Analyzer {
                     const JuliaLspApi *api = JuliaLspApiTable(&count);
                     bool known = false;
                     for (size_t i = 0; i < count && !known; ++i) known = path == api[i].module;
+                    if (!known && !BuildingPackage()) {
+                        // A package on the load path: its exports are known when its file says them all.
+                        if (auto package = FindPackage(path, d.path)) {
+                            if (!PackageNamed(d, path)) d.packages.push_back(package);
+                            known = package->complete;
+                        }
+                    }
                     if (known) S(mod).usings.push_back(path);
                     else S(mod).unknown_usings.push_back(path);
                     (void)last;
@@ -1722,9 +1729,31 @@ std::vector<const JuliaLspApi *> VocabAll(std::string_view name) {
     return out;
 }
 
+const Package *PackageNamed(const Doc &d, std::string_view name) {
+    for (const auto &p : d.packages)
+        if (p->name == name) return p.get();
+    return nullptr;
+}
+
+std::vector<const JuliaLspApi *> VocabAll(const Doc &d, std::string_view name) {
+    std::vector<const JuliaLspApi *> out;
+    for (const auto &p : d.packages)
+        for (const PackageRow *r : PackageRows(*p, name)) out.push_back(&r->api);
+    for (const JuliaLspApi *a : VocabAll(name)) out.push_back(a);
+    return out;
+}
+
 std::vector<const JuliaLspApi *> VocabFor(const Doc &d, int module, std::string_view name) {
     std::vector<const JuliaLspApi *> out;
     const Scope &m = d.scopes[static_cast<size_t>(module)];
+    // `using`ed packages first: their methods are the more specific ones (`size(::Canvas)`).
+    for (const auto &p : d.packages) {
+        const bool used = std::find(m.usings.begin(), m.usings.end(), p->name) != m.usings.end() ||
+                          std::find(m.unknown_usings.begin(), m.unknown_usings.end(), p->name) != m.unknown_usings.end();
+        if (!used) continue;
+        for (const PackageRow *r : PackageRows(*p, name))
+            if (r->exported || r->extends_base) out.push_back(&r->api);
+    }
     for (const JuliaLspApi *a : VocabAll(name)) {
         const std::string_view mod = a->module;
         if (mod == "Core" || (mod == "Base" && !m.bare) ||
@@ -1813,10 +1842,11 @@ std::string SignatureText(const Doc &d, int def) {
 
 using namespace jllsp;
 
-std::shared_ptr<const JuliaLspDocument> JuliaLspAnalyze(const std::vector<std::string> &lines) {
+std::shared_ptr<const JuliaLspDocument> JuliaLspAnalyze(const std::vector<std::string> &lines, const std::string &path) {
     auto doc = std::make_shared<JuliaLspDocument>();
     Doc &d = doc->d;
     d.lines = lines;
+    d.path = path;
     for (size_t i = 0; i < lines.size(); ++i) {
         d.line_starts.push_back(static_cast<uint32_t>(d.text.size()));
         d.text += lines[i];

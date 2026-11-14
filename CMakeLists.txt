@@ -119,6 +119,15 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT APPLE AND NOT EMSCRIPTEN)
             endif()
         endforeach()
     endif()
+    # The Clang wrapper's own injected dirs too (alsa-lib, openssl, libx11, ...):
+    # they're in CMake's implicit list, so no target ever passes them, and the
+    # gcc first on PATH (gfortran's, in a shell with several toolchains) may not
+    # report them -- then clang-scan-deps fails on e.g. <alsa/asoundlib.h>.
+    foreach(MEP_IMPLICIT_DIR ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES})
+        if(NOT MEP_IMPLICIT_DIR IN_LIST MEP_GCC_ISYSTEM_DIRS)
+            add_compile_options("-isystem${MEP_IMPLICIT_DIR}")
+        endif()
+    endforeach()
 endif()
 
 # ccache (BUILD_PERFORMANCE_PLAN.md): auto-detected, not opt-in -- every
@@ -2693,7 +2702,7 @@ add_dependencies(tests mep-octave-lsp-test)
 # `--julia-check FILE...`) over the analysis half (src/julia_lsp.cpp) and
 # mep's JuliaSyntax port. Same reasoning as mep-nix-lsp below.
 # (MEP_JULIA_PARSE_SOURCES is set with MEP_JULIA_FORMAT_SOURCES, which carries it.)
-set(MEP_JULIA_LSP_SOURCES src/julia_lsp.cpp src/julia_lsp_features.cpp src/julia_lsp_vocab.cpp
+set(MEP_JULIA_LSP_SOURCES src/julia_lsp.cpp src/julia_lsp_features.cpp src/julia_lsp_packages.cpp src/julia_lsp_vocab.cpp
     ${MEP_JULIA_FORMAT_SOURCES})
 if(NOT EMSCRIPTEN)
     add_executable(mep-julia-lsp src/julia_lsp_server.cpp ${MEP_JULIA_LSP_SOURCES})

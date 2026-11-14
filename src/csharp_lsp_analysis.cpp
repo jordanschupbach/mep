@@ -7,6 +7,7 @@
 #include <cctype>
 #include <functional>
 #include <set>
+#include <sstream>
 
 namespace cslsp {
 
@@ -174,11 +175,128 @@ std::string CollapseSpaces(const std::string &s) {
 
 }  // namespace
 
+namespace {
+
+// Markers in the text XmlMarkdown builds: a paragraph break, and the start / end of a code block.
+constexpr char kParagraph = '\x1e';
+constexpr char kCodeStart = '\x1c';
+constexpr char kCodeEnd = '\x1d';
+
+std::string XmlTag(const Doc &doc, const SyntaxNode *element) {
+    const SyntaxNode *start = element->Field(Field::StartTag);
+    const SyntaxNode *name = start ? start->Field(Field::Name) : nullptr;
+    return name ? doc.Text(name) : "";
+}
+
+/** @brief An element's name="..." or cref="..." attribute. */
+std::string XmlAttribute(const Doc &doc, const SyntaxNode *element) {
+    const SyntaxNode *start = element->Field(Field::StartTag);
+    if (!start) return "";
+    for (const SyntaxNode *attr : start->FieldItems(Field::Attributes)) {
+        if (attr->Kind() == SyntaxKind::XmlCrefAttribute) return doc.Text(attr->Field(Field::Cref));
+        if (attr->Kind() == SyntaxKind::XmlNameAttribute) return doc.Text(attr->Field(Field::Identifier));
+    }
+    return "";
+}
+
+/** @brief A doc comment element's content as marked text: <para> paragraphs, <code> blocks (newlines kept),
+ *         <c> and references as code spans, <b> / <i> emphasis. */
+void XmlMarkdown(const Doc &doc, const SyntaxNode *n, std::string &out, bool code) {
+    if (n->IsToken()) {
+        if (n->Kind() == SyntaxKind::XmlTextLiteralToken || n->Kind() == SyntaxKind::XmlEntityLiteralToken) {
+            out += csharp::ToUtf8(n->ValueText());
+        } else if (n->Kind() == SyntaxKind::XmlTextLiteralNewLineToken) {
+            out += code ? '\n' : ' ';
+        }
+        return;
+    }
+    if (n->Kind() == SyntaxKind::XmlEmptyElement) {
+        XmlPlain(doc, n, out);
+        return;
+    }
+    if (n->Kind() == SyntaxKind::XmlElement) {
+        const std::string tag = XmlTag(doc, n);
+        std::string inner;
+        for (const SyntaxNode *c : n->FieldItems(Field::Content)) XmlMarkdown(doc, c, inner, code || tag == "code");
+        if (tag == "para") {
+            out += kParagraph + inner + kParagraph;
+        } else if (tag == "code") {
+            out += kCodeStart + inner + kCodeEnd;
+        } else if (tag == "c") {
+            out += "`" + CollapseSpaces(inner) + "`";
+        } else if (tag == "b" || tag == "strong") {
+            out += "**" + CollapseSpaces(inner) + "**";
+        } else if (tag == "i" || tag == "em") {
+            out += "*" + CollapseSpaces(inner) + "*";
+        } else {
+            out += inner;
+        }
+        return;
+    }
+    for (const SyntaxNode *c : n->children) XmlMarkdown(doc, c, out, code);
+}
+
+/** @brief A code block's lines without their common indentation and the blank lines around them. */
+std::string Dedent(const std::string &text) {
+    std::vector<std::string> lines;
+    std::stringstream in(text);
+    for (std::string line; std::getline(in, line);) lines.push_back(line);
+    while (!lines.empty() && lines.front().find_first_not_of(" \t") == std::string::npos) lines.erase(lines.begin());
+    while (!lines.empty() && lines.back().find_first_not_of(" \t") == std::string::npos) lines.pop_back();
+    size_t indent = std::string::npos;
+    for (const std::string &line : lines) {
+        const size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos) indent = std::min(indent, first);
+    }
+    std::string out;
+    for (const std::string &line : lines) {
+        out += (out.empty() ? "" : "\n") + (line.size() > indent && indent != std::string::npos ? line.substr(indent) : std::string());
+    }
+    return out;
+}
+
+/** @brief Marked text as Markdown blocks: paragraphs with their spaces collapsed, fenced code blocks. */
+std::vector<std::string> MarkdownBlocks(const std::string &marked) {
+    std::vector<std::string> blocks;
+    std::string paragraph;
+    auto flush = [&] {
+        std::string p = CollapseSpaces(paragraph);
+        if (!p.empty()) blocks.push_back(p);
+        paragraph.clear();
+    };
+    for (size_t i = 0; i < marked.size(); i++) {
+        if (marked[i] == kParagraph) {
+            flush();
+        } else if (marked[i] == kCodeStart) {
+            flush();
+            const size_t end = marked.find(kCodeEnd, i + 1);
+            const std::string body = Dedent(marked.substr(i + 1, end == std::string::npos ? std::string::npos : end - i - 1));
+            if (!body.empty()) blocks.push_back("```\n" + body + "\n```");
+            if (end == std::string::npos) break;
+            i = end;
+        } else {
+            paragraph += marked[i];
+        }
+    }
+    flush();
+    return blocks;
+}
+
+std::string JoinBlocks(const std::vector<std::string> &blocks) {
+    std::string out;
+    for (const std::string &b : blocks) out += (out.empty() ? "" : "\n\n") + b;
+    return out;
+}
+
+}  // namespace
+
 std::string DocSummary(const Doc &doc, const SyntaxNode *decl) {
     if (!decl) return "";
     const SyntaxNode *first = decl->FirstToken();
     if (!first) return "";
-    std::string summary, whole;
+    std::vector<std::string> summary, remarks, value;
+    std::string returns;
+    std::vector<std::pair<std::string, std::string>> params, exceptions;
     for (const SyntaxTrivia &t : first->leading) {
         if (!t.structure) continue;
         if (t.Kind() != SyntaxKind::SingleLineDocumentationCommentTrivia &&
@@ -187,17 +305,38 @@ std::string DocSummary(const Doc &doc, const SyntaxNode *decl) {
         }
         for (const SyntaxNode *c : t.structure->children) {
             if (c->Kind() != SyntaxKind::XmlElement) continue;
-            const SyntaxNode *start = c->Field(Field::StartTag);
-            const SyntaxNode *name = start ? start->Field(Field::Name) : nullptr;
-            std::string tag = name ? doc.Text(name) : "";
+            const std::string tag = XmlTag(doc, c);
+            std::string marked;
+            for (const SyntaxNode *k : c->FieldItems(Field::Content)) XmlMarkdown(doc, k, marked, false);
+            std::vector<std::string> blocks = MarkdownBlocks(marked);
             if (tag == "summary") {
-                std::string s;
-                for (const SyntaxNode *k : c->FieldItems(Field::Content)) XmlPlain(doc, k, s);
-                summary += CollapseSpaces(s);
+                summary.insert(summary.end(), blocks.begin(), blocks.end());
+            } else if (tag == "remarks") {
+                remarks.insert(remarks.end(), blocks.begin(), blocks.end());
+            } else if (tag == "value") {
+                value.insert(value.end(), blocks.begin(), blocks.end());
+            } else if (tag == "returns") {
+                returns = JoinBlocks(blocks);
+            } else if (tag == "param") {
+                params.emplace_back(XmlAttribute(doc, c), JoinBlocks(blocks));
+            } else if (tag == "exception") {
+                exceptions.emplace_back(XmlAttribute(doc, c), JoinBlocks(blocks));
             }
         }
     }
-    return summary;
+    std::vector<std::string> out = summary;
+    out.insert(out.end(), remarks.begin(), remarks.end());
+    std::string list;
+    for (const auto &[name, text] : params) {
+        if (!text.empty()) list += "\n- `" + name + "`: " + text;
+    }
+    if (!list.empty()) out.push_back("**Parameters**" + list);
+    if (!returns.empty()) out.push_back("**Returns:** " + returns);
+    if (!value.empty()) out.push_back("**Value:** " + JoinBlocks(value));
+    list.clear();
+    for (const auto &[type, text] : exceptions) list += "\n- `" + type + "`" + (text.empty() ? "" : ": " + text);
+    if (!list.empty()) out.push_back("**Exceptions**" + list);
+    return JoinBlocks(out);
 }
 
 std::string DeclHeader(const Doc &doc, const SyntaxNode *decl) {

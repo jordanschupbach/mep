@@ -1,0 +1,91 @@
+#+TITLE: Julia mode
+#+HTML_HEAD: <meta name="help-section" content="Languages">
+#+HTML_HEAD: <meta name="help-order" content="43">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Opening it
+
+The language UI toggle (see [[file:language-ui.html][Language UI modes]]) in a =.jl= file.
+The tab becomes a Julia workspace: your file, an interactive =julia= below
+it, and panels showing what that session holds.
+
+The console is the stock REPL, =julia -i=, so line editing, history, help
+mode (=?=), pkg mode (=]=), shell mode (=;=) and the display of an
+expression's value are its own. It starts with mep's environment: the
+=julia= on =PATH=, =JULIA_LOAD_PATH=, =JULIA_PROJECT= and
+=JULIA_DEPOT_PATH=, as a project's dev shell or direnv set them, so
+=using Package= loads the same package it would in a terminal in that
+project. In a Rosetta-generated binding such as datamunge's =Datamunge=,
+that is the package whose docstrings come from the C++ doc comments.
+
+* Working in it
+
+| Key / call            | Does                                                       |
+|-----------------------+------------------------------------------------------------|
+| =<leader>rr=          | run the whole file in the console                          |
+| =<leader>re=          | run the top-level form at the cursor in the console        |
+| =gh=                  | help for the name under the cursor, in the Help panel      |
+| =MepUI.help("name")=  | the same, from the console (=Mod.name= works too)          |
+| =MepUI.view(x)=       | a value -- its display and its structure -- in Inspect     |
+| =MepUI.run(file)=     | run a file the way =<leader>rr= does                       |
+
+=<leader>re= finds the form around the cursor: from the nearest line above
+that starts one at column 0 to just before the next. That is a whole
+=function=, =struct=, =module= or =begin= block, a docstring together with
+what it documents, or a single line. =end=, =else=, =catch= and closing
+brackets never start a form, and neither does a line that continues the
+previous one (a trailing operator, comma, =do= or open bracket).
+
+Neither key pastes your code into the prompt. The code is written to a
+file and run with a single =MepUI.eval_file(...)= line, in =Main=, under
+your file's name and padded to its line numbers. A stack trace names the
+right line, and =@__FILE__= is your file. The last value is displayed as
+at the prompt; a trailing =;= hides it.
+
+=<leader>rr= runs the buffer as it is in the editor, unsaved changes
+included. mod1+Enter still pastes the current line or the selection
+straight into the prompt (see [[file:repl.html][REPL and send-to-terminal]]).
+
+* The panels
+
+| Panel     | Shows                                                                   |
+|-----------+-------------------------------------------------------------------------|
+| Variables | the bindings the session has made in =Main=, with kind and value (methods for a function, supertype for a type) |
+| Modules   | the packages loaded since the console started, with their files         |
+| Inspect   | =MepUI.view= of a value: as the REPL displays it, then =dump= of its fields |
+| Help      | the docstring (what =?name= prints) and the methods; a module's exports and file |
+
+Clicking a Variables row inspects it; clicking a Modules row shows the
+module's docstring and exports in Help. What existed when the console
+started -- Base, the standard libraries already loaded -- is left out.
+
+The panels refresh after every command: the init script installs a prompt
+function, which the REPL calls before each prompt. With =TERM= unset or
+=dumb=, Julia starts its basic REPL instead, and the panels refresh once a
+second.
+
+* =gh= and the language server
+
+Help shows what the running session knows: docstrings of everything
+loaded, including methods a package added to Base. In a =.jl= buffer
+=gh= also opens the language server's hover (see
+[[file:julia-lsp.html][The Julia language server]]), which reads packages
+from the load path without loading them. Without the mode open, =gh= is
+that hover alone.
+
+* Options
+
+#+begin_src lua
+mep.opt.julia_ui_cmd = {'julia', '--threads=auto'}   -- the console's command
+mep.opt.julia_ui_info_share = 0.3                    -- the panels' width
+#+end_src
+
+A =# REPL: nix develop .#julia --command julia= line in the file overrides
+=julia_ui_cmd= for that file. The mode appends =-i -L= and its init
+script, so the command must accept them, as =julia= does.
+
+* See also
+
+- [[file:language-ui.html][Language UI modes]] -- the other languages' modes.
+- [[file:julia-lsp.html][The Julia language server]].
+- [[file:run-button.html][Run button]] -- a =# CMD:= line runs a file another way.

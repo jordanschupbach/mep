@@ -153,12 +153,17 @@ JuliaLspHoverInfo JuliaLspHover(const JuliaLspDocument &doc, int line, int col) 
         h.range = d.Range(o->b, o->e);
         if (o->var >= 0) {
             h.found = true;
-            h.text = VarMarkdown(d, d.vars[static_cast<size_t>(o->var)]);
+            const Var &v = d.vars[static_cast<size_t>(o->var)];
+            // `using Package`: the package's own docstring.
+            const Package *p = v.kind == VarKind::Import ? PackageNamed(d, v.name) : nullptr;
+            h.text = p ? "```julia\nmodule " + p->name + "\n```\n*package at `" + p->file + "`*" +
+                             (p->doc.empty() ? std::string() : "\n\n" + p->doc)
+                       : VarMarkdown(d, v);
             return h;
         }
         const int mod = d.scopes[static_cast<size_t>(o->scope)].module;
         auto rows = VocabFor(d, mod, o->name);
-        if (rows.empty()) rows = VocabAll(o->name);
+        if (rows.empty()) rows = VocabAll(d, o->name);
         if (!rows.empty()) {
             h.found = true;
             h.text = VocabMarkdown(*rows.front());
@@ -177,7 +182,7 @@ JuliaLspHoverInfo JuliaLspHover(const JuliaLspDocument &doc, int line, int col) 
         while (q > 0 && IdentByte(static_cast<unsigned char>(d.text[q - 1]))) --q;
         qual = d.text.substr(q, b - 1 - q);
     }
-    for (const JuliaLspApi *a : VocabAll(word)) {
+    for (const JuliaLspApi *a : VocabAll(d, word)) {
         if (!qual.empty() && qual != a->module) continue;
         h.found = true;
         h.range = d.Range(b, e);
@@ -222,6 +227,9 @@ std::vector<JuliaLspCompletionItem> JuliaLspCompletions(const JuliaLspDocument &
         int q = start - 1;
         while (q > 0 && IdentByte(static_cast<unsigned char>(cur[static_cast<size_t>(q - 1)]))) q--;
         const std::string mod = cur.substr(static_cast<size_t>(q), static_cast<size_t>(start - 1 - q));
+        // A `using`ed package: all its names, exported or not.
+        if (const Package *p = PackageNamed(d, mod))
+            for (const PackageRow &r : p->rows) push(r.api.name, VocabKind(r.api.kind), r.api.signature, r.api.doc);
         size_t count = 0;
         const JuliaLspApi *api = JuliaLspApiTable(&count);
         for (size_t i = 0; i < count; ++i)
@@ -240,8 +248,18 @@ std::vector<JuliaLspCompletionItem> JuliaLspCompletions(const JuliaLspDocument &
     }
     if (!macro)
         for (const char *k : kKeywords) push(k, JuliaLspKind::Keyword, "keyword", "");
-    // Base, Core and `using`ed standard libraries.
+    // Base, Core and `using`ed standard libraries and packages.
     const int mod = d.scopes[static_cast<size_t>(scope)].module;
+    for (const auto &p : d.packages) {
+        const Scope &m = d.scopes[static_cast<size_t>(mod)];
+        if (std::find(m.usings.begin(), m.usings.end(), p->name) == m.usings.end() &&
+            std::find(m.unknown_usings.begin(), m.unknown_usings.end(), p->name) == m.unknown_usings.end())
+            continue;
+        for (const PackageRow &r : p->rows) {
+            if (!r.exported || (r.api.name[0] == '@') != macro) continue;
+            push(r.api.name, VocabKind(r.api.kind), *r.api.signature ? r.api.signature : r.api.module, r.api.doc);
+        }
+    }
     size_t count = 0;
     const JuliaLspApi *api = JuliaLspApiTable(&count);
     const std::string_view p = prefix;
@@ -302,7 +320,7 @@ JuliaLspSignatureHelp JuliaLspSignatureAt(const JuliaLspDocument &doc, int line,
         }
     }
     if (sigs.empty()) {
-        for (const JuliaLspApi *a : VocabAll(name)) {
+        for (const JuliaLspApi *a : VocabAll(d, name)) {
             std::string all = a->signature;
             size_t p = 0;
             while (p <= all.size()) {
@@ -362,7 +380,27 @@ std::vector<JuliaLspLocation> JuliaLspDefinition(const JuliaLspDocument &doc, in
     const Doc &d = doc.d;
     std::vector<JuliaLspLocation> out;
     const Occ *o = OccAt(d, d.Offset(line, col));
-    if (!o || o->var < 0) return out;
+    if (!o) return out;
+    if (o->var < 0 || d.vars[static_cast<size_t>(o->var)].kind == VarKind::Import) {
+        // A name from a `using`ed package: where the package defines it.
+        const std::string name = o->var < 0 ? o->name : d.vars[static_cast<size_t>(o->var)].name;
+        if (const Package *p = PackageNamed(d, name)) {
+            JuliaLspLocation l;
+            l.path = p->file;
+            out.push_back(l);
+            return out;
+        }
+        for (const auto &p : d.packages)
+            for (const PackageRow *r : PackageRows(*p, name)) {
+                if (!r->has_location) continue;
+                JuliaLspLocation l;
+                l.path = p->file;
+                l.range = {r->line, r->col, r->line, r->col};
+                out.push_back(l);
+                return out;
+            }
+        if (o->var < 0) return out;
+    }
     const Var &v = d.vars[static_cast<size_t>(o->var)];
     std::set<uint32_t> seen;
     for (const Occ &x : d.occs) {

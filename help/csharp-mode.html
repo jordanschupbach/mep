@@ -74,7 +74,8 @@ would run it:</p>
 <li>Top-level statements run, in order; the classes and records declared below them are already there when they do.</li>
 <li>A classic program -- no top-level statements, a <code>static Main</code> in some class -- has its <code>Main</code> called after the file loads (with no arguments; <code>args</code> is empty, as it is at the top level). Its exit code is shown when it is not 0.</li>
 <li>A namespace (<code>namespace Demo { ... }</code> or <code>namespace Demo;</code>) is unwrapped: console code cannot declare one, so its types are declared at the top level, and a <code>using</code> of the file's own namespace is left out.</li>
-<li>The directives of a file-based app (<code>#:package</code>, <code>#:sdk</code>, <code>#:property</code>) are not supported: the console says so and ignores them. The same goes for <code>#r "nuget: ..."=; =#r</code> a <code>.dll</code> by its path instead.</li>
+<li><code>#:project PATH</code> (a file-based app's project reference, relative to the file) is honoured: the console builds the project once per session (<code>dotnet build -c Debug</code>) and references its assembly, with its XML documentation for <code>gh</code>, so a file that runs with <code>dotnet run</code> runs in the console too. <code>&lt;leader&gt;re</code> honours it as well.</li>
+<li>The other directives of a file-based app (<code>#:package</code>, <code>#:sdk</code>, <code>#:property</code>) are not supported: the console says so and ignores them. The same goes for <code>#r "nuget: ..."=; =#r</code> a <code>.dll</code> by its path instead.</li>
 <li>Running the file again replaces its classes and methods for every later input; variables declared again start over.</li>
 </ul>
 <p><code>gh</code> looks up a type (<code>StringBuilder</code>, <code>System.Text.Json.JsonSerializer</code>,

@@ -21,8 +21,14 @@ struct JuliaLspRange {
 
 class JuliaLspDocument;
 
-/** @brief Parses and analyses a document; every query below runs on the result. */
-std::shared_ptr<const JuliaLspDocument> JuliaLspAnalyze(const std::vector<std::string> &lines);
+/** @brief Parses and analyses a document; every query below runs on the result.
+ *  `path` (the document's file, "" for none) is where `using Package` starts looking:
+ *  the package's exports and docstrings then serve hover, completion, signature help and
+ *  definitions (julia_lsp_packages.cpp). */
+std::shared_ptr<const JuliaLspDocument> JuliaLspAnalyze(const std::vector<std::string> &lines,
+                                                       const std::string &path = std::string());
+/** @brief Tests: replaces JULIA_LOAD_PATH for package lookup (nullptr restores it) and drops the cache. */
+void JuliaLspSetLoadPath(const std::vector<std::string> *entries);
 
 // --- Diagnostics ------------------------------------------------------------------
 
@@ -87,6 +93,7 @@ JuliaLspSignatureHelp JuliaLspSignatureAt(const JuliaLspDocument &doc, int line,
 
 struct JuliaLspLocation {
     JuliaLspRange range;
+    std::string path;  // "" = this document, else a package's file
 };
 
 std::vector<JuliaLspLocation> JuliaLspDefinition(const JuliaLspDocument &doc, int line, int col);

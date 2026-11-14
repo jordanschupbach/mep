@@ -52,6 +52,7 @@ console, preview or panels, the toggle closes the layout.</p>
 <tr><td>C#</td><td><a href="csharp-mode.html">C# mode</a></td></tr>
 <tr><td>SQL (SQLite)</td><td><a href="sql-mode.html">SQL mode</a></td></tr>
 <tr><td>Lua</td><td><a href="lua-mode.html">Lua mode</a></td></tr>
+<tr><td>Julia</td><td><a href="julia-mode.html">Julia mode</a></td></tr>
 <tr><td>COBOL</td><td><a href="cobol-lsp.html">The COBOL language server</a> (its <i>COBOL mode</i> section)</td></tr>
 <tr><td>MEPML</td><td><a href="mepml.html">Document preview and navigation</a></td></tr>
 </table>
@@ -70,13 +71,13 @@ mep's working directory.</p>
 arguments, for example the Python mode's init script or the Bash mode's
 <code>--rcfile</code>, after your command. So the command must accept them, as
 <code>python</code> or <code>nix develop ... --command python</code> does. This works in the R,
-Python, C++, Common Lisp, Bash, Clojure and Lua modes. Crystal, C# and SQL start
+Python, C++, Common Lisp, Bash, Clojure, Lua and Julia modes. Crystal, C# and SQL start
 their consoles through their own launchers and ignore the comment.</p>
 <h1><code>gh</code>, in context</h1>
 <p><code>gh</code> ("go help") opens documentation for the symbol under the cursor. What
 answers depends on where you are:</p>
 <ul>
-<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++ (with live C++ object inspection in Data), <code>DESCRIBE</code> for Common Lisp, <code>help</code> and <code>man</code> for Bash, <code>doc</code> for Clojure, the standard library's doc comments for Crystal, the .NET reference documentation for C#, the database's own schema (and mep's SQL documentation for functions and keywords) for SQL, a function's signature, doc comment and source (with the language server's hover alongside) for Lua;</li>
+<li>in a language UI mode, its own Help tab -- R's <code>help()</code>, Python's pydoc, <code>man</code> for C and C++ (with live C++ object inspection in Data), <code>DESCRIBE</code> for Common Lisp, <code>help</code> and <code>man</code> for Bash, <code>doc</code> for Clojure, the standard library's doc comments for Crystal, the .NET reference documentation for C#, the database's own schema (and mep's SQL documentation for functions and keywords) for SQL, a function's signature, doc comment and source (with the language server's hover alongside) for Lua, the docstring and methods (with the language server's hover alongside) for Julia;</li>
 <li>otherwise, the LSP hover popup, the same one <code>K</code> opens.</li>
 </ul>
 <p><code>&lt;leader&gt;hs</code> and <code>:MepGoHelp</code> do the same thing.</p>

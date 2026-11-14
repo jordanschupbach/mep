@@ -49,7 +49,8 @@ const SyntaxNode *Ancestor(const SyntaxNode *n, std::initializer_list<SyntaxKind
 /** @brief Whether `kind` is a type declaration (class, struct, interface, record, record struct, enum, delegate,
  *         extension block). */
 bool IsTypeDeclKind(SyntaxKind kind);
-/** @brief The doc comment's <summary> above a declaration, as plain text. */
+/** @brief The doc comment above a declaration as Markdown: the <summary>, then <remarks>, the documented
+ *         <param>s, <returns>, <value> and <exception>s ("" without one). */
 std::string DocSummary(const Doc &doc, const SyntaxNode *decl);
 /** @brief A declaration's header as written: attributes, the body and any initializer left out. */
 std::string DeclHeader(const Doc &doc, const SyntaxNode *decl);

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "julia_lsp.h"
+#include "julia_lsp_packages.h"
 #include "julia_lsp_vocab.h"
 #include "julia_parse.h"
 
@@ -101,6 +102,8 @@ struct Doc {
     std::vector<Occ> occs;
     std::vector<JuliaLspDiagnostic> diags;
     bool syntax_errors = false;
+    std::string path;  // the document's file, "" for none
+    std::vector<std::shared_ptr<const Package>> packages;  // what its `using`s found
 
     std::string_view Text(const Node &n) const { return std::string_view(text).substr(n.b, n.e - n.b); }
     std::string_view Text(int i) const { return Text(nodes[static_cast<size_t>(i)]); }
@@ -124,6 +127,12 @@ int Lookup(const Doc &d, int scope, std::string_view name);
 std::vector<const JuliaLspApi *> VocabFor(const Doc &d, int module, std::string_view name);
 /** @brief Every vocabulary row named @p name, any module. */
 std::vector<const JuliaLspApi *> VocabAll(std::string_view name);
+/** @brief Every row named @p name: the document's packages' (exported or not) first, then the vocabulary's. */
+std::vector<const JuliaLspApi *> VocabAll(const Doc &d, std::string_view name);
+/** @brief The package `using`ed by the document under @p name, or nullptr. */
+const Package *PackageNamed(const Doc &d, std::string_view name);
+/** @brief Whether package lookup is running (packages' own `using`s are not followed). */
+bool BuildingPackage();
 /** @brief The docstring attached to definition node @p def (a `doc` parent or `@doc`), or "". */
 std::string DocstringFor(const Doc &d, int def);
 /** @brief A definition's signature source, one line (`f(x::Int, y=1)`). */

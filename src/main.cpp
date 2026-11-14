@@ -134,6 +134,7 @@
 #include "language_ui_cpp.h"
 #include "language_ui_document.h"
 #include "language_ui_cobol.h"
+#include "language_ui_julia.h"
 #include "language_ui_lua.h"
 #include "language_ui_sql.h"
 
@@ -72832,6 +72833,7 @@ int main(int argc, char **argv) {
     lua->DoString(BuiltinLanguageUiCsharp());
     lua->DoString(BuiltinLanguageUiSql());
     lua->DoString(BuiltinLanguageUiLua());
+    lua->DoString(BuiltinLanguageUiJulia());
     lua->DoString(BuiltinLanguageUiCobol());
     lua->DoString(kBuiltinCompletion);
     lua->DoString(kBuiltinMenubarBindings);

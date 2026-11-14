@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Julia mode</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Languages">
+<meta name="help-order" content="43">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Julia mode</h1>
+<h1>Opening it</h1>
+<p>The language UI toggle (see <a href="language-ui.html">Language UI modes</a>) in a <code>.jl</code> file.
+The tab becomes a Julia workspace: your file, an interactive <code>julia</code> below
+it, and panels showing what that session holds.</p>
+<p>The console is the stock REPL, <code>julia -i</code>, so line editing, history, help
+mode (<code>?</code>), pkg mode (<code>]</code>), shell mode (<code>;</code>) and the display of an
+expression's value are its own. It starts with mep's environment: the
+<code>julia</code> on <code>PATH</code>, <code>JULIA_LOAD_PATH</code>, <code>JULIA_PROJECT</code> and
+<code>JULIA_DEPOT_PATH</code>, as a project's dev shell or direnv set them, so
+<code>using Package</code> loads the same package it would in a terminal in that
+project. In a Rosetta-generated binding such as datamunge's <code>Datamunge</code>,
+that is the package whose docstrings come from the C++ doc comments.</p>
+<h1>Working in it</h1>
+<table>
+<tr><th>Key / call</th><th>Does</th></tr>
+<tr><td><code>&lt;leader&gt;rr</code></td><td>run the whole file in the console</td></tr>
+<tr><td><code>&lt;leader&gt;re</code></td><td>run the top-level form at the cursor in the console</td></tr>
+<tr><td><code>gh</code></td><td>help for the name under the cursor, in the Help panel</td></tr>
+<tr><td><code>MepUI.help("name")</code></td><td>the same, from the console (<code>Mod.name</code> works too)</td></tr>
+<tr><td><code>MepUI.view(x)</code></td><td>a value -- its display and its structure -- in Inspect</td></tr>
+<tr><td><code>MepUI.run(file)</code></td><td>run a file the way <code>&lt;leader&gt;rr</code> does</td></tr>
+</table>
+<p><code>&lt;leader&gt;re</code> finds the form around the cursor: from the nearest line above
+that starts one at column 0 to just before the next. That is a whole
+<code>function</code>, <code>struct</code>, <code>module</code> or <code>begin</code> block, a docstring together with
+what it documents, or a single line. <code>end</code>, <code>else</code>, <code>catch</code> and closing
+brackets never start a form, and neither does a line that continues the
+previous one (a trailing operator, comma, <code>do</code> or open bracket).</p>
+<p>Neither key pastes your code into the prompt. The code is written to a
+file and run with a single <code>MepUI.eval_file(...)</code> line, in <code>Main</code>, under
+your file's name and padded to its line numbers. A stack trace names the
+right line, and <code>@__FILE__</code> is your file. The last value is displayed as
+at the prompt; a trailing <code>;</code> hides it.</p>
+<p><code>&lt;leader&gt;rr</code> runs the buffer as it is in the editor, unsaved changes
+included. mod1+Enter still pastes the current line or the selection
+straight into the prompt (see <a href="repl.html">REPL and send-to-terminal</a>).</p>
+<h1>The panels</h1>
+<table>
+<tr><th>Panel</th><th>Shows</th></tr>
+<tr><td>Variables</td><td>the bindings the session has made in <code>Main</code>, with kind and value (methods for a function, supertype for a type)</td></tr>
+<tr><td>Modules</td><td>the packages loaded since the console started, with their files</td></tr>
+<tr><td>Inspect</td><td><code>MepUI.view</code> of a value: as the REPL displays it, then <code>dump</code> of its fields</td></tr>
+<tr><td>Help</td><td>the docstring (what <code>?name</code> prints) and the methods; a module's exports and file</td></tr>
+</table>
+<p>Clicking a Variables row inspects it; clicking a Modules row shows the
+module's docstring and exports in Help. What existed when the console
+started -- Base, the standard libraries already loaded -- is left out.</p>
+<p>The panels refresh after every command: the init script installs a prompt
+function, which the REPL calls before each prompt. With <code>TERM</code> unset or
+<code>dumb</code>, Julia starts its basic REPL instead, and the panels refresh once a
+second.</p>
+<h1><code>gh</code> and the language server</h1>
+<p>Help shows what the running session knows: docstrings of everything
+loaded, including methods a package added to Base. In a <code>.jl</code> buffer
+<code>gh</code> also opens the language server's hover (see
+<a href="julia-lsp.html">The Julia language server</a>), which reads packages
+from the load path without loading them. Without the mode open, <code>gh</code> is
+that hover alone.</p>
+<h1>Options</h1>
+<div class="org-code-block"><div class="org-code-header"><span class="org-code-lang">lua</span> <span class="org-code-copy" role="button" tabindex="0" onclick="mepCopyCode(this)">Copy</span></div><pre class="org-code-pre"><code class="org-code-body" data-lang="lua"><span class="tok-cyan">mep</span>.opt.julia_ui_cmd = <span class="tok-blue">{</span><span class="tok-green">'julia'</span>, <span class="tok-green">'--threads=auto'</span><span class="tok-blue">}</span>   <span class="tok-comment">-- the console's command</span>
+<span class="tok-cyan">mep</span>.opt.julia_ui_info_share = <span class="tok-cyan">0.3</span>                    <span class="tok-comment">-- the panels' width</span></code></pre></div>
+<p>A <code># REPL: nix develop .#julia --command julia</code> line in the file overrides
+<code>julia_ui_cmd</code> for that file. The mode appends <code>-i -L</code> and its init
+script, so the command must accept them, as <code>julia</code> does.</p>
+<h1>See also</h1>
+<ul>
+<li><a href="language-ui.html">Language UI modes</a> -- the other languages' modes.</li>
+<li><a href="julia-lsp.html">The Julia language server</a>.</li>
+<li><a href="run-button.html">Run button</a> -- a <code># CMD:</code> line runs a file another way.</li>
+</ul>
+</body>
+</html>

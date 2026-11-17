@@ -23671,6 +23671,65 @@ const char *kBuiltinOrgPolyglot =
     // caching behavior confirmed to need a full client restart to react
     // to at all. Restarts (only) when the resolved argv actually changes
     // from what was last written -- an :includes/:flags edit, mainly.
+    // The compiler flags a block's build environment adds by itself:
+    // NIX_CFLAGS_COMPILE, which Nix's cc-wrapper puts on every compile and
+    // where a `:nix-shell` (or direnv) dev shell's libraries keep their
+    // headers -- `nix-shell=".#"` with `libs="-ldatamunge"` compiles fine
+    // and yet names no -I anywhere, so without these the language server
+    // can read none of the library's headers (no hover, no completion).
+    // With :nix-shell it is that shell's own value. Entering a shell can
+    // take seconds, so it is read in the background, once per shell, and
+    // cached; until it arrives this returns nil and `on_ready` runs when it
+    // does. A failed read is retried after a minute rather than per
+    // keystroke. Without :nix-shell the block compiles in mep's own
+    // environment (which direnv may have set), so that is read directly.
+    "mep_polyglot_env_cflags_cache = {}\n"
+    "local function mep_polyglot_words(s)\n"
+    "  local out = {}\n"
+    "  for w in (s or ''):gmatch('%S+') do out[#out + 1] = w end\n"
+    "  return out\n"
+    "end\n"
+    "local function mep_polyglot_env_cflags(shadow, on_ready)\n"
+    "  if not mep_org_babel_nix_value(shadow.args_str) then\n"
+    "    return mep_polyglot_words(os.getenv('NIX_CFLAGS_COMPILE'))\n"
+    "  end\n"
+    // A marker line, since a dev shell's shellHook may print too.
+    "  local argv = mep_org_babel_nix_argv(shadow.args_str, shadow.run_dir,\n"
+    "    'printf \"\\\\nMEP_CFLAGS:%s\\\\n\" \"$NIX_CFLAGS_COMPILE\"')\n"
+    "  local key = table.concat(argv, '\\1')\n"
+    "  local entry = mep_polyglot_env_cflags_cache[key]\n"
+    "  if entry and entry.words then return entry.words end\n"
+    "  if entry and entry.pending then\n"
+    "    entry.waiters[#entry.waiters + 1] = on_ready\n"
+    "    return nil\n"
+    "  end\n"
+    "  if entry and entry.failed_at and mep.now() - entry.failed_at < 60 then return nil end\n"
+    "  entry = {pending = true, waiters = {on_ready}}\n"
+    "  mep_polyglot_env_cflags_cache[key] = entry\n"
+    "  local found = nil\n"
+    "  local id = mep.job_start(argv, {\n"
+    "    cwd = shadow.run_dir,\n"
+    "    on_stdout = function(line)\n"
+    "      local v = line:match('^MEP_CFLAGS:(.*)$')\n"
+    "      if v then found = v end\n"
+    "    end,\n"
+    "    on_exit = function(code)\n"
+    "      entry.pending = false\n"
+    "      if code ~= 0 or not found then\n"
+    "        entry.failed_at = mep.now()\n"
+    "        return\n"
+    "      end\n"
+    "      entry.words = mep_polyglot_words(found)\n"
+    "      for _, cb in ipairs(entry.waiters) do cb() end\n"
+    "      entry.waiters = {}\n"
+    "    end,\n"
+    "  })\n"
+    "  if not id or id <= 0 then\n"
+    "    entry.pending = false\n"
+    "    entry.failed_at = mep.now()\n"
+    "  end\n"
+    "  return nil\n"
+    "end\n"
     "local function mep_polyglot_write_compile_db(shadow, lang_def)\n"
     "  local exe = mep_org_babel_resolve_exe(lang_def) or lang_def.executable\n"
     "  local dummy_bin = shadow.dir .. '/a.out'\n"
@@ -23686,6 +23745,12 @@ const char *kBuiltinOrgPolyglot =
     "      argv[#argv + 1] = w\n"
     "    end\n"
     "  end\n"
+    // After the block's own flags, as the cc-wrapper puts them; a shell
+    // still being read rewrites this (and restarts the server) when ready.
+    "  local env_flags = mep_polyglot_env_cflags(shadow, function()\n"
+    "    mep_polyglot_write_compile_db(shadow, lang_def)\n"
+    "  end)\n"
+    "  for _, w in ipairs(env_flags or {}) do argv[#argv + 1] = w end\n"
     "  local argv_key = table.concat(argv, '\\1')\n"
     "  if shadow.compile_argv == argv_key then return end\n"
     "  local restart = shadow.compile_argv ~= nil\n"
@@ -23696,7 +23761,7 @@ const char *kBuiltinOrgPolyglot =
     // so without these a library's headers -- `#include <lib/lib.hpp>`
     // behind `$(pkg-config --cflags lib)` -- are invisible to it. A
     // relative -I is the block's run directory's, as it is the compiler's.
-    "  local include_dirs, defines = {}, {}\n"
+    "  local include_dirs, defines, seen = {}, {}, {}\n"
     "  local i = 1\n"
     "  while i <= #argv do\n"
     "    local a = argv[i]\n"
@@ -23707,7 +23772,11 @@ const char *kBuiltinOrgPolyglot =
     "      if rest == '' then i = i + 1 rest = argv[i] end\n"
     "      if rest and rest ~= '' then\n"
     "        if rest:sub(1, 1) ~= '/' and shadow.run_dir then rest = shadow.run_dir .. '/' .. rest end\n"
-    "        include_dirs[#include_dirs + 1] = rest\n"
+    // NIX_CFLAGS_COMPILE repeats a directory once per input that brings it.
+    "        if not seen[rest] then\n"
+    "          seen[rest] = true\n"
+    "          include_dirs[#include_dirs + 1] = rest\n"
+    "        end\n"
     "      end\n"
     "    else\n"
     "      local def = a:match('^%-D(.*)$')\n"
@@ -31379,18 +31448,15 @@ C.anpsdm = cpp({}, cat(Csim, {'const dm::PSplineRegression fit(x, y, ${1:100}); 
                               'const auto yhat = fit.predict(grid);'}, Cplot('P-spline regression')))
 
 -- Group comparisons and tests. Test results print with std::print.
-C.anaov = cpp({'map', 'print'}, cat(IRIS, {
-  'const dm::stats::LM fit(iris, "Sepal.Length ~ Species");', 'std::print("{}\\n", fit.anova_frame());'},
-  bysp('Sepal.Length'), {
-  '// Pairwise Welch t-tests, Holm-adjusted, where R and Python use Tukey HSD.',
-  'std::vector<std::string> names, pairs;', 'std::vector<std::vector<double>> groups;', 'std::vector<double> p;',
-  'for (const auto& [name, g] : by) {', '    names.push_back(name);', '    groups.push_back(g);', '}',
-  'for (std::size_t i = 0; i < groups.size(); ++i)', '    for (std::size_t j = i + 1; j < groups.size(); ++j) {',
-  '        pairs.push_back(names[i] + " - " + names[j]);',
-  '        p.push_back(dm::stats::t_test_two_sample(groups[i], groups[j]).p_value);', '    }',
-  'const auto adjusted = dm::stats::p_adjust(p, dm::stats::PAdjustMethod::Holm);',
-  'for (std::size_t k = 0; k < p.size(); ++k) std::print("{}: p = {:.3g}\\n", pairs[k], adjusted[k]);',
-  'dm::Plot::boxplot(groups, names).title("Sepal.Length by species").save("plot.png");'}))
+C.anaov = cpp({'print'}, {
+  'const auto iris = dm::datasets::iris();',
+  'const dm::stats::LM fit(iris, "Sepal.Length ~ Species");', 'std::print("{}\\n", fit.anova_frame());',
+  '// Tukey HSD, as R and Python: family-wise intervals and adjusted p for every pair.',
+  'const dm::stats::TukeyHSD hsd(iris, "Sepal.Length", "Species");',
+  'std::print("{}\\n", hsd.frame().to_md({.scientific = {"p_adj"}}));',
+  'dm::graphics::RLayout::create(1, 2)', '    .size(1600, 560)',
+  '    .add(dm::Plot::boxplot(iris, "Sepal.Length", "Species").title("Sepal.Length by species"))',
+  '    .add(hsd.plot())', '    .save("plot.png");'})
 C.antt = cpp({'print'}, {
   'const auto mtcars = dm::datasets::mtcars();', 'std::vector<double> automatic, manual;',
   'for (std::size_t i = 0; i < mtcars.nrows(); ++i)',

@@ -355,7 +355,7 @@ the arithmetic in a few lines, the way Python's =anps= builds its P-spline.
 | =anps=    | =PSplineRegression= with λ as a field                             |
 | =anbsdm=  | =BSplineRegression=                                               |
 | =anpsdm=  | =PSplineRegression=, GCV λ                                        |
-| =anaov=   | =LM= ANOVA table, then Holm-adjusted pairwise Welch t-tests       |
+| =anaov=   | =LM= ANOVA table, =stats::TukeyHSD= and its interval plot         |
 | =antt=    | =t_test_two_sample=, mtcars                                       |
 | =anwil=   | =wilcoxon_rank_sum_test=, airquality                              |
 | =anchi=   | =chi_squared_test_independence=, a heat map                       |

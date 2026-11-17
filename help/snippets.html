@@ -254,13 +254,14 @@ unqualified (<code>tidyimp</code> loads the core tidyverse).</p>
 <tr><td><code>shiny</code></td><td>a complete Shiny app: slider, plot, server</td></tr>
 </table>
 <p>For R and these packages in a Nix shell, see <code>rpkgs</code> under Nix below.</p>
-<h1>Analyses in R and Python</h1>
+<h1>Analyses in R, Python and C++</h1>
 <p>A small, complete analysis for each common method, under the same trigger
-in R and in Python. Every one starts with <code>an</code>, so typing <code>an</code> in either
-language lists them all. Each runs as it expands, on a dataset that ships
-with the language's tools -- R's own datasets and the packages R comes
-with; scikit-learn's bundled datasets and statsmodels' <code>co2</code> in Python --
-so nothing is downloaded, and each ends in one plot.</p>
+in R, in Python and in C++ (see "In C++" below). Every one starts with
+<code>an</code>, so typing <code>an</code> in any of them lists them all. Each runs as it
+expands, on a dataset that ships with the language's tools -- R's own
+datasets and the packages R comes with; scikit-learn's bundled datasets and
+statsmodels' <code>co2</code> in Python -- so nothing is downloaded, and each ends in
+one plot.</p>
 <table>
 <tr><th>Trigger</th><th>Analysis</th><th>R</th><th>Python</th></tr>
 <tr><td><code>anlm</code></td><td>linear regression</td><td><code>lm</code>, iris</td><td>statsmodels <code>OLS</code>, iris</td></tr>
@@ -310,6 +311,53 @@ line.</p>
 statsmodels; the R set only R itself. Inside a mepml or org code block they
 expand as they do in a <code>.R</code> or <code>.py</code> file, so <code>pyfig</code> or <code>rfig</code> followed by
 an analysis is a figure of it.</p>
+<h2>In C++</h2>
+<p>The same triggers in a C++ file write a whole program on <a href="https://github.com/jordanschupbach/datamunge">datamunge</a>,
+the C++ library behind the <code>*dm</code> bindings. Build and run it in a
+<code>dmcppflake</code> shell with the command on its first line,
+<code>c++ -std=c++23 main.cpp $(pkg-config --cflags --libs datamunge)</code>, then
+<code>./a.out</code>.</p>
+<p>datamunge bundles iris, mtcars, airquality, faithful and AirPassengers, so
+nothing is downloaded. Analyses whose R dataset it lacks use iris, as Python
+does, and <code>anchi</code> and <code>ansurv</code> use Python's table and simulated
+lifetimes. A program has no window to draw in, so it saves its plot as
+<code>plot.png</code> (<code>antree</code> saves <code>plot.svg</code>), and test results print with
+<code>std::print</code>. Where datamunge has no routine of its own, the snippet does
+the arithmetic in a few lines, the way Python's <code>anps</code> builds its P-spline.</p>
+<table>
+<tr><th>Trigger</th><th>C++ (datamunge)</th></tr>
+<tr><td><code>anlm</code></td><td><code>stats::LM</code>, iris</td></tr>
+<tr><td><code>anlogit</code></td><td><code>stats::GLM</code>, binomial, mtcars</td></tr>
+<tr><td><code>anloess</code></td><td><code>stats::lowess</code>, faithful</td></tr>
+<tr><td><code>anbs</code></td><td>a <code>Bspline</code> basis as the design of an <code>LM</code>, like R's <code>lm(y ~ bs(x))</code></td></tr>
+<tr><td><code>anps</code></td><td><code>PSplineRegression</code> with λ as a field</td></tr>
+<tr><td><code>anbsdm</code></td><td><code>BSplineRegression</code></td></tr>
+<tr><td><code>anpsdm</code></td><td><code>PSplineRegression</code>, GCV λ</td></tr>
+<tr><td><code>anaov</code></td><td><code>LM</code> ANOVA table, then Holm-adjusted pairwise Welch t-tests</td></tr>
+<tr><td><code>antt</code></td><td><code>t_test_two_sample</code>, mtcars</td></tr>
+<tr><td><code>anwil</code></td><td><code>wilcoxon_rank_sum_test</code>, airquality</td></tr>
+<tr><td><code>anchi</code></td><td><code>chi_squared_test_independence</code>, a heat map</td></tr>
+<tr><td><code>ancor</code></td><td><code>pearson_correlation_test</code>, iris</td></tr>
+<tr><td><code>anks</code></td><td><code>ks_test_two_sample</code>, two ECDFs</td></tr>
+<tr><td><code>annorm</code></td><td><code>shapiro_francia_test</code>, <code>Plot::qqnorm</code></td></tr>
+<tr><td><code>anboot</code></td><td><code>stats::Bootstrap</code></td></tr>
+<tr><td><code>ankde</code></td><td>a Gaussian kernel with Scott's bandwidth, by hand</td></tr>
+<tr><td><code>ankm</code></td><td><code>stats::KMeans</code></td></tr>
+<tr><td><code>anelbow</code></td><td><code>KMeans</code> inertia by k</td></tr>
+<tr><td><code>anhc</code></td><td><code>AgglomerativeClustering</code> (Ward), <code>plot_dendrogram</code></td></tr>
+<tr><td><code>anpca</code></td><td><code>stats::PCA</code>, <code>plot_scores</code></td></tr>
+<tr><td><code>anmds</code></td><td><code>stats::MDS</code>, iris</td></tr>
+<tr><td><code>anlda</code></td><td><code>stats::LDA</code>, <code>plot_discriminants</code></td></tr>
+<tr><td><code>antree</code></td><td><code>DecisionTreeClassifier</code>, <code>plot_tree</code></td></tr>
+<tr><td><code>anknn</code></td><td><code>KNNClassifier</code> on a stratified <code>train_test_split</code></td></tr>
+<tr><td><code>ants</code></td><td>R's <code>decompose</code>, by hand, AirPassengers</td></tr>
+<tr><td><code>anarima</code></td><td><code>stats::ARIMA</code>, the airline model, AirPassengers</td></tr>
+<tr><td><code>ansurv</code></td><td>Kaplan-Meier by hand, simulated lifetimes</td></tr>
+</table>
+<p>Where R and Python differ from C++: datamunge has no Tukey HSD (<code>anaov</code>
+runs pairwise t-tests instead) and no Shapiro-Wilk (<code>annorm</code> runs
+Shapiro-Francia, its close relative). Its plots have no dashed lines, so
+the spline snippets draw the true curve in solid black.</p>
 <h1>C++</h1>
 <p>The C++ set works in <code>.cpp</code>, <code>.cc</code>, <code>.cxx</code>, <code>.hpp</code>, <code>.hh</code>, <code>.hxx</code>, <code>.ipp</code>,
 <code>.tpp</code> and <code>.inl</code> files and in Org's <code>C++</code> blocks (<code>.h</code> is left alone,

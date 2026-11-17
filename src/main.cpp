@@ -31115,6 +31115,7 @@ N.dmflake = flake('datamunge in every language', {
 // expansion runs as is -- keep it that way when editing (the R set's own
 // rules apply: 2-space indents, no field reference inside another field's
 // default; a plain `$1` mirror is fine). mep.snippets.r is also .R's table.
+// C++ (mep.snippets.cpp) has the same triggers as programs on datamunge.
 const char *kBuiltinAnalysisSnippets = R"LUA(
 local R = mep.snippets.r
 local P = mep.snippets.py
@@ -31301,6 +31302,234 @@ P.ansurv = {'import matplotlib.pyplot as plt, numpy as np, statsmodels.api as sm
             '# simulated: exponential lifetimes, about 30% censored',
             'rng = np.random.default_rng(0)', 'time, died = rng.exponential(10, 100), rng.random(100) < 0.7',
             'sm.SurvfuncRight(time, died).plot()', 'plt.show()', '$0'}
+
+-- C++: the same an* triggers as whole programs on datamunge (the C++ library
+-- the *dm snippets bind), built in a dmcppflake shell by each one's first
+-- line. datamunge bundles iris, mtcars, airquality, faithful and
+-- air_passengers, so analyses on R datasets it lacks use iris instead, as
+-- Python does. Where datamunge has no routine (a KDE, a seasonal
+-- decomposition, Kaplan-Meier) the snippet computes it in a few lines, as
+-- Python's anps does. No display is assumed: each plot is saved as plot.png.
+local C = mep.snippets.cpp
+local function cpp(includes, body)
+  local out = {'// c++ -std=c++23 main.cpp $(pkg-config --cflags --libs datamunge)', '#include <dm/dm.hpp>'}
+  for _, h in ipairs(includes) do out[#out + 1] = '#include <' .. h .. '>' end
+  out[#out + 1] = ''
+  out[#out + 1] = 'int main() {'
+  for _, l in ipairs(body) do out[#out + 1] = l == '' and '' or '    ' .. l end
+  for _, l in ipairs({'    $0', '    return 0;', '}'}) do out[#out + 1] = l end
+  return out
+end
+local IRIS = {'const auto iris = dm::datasets::iris();',
+              'const std::vector<std::string> features{"Sepal.Length", "Sepal.Width", "Petal.Length", "Petal.Width"};'}
+local SPECIES = {'const auto species = iris.string_column("Species").values();'}
+-- Sepal.Length (or another column) split by species, in species order.
+local function bysp(col)
+  return {'std::map<std::string, std::vector<double>> by;',
+          'for (std::size_t i = 0; i < iris.nrows(); ++i)',
+          '    by[iris.string_at("Species", i)].push_back(iris.double_at("' .. col .. '", i));'}
+end
+-- One colour per cluster or class label (0, 1, 2, ...).
+local COLOURS = {'const std::vector<dm::RGBA> palette{"blue", "red", "green", "magenta", "cyan", "yellow", "black", "grey"};',
+                 'std::vector<dm::RGBA> colours;'}
+
+-- Regression
+C.anlm = cpp({}, cat(IRIS, {
+  'const dm::stats::LM fit(iris, "Petal.Width ~ Petal.Length");', 'fit.print_summary();',
+  'const auto& b = fit.coefficients();',
+  'dm::Plot().points(iris.numeric_column("Petal.Length").values(), iris.numeric_column("Petal.Width").values())',
+  '    .abline(b[0], b[1]).title("Linear regression").xlab("Petal.Length").ylab("Petal.Width").save("plot.png");'}))
+C.anlogit = cpp({}, {
+  'const auto mtcars = dm::datasets::mtcars();',
+  'const dm::stats::GLM fit(mtcars, "am ~ wt", {.family = dm::stats::GLMFamily::Binomial});', 'fit.print_summary();',
+  'const auto wt = dm::seql(1.5, 5.5, 200);', 'dm::dstruct::DataFrame grid;', 'grid.add_column("wt", wt);',
+  'dm::Plot().points(mtcars.numeric_column("wt").values(), mtcars.numeric_column("am").values())',
+  '    .lines(wt, fit.predict(grid), "", "black")',
+  '    .title("Logistic regression").xlab("wt").ylab("am (manual)").save("plot.png");'})
+C.anloess = cpp({}, {
+  'const auto faithful = dm::datasets::faithful();',
+  'const auto x = faithful.numeric_column("waiting").values(), y = faithful.numeric_column("eruptions").values();',
+  'const auto fit = dm::stats::lowess(x, y);',
+  'dm::Plot().points(x, y).lines(fit.x, fit.y, "", "black")',
+  '    .title("Lowess smoother").xlab("waiting").ylab("eruptions").save("plot.png");'})
+
+-- Splines, on the simulated curve of the R and Python set. anbs is R's
+-- lm(y ~ bs(x)): a B-spline basis as the design of an ordinary LM. The
+-- *dm pair fit with datamunge's BSplineRegression / PSplineRegression.
+local Csim = {'dm::set_seed(1);', 'auto f = [](const dm::Vector<>& x) { return dm::sin(20 / (x + 0.25)); };',
+              'const auto x = dm::runif(0, 1, 500);', 'const auto y = f(x) + dm::rnorm(0, 0.2, 500);',
+              'const auto grid = dm::seql(0, 1, 1000);'}
+local function Cplot(title)
+  return {'dm::Plot()', '    .title("' .. title .. '")', '    .points(x, y, "", "grey", 2.5)',
+          '    .lines(grid, f(grid), "", "black", 1)', '    .lines(grid, yhat, "", "red", 2)', '    .save("plot.png");'}
+end
+C.anbs = cpp({}, cat(Csim, {
+  'const dm::Bspline basis(0, 1, dm::seql(0, 1, ${1:28}));  // cubic, on equally spaced knots',
+  'const dm::stats::LM fit(y, basis.eval(x));', 'const auto& b = fit.coefficients();  // intercept first',
+  'const auto B = basis.eval(grid);', 'std::vector<double> yhat(grid.size(), b[0]);',
+  'for (std::size_t i = 0; i < B.rows(); ++i)', '    for (std::size_t j = 0; j < B.cols(); ++j) yhat[i] += B(i, j) * b[j + 1];'},
+  Cplot('B-spline regression')))
+-- The P-spline with lambda as a field, as Python's anps; anpsdm picks it by GCV.
+C.anps = cpp({}, cat(Csim, {
+  'const dm::PSplineRegression fit(x, y, ${1:100}, ${2:0.003});  // basis size, lambda',
+  'const auto yhat = fit.predict(grid);'}, Cplot('P-spline regression')))
+C.anbsdm = cpp({}, cat(Csim, {'const dm::BSplineRegression fit(x, y, ${1:30});', 'const auto yhat = fit.predict(grid);'},
+                   Cplot('B-spline regression')))
+C.anpsdm = cpp({}, cat(Csim, {'const dm::PSplineRegression fit(x, y, ${1:100});  // lambda by GCV',
+                              'const auto yhat = fit.predict(grid);'}, Cplot('P-spline regression')))
+
+-- Group comparisons and tests. Test results print with std::print.
+C.anaov = cpp({'map', 'print'}, cat(IRIS, {
+  'const dm::stats::LM fit(iris, "Sepal.Length ~ Species");', 'std::print("{}\\n", fit.anova_frame());'},
+  bysp('Sepal.Length'), {
+  '// Pairwise Welch t-tests, Holm-adjusted, where R and Python use Tukey HSD.',
+  'std::vector<std::string> names, pairs;', 'std::vector<std::vector<double>> groups;', 'std::vector<double> p;',
+  'for (const auto& [name, g] : by) {', '    names.push_back(name);', '    groups.push_back(g);', '}',
+  'for (std::size_t i = 0; i < groups.size(); ++i)', '    for (std::size_t j = i + 1; j < groups.size(); ++j) {',
+  '        pairs.push_back(names[i] + " - " + names[j]);',
+  '        p.push_back(dm::stats::t_test_two_sample(groups[i], groups[j]).p_value);', '    }',
+  'const auto adjusted = dm::stats::p_adjust(p, dm::stats::PAdjustMethod::Holm);',
+  'for (std::size_t k = 0; k < p.size(); ++k) std::print("{}: p = {:.3g}\\n", pairs[k], adjusted[k]);',
+  'dm::Plot::boxplot(groups, names).title("Sepal.Length by species").save("plot.png");'}))
+C.antt = cpp({'print'}, {
+  'const auto mtcars = dm::datasets::mtcars();', 'std::vector<double> automatic, manual;',
+  'for (std::size_t i = 0; i < mtcars.nrows(); ++i)',
+  '    (mtcars.double_at("am", i) == 1 ? manual : automatic).push_back(mtcars.double_at("mpg", i));',
+  'std::print("{}\\n", dm::stats::t_test_two_sample(automatic, manual));',
+  'dm::Plot::boxplot({automatic, manual}, {"automatic", "manual"}).title("mpg by transmission").save("plot.png");'})
+C.anwil = cpp({'print'}, {
+  'const auto airquality = dm::datasets::airquality();', 'std::vector<double> may, august;',
+  'for (std::size_t i = 0; i < airquality.nrows(); ++i) {',
+  '    const auto ozone = airquality.optional_double_at("Ozone", i);',
+  '    const double month = airquality.double_at("Month", i);', '    if (ozone && month == 5) may.push_back(*ozone);',
+  '    if (ozone && month == 8) august.push_back(*ozone);', '}',
+  'std::print("{}\\n", dm::stats::wilcoxon_rank_sum_test(may, august));',
+  'dm::Plot::boxplot({may, august}, {"May", "August"}).title("Ozone by month").save("plot.png");'})
+C.anchi = cpp({'print'}, {
+  '// Hair (black, brown, red, blond) by eye colour (brown, blue, hazel, green), from R\'s HairEyeColor.',
+  'const std::vector<std::vector<double>> tab{{68, 20, 15, 5}, {119, 84, 54, 29}, {26, 17, 14, 14}, {7, 94, 10, 16}};',
+  'std::vector<double> cells;', 'for (const auto& row : tab) cells.insert(cells.end(), row.begin(), row.end());',
+  'std::print("{}\\n", dm::stats::chi_squared_test_independence(cells, 4, 4));',
+  'dm::Plot().image({0, 1, 2, 3}, {0, 1, 2, 3}, tab)',
+  '    .x_ticks({0, 1, 2, 3}, {"black", "brown", "red", "blond"})',
+  '    .y_ticks({0, 1, 2, 3}, {"brown", "blue", "hazel", "green"})',
+  '    .title("Hair by eye colour").xlab("hair").ylab("eye").save("plot.png");'})
+C.ancor = cpp({'print'}, cat(IRIS, {
+  'std::print("{}\\n", dm::stats::pearson_correlation_test(iris.numeric_column("Sepal.Length").values(),',
+  '                                                       iris.numeric_column("Petal.Length").values()));',
+  'dm::Plot().points(iris.numeric_column("Sepal.Length").values(), iris.numeric_column("Petal.Length").values())',
+  '    .title("Correlation").xlab("Sepal.Length").ylab("Petal.Length").save("plot.png");'}))
+C.anks = cpp({'algorithm', 'map', 'print'}, cat(IRIS, bysp('Sepal.Length'), {
+  'std::print("{}\\n", dm::stats::ks_test_two_sample(by["setosa"], by["versicolor"]));',
+  '// An empirical CDF as a step line.', 'auto ecdf = [](std::vector<double> v) {',
+  '    std::ranges::sort(v);', '    std::vector<double> x, y;', '    for (std::size_t i = 0; i < v.size(); ++i) {',
+  '        x.insert(x.end(), {v[i], v[i]});',
+  '        y.insert(y.end(), {double(i) / v.size(), double(i + 1) / v.size()});', '    }',
+  '    return std::pair{x, y};', '};', 'const auto [x1, y1] = ecdf(by["setosa"]);',
+  'const auto [x2, y2] = ecdf(by["versicolor"]);',
+  'dm::Plot().lines(x1, y1, "setosa", "black").lines(x2, y2, "versicolor", "red")',
+  '    .title("Empirical CDFs").xlab("Sepal.Length").ylab("Fn(x)").save("plot.png");'}))
+C.annorm = cpp({'print'}, cat(IRIS, {
+  'const auto x = iris.numeric_column("Sepal.Width").values();',
+  'std::print("{}\\n", dm::stats::shapiro_francia_test(x));  // Shapiro-Wilk\'s close cousin',
+  'dm::Plot::qqnorm(x).qqline(x).save("plot.png");'}))
+C.anboot = cpp({'print'}, cat(IRIS, {
+  'const auto x = iris.numeric_column("Sepal.Length").values();',
+  'const auto b = dm::stats::Bootstrap().run(x, [](const std::vector<double>& s) { return dm::median(s); });',
+  'std::print("median {}, 95% interval [{}, {}]\\n", b.estimate, b.percentile_interval.first,',
+  '           b.percentile_interval.second);', 'dm::Histogram(b.replicates, 20).set_title("Bootstrap medians").save("plot.png");'}))
+
+-- Density: a Gaussian kernel with Scott's bandwidth, as scipy's gaussian_kde.
+C.ankde = cpp({'algorithm', 'cmath', 'numbers'}, cat(IRIS, {
+  'const auto x = iris.numeric_column("Petal.Length").values();',
+  'const double h = dm::sd(x) * std::pow(double(x.size()), -0.2);',
+  'const auto xs = dm::seql(std::ranges::min(x) - 1, std::ranges::max(x) + 1, 200);',
+  'std::vector<double> density;', 'for (const double t : xs) {', '    double sum = 0;',
+  '    for (const double xi : x) sum += std::exp(-0.5 * (t - xi) * (t - xi) / (h * h));',
+  '    density.push_back(sum / (x.size() * h * std::sqrt(2 * std::numbers::pi)));', '}',
+  'dm::Plot().lines(xs, density, "", "black").points(x, std::vector<double>(x.size(), 0.0), "", "grey", 2)',
+  '    .title("Kernel density").xlab("Petal.Length").ylab("density").save("plot.png");'}))
+
+-- Clustering and dimension reduction
+C.ankm = cpp({}, cat(IRIS, {
+  'const dm::stats::KMeans km(iris, features, {.n_clusters = ${1:3}});', 'km.print_summary();'}, COLOURS, {
+  'for (const auto label : km.labels()) colours.push_back(palette[label % palette.size()]);',
+  'const auto& centers = km.cluster_centers();', 'std::vector<double> cx, cy;',
+  'for (std::size_t c = 0; c < centers.rows(); ++c) {', '    cx.push_back(centers(c, 2));',
+  '    cy.push_back(centers(c, 3));', '}',
+  'dm::Plot().points_colored(iris.numeric_column("Petal.Length").values(), iris.numeric_column("Petal.Width").values(),',
+  '                          colours)', '    .points(cx, cy, "", "black", 10)',
+  '    .title("k-means clusters").xlab("Petal.Length").ylab("Petal.Width").save("plot.png");'}))
+C.anelbow = cpp({}, cat(IRIS, {
+  'std::vector<double> k, wss;', 'for (std::size_t n = 1; n <= 8; ++n) {', '    k.push_back(n);',
+  '    wss.push_back(dm::stats::KMeans(iris, features, {.n_clusters = n}).inertia());', '}',
+  'dm::Plot().lines(k, wss).points(k, wss)',
+  '    .title("Elbow plot").xlab("k").ylab("within-cluster sum of squares").save("plot.png");'}))
+C.anhc = cpp({}, cat(IRIS, {
+  'const dm::stats::AgglomerativeClustering hc(iris, features, {.n_clusters = ${1:3}});  // Ward linkage',
+  'hc.print_summary();', 'dm::stats::plot_dendrogram(hc).save("plot.png");'}))
+C.anpca = cpp({}, cat(IRIS, SPECIES, {
+  'const dm::stats::PCA pca(iris, features, {true, true});  // centred and scaled', 'pca.print_summary();',
+  'pca.plot_scores(species).save("plot.png");'}))
+C.anmds = cpp({}, cat(IRIS, SPECIES, {
+  'const dm::stats::MDS mds(iris, features);  // classical', 'mds.print_summary();',
+  'mds.plot_embedding(species).save("plot.png");'}))
+
+-- Classification
+C.anlda = cpp({}, cat(IRIS, {
+  'const dm::stats::LDA fit(iris, "Species ~ Sepal.Length + Sepal.Width + Petal.Length + Petal.Width");',
+  'fit.print_summary();', 'fit.plot_discriminants().save("plot.png");'}))
+C.antree = cpp({}, cat(IRIS, {
+  'const dm::stats::DecisionTreeClassifier tree(',
+  '    iris, "Species ~ Sepal.Length + Sepal.Width + Petal.Length + Petal.Width", {.max_depth = ${1:3}});',
+  'tree.print_summary();', 'tree.plot_tree().save_svg("plot.svg");'}))
+C.anknn = cpp({'print'}, cat(IRIS, {
+  'const auto [train, test] = dm::stats::train_test_split(iris, 1.0 / 3, 1, "Species");',
+  'const dm::stats::KNNClassifier knn(train, "Species ~ Sepal.Length + Sepal.Width + Petal.Length + Petal.Width",',
+  '                                   {.k = ${1:5}});',
+  'const auto pred = knn.predict(test);', 'std::size_t right = 0;',
+  'for (std::size_t i = 0; i < pred.size(); ++i) right += pred[i] == test.string_at("Species", i);',
+  'std::print("test accuracy {}/{}\\n", right, pred.size());',
+  'knn.plot_classification(test, "Petal.Length", "Petal.Width").save("plot.png");'}))
+
+-- Time series and survival, on AirPassengers as in R.
+local AP = {'const auto passengers = dm::datasets::air_passengers().numeric_column("passengers").values();',
+            'std::vector<double> t;', 'for (std::size_t i = 0; i < passengers.size(); ++i) t.push_back(1949 + i / 12.0);'}
+-- Classical multiplicative decomposition, as R's decompose(): a centred
+-- 2x12 moving average for the trend, monthly means of y / trend for the
+-- seasonal factors (scaled to average 1), and what is left.
+C.ants = cpp({}, cat(AP, {
+  'const std::size_t n = passengers.size();', 'std::vector<double> tt, trend, seasonal(n), random, month(12), count(12);',
+  'for (std::size_t i = 6; i + 6 < n; ++i) {', '    double sum = (passengers[i - 6] + passengers[i + 6]) / 2;',
+  '    for (std::size_t j = i - 5; j <= i + 5; ++j) sum += passengers[j];', '    tt.push_back(t[i]);',
+  '    trend.push_back(sum / 12);', '    month[i % 12] += passengers[i] / trend.back();', '    ++count[i % 12];', '}',
+  'double mean = 0;', 'for (std::size_t m = 0; m < 12; ++m) mean += month[m] / count[m] / 12;',
+  'for (std::size_t i = 0; i < n; ++i) seasonal[i] = month[i % 12] / count[i % 12] / mean;',
+  'for (std::size_t k = 0; k < tt.size(); ++k) random.push_back(passengers[k + 6] / (trend[k] * seasonal[k + 6]));',
+  'dm::graphics::RLayout::create(2, 2)', '    .add(dm::Plot().lines(t, passengers).title("observed"))',
+  '    .add(dm::Plot().lines(tt, trend).title("trend"))', '    .add(dm::Plot().lines(t, seasonal).title("seasonal"))',
+  '    .add(dm::Plot().points(tt, random).title("random"))', '    .size(1200, 800)', '    .save("plot.png");'}))
+C.anarima = cpp({'cmath'}, cat(AP, {
+  '// The airline model, ARIMA(0,1,1)(0,1,1)[12], on the log scale.', 'std::vector<double> logged;',
+  'for (const double p : passengers) logged.push_back(std::log(p));',
+  'const dm::stats::ARIMA fit(logged, {.d = 1, .q = 1, .seasonal_d = 1, .seasonal_q = 1, .seasonal_period = 12,',
+  '                                    .include_mean = false});',
+  'const auto fc = fit.forecast(${1:24});', 'std::vector<double> tf, yf;',
+  'for (std::size_t h = 0; h < fc.size(); ++h) {', '    tf.push_back(t.back() + (h + 1) / 12.0);',
+  '    yf.push_back(std::exp(fc[h]));', '}', 'dm::Plot().lines(t, passengers, "", "black").lines(tf, yf, "forecast", "red")',
+  '    .title("AirPassengers").xlab("year").ylab("passengers").save("plot.png");'}))
+-- Kaplan-Meier by hand, on simulated lifetimes as in Python.
+C.ansurv = cpp({'algorithm', 'cmath', 'numeric'}, {
+  '// Simulated: exponential lifetimes (mean 10), about 30% censored.', 'dm::set_seed(1);',
+  'const auto u = dm::runif(0, 1, 100), died = dm::runif(0, 1, 100);', 'std::vector<double> time;',
+  'for (const double v : u) time.push_back(-10 * std::log(v));',
+  'std::vector<std::size_t> order(time.size());', 'std::iota(order.begin(), order.end(), 0);',
+  'std::ranges::sort(order, {}, [&](std::size_t i) { return time[i]; });',
+  'std::vector<double> x{0}, s{1};', 'double surv = 1;', 'for (std::size_t k = 0; k < order.size(); ++k) {',
+  '    if (died[order[k]] >= 0.7) continue;  // censored', '    const double at = time[order[k]];',
+  '    x.insert(x.end(), {at, at});', '    s.push_back(surv);', '    surv *= 1 - 1.0 / (order.size() - k);',
+  '    s.push_back(surv);', '}',
+  'dm::Plot().lines(x, s).title("Kaplan-Meier").xlab("time").ylab("survival").ylim(0, 1).save("plot.png");'})
 )LUA";
 
 // Math delimiter-balance linter for org and tex buffers (:MepMathLint).

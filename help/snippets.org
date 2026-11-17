@@ -268,14 +268,15 @@ Tidyverse and other common packages; each family shares a prefix:
 
 For R and these packages in a Nix shell, see =rpkgs= under Nix below.
 
-* Analyses in R and Python
+* Analyses in R, Python and C++
 
 A small, complete analysis for each common method, under the same trigger
-in R and in Python. Every one starts with =an=, so typing =an= in either
-language lists them all. Each runs as it expands, on a dataset that ships
-with the language's tools -- R's own datasets and the packages R comes
-with; scikit-learn's bundled datasets and statsmodels' =co2= in Python --
-so nothing is downloaded, and each ends in one plot.
+in R, in Python and in C++ (see "In C++" below). Every one starts with
+=an=, so typing =an= in any of them lists them all. Each runs as it
+expands, on a dataset that ships with the language's tools -- R's own
+datasets and the packages R comes with; scikit-learn's bundled datasets and
+statsmodels' =co2= in Python -- so nothing is downloaded, and each ends in
+one plot.
 
 | Trigger   | Analysis                         | R                         | Python                               |
 |-----------+----------------------------------+---------------------------+--------------------------------------|
@@ -328,6 +329,57 @@ The Python set needs numpy, SciPy, matplotlib, scikit-learn and
 statsmodels; the R set only R itself. Inside a mepml or org code block they
 expand as they do in a =.R= or =.py= file, so =pyfig= or =rfig= followed by
 an analysis is a figure of it.
+
+** In C++
+
+The same triggers in a C++ file write a whole program on [[https://github.com/jordanschupbach/datamunge][datamunge]],
+the C++ library behind the =*dm= bindings. Build and run it in a
+=dmcppflake= shell with the command on its first line,
+=c++ -std=c++23 main.cpp $(pkg-config --cflags --libs datamunge)=, then
+=./a.out=.
+
+datamunge bundles iris, mtcars, airquality, faithful and AirPassengers, so
+nothing is downloaded. Analyses whose R dataset it lacks use iris, as Python
+does, and =anchi= and =ansurv= use Python's table and simulated
+lifetimes. A program has no window to draw in, so it saves its plot as
+=plot.png= (=antree= saves =plot.svg=), and test results print with
+=std::print=. Where datamunge has no routine of its own, the snippet does
+the arithmetic in a few lines, the way Python's =anps= builds its P-spline.
+
+| Trigger   | C++ (datamunge)                                                   |
+|-----------+-------------------------------------------------------------------|
+| =anlm=    | =stats::LM=, iris                                                 |
+| =anlogit= | =stats::GLM=, binomial, mtcars                                    |
+| =anloess= | =stats::lowess=, faithful                                         |
+| =anbs=    | a =Bspline= basis as the design of an =LM=, like R's =lm(y ~ bs(x))= |
+| =anps=    | =PSplineRegression= with λ as a field                             |
+| =anbsdm=  | =BSplineRegression=                                               |
+| =anpsdm=  | =PSplineRegression=, GCV λ                                        |
+| =anaov=   | =LM= ANOVA table, then Holm-adjusted pairwise Welch t-tests       |
+| =antt=    | =t_test_two_sample=, mtcars                                       |
+| =anwil=   | =wilcoxon_rank_sum_test=, airquality                              |
+| =anchi=   | =chi_squared_test_independence=, a heat map                       |
+| =ancor=   | =pearson_correlation_test=, iris                                  |
+| =anks=    | =ks_test_two_sample=, two ECDFs                                   |
+| =annorm=  | =shapiro_francia_test=, =Plot::qqnorm=                            |
+| =anboot=  | =stats::Bootstrap=                                                |
+| =ankde=   | a Gaussian kernel with Scott's bandwidth, by hand                 |
+| =ankm=    | =stats::KMeans=                                                   |
+| =anelbow= | =KMeans= inertia by k                                             |
+| =anhc=    | =AgglomerativeClustering= (Ward), =plot_dendrogram=               |
+| =anpca=   | =stats::PCA=, =plot_scores=                                       |
+| =anmds=   | =stats::MDS=, iris                                                |
+| =anlda=   | =stats::LDA=, =plot_discriminants=                                |
+| =antree=  | =DecisionTreeClassifier=, =plot_tree=                             |
+| =anknn=   | =KNNClassifier= on a stratified =train_test_split=                |
+| =ants=    | R's =decompose=, by hand, AirPassengers                           |
+| =anarima= | =stats::ARIMA=, the airline model, AirPassengers                  |
+| =ansurv=  | Kaplan-Meier by hand, simulated lifetimes                         |
+
+Where R and Python differ from C++: datamunge has no Tukey HSD (=anaov=
+runs pairwise t-tests instead) and no Shapiro-Wilk (=annorm= runs
+Shapiro-Francia, its close relative). Its plots have no dashed lines, so
+the spline snippets draw the true curve in solid black.
 
 * C++
 

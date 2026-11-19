@@ -335,7 +335,7 @@ int Usage() {
                  "  writing their results into it), then export; the export is written even if a\n"
                  "  block fails (it keeps its previous results), but the exit status is then 1\n"
                  "  RUN OPTIONS: --timeout SECONDS (per block), --report FILE.json (each block's\n"
-                 "  outcome), --write-errors (a failed block's errors become its results),\n"
+                 "  outcome), --refresh-cache (rerun cached blocks), --write-errors (write errors),\n"
                  "  -q/--quiet, -v/--verbose, --mep PATH (the mep that runs them; $MEP_EXECUTABLE,\n"
                  "  else the mep beside this program, else mep on PATH); `run` also takes -o OUT\n"
                  "  Options may come before or after the files.\n");
@@ -543,7 +543,7 @@ int main(int argc, char **argv) {
         else if ((a == "--timeout" || a == "--report" || ((a == "-o" || a == "--output") && cmd == "run")) && has_value) {
             run_args.push_back(a);
             run_args.push_back(argv[++i]);
-        } else if (a == "--write-errors" || a == "-q" || a == "--quiet" || a == "-v" || a == "--verbose") {
+        } else if (a == "--write-errors" || a == "--refresh-cache" || a == "-q" || a == "--quiet" || a == "-v" || a == "--verbose") {
             run_args.push_back(a);
         } else if (a == "-h" || a == "--help") {
             Usage();

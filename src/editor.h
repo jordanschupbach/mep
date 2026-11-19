@@ -12085,9 +12085,11 @@ public:
      * @param fence_row 0-based row of the block's ``` line.
      * @param code The block body the output came from; the splice is refused if the block has changed since.
      * @param output Program output ('\n'-separated).
+     * @param run_key Optional execution snapshot; also checks the execution options and composed source.
      * @return True if the results were written.
      */
-    bool MepmlSpliceResults(int buffer_id, int fence_row, const std::string &code, const std::string &output);
+    bool MepmlSpliceResults(int buffer_id, int fence_row, const std::string &code, const std::string &output,
+                            const std::string &run_key = {});
     /**
      * @brief The current mepml buffer's math, as fragments for the LaTeX preview (OrgLatexScanFragments dispatches here for .mepml).
      * @return Display-math blocks and inline fragments, rows/cols 1-based.

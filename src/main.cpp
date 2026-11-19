@@ -31452,7 +31452,7 @@ C.anaov = cpp({'print'}, {
   'const auto iris = dm::datasets::iris();',
   'const dm::stats::LM fit(iris, "Sepal.Length ~ Species");', 'std::print("{}\\n", fit.anova_frame());',
   '// Tukey HSD, as R and Python: family-wise intervals and adjusted p for every pair.',
-  'const dm::stats::TukeyHSD hsd(iris, "Sepal.Length", "Species");',
+  'const dm::stats::TukeyHSD hsd(iris, "Sepal.Length ~ Species");',
   'std::print("{}\\n", hsd.frame().to_md({.scientific = {"p_adj"}}));',
   'dm::graphics::RLayout::create(1, 2)', '    .size(1600, 560)',
   '    .add(dm::Plot::boxplot(iris, "Sepal.Length", "Species").title("Sepal.Length by species"))',
@@ -32178,7 +32178,7 @@ const char *kBuiltinMepml =
     "  on_done = on_done or function() end\n"
     "  opts = opts or {}\n"
     "  local function skip(why) on_done({status = 'skipped', reason = why}) end\n"
-    "  local blk = mep.mepml_block_at(row)\n"
+    "  local blk = mep.mepml_block_at(row, true)\n"
     "  if not blk then mep.notify('Not in a mepml code block', 'warn') skip('not in a code block') return end\n"
     "  if mep_mepml_falsy(blk.options.eval) then\n"
     "    mep.notify('This block has eval=' .. tostring(blk.options.eval) .. '; not running it', 'warn')\n"
@@ -32202,11 +32202,26 @@ const char *kBuiltinMepml =
     "    local duration = string.format('%.3f s', status.seconds)\n"
     "    if status.status == 'failed' then\n"
     "      mep.notify('mepml: ' .. label .. ' failed after ' .. duration .. ': ' .. tostring(status.reason), 'warn')\n"
+    "    elseif status.reason == 'cached' then\n"
+    "      mep.notify('Restored cached results for ' .. label)\n"
     "    else\n"
     "      mep.notify('Done running ' .. label .. ' in ' .. duration)\n"
     "    end\n"
     "    on_done(status)\n"
     "  end\n"
+    "  local cache = blk.options.cache\n"
+    "  local cache_enabled = cache == true or cache == 1 or cache == 'yes' or cache == 'true' or cache == 'results'\n"
+    "  local function fail(reason) completed({status = 'failed', reason = reason}) end\n"
+    "  if blk.run_error then fail(blk.run_error) return end\n"
+    "  if cache ~= nil and not cache_enabled and not mep_mepml_falsy(cache) then\n"
+    "    fail('unknown cache= mode: ' .. tostring(cache)) return\n"
+    "  end\n"
+    "  if cache_enabled and not blk.id then fail('cache=yes requires a unique id=') return end\n"
+    "  if interactive and blk.options.use ~= nil then fail('use= requires a batch block') return end\n"
+    "  local run_code = blk.run_code or blk.code\n"
+    "  local document = mep.filename()\n"
+    "  local cacheable = cache_enabled and not interactive and document ~= ''\n"
+    "    and (blk.options.file == nil or blk.options.file == '')\n"
     "  -- results=web: what the block makes is a web page -- an html block is\n"
     "  -- the page, any other block a program serving one (a Shiny app ...).\n"
     "  if res == 'web' or res == 'app' then\n"
@@ -32228,15 +32243,25 @@ const char *kBuiltinMepml =
     "  end\n"
     "  local buf = mep.current_buffer()\n"
     "  -- `failure`: why the run failed, or nil when it did not.\n"
-    "  local function finish(text, failure)\n"
+    "  local function finish(text, failure, cached)\n"
     "    if failure and opts.keep_failed then completed({status = 'failed', reason = failure, output = text}) return end\n"
-    "    if not mep.mepml_splice_results(buf, blk.fence_row, blk.code, text) then\n"
+    "    if not mep.mepml_splice_results(buf, blk.fence_row, blk.code, text, blk.run_key) then\n"
     "      failure = failure or 'the block changed while it ran; results discarded'\n"
     "    end\n"
-    "    completed({status = failure and 'failed' or 'ok', reason = failure, output = failure and text or nil})\n"
+    "    if not failure and not cached and cacheable and not (opts.cancelled and opts.cancelled()) then\n"
+    "      if not mep.mepml_run_cache(document, blk.id, blk.run_key, text) then\n"
+    "        mep.notify('Could not save mepml cache for ' .. blk.id, 'warn')\n"
+    "      end\n"
+    "    end\n"
+    "    completed({status = failure and 'failed' or 'ok', reason = failure or (cached and 'cached' or nil),\n"
+    "      output = failure and text or nil})\n"
+    "  end\n"
+    "  if cacheable and not opts.refresh_cache then\n"
+    "    local cached = mep.mepml_run_cache(document, blk.id, blk.run_key)\n"
+    "    if cached ~= nil then finish(cached, nil, true) return end\n"
     "  end\n"
     "  if lang == 'mep-lua' then\n"
-    "    local chunk, err = load(blk.code, '=mep-lua block', 't')\n"
+    "    local chunk, err = load(run_code, '=mep-lua block', 't')\n"
     "    if not chunk then finish('compile error: ' .. tostring(err), 'compile error') return end\n"
     "    local r = table.pack(pcall(chunk))\n"
     "    local out = {}\n"
@@ -32249,7 +32274,11 @@ const char *kBuiltinMepml =
     "  -- Header options become babel header args, so every babel language\n"
     "  -- option (:cmdline, :stdin, :includes ...) works unchanged.\n"
     "  local args = {}\n"
-    "  for _, o in ipairs(blk.option_list) do args[#args + 1] = ':' .. o.name .. ' ' .. o.value end\n"
+    "  for _, o in ipairs(blk.option_list) do\n"
+    "    if o.name ~= 'id' and o.name ~= 'use' and o.name ~= 'cache' and o.name ~= 'cache-key' then\n"
+    "      args[#args + 1] = ':' .. o.name .. ' ' .. o.value\n"
+    "    end\n"
+    "  end\n"
     "  local args_str = table.concat(args, ' ')\n"
     "  local lang_def, exe = mep_org_babel_resolve_lang(lang, args_str)\n"
     "  if not lang_def then\n"
@@ -32262,9 +32291,9 @@ const char *kBuiltinMepml =
     "  -- results=exec-gui: in a window of its own there). A failed compile\n"
     "  -- leaves its errors as the results instead.\n"
     "  if res == 'exec' or res == 'exec-gui' then\n"
-    "    local script = mep_org_babel_prepare_script(lang, lang_def, {}, mep_mepml_split(blk.code), args_str, {}, nil)\n"
+    "    local script = mep_org_babel_prepare_script(lang, lang_def, {}, mep_mepml_split(run_code), args_str, {}, nil)\n"
     "    if lang_def.compiled then mep.notify('Compiling ' .. lang .. ' block...') end\n"
-    "    mep_org_babel_prepare_exec(lang_def, exe, script, args_str, mep_mepml_dir(mep.filename()), function(argv, extra, stage)\n"
+    "    mep_org_babel_prepare_exec(lang_def, exe, script, args_str, mep_mepml_dir(document), function(argv, extra, stage)\n"
     "      if not argv then\n"
     "        finish(table.concat(extra or {}, '\\n'), tostring(stage or 'build') .. ' failed')\n"
     "        return\n"
@@ -32285,7 +32314,7 @@ const char *kBuiltinMepml =
     "  -- its own choosing under the document's directory instead has it\n"
     "  -- captured (mep_mepml_capture_figure). When the file is there\n"
     "  -- afterwards, an \\image() line joins the results and the editor draws it.\n"
-    "  local dir = mep_mepml_dir(mep.filename())\n"
+    "  local dir = mep_mepml_dir(document)\n"
     "  local fig = blk.options.file\n"
     "  if fig ~= nil then fig = tostring(fig) end\n"
     "  if fig == '' then fig = nil end\n"
@@ -32301,7 +32330,7 @@ const char *kBuiltinMepml =
     "    video = res == 'video' or e == 'mp4' or e == 'm4v' or e == 'mov' or e == 'webm' or e == 'mkv' or e == 'avi' or e == 'ogv'\n"
     "  end\n"
     "  local fig_path = fig and (fig:sub(1, 1) == '/' and fig or (dir .. '/' .. fig:gsub('^%./', ''))) or nil\n"
-    "  local body = mep_mepml_split(blk.code)\n"
+    "  local body = mep_mepml_split(run_code)\n"
     "  local modes = {}\n"
     "  local before, target_before, env = nil, nil, nil\n"
     "  if fig_path then\n"
@@ -32368,6 +32397,9 @@ const char *kBuiltinMepml =
     // (`on_done` and `opts` as mep_mepml_run_block takes them; mep --run-mepml passes both.)
     "function mep.mepml_run_block_at(row, on_done, opts) mep_mepml_run_block(row, on_done, opts) end\n"
     "mep.command('MepmlExecute', mep.mepml_execute)\n"
+    "mep.command('MepmlRefreshCache', function()\n"
+    "  mep_mepml_run_block((mep.cursor()), nil, {refresh_cache = true})\n"
+    "end)\n"
     "mep.command('MepmlBlockSettings', function() mep.org_block_settings() end)\n"
     "mep.leader_map('kS', 'mepml: code block settings', mep.org_block_settings)\n"
     // A \video on (or near) the cursor's row plays or pauses, as a click
@@ -72688,7 +72720,8 @@ function mep_mepml_headless_start(opts)
     local done = finisher()
     H.give_up = done
     local ok, err = xpcall(mep.mepml_run_block_at, debug.traceback, H.current.first, done,
-                           {headless = true, keep_failed = not opts.write_errors})
+                           {headless = true, keep_failed = not opts.write_errors, refresh_cache = opts.refresh_cache,
+                            cancelled = function() return H.timed_out or done ~= H.give_up end})
     if not ok then done({status = 'failed', reason = 'runner error', output = tostring(err)}) end
   end
   next_block()
@@ -72788,6 +72821,7 @@ int RunHeadlessMepml(const std::vector<std::string> &args) {
                      "                       the blocks still run in FILE's directory)\n"
                      "  --report FILE.json   each block's outcome (status, reason, time, error output)\n"
                      "  --timeout SECONDS    stop a block that runs longer and count it as failed\n"
+                     "  --refresh-cache      rerun cached blocks and replace their cached results\n"
                      "  --write-errors       write a failed block's errors as its results, as the editor\n"
                      "                       does (default: keep its previous results)\n"
                      "  -q, --quiet          report only failures\n"
@@ -72797,7 +72831,7 @@ int RunHeadlessMepml(const std::vector<std::string> &args) {
     std::vector<std::string> files;
     std::string output, report;
     double timeout = 0;
-    bool write_errors = false, quiet = false, verbose = false;
+    bool write_errors = false, quiet = false, verbose = false, refresh_cache = false;
     for (size_t i = 0; i < args.size(); ++i) {
         const std::string &a = args[i];
         auto value = [&](std::string *out) {
@@ -72815,6 +72849,8 @@ int RunHeadlessMepml(const std::vector<std::string> &args) {
             char *end = nullptr;
             timeout = std::strtod(v.c_str(), &end);
             if (end == v.c_str() || *end || timeout < 0) return usage(stderr);
+        } else if (a == "--refresh-cache") {
+            refresh_cache = true;
         } else if (a == "--write-errors") {
             write_errors = true;
         } else if (a == "-q" || a == "--quiet") {
@@ -72877,6 +72913,7 @@ int RunHeadlessMepml(const std::vector<std::string> &args) {
         const std::string start = "local ok, err = pcall(mep_mepml_headless_start, {name = " + HeadlessQuote(files[f]) +
                                   ", timeout = " + std::to_string(timeout) +
                                   ", write_errors = " + (write_errors ? "true" : "false") +
+                                  ", refresh_cache = " + (refresh_cache ? "true" : "false") +
                                   ", quiet = " + (quiet ? "true" : "false") +
                                   ", verbose = " + (verbose ? "true" : "false") + "})\n" +
                                   "if not ok then io.stderr:write('mep --run-mepml: ' .. tostring(err) .. '\\n') "
@@ -72913,8 +72950,9 @@ int RunHeadlessMepml(const std::vector<std::string> &args) {
         }
         // Save through the editor (`:w!`, which puts include= blocks' code
         // back in their files), to a scratch file first, so a document whose
-        // results did not change is not touched.
-        const std::string scratch = target + ".mep-run.tmp";
+        // results did not change is not touched. Keep the .mepml extension
+        // so the save writes include= placeholders instead of their bodies.
+        const std::string scratch = target + ".mep-run.tmp.mepml";
         g_editor.RunCommand("w! " + scratch);
         std::string after, file_error;
         bool written = false;

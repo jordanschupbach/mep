@@ -668,6 +668,47 @@ block (=C-c C-c=) writes its output between the =result_begin:= and
 =result_end= markers, creating them under the block if they aren't there
 yet. =eval=false= stops a block from running.
 
+** Shared source and cached results
+
+Give reusable chunks document-local names with =id==. A block can prepend
+their source with =use==. For several names, quote the comma-separated list.
+
+#+begin_example
+```{bash, id=setup, eval=no}
+scale=4
+```
+
+```{bash, id=report, use=setup, cache=yes}
+echo "$((scale * 3))"
+```
+#+end_example
+
+The runner assembles one script in dependency order and runs it once.
+Dependencies can appear anywhere in the same document and must use the same
+language label (case-insensitive). Each dependency is inserted once per
+target, so a shared setup in two branches runs once. Only the target's
+execution options apply. Use =eval=no= on a source chunk to skip standalone
+execution during Run All while still allowing other chunks to use its source.
+Names are case-sensitive and accept up to 128 letters, digits, underscores
+and hyphens.
+Missing names, duplicate IDs and dependency cycles fail the run.
+
+=cache=yes= stores the last successful batch result under the block's ID in
+a sidecar directory such as =notes.mepml.mep-cache/=. A cache hit restores the
+result region, including its normal text, Markdown or HTML formatting.
+Matching uses the exact assembled source and target options, so editing a
+shared chunk invalidates its consumers and moving a named block preserves
+its cache entry. The cache
+also records successful runs with empty output. Each entry stores source
+and output locally. Delete the sidecar directory to clear a document’s cache.
+
+Use =:MepmlRefreshCache= in the editor or =mep-mepml run --refresh-cache=
+on the CLI to run again. For external inputs such as data files, environment
+variables or interpreter versions, change a block's =cache-key== value or
+refresh the cache. Use caching for blocks whose document results are all
+you need to reuse. Terminal, GUI, web and =file== figure runs execute
+normally. Chunk composition is available for batch runs.
+
 When a block finishes, a notification reports its elapsed time in seconds,
 for example /Done running python block at line 12 in 1.234 s/. The time
 includes preparation and compilation, when needed. Failed runs report

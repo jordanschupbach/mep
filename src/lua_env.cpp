@@ -89,6 +89,7 @@
 #if defined(__linux__)
 #include <unistd.h>
 #elif defined(__APPLE__)
+#include <unistd.h>
 #include <mach-o/dyld.h>  // _NSGetExecutablePath, the readlink(/proc/self/exe) equivalent
 #endif
 #endif
@@ -5190,7 +5191,7 @@ void PushMepmlValue(lua_State *L, const mepml::Value &v) {
 //     option_list = {{name=, value=}, ...}, include = path }
 // `code` is what runs: the lines between the fences -- for a block with
 // include= (and `include` that file's resolved path) the file's, which
-// fill empty fences.
+// fill empty fences. Pass true as arg 2 for the runner's resolved source and key.
 /**
  * @brief Implements mep.mepml_block_at(row): describes the mepml code block at a 1-based row.
  * @param L Lua state; arg 1 is the 1-based row.
@@ -5202,6 +5203,7 @@ int l_mepml_block_at(lua_State *L) {
     const mepml::Document &doc = GetEditor(L)->MepmlParseCurrent(true);
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Code || row < b.line_start || row > b.line_end) continue;
+        const bool for_run = lua_toboolean(L, 2);
         lua_newtable(L);
         lua_pushlstring(L, b.lang.data(), b.lang.size());
         lua_setfield(L, -2, "lang");
@@ -5230,6 +5232,22 @@ int l_mepml_block_at(lua_State *L) {
             lua_rawseti(L, -2, k++);
         }
         lua_setfield(L, -2, "option_list");
+        if (for_run && (mepml::FindCodeOption(b, "use") || mepml::FindCodeOption(b, "id") ||
+                        mepml::FindCodeOption(b, "cache"))) {
+            const mepml::CodeRunSource run = mepml::ResolveCodeRunSource(doc, b);
+            lua_pushlstring(L, run.code.data(), run.code.size());
+            lua_setfield(L, -2, "run_code");
+            lua_pushlstring(L, run.key.data(), run.key.size());
+            lua_setfield(L, -2, "run_key");
+            if (!run.error.empty()) {
+                lua_pushlstring(L, run.error.data(), run.error.size());
+                lua_setfield(L, -2, "run_error");
+            }
+            if (const mepml::Option *id = mepml::FindCodeOption(b, "id")) {
+                lua_pushlstring(L, id->value.s.data(), id->value.s.size());
+                lua_setfield(L, -2, "id");
+            }
+        }
         return 1;
     }
     lua_pushnil(L);
@@ -5251,10 +5269,8 @@ int l_mepml_code_blocks(lua_State *L) {
     lua_Integer k = 1;
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Code) continue;
-        // (Nothing between the fences: nothing to run or analyse -- unless
-        // the code is a file's, which runs; `included` says so, and its
-        // first > last.)
-        if (b.code_line_end < b.code_line_start && b.include.empty()) continue;
+        // An empty fence can still run source supplied by include= or use=.
+        if (b.code_line_end < b.code_line_start && b.include.empty() && !mepml::FindCodeOption(b, "use")) continue;
         lua_newtable(L);
         lua_pushlstring(L, b.lang.data(), b.lang.size());
         lua_setfield(L, -2, "lang");
@@ -5400,9 +5416,77 @@ int l_mepml_outline(lua_State *L) {
 int l_mepml_splice_results(lua_State *L) {
     const int buffer_id = static_cast<int>(luaL_checkinteger(L, 1));
     const int fence_row = static_cast<int>(luaL_checkinteger(L, 2)) - 1;
-    const std::string code = luaL_checkstring(L, 3);
-    const std::string output = luaL_optstring(L, 4, "");
-    lua_pushboolean(L, GetEditor(L)->MepmlSpliceResults(buffer_id, fence_row, code, output));
+    size_t code_len, output_len, key_len;
+    const char *code = luaL_checklstring(L, 3, &code_len);
+    const char *output = luaL_optlstring(L, 4, "", &output_len);
+    const char *key = luaL_optlstring(L, 5, "", &key_len);
+    lua_pushboolean(L, GetEditor(L)->MepmlSpliceResults(buffer_id, fence_row, {code, code_len},
+                                                        {output, output_len}, {key, key_len}));
+    return 1;
+}
+
+// mep.mepml_run_cache(document, id, key [, output]) -> cached output or nil
+// on lookup; true/false on store. Each block has one replaceable entry.
+int l_mepml_run_cache(lua_State *L) {
+    const bool store = !lua_isnoneornil(L, 4);
+#if defined(__linux__) || defined(__APPLE__)
+    const std::string document = luaL_checkstring(L, 1);
+    size_t id_size, key_size;
+    const char *id_text = luaL_checklstring(L, 2, &id_size);
+    const std::string id(id_text, id_size);
+    const char *key_text = luaL_checklstring(L, 3, &key_size);
+    const std::string key_header = std::to_string(key_size) + "\n";
+    std::error_code ec;
+    const auto source = std::filesystem::absolute(document, ec);
+    if (!ec && std::filesystem::is_regular_file(source, ec) && mepml::ValidCodeId(id)) {
+        const std::filesystem::path dir = source.lexically_normal().string() + ".mep-cache";
+        const auto path = dir / ("block-" + id);
+        if (!store && std::filesystem::is_regular_file(path, ec)) {
+            std::ifstream in(path, std::ios::binary);
+            std::string key(key_size, '\0');
+            std::string length;
+            if (std::getline(in, length) && length + '\n' == key_header &&
+                in.read(key.data(), static_cast<std::streamsize>(key.size())) &&
+                key.compare(0, key.size(), key_text, key_size) == 0 && std::getline(in, length)) {
+                const std::string output{std::istreambuf_iterator<char>(in), {}};
+                if (length == std::to_string(output.size())) {
+                    lua_pushlstring(L, output.data(), output.size());
+                    return 1;
+                }
+            }
+        }
+        if (store) {
+            size_t output_size;
+            const char *output = luaL_checklstring(L, 4, &output_size);
+            std::filesystem::create_directory(dir, ec);
+            if (!ec) {
+                std::string tmp = path.string() + ".XXXXXX";
+                const int fd = mkstemp(tmp.data());
+                if (fd >= 0) {
+                    bool ok = false;
+                    if (FILE *file = fdopen(fd, "wb")) {
+                        const std::string output_header = std::to_string(output_size) + "\n";
+                        ok = std::fwrite(key_header.data(), 1, key_header.size(), file) == key_header.size() &&
+                             std::fwrite(key_text, 1, key_size, file) == key_size &&
+                             std::fwrite(output_header.data(), 1, output_header.size(), file) == output_header.size() &&
+                             std::fwrite(output, 1, output_size, file) == output_size;
+                        ok = (std::fclose(file) == 0) && ok;
+                    } else {
+                        close(fd);
+                    }
+                    if (ok) std::filesystem::rename(tmp, path, ec);
+                    if (!ok || ec) std::filesystem::remove(tmp, ec);
+                    else {
+                        lua_pushboolean(L, true);
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+#endif
+    if (store) lua_pushboolean(L, false);
+    else lua_pushnil(L);
     return 1;
 }
 
@@ -18376,6 +18460,7 @@ const luaL_Reg kMepFuncs[] = {
     {"mepml_tables_stale", l_mepml_tables_stale},
     {"mepml_outline", l_mepml_outline},
     {"mepml_splice_results", l_mepml_splice_results},
+    {"mepml_run_cache", l_mepml_run_cache},
     {"mepml_link_at", l_mepml_link_at},
     {"mepml_terminal_start", l_mepml_terminal_start},
     {"mepml_gui_start", l_mepml_gui_start},

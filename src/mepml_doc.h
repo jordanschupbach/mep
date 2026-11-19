@@ -363,6 +363,18 @@ struct Document {
     int BlockAtLine(int line) const;
 };
 
+// Last block option wins, as in the runner's options table.
+const Option *FindCodeOption(const Block &block, const std::string &name);
+
+struct CodeRunSource {
+    std::string code;
+    std::string key;  // Versioned, length-prefixed execution inputs.
+    std::string error;
+};
+
+bool ValidCodeId(const std::string &id);
+CodeRunSource ResolveCodeRunSource(const Document &doc, const Block &target);
+
 // A \abstract block's paragraphs, each its own run of inlines.
 std::vector<std::vector<Inline>> AbstractParagraphs(const Block &b);
 

@@ -723,6 +723,10 @@ const std::vector<Vocab> &CodeOptionVocab() {
     static const std::vector<Vocab> v = {
         {"file", "file=path.png", "The block draws a figure into this file; after a run it is shown under the block, numbered and captioned. R and Python plots go there by themselves; any other program can save its picture anywhere under the document's directory (the newest one with this extension is copied here) or write the path in $MEP_FILE."},
         {"eval", "eval=false", "eval=false (or no, never) stops the block from running."},
+        {"id", "id=setup", "A document-local code block name that use= can reference. Cached blocks require a unique id."},
+        {"use", "use=\"setup, helpers\"", "Prepend the source of these same-language code blocks, including their own dependencies, once each in dependency order."},
+        {"cache", "cache=yes", "Reuse this batch block's successful results when its code, dependencies and options match the previous run. Requires id=."},
+        {"cache-key", "cache-key=data-v2", "Change this value to invalidate cached results when an external input changes."},
         {"include", "include=\"src/fit.py\"", "The block's code is this file's text (the path relative to the document), the exports show it, running the block runs it. In mep the lines sit between the fences while the document is open and go back to the file when it is saved. lines= or region= picks part of the file."},
         {"lines", "lines=10-20", "With include=: the lines of the file the block takes, 1-based and inclusive -- 10-20, 10 (one line), 10- (to the end), -20 (from the start). Inside a region= they count within the region."},
         {"region", "region=fit", "With include=: the lines between a `region name` marker comment in the file and the `endregion` after it (`# region fit` ... `# endregion`, `// region fit`, `-- region fit`, `<!-- region fit -->` ...)."},

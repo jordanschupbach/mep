@@ -36,3 +36,6 @@ tools/ts_grammar_diff/__pycache__/
 # SQLite databases built from the examples
 examples/sql/*.db
 examples/sql/*.db-*
+
+# Local MEPML execution results
+*.mep-cache/

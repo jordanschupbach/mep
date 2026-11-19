@@ -128,6 +128,43 @@ assert(result.status=='failed' and last().text:find('2.025 s',1,true))
 reset('exec')
 mep.mepml_run_block_at(7,done)
 assert(launched[5]==100 and result.status=='ok' and #notices==0)
+-- Cached results take the same splice path, without starting a job.
+reset('bash', {cache='yes', id='report', use='setup'})
+local block = blocks[7]
+block.id, block.run_key, block.run_code = 'report', 'key', 'setup\necho result'
+local entries, seen = {}, nil
+function mep.mepml_run_cache(_, id, key, output)
+  assert(id=='report')
+  if output == nil then return entries[key] end
+  entries[key] = output
+  return true
+end
+function mep_org_babel_spawn(_, _, script, args, callback)
+  assert(args=='')
+  seen=table.concat(script,'\n')
+  jobs[#jobs+1]=callback
+end
+mep.mepml_run_block_at(7, done)
+assert(seen==block.run_code and #jobs==1)
+jobs[1](0, {'output'}, {})
+assert(entries.key=='output')
+mep.mepml_run_block_at(7, done)
+assert(#jobs==1 and result.reason=='cached' and splices[2].text=='output')
+mep.mepml_run_block_at(7, done, {refresh_cache=true})
+assert(#jobs==2)
+jobs[2](0, {}, {})
+assert(entries.key=='')
+mep.mepml_run_block_at(7, done)
+assert(#jobs==2 and result.reason=='cached' and splices[4].text=='')
+block.run_key='new key'
+mep.mepml_run_block_at(7, done)
+assert(#jobs==3)
+jobs[3](1, {}, {'failed'})
+assert(entries['new key']==nil)
+mep.mepml_run_block_at(7, done)
+changed=true
+jobs[4](0, {'stale'}, {})
+assert(result.status=='failed' and entries['new key']==nil)
 print('MEPML timing: asynchronous/synchronous success, errors, skipped blocks, concurrency and interactive handoff passed')
 '''
 

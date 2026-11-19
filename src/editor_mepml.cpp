@@ -2651,19 +2651,26 @@ void Editor::RecomputeMepmlFolds() {
     RecomputeMepmlTabFolds();
 }
 
-bool Editor::MepmlSpliceResults(int buffer_id, int fence_row, const std::string &code, const std::string &output) {
+bool Editor::MepmlSpliceResults(int buffer_id, int fence_row, const std::string &code, const std::string &output,
+                                const std::string &run_key) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return false;
     const Buffer &buf = buffers_[static_cast<size_t>(buffer_id)];
     const mepml::Document doc = MepmlParseBuffer(buf);
     for (const mepml::Block &b : doc.blocks) {
         if (!b.origin.empty() || b.kind != mepml::BlockKind::Code || b.code_line_start - 1 != fence_row) continue;
         if (b.code != code) return false;  // edited while it ran
+        if (!run_key.empty()) {
+            const mepml::CodeRunSource run = mepml::ResolveCodeRunSource(doc, b);
+            if (!run.error.empty() || run.key != run_key) return false;
+        }
         int first = 0, last = 0;
         mepml::ResultsReplaceRange(b, &first, &last);
         // results=html (or svg, or output that is an SVG image): the output
         // is HTML, kept as such and rendered.
         std::vector<std::string> lines = mepml::FormatResults(output, mepml::ResultFormatFor(b, output));
         if (first == last && first > static_cast<int>(buf.lines.size())) first = last = static_cast<int>(buf.lines.size());
+        if (!run_key.empty() && std::equal(lines.begin(), lines.end(), buf.lines.begin() + first, buf.lines.begin() + last))
+            return true;
         ReplaceLinesAt(buffer_id, first, last, lines);
         return true;
     }

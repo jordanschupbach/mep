@@ -214,6 +214,99 @@ Block::Pos Block::OffsetToPos(int offset) const {
     return p;
 }
 
+const Option *FindCodeOption(const Block &block, const std::string &name) {
+    for (auto it = block.options.rbegin(); it != block.options.rend(); ++it) {
+        if (it->name == name) return &*it;
+    }
+    return nullptr;
+}
+
+bool ValidCodeId(const std::string &id) {
+    return !id.empty() && id.size() <= 128 && std::all_of(id.begin(), id.end(), [](char c) {
+        return IsAlpha(c) || IsDigit(c) || c == '_' || c == '-';
+    });
+}
+
+CodeRunSource ResolveCodeRunSource(const Document &doc, const Block &target) {
+    CodeRunSource run;
+    std::unordered_map<std::string, const Block *> named;
+    for (const Block &block : doc.blocks) {
+        if (block.kind != BlockKind::Code || !block.origin.empty()) continue;
+        if (const Option *id = FindCodeOption(block, "id")) {
+            if (!named.emplace(id->value.s, &block).second) named[id->value.s] = nullptr;
+        }
+    }
+    if (const Option *id = FindCodeOption(target, "id")) {
+        if (!ValidCodeId(id->value.s)) run.error = "invalid code block id: " + id->value.s;
+        else if (named.at(id->value.s) == nullptr) run.error = "duplicate code block id: " + id->value.s;
+        if (!run.error.empty()) return run;
+    }
+
+    // Store the exact inputs to avoid hash collisions or platform-specific
+    // hashes. Length prefixes distinguish arbitrary code and option values.
+    run.key = "mepml-run-v1\n";
+    auto append = [&](const std::string &value) {
+        run.key += std::to_string(value.size()) + ':' + value;
+    };
+    append(target.lang);
+    append(std::to_string(target.options.size()));
+    for (const Option &o : target.options) {
+        append(o.name);
+        append(std::to_string(static_cast<int>(o.value.kind)));
+        append(o.value.s);
+    }
+    const std::string language = Lower(target.lang);
+    enum class Visit { Active, Done };
+    std::unordered_map<const Block *, Visit> visits;
+    auto visit = [&](auto &&self, const Block &block) -> bool {
+        const Option *id = FindCodeOption(block, "id");
+        const std::string name = id ? id->value.s : "target";
+        if (auto v = visits.find(&block); v != visits.end()) {
+            if (v->second == Visit::Done) return true;
+            run.error = "cycle in use= at code block " + name;
+            return false;
+        }
+        visits.emplace(&block, Visit::Active);
+        if (Lower(block.lang) != language) {
+            run.error = "language mismatch in use= for code block " + name;
+            return false;
+        }
+        if (FindCodeOption(block, "include") && block.include.empty() && block.code.empty()) {
+            run.error = "cannot resolve include= for code block " + name;
+            return false;
+        }
+        if (const Option *use = FindCodeOption(block, "use")) {
+            size_t start = 0;
+            do {
+                const size_t end = use->value.s.find(',', start);
+                const std::string dependency = Trim(use->value.s.substr(start, end == std::string::npos ? end : end - start));
+                auto found = named.find(dependency);
+                if (!ValidCodeId(dependency) || found == named.end()) {
+                    run.error = "unknown code block in use=: " + dependency;
+                    return false;
+                }
+                if (!found->second) {
+                    run.error = "duplicate code block id: " + dependency;
+                    return false;
+                }
+                if (!self(self, *found->second)) return false;
+                if (end == std::string::npos) break;
+                start = end + 1;
+            } while (true);
+        }
+        if (&block != &target) {
+            run.code += block.code;
+            run.code += '\n';
+        }
+        append(id ? id->value.s : "");
+        append(block.code);
+        visits[&block] = Visit::Done;
+        return true;
+    };
+    if (visit(visit, target)) run.code += target.code;
+    return run;
+}
+
 const Option *Document::FindOption(const std::string &name) const {
     for (const Option &o : options)
         if (o.name == name) return &o;

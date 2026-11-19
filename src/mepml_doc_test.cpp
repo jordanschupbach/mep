@@ -2095,6 +2095,40 @@ int main() {
         CHECK(HtmlResultFragment(svg).find("<svg width") != std::string::npos);
     }
 
+    // Shared source is expanded depth-first, with a common dependency
+    // included once. The key survives a move but changes with the source.
+    {
+        Lines src = {"```{bash, id=report, use=\"left, right\", cache=yes}", "report", "```",
+                     "```{bash, id=left, use=base}", "left", "```",
+                     "```{bash, id=right, use=base}", "right", "```",
+                     "```{bash, id=base, eval=no}", "base", "```"};
+        auto resolve = [](const Lines &lines) {
+            const Document doc = Parse(lines);
+            for (const Block &block : doc.blocks) {
+                const Option *id = FindCodeOption(block, "id");
+                if (id && id->value.s == "report") return ResolveCodeRunSource(doc, block);
+            }
+            std::abort();
+        };
+        const CodeRunSource run = resolve(src);
+        CHECK(run.error.empty() && run.code == "base\nleft\nright\nreport");
+        const Lines target(src.begin(), src.begin() + 3);
+        src.erase(src.begin(), src.begin() + 3);
+        src.insert(src.end(), target.begin(), target.end());
+        CHECK(resolve(src).key == run.key);
+        src[7] = "new base";
+        CHECK(resolve(src).key != run.key);
+        src[6] = "```{bash, id=base, use=report}";
+        CHECK(resolve(src).error.find("cycle") != std::string::npos);
+        src[6] = "```{python, id=base}";
+        CHECK(resolve(src).error.find("language mismatch") != std::string::npos);
+        src[6] = "```{bash, id=missing}";
+        CHECK(resolve(src).error.find("unknown code block") != std::string::npos);
+        src[6] = "```{bash, id=base}";
+        src.insert(src.begin(), {"```{bash, id=base}", "another base", "```"});
+        CHECK(resolve(src).error.find("duplicate") != std::string::npos);
+    }
+
     std::printf("mepml_doc_test: all checks passed\n");
     return 0;
 }

@@ -413,6 +413,16 @@ int main() {
         CHECK(html.find(">3</code>") == std::string::npos && html.find(">2</code>") != std::string::npos);
     }
 
+    {
+        const Lines source = {R"(\citation(paper, title = {{GPU} scheduling (draft}, file = {/tmp/Two  Spaces (draft.txt}))"};
+        const Document rendered = Parse(source);
+        const Document library = Parse(source, true);
+        CHECK(library.blocks.size() == 1 && library.blocks[0].kind == BlockKind::Citation);
+        CHECK(library.citations.at("paper").fields.at("title") == "{GPU} scheduling (draft");
+        CHECK(rendered.citations.at("paper").fields.at("title") == "GPU scheduling (draft");
+        CHECK(rendered.citations.at("paper").fields.at("file") == "/tmp/Two  Spaces (draft.txt");
+    }
+
     // --- Display math, images, captions, tables, lists, rules, citations.
     {
         Lines src = {

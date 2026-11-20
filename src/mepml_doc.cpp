@@ -79,7 +79,7 @@ int WebPageHeight(const Block &b) {
 // balancing nested braces (or parentheses) and honouring backslash escapes.
 // Returns the index just past the closing brace (content is [i+1, ret-1)),
 // or -1 if unbalanced before `limit`.
-int ReadGroup(const std::string &s, int i, int limit) {
+int ReadGroup(const std::string &s, int i, int limit, bool brace_values = false) {
     const char open = At(s, i);
     if (open != '{' && open != '(') return -1;
     const char close = open == '{' ? '}' : ')';
@@ -88,6 +88,12 @@ int ReadGroup(const std::string &s, int i, int limit) {
         char c = s[static_cast<size_t>(j)];
         if (c == '\\') {
             ++j;
+            continue;
+        }
+        if (brace_values && open == '(' && c == '{') {
+            const int end = ReadGroup(s, j, limit);
+            if (end < 0) return -1;
+            j = end - 1;
             continue;
         }
         if (c == open) ++depth;
@@ -1148,7 +1154,7 @@ bool IsIdentifier(const std::string &s) {
 
 // Parses "k = v, k = {v}, k = "v"" fields out of a citation body.
 void ParseFields(const std::string &body, std::map<std::string, std::string> *fields,
-                 std::vector<std::string> *order) {
+                 std::vector<std::string> *order, bool preserve_values) {
     size_t k = 0;
     while (k < body.size()) {
         while (k < body.size() && (IsSpace(body[k]) || body[k] == ',')) ++k;
@@ -1191,6 +1197,7 @@ void ParseFields(const std::string &body, std::map<std::string, std::string> *fi
             sp = false;
             if (c != '{' && c != '}') flat += c;
         }
+        if (preserve_values || name == "file") flat = std::move(value);
         if (!name.empty()) {
             if (!fields->count(name)) order->push_back(name);
             (*fields)[name] = flat;
@@ -1203,6 +1210,7 @@ struct Parser {
     Document doc;
     int footnotes = 0;
     int n = 0;
+    bool preserve_citation_fields = false;
     // The `// result_end` lines closing `results=markdown` regions. Their
     // content is parsed as blocks of the document, so the closing marker
     // is skipped rather than read as a comment, and a caption under it
@@ -1630,7 +1638,7 @@ struct Parser {
             offs.push_back(Len(joined));
             joined += L(j);
             joined += '\n';
-            g1 = ReadGroup(joined, col, Len(joined));
+            g1 = ReadGroup(joined, col, Len(joined), paren);
             if (g1 < 0) continue;
             if (name != "citation" || paren) break;
             int k = g1;
@@ -1666,7 +1674,7 @@ struct Parser {
             b.keyword = Lower(name);
             CheckTrailing(j, g1 - offs.back());
         }
-        ParseFields(body, &b.fields, &b.field_order);
+        ParseFields(body, &b.fields, &b.field_order, preserve_citation_fields);
         if (b.value.empty()) {
             Diag(Diagnostic::Error, i, 0, Len(s), "citation has no key");
         } else {
@@ -2659,8 +2667,9 @@ int LineHeadingMarkupLen(const std::string &line) {
     return c;
 }
 
-Document Parse(const std::vector<std::string> &lines) {
+Document Parse(const std::vector<std::string> &lines, bool preserve_citation_fields) {
     Parser p(lines);
+    p.preserve_citation_fields = preserve_citation_fields;
     p.Run();
     Finish(p.doc);
     return std::move(p.doc);

@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (91)
+* The bindings (92)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -67,6 +67,7 @@ that it does nothing.
 | =mep.picker_is_open= | reports whether the picker overlay is open |
 | =mep.picker_open= | opens the fuzzy picker overlay with the given items and callbacks |
 | =mep.picker_preview_file= | loads a file's leading lines into the picker's preview column |
+| =mep.picker_selected_data= | returns the highlighted picker item's data, or nil |
 | =mep.picker_set_hint= | sets the open picker's footer key hint |
 | =mep.picker_set_items= | replaces the open picker's item list in place |
 | =mep.picker_set_preview= | sets (or clears) the picker's preview-column text and optional per-span syntax highlighting |

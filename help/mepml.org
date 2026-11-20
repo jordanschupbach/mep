@@ -1433,6 +1433,11 @@ join this document. =\toc= is a table of contents and
 =\bibliography= lists every cited entry, in the order first cited
 (=@printbibliography=, its oldest name, still works).
 
+Use the [[file:reference-manager.html][Reference manager]] to browse
+libraries and insert citations with a preview. Its picker adds selected
+entries to the project's =citations.mepml=, which you can import from
+your document.
+
 Every directive is written =\name(...)=, or bare (=\toc=). The older
 =@name{...}= spelling (=@image{path}=, =@caption{text}=,
 =@citation{key}{fields}=, =@toc=, ...) still works, except for the

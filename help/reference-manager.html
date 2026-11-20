@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference manager</title>
+<style>body{max-width:48em;margin:2em auto;padding:0 1em;background:#fff;font-family:sans-serif;line-height:1.5;color:#222}pre{background:#f2f2f2;padding:0.6em;overflow:auto;border-radius:3px}code{background:#f2f2f2;padding:0.1em 0.3em;border-radius:3px}img{max-width:100%}h1,h2,h3{line-height:1.25}table{border-collapse:collapse;margin:1.2em 0;width:100%}th{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top;background:#f6f8fa;font-weight:600}td{border:1px solid #d0d7de;padding:0.4em 0.7em;text-align:left;vertical-align:top}.org-code-block{margin:1.2em 0;border-top:1px solid #d0d7de;border-right:1px solid #d0d7de;border-bottom:1px solid #d0d7de;border-left:4px solid #6b8afd;border-radius:4px;overflow:hidden;background:#fff;color:#24292e;font-size:0.95em}.org-code-header{display:flex;justify-content:space-between;align-items:center;gap:0.6em;padding:0.35em 0.8em;background:#f6f8fa;border-bottom:1px solid #d0d7de;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.8em;color:#57606a}.org-code-lang{text-transform:lowercase;letter-spacing:0.02em}.org-code-copy{background:#eaeef2;color:#24292e;border:none;border-radius:3px;padding:0.2em 0.7em;font-size:0.85em;cursor:pointer;font-family:inherit}.org-code-copy:hover{background:#d0d7de}.org-code-pre{margin:0;padding:0.8em 1em;background:#fff;border-radius:0;overflow:auto}.org-code-body{background:#fff;padding:0;border-radius:0;color:#24292e;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:0.9em;line-height:1.5}.tok-comment{color:#6b7280;font-style:italic}.tok-green{color:#1a7f37}.tok-cyan{color:#0b7285}.tok-purple{color:#8250df}.tok-blue{color:#0550ae}.tok-orange{color:#953800}.tok-red{color:#cf222e}.tok-yellow{color:#9a6700}.hl-red{color:#cf222e;font-weight:bold}.hl-orange{color:#953800;font-weight:bold}.hl-yellow{color:#9a6700;font-weight:bold}.hl-green{color:#1a7f37;font-weight:bold}.hl-cyan{color:#0b7285;font-weight:bold}.hl-blue{color:#0550ae;font-weight:bold}.hl-purple{color:#8250df;font-weight:bold}</style>
+<script>function mepCopyCode(btn){var block=btn.closest(".org-code-block");var code=block&&block.querySelector("code");if(!code)return;var text=code.innerText;var restore=function(){setTimeout(function(){btn.textContent="Copy";},1200);};btn.textContent="Copied!";if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(restore,restore);}else{var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.opacity="0";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");}catch(e){}document.body.removeChild(ta);restore();}}</script>
+<meta name="help-section" content="Writing">
+<meta name="help-order" content="31">
+<link rel="stylesheet" href="help.css">
+</head>
+<body>
+<h1>Reference manager</h1>
+<h1>Browse and edit</h1>
+<p><code>&lt;leader&gt;rm</code> (<code>:MepRefManager</code>) opens the manager in a buffer. Use the
+Collections sidebar to browse the project library, the global library,
+your named collections, or subscribed folders. <code>Enter</code> on a reference
+with a stored file opens it in a pane to the right.</p>
+<p><b>Add file</b> (<code>:MepRefAddFile</code>) saves a reference to the global library.
+Use a row's pencil or <b>Edit or promote reference</b> (<code>:MepRefEdit</code>) to
+edit fields or save metadata for an automatically listed file. Use
+<b>Refresh</b> (<code>:MepRefRefresh</code>) after editing library files or changing a
+folder outside the manager.</p>
+<p><b>Manage collections and folders</b> (<code>:MepRefCollections</code>) opens the
+collection and subscription actions. The individual commands are
+<code>:MepRefCollectionAdd</code>, <code>:MepRefCollectionRename</code>,
+<code>:MepRefCollectionRemove</code>, <code>:MepRefSubscribe</code>, and <code>:MepRefUnsubscribe</code>.
+<code>:MepRefSubscribe</code> opens a folder picker with the full path above the
+entries and the selected entry's preview on the right. Use <code>Enter</code> to
+open a folder, <code>../</code> to go up, or <b>Type a folder path</b> to jump directly.
+Select <b>Subscribe to this folder</b> or press <code>Ctrl+A</code> to confirm.</p>
+<p>A subscription imports PDFs from the folder and its subfolders into the
+global library in the background. Mep reads embedded bibliographic
+metadata and falls back to the filename for the title when needed.
+Existing records and edits are kept. Open the manager or use
+<code>:MepRefRefresh</code> to pick up newly added PDFs.</p>
+<p>Other files directly in the folder appear as stubs, and its <code>.bib</code>
+files are read as bibliographies.</p>
+<h1>Insert a citation</h1>
+<p><code>&lt;leader&gt;ri</code> (<code>:MepRefInsert</code>) opens a fuzzy picker with a preview from
+an editable text buffer. The first match for each key wins. Mep looks
+in the project's <code>citations.mepml</code>, the project's <code>.bib</code> files, the
+global <code>library.mepml</code>, then the subscribed folders' <code>.bib</code> files and
+file stubs. BibTeX files within a directory are read in filename order.</p>
+<p>Choosing an entry inserts <code>\cite(key)</code>, or <code>\cite{key}</code> in a <code>.tex</code>
+buffer, and adds the entry to the project's <code>citations.mepml</code> if the
+key is absent. Use <code>\import(citations.mepml)</code> from a MEPML document
+at the project root to include those entries. Use <code>\bibliography</code>
+to print the cited entries.</p>
+<p>On Linux, the global library and <code>config.mepml</code> are stored in
+<code>~/.local/share/mep/references/</code> or <code>$XDG_DATA_HOME/mep/references/</code>.
+Mep uses its standard application data directory on other platforms.</p>
+<ul>
+<li><a href="mepml.html">MEPML documents</a></li>
+</ul>
+</body>
+</html>

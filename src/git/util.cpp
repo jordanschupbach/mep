@@ -89,13 +89,24 @@ bool WriteFile(const std::string &path, std::string_view data, bool exec) {
 #endif
 }
 
-bool WriteFileAtomic(const std::string &path, std::string_view data, std::string *err) {
+bool WriteFileAtomic(const std::string &path, std::string_view data, std::string *err,
+                     const std::string_view *expected) {
+    const auto matches = [&] {
+        if (!expected) return true;
+        std::error_code ec;
+        const auto status = fs::status(path, ec);
+        if (status.type() == fs::file_type::not_found) return expected->empty();
+        std::string current;
+        return fs::is_regular_file(status) && ReadFile(path, current) && current == *expected;
+    };
     std::string lock = path + ".lock";
 #if !defined(_WIN32)
-    int fd = ::open(lock.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+    int fd = ::open(lock.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, expected ? 0600 : 0666);
     if (fd < 0) {
         if (err) {
-            if (errno == EEXIST)
+            if (errno == EEXIST && expected)
+                *err = "File is locked: " + path;
+            else if (errno == EEXIST)
                 *err = "Unable to create '" + lock +
                        "': File exists.\n\nAnother git process seems to be running in this repository.";
             else
@@ -103,11 +114,24 @@ bool WriteFileAtomic(const std::string &path, std::string_view data, std::string
         }
         return false;
     }
+    if (!matches()) {
+        ::close(fd);
+        ::unlink(lock.c_str());
+        if (err) *err = "File changed or could not be read: " + path;
+        return false;
+    }
+    struct stat original;
+    if (expected && ::stat(path.c_str(), &original) == 0 && ::fchmod(fd, original.st_mode & 0777) != 0) {
+        ::close(fd);
+        ::unlink(lock.c_str());
+        if (err) *err = "Unable to preserve file permissions: " + path;
+        return false;
+    }
     size_t done = 0;
     while (done < data.size()) {
         ssize_t n = ::write(fd, data.data() + done, data.size() - done);
-        if (n < 0) {
-            if (errno == EINTR) continue;
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) continue;
             ::close(fd);
             ::unlink(lock.c_str());
             if (err) *err = "write error on " + lock;
@@ -122,12 +146,16 @@ bool WriteFileAtomic(const std::string &path, std::string_view data, std::string
     }
     return true;
 #else
-    if (FileExists(lock)) {
-        if (err) *err = "Unable to create '" + lock + "': File exists.";
+    std::FILE *file = std::fopen(lock.c_str(), "wbx");
+    if (!file) {
+        if (err) *err = "Unable to create '" + lock + "': " + std::strerror(errno);
         return false;
     }
-    if (!WriteFile(lock, data)) {
-        if (err) *err = "unable to write " + lock;
+    const bool unchanged = matches();
+    const bool written = unchanged && (data.empty() || std::fwrite(data.data(), 1, data.size(), file) == data.size());
+    if (std::fclose(file) != 0 || !written) {
+        std::remove(lock.c_str());
+        if (err) *err = unchanged ? "Unable to write " + lock : "File changed or could not be read: " + path;
         return false;
     }
     std::error_code ec;

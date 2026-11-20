@@ -9,6 +9,9 @@
 #include "http_client.h"
 #include "http_server.h"
 #include "pdf_raster.h"
+#include "pdf_filters.h"
+#include "pdf_xref.h"
+#include "xml_doc.h"
 #include "tex/tex_backend.h"
 #include "url_util.h"
 #include "doc_export.h"
@@ -76,6 +79,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <optional>
 #include <system_error>
@@ -103,6 +107,7 @@ extern "C" {
 #include "gfx/audio.h"
 #include "gfx/platform.h"
 
+#include "git/util.h"
 #include "json.h"
 #include "mepml_convert.h"
 #include "persist.h"
@@ -9247,14 +9252,14 @@ int l_picker_set_query(lua_State *L) {
 // is kBuiltinPickerSources' mep.buffer_search (main.cpp).
 /**
  * @brief Implements mep.picker_set_preview(text, spans): sets (or clears) the picker's preview-column text and optional per-span syntax highlighting.
- * @param L Lua state; arg 1 is the preview text ("" hides the column), optional arg 2 an array of {row=, col_start=, col_end=, hl=} spans.
+ * @param L Lua state; arg 1 is preview text, optional arg 2 highlight spans, optional arg 3 a glyph to draw large.
  * @return Number of values pushed (0).
  */
 int l_picker_set_preview(lua_State *L) {
     size_t len = 0;
     const char *text = luaL_optlstring(L, 1, "", &len);
     std::vector<PickerHlSpan> spans = ReadPreviewSpans(L, 2);
-    GetEditor(L)->SetPickerPreview(std::string(text, len), std::move(spans));
+    GetEditor(L)->SetPickerPreview(std::string(text, len), std::move(spans), luaL_optstring(L, 3, ""));
     return 0;
 }
 
@@ -10977,7 +10982,7 @@ int l_docs_signature_info(lua_State *L) {
     return 3;
 }
 
-// mep.picker_preview_file(path, max_lines): see Editor::PreviewFile.
+// mep.picker_preview_file(path, max_lines, visual?): see Editor::PreviewFile.
 /**
  * @brief Implements mep.picker_preview_file(path, max_lines): loads a file's leading lines into the picker's preview column.
  * @param L Lua state; arg 1 is the file path, optional arg 2 the maximum line count (default 40).
@@ -10986,7 +10991,7 @@ int l_docs_signature_info(lua_State *L) {
 int l_picker_preview_file(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
     int max_lines = static_cast<int>(luaL_optinteger(L, 2, 40));
-    GetEditor(L)->PreviewFile(path, max_lines);
+    GetEditor(L)->PreviewFile(path, max_lines, lua_toboolean(L, 3));
     return 0;
 }
 
@@ -11885,8 +11890,301 @@ int l_org_latex_scan_delta(lua_State *L) {
     return 1;
 }
 
-// mep.org_bib_parse_files({text1, text2, ...}) -> array of
-// {type=,key=,fields={name=value,...}}: see Editor::OrgBibParseFiles.
+// Native reference-manager I/O. The manager owns the storage format and
+// passes the snapshot it read so a stale edit cannot replace a newer one.
+/**
+ * @brief Implements mep.ref_data_dir(): returns mep's native user data directory.
+ */
+int l_ref_data_dir(lua_State *L) {
+    const std::string dir = MepDataDir();
+    lua_pushstring(L, dir.c_str());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.ref_path(path): returns a canonical path and its filesystem kind.
+ */
+int l_ref_path(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+#if defined(__EMSCRIPTEN__)
+    (void)path;
+    lua_pushnil(L);
+    return 1;
+#else
+    std::error_code ec;
+    const auto absolute = std::filesystem::absolute(path, ec);
+    if (ec) return 0;
+    const auto resolved = std::filesystem::weakly_canonical(absolute, ec);
+    if (ec) return 0;
+    const auto status = std::filesystem::status(resolved, ec);
+    const char *kind = "other";
+    if (std::filesystem::is_regular_file(status)) kind = "file";
+    if (std::filesystem::is_directory(status)) kind = "directory";
+    if (status.type() == std::filesystem::file_type::not_found) kind = "missing";
+    lua_pushstring(L, resolved.generic_string().c_str());
+    lua_pushstring(L, kind);
+    return 2;
+#endif
+}
+
+/**
+ * @brief Implements mep.ref_write(path, before, after): updates a reference file if the snapshot still matches.
+ */
+int l_ref_write(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    size_t before_size = 0, after_size = 0;
+    const char *before = luaL_checklstring(L, 2, &before_size);
+    const char *after = luaL_checklstring(L, 3, &after_size);
+    std::string error;
+#if defined(__EMSCRIPTEN__)
+    (void)path; (void)before; (void)after;
+    error = "Reference libraries require a native filesystem";
+#else
+    Editor *ed = GetEditor(L);
+    std::vector<int> open;
+    for (int id = 0; id < ed->BufferCountForLua(); ++id) {
+        if (!ed->BufferIsLive(id) || ed->GetTerminal(id)) continue;
+        const Buffer &buffer = ed->GetBuffer(id);
+        if (buffer.filename.empty()) continue;
+        const std::string name = ed->ResolveBufferPath(buffer, buffer.filename);
+        std::error_code ec;
+        const auto absolute = std::filesystem::absolute(name, ec);
+        if (ec) continue;
+        const auto resolved = std::filesystem::weakly_canonical(absolute, ec);
+        if (ec || resolved.generic_string() != path) continue;
+        if (ed->BufferModifiedForLua(id)) {
+            error = "Save the open buffer before updating " + std::string(path);
+            break;
+        }
+        open.push_back(id);
+    }
+    if (error.empty()) {
+        const std::string_view expected(before, before_size);
+        if (mep::git::WriteFileAtomic(path, std::string_view(after, after_size), &error, &expected)) {
+            for (int id : open) ed->ReloadBufferFromDisk(id, false);
+        }
+    }
+#endif
+    lua_pushboolean(L, error.empty());
+    if (error.empty()) return 1;
+    lua_pushstring(L, error.c_str());
+    return 2;
+}
+
+#if !defined(__EMSCRIPTEN__)
+Json ReadReferencePdfFields(const std::string &path) {
+    Json fields = Json::Object();
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    constexpr size_t kMaxPdfBytes = 128 * 1024 * 1024;
+    if (ec || size == 0 || size > kMaxPdfBytes) return fields;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return fields;
+    std::vector<unsigned char> bytes(static_cast<size_t>(size));
+    if (!in.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) return fields;
+
+    // The trailer and catalog are sufficient for metadata. Avoid loading
+    // the page tree or rasterizing pages for a directory full of books.
+    pdfxref::XrefTable xref;
+    xref.Load(bytes.data(), bytes.size());
+    if (xref.IsEncrypted() && !xref.Encryption()) return fields;
+    const auto resolve = [&](const pdfobj::Object *value) {
+        if (!value) return pdfobj::Object{};
+        if (value->IsReference()) {
+            return pdfxref::ResolveObject(bytes.data(), bytes.size(), xref, value->ref_val.num, value->ref_val.gen);
+        }
+        return *value;
+    };
+    const auto put = [&](const char *key, std::string value) {
+        if (!value.empty() && value.size() <= 4096) fields[key] = std::move(value);
+    };
+    const auto info = resolve(xref.Trailer().Find("Info"));
+    for (const auto &[key, field] : {std::pair{"Title", "title"}, {"Author", "author"},
+                                       {"Publisher", "publisher"}, {"PublicationDate", "date"},
+                                       {"DOI", "doi"}, {"ISBN", "isbn"}}) {
+        const auto value = resolve(info.Find(key));
+        if (value.IsString()) put(field, pdfobj::TextStringToUtf8(value.str_val));
+    }
+
+    const auto catalog = resolve(xref.Trailer().Find("Root"));
+    const auto *metadata = catalog.Find("Metadata");
+    if (!metadata || !metadata->IsReference()) return fields;
+    pdfobj::Object dictionary;
+    std::string raw, packet;
+    constexpr size_t kMaxXmpBytes = 1024 * 1024;
+    if (!pdfxref::ResolveStream(bytes.data(), bytes.size(), xref, metadata->ref_val.num, metadata->ref_val.gen,
+                                &dictionary, &raw) ||
+        raw.size() > kMaxXmpBytes || !pdffilter::DecodeStream(raw, &dictionary, &packet) || packet.size() > kMaxXmpBytes)
+        return fields;
+    xml::xml_document xmp;
+    if (!xmp.load_buffer(packet.data(), packet.size())) return fields;
+    const auto root = xmp.document_element();
+    const auto rdf = std::string_view(root.name()) == "rdf:RDF" ? root : root.child("rdf:RDF");
+    for (const auto &description : rdf.children("rdf:Description")) {
+        for (const auto &[key, field] : {std::pair{"dc:title", "title"}, {"dc:creator", "author"},
+                                           {"dc:publisher", "publisher"}, {"prism:publicationDate", "date"},
+                                           {"prism:doi", "doi"}, {"prism:isbn", "isbn"},
+                                           {"prism:publicationName", "journal"}, {"prism:volume", "volume"},
+                                           {"prism:number", "number"}}) {
+            const auto element = description.child(key);
+            std::string value = element.text().get();
+            if (value.empty()) value = description.attribute(key).as_string();
+            if (value.empty()) {
+                const auto container = element.first_child();
+                for (const auto &item : container.children("rdf:li")) {
+                    if (std::string_view(container.name()) == "rdf:Alt") {
+                        if (value.empty() || std::string_view(item.attribute("xml:lang").as_string()) == "x-default")
+                            value = item.text().get();
+                    } else if (const std::string_view text = item.text().get(); !text.empty()) {
+                        if (!value.empty()) value += field == std::string_view("author") ? " and " : "; ";
+                        value += text;
+                    }
+                }
+            }
+            put(field, std::move(value));
+        }
+    }
+    return fields;
+}
+#endif
+
+/**
+ * @brief Implements mep.ref_scan_pdfs(folder, known_files, done): scans for uncatalogued PDFs and reads metadata in the background.
+ */
+int l_ref_scan_pdfs(lua_State *L) {
+    std::string folder = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+#if defined(__EMSCRIPTEN__)
+    return 0;
+#else
+    std::unordered_set<std::string> known;
+    const auto count = static_cast<lua_Integer>(lua_rawlen(L, 2));
+    for (lua_Integer i = 1; i <= count; ++i) {
+        lua_rawgeti(L, 2, i);
+        known.emplace(luaL_checkstring(L, -1));
+        lua_pop(L, 1);
+    }
+    LuaEnv *env = GetLuaEnv(L);
+    lua_pushvalue(L, 3);
+    const int ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    auto results = std::make_shared<Json>(Json::Array());
+    JobManager::Callbacks callbacks;
+    callbacks.on_stdout = [results](const std::string &line) {
+        Json row;
+        if (Json::Parse(line, &row)) results->push_back(std::move(row));
+    };
+    callbacks.on_exit = [env, ref, results](int code) {
+        env->CallRefWithJson(ref, code == 0 ? *results : Json());
+        env->UnrefFunction(ref);
+    };
+    Job::Task task = [folder = std::move(folder), known = std::move(known)](
+                         const Job::EmitLine &emit, const std::atomic<bool> &cancelled) {
+        std::error_code ec;
+        std::vector<std::string> paths;
+        auto it = std::filesystem::recursive_directory_iterator(
+            folder, std::filesystem::directory_options::skip_permission_denied, ec);
+        for (; !ec && it != std::filesystem::recursive_directory_iterator{} && !cancelled.load(); it.increment(ec)) {
+            std::error_code status_error;
+            if (!it->is_regular_file(status_error) || it->is_symlink(status_error)) continue;
+            std::string path = it->path().generic_string();
+            if (IsPdfPath(path) && !known.count(path)) paths.push_back(std::move(path));
+        }
+        if (ec || cancelled.load()) return 1;
+        std::sort(paths.begin(), paths.end());
+        for (const auto &path : paths) {
+            if (cancelled.load()) return 1;
+            Json row = Json::Object();
+            row["path"] = path;
+            row["fields"] = ReadReferencePdfFields(path);
+            emit(row.dump());
+        }
+        return 0;
+    };
+    lua_pushinteger(L, JobManager::Instance().SpawnTask(std::move(task), std::move(callbacks), "reference PDF import"));
+    return 1;
+#endif
+}
+
+/**
+ * @brief Implements mep.ref_can_insert(): checks whether the current buffer accepts citation text.
+ */
+int l_ref_can_insert(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CanInsertAtTextCursor());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.can_insert_text(): checks whether the current buffer has an editable text cursor.
+ */
+int l_can_insert_text(lua_State *L) {
+    lua_pushboolean(L, GetEditor(L)->CanInsertAtTextCursor());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.ref_open_file(path): opens a file in a document pane on the right.
+ */
+int l_ref_open_file(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    GetEditor(L)->OpenFileToRight(path);
+    return 0;
+}
+
+/**
+ * @brief Implements mep.picker_selected_data(): returns the highlighted picker item's data, or nil.
+ */
+int l_picker_selected_data(lua_State *L) {
+    const Editor *ed = GetEditor(L);
+    if (!ed->IsPickerOpen()) return 0;
+    const auto &items = ed->PickerFilteredResults();
+    const int index = ed->PickerSelected();
+    if (index < 0 || static_cast<size_t>(index) >= items.size()) return 0;
+    const std::string &data = items[static_cast<size_t>(index)].data;
+    lua_pushlstring(L, data.data(), data.size());
+    return 1;
+}
+
+/**
+ * @brief Implements mep.mepml_citations(text): returns citation declarations and their line ranges in source order.
+ */
+int l_mepml_citations(lua_State *L) {
+    size_t size = 0;
+    const char *data = luaL_checklstring(L, 1, &size);
+    std::istringstream input(std::string(data, size));
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(std::move(line));
+    }
+    const mepml::Document doc = mepml::Parse(lines, true);
+    lua_newtable(L);
+    int index = 1;
+    for (const auto &block : doc.blocks) {
+        if (block.kind != mepml::BlockKind::Citation || block.value.empty()) continue;
+        lua_createtable(L, 0, 5);
+        lua_pushlstring(L, block.value.data(), block.value.size());
+        lua_setfield(L, -2, "key");
+        lua_pushstring(L, block.keyword.c_str());
+        lua_setfield(L, -2, "type");
+        lua_pushinteger(L, block.line_start + 1);
+        lua_setfield(L, -2, "first");
+        lua_pushinteger(L, block.line_end + 1);
+        lua_setfield(L, -2, "last");
+        lua_createtable(L, 0, static_cast<int>(block.fields.size()));
+        for (const auto &kv : block.fields) {
+            lua_pushlstring(L, kv.second.data(), kv.second.size());
+            lua_setfield(L, -2, kv.first.c_str());
+        }
+        lua_setfield(L, -2, "fields");
+        lua_rawseti(L, -2, index++);
+    }
+    return 1;
+}
+
+// mep.org_bib_parse_files({text1, text2, ...}, first_crossref?) -> array of
+// {type=, key=, file_index=, fields={name=value,...}} in source order.
 /**
  * @brief Implements mep.org_bib_parse_files({text1, text2, ...}): parses BibTeX-style file contents into bibliography entries.
  * @param L Lua state; arg 1 is a Lua array of file-content strings.
@@ -11901,11 +12199,13 @@ int l_org_bib_parse_files(lua_State *L) {
         texts.emplace_back(luaL_optstring(L, -1, ""));
         lua_pop(L, 1);
     }
-    std::vector<Editor::OrgBibEntry> entries = GetEditor(L)->OrgBibParseFiles(texts);
+    std::vector<Editor::OrgBibEntry> entries = GetEditor(L)->OrgBibParseFiles(texts, lua_toboolean(L, 2));
     lua_createtable(L, static_cast<int>(entries.size()), 0);
     for (size_t i = 0; i < entries.size(); i++) {
         const Editor::OrgBibEntry &e = entries[i];
-        lua_createtable(L, 0, 3);
+        lua_createtable(L, 0, 4);
+        lua_pushinteger(L, static_cast<lua_Integer>(e.file_index + 1));
+        lua_setfield(L, -2, "file_index");
         lua_pushlstring(L, e.type.data(), e.type.size());
         lua_setfield(L, -2, "type");
         lua_pushlstring(L, e.key.data(), e.key.size());
@@ -18171,6 +18471,7 @@ const luaL_Reg kMepFuncs[] = {
     {"is_insert_mode", l_is_insert_mode},
     {"stt_set_recording", l_stt_set_recording},
     {"insert_text", l_insert_text},
+    {"can_insert_text", l_can_insert_text},
     {"clipboard_get", l_clipboard_get},
     {"clipboard_set", l_clipboard_set},
     {"notify", l_notify},
@@ -18391,6 +18692,14 @@ const luaL_Reg kMepFuncs[] = {
     {"org_latex_scan_delta", l_org_latex_scan_delta},
     {"org_literal_spans", l_org_literal_spans},
     {"org_bib_parse_files", l_org_bib_parse_files},
+    {"mepml_citations", l_mepml_citations},
+    {"ref_data_dir", l_ref_data_dir},
+    {"ref_path", l_ref_path},
+    {"ref_scan_pdfs", l_ref_scan_pdfs},
+    {"ref_write", l_ref_write},
+    {"ref_open_file", l_ref_open_file},
+    {"ref_can_insert", l_ref_can_insert},
+    {"picker_selected_data", l_picker_selected_data},
     {"org_roam_files_in", l_org_roam_files_in},
     {"org_roam_title_of", l_org_roam_title_of},
     {"org_roam_ensure_id", l_org_roam_ensure_id},

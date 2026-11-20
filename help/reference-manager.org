@@ -1,0 +1,55 @@
+#+TITLE: Reference manager
+#+HTML_HEAD: <meta name="help-section" content="Writing">
+#+HTML_HEAD: <meta name="help-order" content="31">
+#+HTML_HEAD: <link rel="stylesheet" href="help.css">
+
+* Browse and edit
+
+=<leader>rm= (=:MepRefManager=) opens the manager in a buffer. Use the
+Collections sidebar to browse the project library, the global library,
+your named collections, or subscribed folders. =Enter= on a reference
+with a stored file opens it in a pane to the right.
+
+*Add file* (=:MepRefAddFile=) saves a reference to the global library.
+Use a row's pencil or *Edit or promote reference* (=:MepRefEdit=) to
+edit fields or save metadata for an automatically listed file. Use
+*Refresh* (=:MepRefRefresh=) after editing library files or changing a
+folder outside the manager.
+
+*Manage collections and folders* (=:MepRefCollections=) opens the
+collection and subscription actions. The individual commands are
+=:MepRefCollectionAdd=, =:MepRefCollectionRename=,
+=:MepRefCollectionRemove=, =:MepRefSubscribe=, and =:MepRefUnsubscribe=.
+=:MepRefSubscribe= opens a folder picker with the full path above the
+entries and the selected entry's preview on the right. Use =Enter= to
+open a folder, =../= to go up, or *Type a folder path* to jump directly.
+Select *Subscribe to this folder* or press =Ctrl+A= to confirm.
+
+A subscription imports PDFs from the folder and its subfolders into the
+global library in the background. Mep reads embedded bibliographic
+metadata and falls back to the filename for the title when needed.
+Existing records and edits are kept. Open the manager or use
+=:MepRefRefresh= to pick up newly added PDFs.
+
+Other files directly in the folder appear as stubs, and its =.bib=
+files are read as bibliographies.
+
+* Insert a citation
+
+=<leader>ri= (=:MepRefInsert=) opens a fuzzy picker with a preview from
+an editable text buffer. The first match for each key wins. Mep looks
+in the project's =citations.mepml=, the project's =.bib= files, the
+global =library.mepml=, then the subscribed folders' =.bib= files and
+file stubs. BibTeX files within a directory are read in filename order.
+
+Choosing an entry inserts =\cite(key)=, or =\cite{key}= in a =.tex=
+buffer, and adds the entry to the project's =citations.mepml= if the
+key is absent. Use =\import(citations.mepml)= from a MEPML document
+at the project root to include those entries. Use =\bibliography=
+to print the cited entries.
+
+On Linux, the global library and =config.mepml= are stored in
+=~/.local/share/mep/references/= or =$XDG_DATA_HOME/mep/references/=.
+Mep uses its standard application data directory on other platforms.
+
+- [[file:mepml.html][MEPML documents]]

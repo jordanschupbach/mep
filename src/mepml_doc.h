@@ -463,7 +463,7 @@ std::string BoxHeading(const Block &b);
 // The same, its label the one `doc`'s style sheets give the kind.
 std::string BoxHeading(const Document &doc, const Block &b);
 
-Document Parse(const std::vector<std::string> &lines);
+Document Parse(const std::vector<std::string> &lines, bool preserve_citation_fields = false);
 // A line's heading depth by its own text (`>`..`>>>>>>` then a space), 0
 // otherwise. Context-free: Document::blocks is the authority on whether the
 // line really is a heading (it is not inside a code block, say).

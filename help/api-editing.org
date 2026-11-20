@@ -11,7 +11,7 @@ This page is generated from mep's own binding table, so it lists what
 the running editor actually exposes. Call any of these from
 =init.lua=, from =:lua=, or from a =mep-lua= org block.
 
-* The bindings (280)
+* The bindings (288)
 
 A dash means that binding has no doc comment in the source yet, not
 that it does nothing.
@@ -77,6 +77,7 @@ that it does nothing.
 | =mep.cad_suppress= | ok |
 | =mep.cad_view= | shaded, wireframe or drawing |
 | =mep.cad_zoom= | -- |
+| =mep.can_insert_text= | checks whether the current buffer has an editable text cursor |
 | =mep.clipboard_get= | returns the system clipboard's text |
 | =mep.clipboard_set= | copies text to the system clipboard |
 | =mep.clock= | monotonic seconds, read at the call (unlike mep.now(), which is fixed per frame) |
@@ -143,6 +144,7 @@ that it does nothing.
 | =mep.mepml_alt_popup_toggle= | toggles the mepml alt text popup |
 | =mep.mepml_alt_popup_visible= | reports whether a hovered mepml block shows its alt text in a popup |
 | =mep.mepml_block_at= | describes the mepml code block at a 1-based row |
+| =mep.mepml_citations= | returns citation declarations and their line ranges in source order |
 | =mep.mepml_code_blocks= | lists the current mepml buffer's code-block bodies |
 | =mep.mepml_convert_text= | converts a document between text formats through mepml |
 | =mep.mepml_diagnostics= | the parser's diagnostics for the current mepml buffer |
@@ -202,6 +204,12 @@ that it does nothing.
 | =mep.pres_theme= | on: theme colours (Ctrl-R) set, or read |
 | =mep.pres_undo= | -- |
 | =mep.read_disk_lines= | array of lines, or nil |
+| =mep.ref_can_insert= | checks whether the current buffer accepts citation text |
+| =mep.ref_data_dir= | returns mep's native user data directory |
+| =mep.ref_open_file= | opens a file in a document pane on the right |
+| =mep.ref_path= | returns a canonical path and its filesystem kind |
+| =mep.ref_scan_pdfs= | scans for uncatalogued PDFs and reads metadata in the background |
+| =mep.ref_write= | updates a reference file if the snapshot still matches |
 | =mep.reload_changed_buffers= | reloaded_count, conflicts |
 | =mep.replace_lines= | replaces a 1-indexed, end-exclusive line range with a new set of lines |
 | =mep.reveal_buffer= | brings a buffer to the front of its own pane without moving focus |

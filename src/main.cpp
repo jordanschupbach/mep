@@ -147,6 +147,8 @@
 #include "language_ui_ocaml.h"
 #include "language_ui_sql.h"
 #include "language_ui_tcl.h"
+#include "reference_manager.h"
+#include "symbol_picker.h"
 
 namespace {
 
@@ -45138,18 +45140,15 @@ static float DrawPickerColoredRun(const std::string &text, const std::vector<gfx
 // level with the cursor row, on whichever side of the tree has room.
 gfx::Texture2D g_file_preview_tex{};
 unsigned g_file_preview_tex_gen = ~0u;
+gfx::Texture2D g_picker_file_preview_tex{};
+unsigned g_picker_file_preview_tex_gen = ~0u;
 
-/**
- * @brief Draws the file preview float beside the focused pane it belongs to, if any.
- */
-void DrawFilePreviewFloat() {
-    g_editor.TickFilePreview();
-    const Editor::FilePreview &fp = g_editor.GetFilePreview();
+void SyncFilePreviewTexture(const Editor::FilePreview &fp, gfx::Texture2D &texture, unsigned &generation) {
     // GPU copy of the picture, re-uploaded only when it changes.
-    if (fp.generation != g_file_preview_tex_gen) {
-        g_file_preview_tex_gen = fp.generation;
-        if (g_file_preview_tex.id != 0) gfx::UnloadTexture(g_file_preview_tex);
-        g_file_preview_tex = gfx::Texture2D{};
+    if (fp.generation != generation) {
+        generation = fp.generation;
+        if (texture.id != 0) gfx::UnloadTexture(texture);
+        texture = gfx::Texture2D{};
         if (fp.kind == Editor::FilePreview::Kind::Image && !fp.rgba.empty() && fp.w > 0 && fp.h > 0) {
             gfx::Image img{};
             img.data = const_cast<unsigned char *>(fp.rgba.data());
@@ -45157,9 +45156,16 @@ void DrawFilePreviewFloat() {
             img.height = fp.h;
             img.mipmaps = 1;
             img.format = gfx::kPixelFormatR8G8B8A8;
-            g_file_preview_tex = gfx::LoadTextureFromImage(img);
+            texture = gfx::LoadTextureFromImage(img);
         }
     }
+}
+
+void DrawFilePreviewFloat() {
+    g_editor.TickFilePreview();
+    SyncFilePreviewTexture(g_editor.GetPickerFilePreview(), g_picker_file_preview_tex, g_picker_file_preview_tex_gen);
+    const Editor::FilePreview &fp = g_editor.GetFilePreview();
+    SyncFilePreviewTexture(fp, g_file_preview_tex, g_file_preview_tex_gen);
     const RowCursorAnchor anchor = g_row_cursor_anchor;
     g_row_cursor_anchor = RowCursorAnchor{};
     if (fp.kind == Editor::FilePreview::Kind::None) return;
@@ -45279,7 +45285,11 @@ void DrawPickerOverlay() {
     const std::vector<PickerItem> &results = g_editor.PickerFilteredResults();
     int selected = g_editor.PickerSelected();
     const bool doc_preview = g_editor.GetPickerDocPreview().kind != Editor::PickerDocPreview::kNone;
-    bool has_preview = !g_editor.PickerPreview().empty() || IsSwatchPreviewPicker() || doc_preview;
+    const Editor::FilePreview &file = g_editor.GetPickerFilePreview();
+    const bool visual_preview = file.kind == Editor::FilePreview::Kind::Image;
+    const std::string &preview_glyph = g_editor.PickerPreviewGlyph();
+    const bool has_preview = !g_editor.PickerPreview().empty() || !preview_glyph.empty() ||
+                             IsSwatchPreviewPicker() || doc_preview || visual_preview;
     // Sized like mep.nvim's own picker (mep.nvim/lua/mep/picker/ui.lua's
     // create_layout: width = 0.9*columns, height = 0.8*lines, left/results
     // column = 0.38*width) -- 80% of width rather than mep.nvim's 90%,
@@ -45373,7 +45383,13 @@ void DrawPickerOverlay() {
             gfx::DrawRectangle(f.box_x + 4, static_cast<int>(ry) - 1, list_w - 8, line_h, ResolveHlGroup("PickerSelected"));
         }
         if (results[static_cast<size_t>(i)].spans.empty()) {
-            gfx::DrawTextEx(g_font, results[static_cast<size_t>(i)].display.c_str(), gfx::Vector2{f.content_x, ry}, g_font_size, 0, ResolveHlGroup("Normal"));
+            const std::string &display = results[static_cast<size_t>(i)].display;
+            const gfx::Vector2 pos{f.content_x, ry};
+            const auto color = ResolveHlGroup("Normal");
+            if (std::any_of(display.begin(), display.end(), [](unsigned char byte) { return byte >= 0x80; }))
+                DrawUiText(display, pos, g_font_size, color);
+            else
+                gfx::DrawTextEx(g_font, display.c_str(), pos, g_font_size, 0, color);
         } else {
             std::vector<gfx::Color> colors = PickerLineColors(results[static_cast<size_t>(i)].display, results[static_cast<size_t>(i)].spans, ResolveHlGroup("Normal"));
             DrawPickerColoredRun(results[static_cast<size_t>(i)].display, colors, 0, results[static_cast<size_t>(i)].display.size(), f.content_x, ry);
@@ -45398,6 +45414,22 @@ void DrawPickerOverlay() {
         if (doc_preview) {
             DrawPickerDocPreview(static_cast<float>(div_x + 4), list_y - 2.0f, static_cast<float>(preview_w + 12),
                                  static_cast<float>(content_bottom) - list_y);
+            gfx::EndScissorMode();
+        } else if (visual_preview) {
+            const std::string info = file.pending_path.empty() ? file.info : "Loading preview…";
+            gfx::DrawTextEx(g_font, info.c_str(), gfx::Vector2{px, list_y}, g_font_size, 0, ResolveHlGroup("Comment"));
+            const gfx::Texture2D &tex = g_picker_file_preview_tex;
+            const float top = list_y + static_cast<float>(line_h);
+            const float available_height = static_cast<float>(content_bottom) - top - 8.0f;
+            if (tex.id != 0 && available_height > 0.0f) {
+                const float width = static_cast<float>(tex.width);
+                const float height = static_cast<float>(tex.height);
+                const float scale = std::min({1.0f, static_cast<float>(preview_w) / width, available_height / height});
+                const gfx::Rectangle src{0, 0, width, height};
+                const gfx::Rectangle dst{px + (static_cast<float>(preview_w) - width * scale) / 2.0f, top,
+                                         width * scale, height * scale};
+                gfx::DrawTexturePro(tex, src, dst, gfx::Vector2{0, 0}, 0.0f, gfx::White);
+            }
             gfx::EndScissorMode();
         } else if (IsSwatchPreviewPicker()) {
             // One row per named palette role: a filled swatch of that
@@ -45433,9 +45465,15 @@ void DrawPickerOverlay() {
             }
             gfx::EndScissorMode();
         } else {
+            float text_y = list_y;
+            if (!preview_glyph.empty()) {
+                const float glyph_size = g_font_size * 2.8f;
+                DrawUiText(preview_glyph, gfx::Vector2{px, list_y}, glyph_size, ResolveHlGroup("Normal"));
+                text_y += glyph_size + 10.0f;
+            }
             int max_chars = std::max(10, static_cast<int>(static_cast<float>(preview_w) / g_char_width));
             int row = 0;
-            int max_preview_rows = static_cast<int>((static_cast<float>(content_bottom) - list_y) / static_cast<float>(line_h));
+            int max_preview_rows = static_cast<int>((static_cast<float>(content_bottom) - text_y) / static_cast<float>(line_h));
             // mod1+j/k (Editor::HandleMod1Shortcuts' own Mode::Picker special
             // case) scrolls by skipping raw lines here -- PickerPreviewScroll()
             // counts the same raw lines SplitLines() returns, not the wrapped
@@ -45460,7 +45498,7 @@ void DrawPickerOverlay() {
                 while (pos < raw_line.size() && row < max_preview_rows) {
                     size_t take = std::min(raw_line.size() - pos, static_cast<size_t>(max_chars));
                     if (has_line_spans) {
-                        const float ry = list_y + static_cast<float>(row * line_h);
+                        const float ry = text_y + static_cast<float>(row * line_h);
                         // Background spans first, clipped to this wrapped piece.
                         for (const PickerHlSpan &sp : sit->second) {
                             if (!sp.bg) continue;
@@ -45478,7 +45516,7 @@ void DrawPickerOverlay() {
                         continue;
                     }
                     std::string chunk = raw_line.substr(pos, take);
-                    gfx::DrawTextEx(g_font, chunk.c_str(), gfx::Vector2{px, list_y + static_cast<float>(row * line_h)}, g_font_size, 0,
+                    gfx::DrawTextEx(g_font, chunk.c_str(), gfx::Vector2{px, text_y + static_cast<float>(row * line_h)}, g_font_size, 0,
                                ResolveHlGroup("Normal"));
                     pos += take;
                     row++;
@@ -73214,6 +73252,10 @@ int main(int argc, char **argv) {
     lua->DoString(kBuiltinSidebarPopout);
     lua->DoString(kBuiltinRightSidebarPanes);
     lua->DoString(kBuiltinPickerSources);
+    lua->DoString(kBuiltinSymbolPicker);
+    lua->DoString(
+        "mep.command('MepInsertSymbol', mep.insert_symbol)\n"
+        "mep.leader_map('is', 'Insert Unicode symbol', mep.insert_symbol)\n");
     lua->DoString(kBuiltinTextTools);
     lua->DoString(kBuiltinQuickJump);
     lua->DoString(kBuiltinFileTree);
@@ -73305,6 +73347,21 @@ int main(int argc, char **argv) {
         lua->DoString(learn);
     }
     lua->DoString(kBuiltinOrgBib);
+    lua->DoString(kBuiltinReferenceManager);
+    lua->DoString(
+        "mep.command('MepRefManager', mep.references.open)\n"
+        "mep.command('MepRefInsert', mep.references.insert)\n"
+        "mep.command('MepRefCollectionAdd', mep.references.collection_add)\n"
+        "mep.command('MepRefCollectionRename', mep.references.collection_rename)\n"
+        "mep.command('MepRefCollectionRemove', mep.references.collection_remove)\n"
+        "mep.command('MepRefSubscribe', mep.references.subscribe)\n"
+        "mep.command('MepRefUnsubscribe', mep.references.unsubscribe)\n"
+        "mep.command('MepRefAddFile', mep.references.add_file)\n"
+        "mep.command('MepRefEdit', mep.references.edit)\n"
+        "mep.command('MepRefRefresh', mep.references.refresh)\n"
+        "mep.command('MepRefCollections', mep.references.collections)\n"
+        "mep.leader_map('rm', 'Open reference manager', mep.references.open)\n"
+        "mep.leader_map('ri', 'Insert citation', mep.references.insert)\n");
     lua->DoString(kBuiltinMathSnippets);
     lua->DoString(kBuiltinOrgSnippets);
     lua->DoString(kBuiltinMathLint);

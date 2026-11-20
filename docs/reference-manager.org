@@ -1,0 +1,91 @@
+#+TITLE: Reference manager
+
+* Libraries and lookup
+
+Open the manager with =:MepRefManager= or =<leader>rm=. Its Collections
+sidebar filters the manager buffer by project, global library, a named
+collection, or a subscribed folder. Activate an entry with an attached
+file to open it in a pane to the right. The manager can reuse a document
+pane already on that side.
+
+The global library lives in =~/.local/share/mep/references/library.mepml=
+on Linux. Mep also honors =$XDG_DATA_HOME= and uses its usual application
+data directory on other platforms. The active project's library is
+=citations.mepml= plus the =.bib= files in the root of the active
+workspace. A Git worktree uses its own root.
+
+=:MepRefInsert= or =<leader>ri= opens a fuzzy picker from an editable
+text buffer. The preview shows the selected citation's fields and source
+path. For a duplicate key, the first entry in this order wins.
+
+1. The project's =citations.mepml=, in document order.
+2. Project =.bib= files, in alphabetical filename order.
+3. The global =library.mepml=, in document order.
+4. Subscribed folders' =.bib= files, ordered by folder path and then filename.
+5. File stubs from subscribed folders.
+
+Selecting a citation inserts =\cite(key)= at the cursor, or =\cite{key}=
+in a =.tex= buffer, and adds an entry to the project's =citations.mepml=
+if the key is absent. In a MEPML document, use
+=\import(citations.mepml)= with the path relative to the document and add
+=\bibliography= to print the cited entries. LaTeX builds continue to use
+the bibliography configured in the =.tex= document.
+
+* Adding and editing references
+
+Use *Add file* (=:MepRefAddFile=) to add a file to the global
+library. Mep suggests a citation key and title from the filename.
+Select the pencil on a row or use *Edit or promote reference*
+(=:MepRefEdit=) to set a field. You can add fields by name and clear
+a field by submitting an empty value. Mep saves edits to BibTeX imports
+as MEPML entries in the corresponding library. The source =.bib=
+remains available for other tools.
+
+The =file= field can use an absolute path, a =~/= path, or a path
+relative to the citation's source file. Mep stores an absolute path
+when it attaches a file or copies a citation between libraries.
+
+Use *Manage collections and folders* (=:MepRefCollections=) to create,
+rename, or remove a collection, change its membership, or manage
+subscriptions. Mep stores collection membership by citation key and
+keeps these settings in =references/config.mepml= next to the global
+library.
+
+=:MepRefSubscribe= opens a folder picker at the active workspace root.
+The header shows the full path. Type to filter entries, use =Enter= on
+a folder to open it, and use =../= to move up. The right column previews
+the highlighted entry, including images and the first page of PDFs.
+Use *Type a folder path* to jump directly, then select
+*Subscribe to this folder* or press =Ctrl+A= to confirm.
+
+* Importing PDFs
+
+Subscribing to a folder starts a background import of PDFs in that
+folder and its subfolders. The global library stores an editable
+citation and the original file path for each new PDF. Opening the
+manager or running =:MepRefRefresh= scans existing subscriptions for
+new PDFs. The importer matches files by their path and keeps existing
+citations and edits. Imported references remain in the global library
+after a folder is unsubscribed.
+
+The importer reads common XMP bibliographic fields and the PDF
+document information dictionary. It uses the filename when a usable
+embedded title is unavailable and records the choice in =title_source=.
+Missing authors, publishers, and publication dates are left blank.
+PDF creation and modification dates describe the file itself. Use
+*Edit or promote reference* to verify or correct metadata against the
+title page and other publication details in the work.
+
+ANSI/NISO Z39.29–2005 (R2010), /Bibliographic References/, guides the
+choice of discrete fields in MEPML. Authorship and title map to
+=author= and =title=. The imprint can use =address=, =publisher=,
+=date= and =year=. A container can use =journal= or =booktitle=,
+=volume=, =number=, and =pages=. Edition, medium, and identifiers have
+their own =edition=, =medium=, =doi=, and =isbn= fields. The PDF path and
+title source are local catalog metadata. The importer fills fields
+supported by the embedded data. MEPML's bibliography renderer uses
+its existing citation style.
+
+Other files directly in the subscribed folder still appear as stubs
+when they have no citation metadata. Mep reads its immediate =.bib=
+files as bibliographies. Choose *Save to library* to persist a stub.

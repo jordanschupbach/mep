@@ -5,7 +5,7 @@
 
 * Every command
 
-All 440 ex commands mep defines: 147 built in and 294 registered from Lua.
+All 452 ex commands mep defines: 147 built in and 306 registered from Lua.
 
 =Tab= at the =:= prompt completes these, and =<leader>hk= lists the key
 bindings instead. A dash means no page covers that command yet.
@@ -143,6 +143,7 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepHelpSearch= | -- |
 | =:MepHelpTopic= | -- |
 | =:MepHtmlSearch= | [[file:browser.html][The browser pane]] |
+| =:MepInsertSymbol= | [[file:pickers.html][Pickers]] |
 | =:MepKeymaps= | [[file:keymaps.html][Remapping keys]] |
 | =:MepLangTest= | [[file:tests.html][Tests]] |
 | =:MepLanguageUi= | [[file:language-ui.html][Language UI modes]] |
@@ -307,6 +308,17 @@ bindings instead. A dash means no page covers that command yet.
 | =:MepProjectClear= | -- |
 | =:MepProjects= | [[file:dashboard.html][The start screen]] |
 | =:MepProjectsOpen= | [[file:projects.html][Projects]] |
+| =:MepRefAddFile= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefCollectionAdd= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefCollectionRemove= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefCollectionRename= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefCollections= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefEdit= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefInsert= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefManager= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefRefresh= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefSubscribe= | [[file:reference-manager.html][Reference manager]] |
+| =:MepRefUnsubscribe= | [[file:reference-manager.html][Reference manager]] |
 | =:MepReplSendBuffer= | [[file:repl.html][REPL and send-to-terminal]] |
 | =:MepReplSendLine= | [[file:repl.html][REPL and send-to-terminal]] |
 | =:MepReplStart= | [[file:repl.html][REPL and send-to-terminal]] |

@@ -978,6 +978,10 @@ test-gui: build-native
     # MCP client drives it, against a real mep behind it.
     echo "== mep-mcp-live-test"
     "./{{native_build_dir}}/mep-mcp-live-test" "./{{native_build_dir}}/mep"
+    echo "== reference manager live check"
+    python3 tools/reference_manager_live_check.py --build-dir {{native_build_dir}}
+    echo "== Unicode symbol picker live check"
+    python3 tools/symbol_picker_live_check.py --build-dir {{native_build_dir}}
     # PDF selection end to end: annotate mode's caret, `v`, `y`, and the
     # passage mep.pdf_selection() hands an AI prompt. That layer is only
     # reachable from a running editor -- the AI client is Lua embedded in

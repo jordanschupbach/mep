@@ -24,11 +24,22 @@ extra keys along its bottom edge, so you never have to remember them.
 | =<leader>ut=  | colorscheme, with live preview                |
 | =<leader>hk=  | every key binding currently in effect         |
 | =<leader>yy=  | snippets                                      |
+| =<leader>is=  | insert a Unicode symbol                        |
 | =<leader>pp=  | loaded projects                               |
 | =<leader>ww=  | workspaces                                    |
 
 The tab bar's three search buttons are the first, second and fourth of
 these.
+
+* Insert a symbol
+
+Use =<leader>is= or =:MepInsertSymbol= in an editable buffer. Find
+Greek letters, arrows, math operators, superscripts, punctuation, and
+other symbols by name, alias, or Unicode code point. Try =lambda=,
+=right arrow=, or =U+2264=. The right column shows an enlarged glyph
+and its name and code point. Press =Enter= to insert the character at
+the cursor, or =Esc= to close the picker.
+
 
 * The buffer picker
 

@@ -130,32 +130,36 @@ void Editor::SetFilePreviewText(int anchor_buffer, const std::string &title, con
 }
 
 void Editor::SetFilePreviewVisual(int anchor_buffer, const std::string &title, const std::string &path) {
-    file_preview_.kind = FilePreview::Kind::Image;
     file_preview_.anchor_buffer = anchor_buffer;
     file_preview_.title = title;
-    file_preview_.text.clear();
-    file_preview_.spans.clear();
-    file_preview_.rgba.clear();
-    file_preview_.w = file_preview_.h = 0;
-    file_preview_.info.clear();
-    file_preview_.generation++;
+    RequestFilePreview(file_preview_, path);
+}
+
+void Editor::RequestFilePreview(FilePreview &preview, const std::string &path) {
+    preview.kind = FilePreview::Kind::Image;
+    preview.text.clear();
+    preview.spans.clear();
+    preview.rgba.clear();
+    preview.w = preview.h = 0;
+    preview.info.clear();
+    preview.generation++;
     // Already decoded (moving back over a row): show it straight away.
     const long long mtime = FileMtime(path);
     for (size_t i = 0; i < file_preview_cache_.size(); i++) {
         FilePreviewCacheEntry &e = file_preview_cache_[i];
         if (e.path != path || e.mtime != mtime) continue;
-        file_preview_.rgba = e.rgba;
-        file_preview_.w = e.w;
-        file_preview_.h = e.h;
-        file_preview_.info = e.info;
-        file_preview_.pending_path.clear();
+        preview.rgba = e.rgba;
+        preview.w = e.w;
+        preview.h = e.h;
+        preview.info = e.info;
+        preview.pending_path.clear();
         // Most recently used goes last.
         std::rotate(file_preview_cache_.begin() + static_cast<std::ptrdiff_t>(i),
                     file_preview_cache_.begin() + static_cast<std::ptrdiff_t>(i) + 1, file_preview_cache_.end());
         return;
     }
-    file_preview_.pending_path = path;
-    file_preview_.requested_at = gfx::GetTime();
+    preview.pending_path = path;
+    preview.requested_at = gfx::GetTime();
 }
 
 void Editor::ClearFilePreview() {
@@ -169,11 +173,23 @@ void Editor::ClearFilePreview() {
     file_preview_.generation++;
 }
 
+void Editor::ClearPickerFilePreview() {
+    if (picker_file_preview_.kind == FilePreview::Kind::None) return;
+    const unsigned generation = picker_file_preview_.generation + 1;
+    picker_file_preview_ = FilePreview{};
+    picker_file_preview_.generation = generation;
+}
+
 void Editor::TickFilePreview() {
-    if (file_preview_.kind != FilePreview::Kind::Image || file_preview_.pending_path.empty()) return;
-    if (gfx::GetTime() - file_preview_.requested_at < kPreviewDecodeDelay) return;
-    const std::string path = file_preview_.pending_path;
-    file_preview_.pending_path.clear();
+    DecodeFilePreview(file_preview_);
+    DecodeFilePreview(picker_file_preview_);
+}
+
+void Editor::DecodeFilePreview(FilePreview &preview) {
+    if (preview.kind != FilePreview::Kind::Image || preview.pending_path.empty()) return;
+    if (gfx::GetTime() - preview.requested_at < kPreviewDecodeDelay) return;
+    const std::string path = preview.pending_path;
+    preview.pending_path.clear();
 
     std::vector<unsigned char> rgba;
     int w = 0, h = 0;
@@ -230,11 +246,11 @@ void Editor::TickFilePreview() {
 #endif
 
     {
-        file_preview_.rgba = rgba;
-        file_preview_.w = w;
-        file_preview_.h = h;
-        file_preview_.info = info;
-        file_preview_.generation++;
+        preview.rgba = rgba;
+        preview.w = w;
+        preview.h = h;
+        preview.info = info;
+        preview.generation++;
     }
     if (!rgba.empty()) {
         if (file_preview_cache_.size() >= kPreviewCacheSize) file_preview_cache_.erase(file_preview_cache_.begin());

@@ -13,7 +13,9 @@ bool ReadFile(const std::string &path, std::string &out);
 bool WriteFile(const std::string &path, std::string_view data, bool exec = false);
 // Writes `<path>.lock` then renames it over `path` (git's lockfile dance).
 // Fails if the lock already exists (another git process holds it).
-bool WriteFileAtomic(const std::string &path, std::string_view data, std::string *err);
+// If expected is provided, compare the current contents under the lock.
+bool WriteFileAtomic(const std::string &path, std::string_view data, std::string *err,
+                     const std::string_view *expected = nullptr);
 bool FileExists(const std::string &path);
 bool IsDirectory(const std::string &path);
 bool MakeDirs(const std::string &path);

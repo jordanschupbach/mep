@@ -5,7 +5,7 @@
 
 * Leader bindings
 
-All 195 =<leader>= sequences registered at startup. Press
+All 198 =<leader>= sequences registered at startup. Press
 =<Space>= for the same list as a popup, or =<leader>hk= for every
 binding including your own.
 
@@ -96,6 +96,7 @@ the features live.
 | =<leader>hh= | Open help | [[file:intro.html][mep Help]] |
 | =<leader>hk= | Help: keymaps | [[file:command-line.html][The command line]] |
 | =<leader>hs= | Help: symbol under the cursor (gh) | [[file:language-ui.html][Language UI modes]] |
+| =<leader>is= | Insert Unicode symbol | [[file:pickers.html][Pickers]] |
 | =<leader>jv= | Runner: variable inspector | [[file:runners.html][The command runner]] |
 | =<leader>jw= | Runner: workspaces | [[file:runners.html][The command runner]] |
 | =<leader>kA= | mepml: toggle alt text popup on hover | [[file:mepml.html][mepml]] |
@@ -177,7 +178,9 @@ the features live.
 | =<leader>pr= | Live grep | [[file:pickers.html][Pickers]] |
 | =<leader>rc= | Configure send-to-terminal target | [[file:files.html][Files and buffers]] |
 | =<leader>re= | Run: send the code at the cursor to the language UI console | [[file:bash-mode.html][Bash mode]] |
+| =<leader>ri= | Insert citation | [[file:reference-manager.html][Reference manager]] |
 | =<leader>rj= | Jump to/from Run/REPL pane | [[file:repl.html][REPL and send-to-terminal]] |
+| =<leader>rm= | Open reference manager | [[file:reference-manager.html][Reference manager]] |
 | =<leader>rn= | LSP: rename | [[file:c-lsp.html][The C language server]] |
 | =<leader>rr= | Run button: run/compile current file | [[file:bash-mode.html][Bash mode]] |
 | =<leader>rs= | Run button: setup current filetype | [[file:run-button.html][Running the current file]] |

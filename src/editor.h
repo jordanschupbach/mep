@@ -8847,7 +8847,7 @@ public:
      * @param path The file path to preview.
      * @param max_lines The maximum number of lines to read.
      */
-    void PreviewFile(const std::string &path, int max_lines);
+    void PreviewFile(const std::string &path, int max_lines, bool visual = false);
     // File tree (kBuiltinFileTree, main.cpp): the recursive directory
     // walk (mep_tree_build_widgets' own traversal half, port of --
     // hidden/gitignore filtering, expand-state-driven recursion into
@@ -9605,13 +9605,15 @@ public:
         std::string type;
         std::string key;
         std::map<std::string, std::string> fields;
+        size_t file_index = 0;
     };
     /**
      * @brief Parses BibTeX entries from already-read .bib file texts and resolves crossref fields across them.
      * @param file_texts The full text of each .bib file, in macro-resolution order.
      * @return The parsed and crossref-resolved bibliography entries.
      */
-    std::vector<OrgBibEntry> OrgBibParseFiles(const std::vector<std::string> &file_texts) const;
+    std::vector<OrgBibEntry> OrgBibParseFiles(const std::vector<std::string> &file_texts,
+                                              bool first_crossref = false) const;
     // kBuiltinOrgBib's own citation-recognition-at-cursor port: resolves
     // both modern org-cite (`[cite:@key]`, `[cite/style:@key1;@key2]`)
     // and legacy org-ref (`cite:key`, `citep:key`, ...) syntax under the
@@ -9875,16 +9877,8 @@ public:
     // per-buffer undo entry (PushUndoForBuffer), so the local user can
     // always `u`-undo a remote edit like any other change.
     //
-    // InsertTextAt deliberately does not reuse InsertChar/InsertNewline
-    // (editor.cpp): InsertChar rejects any codepoint outside 32-126, and
-    // the existing InsertTextForLua iterates its input byte-wise, so
-    // non-ASCII text has always been silently dropped by buffer.
-    // insertText -- a real, pre-existing bug, out of scope to fix here
-    // (needs its own dedicated verification). InsertTextAt instead
-    // splices the given text in as raw bytes (split on '\n', spliced
-    // into buf.lines directly, the same technique InsertNewline's own
-    // line-splitting already uses), which is correct for UTF-8 by
-    // construction and avoids inheriting that bug in new code.
+    // InsertTextAt splices UTF-8 bytes at the supplied position without
+    // applying the current pane's typed-text indentation rules.
     /**
      * @brief Inserts raw text as UTF-8 bytes into a specific buffer at an explicit position, pushing its own undo entry.
      * @param buffer_id The id of the buffer to edit.
@@ -10406,6 +10400,8 @@ public:
     // so images/PDFs/HTML/office files get their viewers exactly as `:e`
     // would; the new pane becomes the active one.
     void OpenFileInPane(int dest_pane_id, const std::string &path, bool split, SplitDir dir, bool before);
+    void OpenFileToRight(const std::string &path);
+    bool CanInsertAtTextCursor() const;
     // OpenFileInPane's counterpart for a buffer that is already open: the
     // drop target for a row dragged out of the Buffers sidebar
     // (SidebarWidget::drag_buffer_id). Shows `buffer_id` in
@@ -13254,9 +13250,12 @@ public:
      * @brief Sets the text (and optional syntax highlight spans) shown in the picker's preview column, resetting its scroll.
      * @param text The preview text to show.
      * @param spans Optional Treesitter-backed highlight spans over the preview text.
+     * @param glyph Optional symbol drawn above the preview text at a larger size.
      */
-    void SetPickerPreview(const std::string &text, std::vector<PickerHlSpan> spans = {}) {
+    void SetPickerPreview(const std::string &text, std::vector<PickerHlSpan> spans = {}, const std::string &glyph = {}) {
+        ClearPickerFilePreview();
         picker_preview_text_ = text;
+        picker_preview_glyph_ = glyph;
         picker_preview_spans_ = std::move(spans);
         picker_preview_scroll_ = 0;
     }
@@ -13330,6 +13329,7 @@ public:
      * @return The preview (kind None when hidden).
      */
     const FilePreview &GetFilePreview() const { return file_preview_; }
+    const FilePreview &GetPickerFilePreview() const { return picker_file_preview_; }
     /**
      * @brief Classifies a path for the file preview: "dir", "image", "pdf", "binary", "text" or "missing".
      * @param path The path to classify.
@@ -13341,6 +13341,7 @@ public:
      * @return The preview text, empty if no preview is set.
      */
     const std::string &PickerPreview() const { return picker_preview_text_; }
+    const std::string &PickerPreviewGlyph() const { return picker_preview_glyph_; }
     /**
      * @brief Returns the picker preview's syntax highlight spans.
      * @return The preview's highlight spans.
@@ -16530,6 +16531,7 @@ private:
     int picker_on_select_change_ref_ = 0;
     bool picker_raw_results_ = false;
     std::string picker_preview_text_;
+    std::string picker_preview_glyph_;
     std::vector<PickerHlSpan> picker_preview_spans_;
     // First preview line drawn (mod1+j/k, see HandleMod1Shortcuts) --
     // reset to 0 by SetPickerPreview so switching the highlighted result
@@ -16540,6 +16542,10 @@ private:
     size_t svg_font_len_ = 0;
     PickerDocPreview picker_doc_preview_;
     FilePreview file_preview_;
+    FilePreview picker_file_preview_;
+    void ClearPickerFilePreview();
+    void RequestFilePreview(FilePreview &preview, const std::string &path);
+    void DecodeFilePreview(FilePreview &preview);
     // Recently decoded preview pictures, newest last, so moving back over a
     // row is instant. Keyed by path + mtime.
     struct FilePreviewCacheEntry {

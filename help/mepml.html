@@ -559,6 +559,39 @@ echo "Hello, world"
 block (<code>C-c C-c</code>) writes its output between the <code>result_begin:</code> and
 <code>result_end</code> markers, creating them under the block if they aren't there
 yet. <code>eval=false</code> stops a block from running.</p>
+<h2>Shared source and cached results</h2>
+<p>Give reusable chunks document-local names with <code>id=</code>. A block can prepend
+their source with <code>use=</code>. For several names, quote the comma-separated list.</p>
+<pre>```{bash, id=setup, eval=no}
+scale=4
+```
+
+```{bash, id=report, use=setup, cache=yes}
+echo "$((scale * 3))"
+```</pre>
+<p>The runner assembles one script in dependency order and runs it once.
+Dependencies can appear anywhere in the same document and must use the same
+language label (case-insensitive). Each dependency is inserted once per
+target, so a shared setup in two branches runs once. Only the target's
+execution options apply. Use <code>eval=no</code> on a source chunk to skip standalone
+execution during Run All while still allowing other chunks to use its source.
+Names are case-sensitive and accept up to 128 letters, digits, underscores
+and hyphens.
+Missing names, duplicate IDs and dependency cycles fail the run.</p>
+<p><code>cache=yes</code> stores the last successful batch result under the block's ID in
+a sidecar directory such as <code>notes.mepml.mep-cache/</code>. A cache hit restores the
+result region, including its normal text, Markdown or HTML formatting.
+Matching uses the exact assembled source and target options, so editing a
+shared chunk invalidates its consumers and moving a named block preserves
+its cache entry. The cache
+also records successful runs with empty output. Each entry stores source
+and output locally. Delete the sidecar directory to clear a document’s cache.</p>
+<p>Use <code>:MepmlRefreshCache</code> in the editor or <code>mep-mepml run --refresh-cache</code>
+on the CLI to run again. For external inputs such as data files, environment
+variables or interpreter versions, change a block's <code>cache-key=</code> value or
+refresh the cache. Use caching for blocks whose document results are all
+you need to reuse. Terminal, GUI, web and <code>file=</code> figure runs execute
+normally. Chunk composition is available for batch runs.</p>
 <p>When a block finishes, a notification reports its elapsed time in seconds,
 for example <i>Done running python block at line 12 in 1.234 s</i>. The time
 includes preparation and compilation, when needed. Failed runs report
@@ -1129,6 +1162,10 @@ another file (relative to this one); its content, citations and options
 join this document. <code>\toc</code> is a table of contents and
 <code>\bibliography</code> lists every cited entry, in the order first cited
 (<code>@printbibliography</code>, its oldest name, still works).</p>
+<p>Use the <a href="reference-manager.html">Reference manager</a> to browse
+libraries and insert citations with a preview. Its picker adds selected
+entries to the project's <code>citations.mepml</code>, which you can import from
+your document.</p>
 <p>Every directive is written <code>\name(...)</code>, or bare (<code>\toc</code>). The older
 <code>@name{...}</code> spelling (<code>@image{path}</code>, <code>@caption{text}</code>,
 <code>@citation{key}{fields}</code>, <code>@toc</code>, ...) still works, except for the

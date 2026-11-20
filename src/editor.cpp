@@ -4310,14 +4310,20 @@ void BibParseText(const std::string &text, std::map<std::string, std::string> *s
 }
 }  // namespace
 
-std::vector<Editor::OrgBibEntry> Editor::OrgBibParseFiles(const std::vector<std::string> &file_texts) const {
+std::vector<Editor::OrgBibEntry> Editor::OrgBibParseFiles(const std::vector<std::string> &file_texts,
+                                                           bool first_crossref) const {
     std::map<std::string, std::string> strings;
     std::vector<OrgBibEntry> entries;
-    for (const std::string &text : file_texts) {
-        BibParseText(text, &strings, &entries);
+    for (size_t i = 0; i < file_texts.size(); ++i) {
+        const size_t first = entries.size();
+        BibParseText(file_texts[i], &strings, &entries);
+        for (size_t j = first; j < entries.size(); ++j) entries[j].file_index = i;
     }
     std::map<std::string, OrgBibEntry *> by_key;
-    for (OrgBibEntry &e : entries) by_key[e.key] = &e;
+    for (OrgBibEntry &e : entries) {
+        if (first_crossref) by_key.try_emplace(e.key, &e);
+        else by_key[e.key] = &e;
+    }
     for (OrgBibEntry &e : entries) {
         auto fit = e.fields.find("crossref");
         if (fit == e.fields.end()) continue;
@@ -23984,6 +23990,17 @@ bool Editor::IsNavigatorPaneBuffer(int buffer_id) const {
     return SidebarIdForPaneBuffer(buffer_id) != 0 || BufferHasDragResolver(buffer_id);
 }
 
+void Editor::OpenFileToRight(const std::string &path) {
+    const int active = ActivePaneId();
+    const int right = FindNeighborPaneId(active, "right");
+    const SplitNode *node = right < 0 ? nullptr : FindNode(ActiveTab().root.get(), right);
+    if (node && !IsNavigatorPaneBuffer(node->pane.buffer_id)) {
+        OpenFileInPane(right, path, false, SplitDir::Vertical, false);
+    } else {
+        OpenFileInPane(active, path, true, SplitDir::Vertical, false);
+    }
+}
+
 void Editor::OpenBufferInPane(int dest_pane_id, int buffer_id, bool split, SplitDir dir, bool before) {
     if (buffer_id < 0 || buffer_id >= static_cast<int>(buffers_.size())) return;
     if (buffers_[static_cast<size_t>(buffer_id)].deleted) return;
@@ -25204,6 +25221,37 @@ std::string Editor::RegisterTextForPaste(int name) {
     return RegisterFor(reg_name).text;
 }
 
+namespace {
+std::pair<int, size_t> DecodeInsertedCodepoint(std::string_view text, size_t offset) {
+    const auto lead = static_cast<unsigned char>(text[offset]);
+    if (lead < 0x80) return {lead, 1};
+    size_t length = 0;
+    int codepoint = 0;
+    int minimum = 0;
+    if ((lead & 0xe0) == 0xc0) {
+        length = 2;
+        codepoint = lead & 0x1f;
+        minimum = 0x80;
+    } else if ((lead & 0xf0) == 0xe0) {
+        length = 3;
+        codepoint = lead & 0x0f;
+        minimum = 0x800;
+    } else if ((lead & 0xf8) == 0xf0) {
+        length = 4;
+        codepoint = lead & 0x07;
+        minimum = 0x10000;
+    }
+    if (length == 0 || length > text.size() - offset) return {-1, 1};
+    for (size_t i = 1; i < length; ++i) {
+        const auto tail = static_cast<unsigned char>(text[offset + i]);
+        if ((tail & 0xc0) != 0x80) return {-1, 1};
+        codepoint = (codepoint << 6) | (tail & 0x3f);
+    }
+    if (codepoint < minimum || codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff)) return {-1, 1};
+    return {codepoint, length};
+}
+}  // namespace
+
 void Editor::InsertTextAsTyped(const std::string &text) {
     // A multi-line block arrives with the indentation of wherever it was copied
     // from, which is almost never the indentation of where it is going: the
@@ -25241,39 +25289,9 @@ void Editor::InsertTextAsTyped(const std::string &text) {
     // as garbage.
     size_t i = 0;
     while (i < prepared.size()) {
-        unsigned char b = static_cast<unsigned char>(prepared[i]);
-        int cp = 0;
-        size_t len = 1;
-        if (b < 0x80) {
-            cp = b;
-        } else if ((b & 0xE0) == 0xC0) {
-            cp = b & 0x1F;
-            len = 2;
-        } else if ((b & 0xF0) == 0xE0) {
-            cp = b & 0x0F;
-            len = 3;
-        } else if ((b & 0xF8) == 0xF0) {
-            cp = b & 0x07;
-            len = 4;
-        } else {
-            i++;
-            continue;
-        }
-        if (i + len > prepared.size()) break;
-        bool valid = true;
-        for (size_t k = 1; k < len; k++) {
-            unsigned char c = static_cast<unsigned char>(prepared[i + k]);
-            if ((c & 0xC0) != 0x80) {
-                valid = false;
-                break;
-            }
-            cp = (cp << 6) | (c & 0x3F);
-        }
-        if (!valid) {
-            i++;
-            continue;
-        }
-        i += len;
+        const auto [cp, length] = DecodeInsertedCodepoint(prepared, i);
+        i += length;
+        if (cp < 0) continue;
         if (cp == '\n') {
             ProcessInsertKey(kReplayEnter);
         } else if (cp == '\r') {
@@ -30690,7 +30708,17 @@ int Editor::CreateSidebar(const std::string &title, const std::string &position,
 }
 
 void Editor::SetSidebarSections(int id, std::vector<SidebarSection> sections) {
-    if (SidebarInstance *sb = FindSidebarMut(id)) sb->sections = std::move(sections);
+    if (SidebarInstance *sb = FindSidebarMut(id)) {
+        if (lua_) {
+            for (const auto &section : sb->sections) {
+                for (const auto &widget : section.widgets) {
+                    if (widget.on_click_ref > 0) lua_->UnrefFunction(widget.on_click_ref);
+                    if (widget.trailing_on_click_ref > 0) lua_->UnrefFunction(widget.trailing_on_click_ref);
+                }
+            }
+        }
+        sb->sections = std::move(sections);
+    }
     // The row under the popout's cursor may now name something else (a
     // git status refresh reordering its list, the file tree expanding a
     // directory) even though the cursor index itself never moved.
@@ -31468,9 +31496,7 @@ void Editor::OpenPicker(const std::string &title, std::vector<PickerItem> items,
     picker_on_key_ref_ = on_key_ref;
     picker_on_select_change_ref_ = on_select_change_ref;
     picker_raw_results_ = raw_results;
-    picker_preview_text_.clear();
-    picker_preview_spans_.clear();
-    picker_preview_scroll_ = 0;
+    SetPickerPreview("");
     picker_doc_preview_ = PickerDocPreview{};
     picker_tabs_.clear();
     picker_active_tab_ = 0;
@@ -31489,6 +31515,7 @@ void Editor::SetPickerDocPreview(PickerDocPreview::Kind kind, int buffer_id, int
 }
 
 void Editor::ClosePicker() {
+    ClearPickerFilePreview();
     picker_open_ = false;
     if (mode_ == Mode::Picker) RestoreFromOverlay();
 }
@@ -32107,6 +32134,13 @@ bool Editor::IsQuickJumpTextBuffer(int buffer_id) const {
            !IsVideoBuffer(buffer_id) && !IsYoutubeBuffer(buffer_id) &&
            !IsHtmlBuffer(buffer_id) && !IsSidebarPaneBuffer(buffer_id) && !IsOfficeBuffer(buffer_id) &&
            !IsSheetBuffer(buffer_id) && !IsPresBuffer(buffer_id) && !IsKanbanViewActive(buffer_id) && !IsGanttViewActive(buffer_id);
+}
+
+bool Editor::CanInsertAtTextCursor() const {
+    const int buffer = CurrentBufferId();
+    const bool text_mode = mode_ == Mode::Normal || mode_ == Mode::Insert || mode_ == Mode::Visual ||
+                           mode_ == Mode::VisualLine || mode_ == Mode::VisualBlock;
+    return text_mode && IsQuickJumpTextBuffer(buffer) && !IsNavigatorPaneBuffer(buffer);
 }
 
 void Editor::BeginQuickJump() {
@@ -38667,7 +38701,19 @@ bool Editor::SnippetBeforeInsertKey(int key) {
     return erase;
 }
 
-void Editor::PreviewFile(const std::string &path, int max_lines) {
+void Editor::PreviewFile(const std::string &path, int max_lines, bool visual) {
+    if (visual) {
+        const std::string kind = FilePreviewKind(path);
+        if (kind == "pdf" || kind == "image") {
+            SetPickerPreview("");
+            RequestFilePreview(picker_file_preview_, path);
+            return;
+        }
+        if (kind != "text") {
+            SetPickerPreview(path + "\n\n" + (kind == "binary" ? "Binary file" : "Preview unavailable"));
+            return;
+        }
+    }
     std::ifstream f(path);
     if (!f) {
         SetPickerPreview("(cannot open " + path + ")");
@@ -38690,7 +38736,7 @@ void Editor::PreviewFile(const std::string &path, int max_lines) {
         if (i > 0) text += '\n';
         text += lines[i];
     }
-    SetPickerPreview(text);
+    SetPickerPreview(visual && text.empty() ? path + "\n\nEmpty file" : text);
 }
 
 namespace {
@@ -40824,9 +40870,23 @@ void Editor::InsertTextForLua(const std::string &text) {
     cursor.row = std::max(0, std::min(cursor.row, Buf().LineCount() - 1));
     cursor.col = std::max(0, std::min(cursor.col, LineLen(cursor.row)));
     PushUndo();
-    for (char c : text) {
-        if (c == '\n') InsertNewline();
-        else InsertChar(static_cast<unsigned char>(c));
+    for (size_t i = 0; i < text.size();) {
+        const auto [codepoint, length] = DecodeInsertedCodepoint(text, i);
+        const size_t start = i;
+        i += length;
+        if (codepoint < 0) continue;
+        if (codepoint < 0x80) {
+            if (codepoint == '\n') InsertNewline();
+            else InsertChar(codepoint);
+            continue;
+        }
+        const std::string &line = Buf().lines[static_cast<size_t>(cursor.row)];
+        while (cursor.col > 0 && static_cast<size_t>(cursor.col) < line.size() &&
+               IsUtf8Cont(line[static_cast<size_t>(cursor.col)])) {
+            --cursor.col;
+        }
+        cursor = InsertCharwiseTextAt(cursor, text.substr(start, length));
+        Buf().modified = true;
     }
 }
 

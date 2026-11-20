@@ -5678,6 +5678,7 @@ void Editor::UpdateScrollForPane(int pane_id, int visible_lines, int wrap_cols) 
     Pane &pane = node->pane;
     visible_lines = std::max(1, visible_lines);
     pane.visible_lines = visible_lines;
+    if (IsSidebarPaneBuffer(pane.buffer_id)) return;
     if (pane.buffer_id < 0 || pane.buffer_id >= static_cast<int>(buffers_.size())) return;
     Buffer &buf = buffers_[static_cast<size_t>(pane.buffer_id)];
     // Last stop before this pane is drawn, and the one place every buffer
@@ -27588,19 +27589,26 @@ void Editor::HandleCommandInput() {
         UpdateCmdlineCompletion();
         return;
     }
+    auto leave_command_line = [this] {
+        EnterNormal();
+        // The command bar leaves the same sidebar row selected. Restore
+        // its mode before dispatch so a command that opens a picker can
+        // return to the list when the picker closes.
+        if (IsSidebarPaneBuffer(CurPane().buffer_id)) mode_ = Mode::SidebarPane;
+    };
     // Back from the command line to a presentation's own mode (EnterNormal
     // is plain Normal, which a deck's keys do not go through).
     auto back_to_pres = [this] {
         if (mode_ == Mode::Normal && IsPresBuffer(CurPane().buffer_id)) SyncModeToActivePaneBuffer();
     };
     if (escape) {
-        EnterNormal();
+        leave_command_line();
         back_to_pres();
         return;
     }
     if (enter) {
         std::string cmd = command_line_;
-        EnterNormal();
+        leave_command_line();
         if (!cmd.empty() && (command_history_.empty() || command_history_.back() != cmd)) {
             command_history_.push_back(cmd);
         }
@@ -27612,7 +27620,7 @@ void Editor::HandleCommandInput() {
         if (!command_line_.empty()) {
             command_line_.pop_back();
         } else {
-            EnterNormal();
+            leave_command_line();
         }
         return;
     }
@@ -30782,6 +30790,10 @@ static std::vector<SidebarLine> FlattenSidebarHelp(const SidebarInstance &sb, bo
     std::vector<std::pair<std::string, std::string>> nav;
     nav.push_back({"j / k", "move down / up"});
     nav.push_back({"gg / G", "first / last row"});
+    if (pane_hosted) {
+        nav.push_back({"Ctrl+D/Ctrl+U", "scroll down / up half a page"});
+        nav.push_back({":", "open the command bar"});
+    }
     nav.push_back({"Enter", "open / activate the row"});
     if (!sb.tabs.empty()) nav.push_back({"Tab / S-Tab", "next / previous view"});
     if (!pane_hosted) {
@@ -31181,9 +31193,24 @@ void Editor::HandleSidebarPaneInput() {
     if (sidebar_id == 0) return;
     std::vector<SidebarLine> lines = FlattenSidebar(sidebar_id);
     bool enter = false, escape = false;
+    const bool ctrl = gfx::IsKeyDown(gfx::Key::LeftControl) || gfx::IsKeyDown(gfx::Key::RightControl);
+    int half_pages = 0;
     for (gfx::Key key = gfx::GetKeyPressed(); key != gfx::Key::None; key = gfx::GetKeyPressed()) {
         if (key == gfx::Key::Enter) enter = true;
         else if (key == gfx::Key::Escape) escape = true;
+        else if (ctrl && key == gfx::Key::D) ++half_pages;
+        else if (ctrl && key == gfx::Key::U) --half_pages;
+    }
+    if (half_pages != 0 && !escape && !enter) {
+        if (SidebarInstance *sb = FindSidebarMut(sidebar_id)) {
+            const int rows = static_cast<int>(lines.size());
+            const int visible_lines = CurPane().visible_lines;
+            const int delta = half_pages * std::max(1, visible_lines / 2);
+            sidebar_pane_cursor_ = std::clamp(sidebar_pane_cursor_ + delta, 0, std::max(0, rows - 1));
+            sb->scroll_offset = std::clamp(sb->scroll_offset + delta, 0, std::max(0, rows - visible_lines));
+        }
+        pending_g_ = false;
+        return;
     }
     if (SidebarHelpOpen(sidebar_id)) {
         HandleSidebarHelpInput(sidebar_id, escape);
@@ -31196,6 +31223,11 @@ void Editor::HandleSidebarPaneInput() {
     }
     int cp = gfx::GetCharPressed();
     while (cp > 0) {
+        if (cp == ':') {
+            pending_g_ = false;
+            EnterCommand();
+            return;
+        }
         if (cp == 'G') {
             sidebar_pane_cursor_ = std::max(0, static_cast<int>(lines.size()) - 1);
             pending_g_ = false;

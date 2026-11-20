@@ -8,6 +8,12 @@ collection, or a subscribed folder. Activate an entry with an attached
 file to open it in a pane to the right. The manager can reuse a document
 pane already on that side.
 
+Press =/= in the manager buffer to fuzzy-search the current collection
+by citation key, title, author, or year. The right column previews the
+selected reference. Press =Enter= to open it or =Esc= to return to the list.
+In the list, =Ctrl+D= and =Ctrl+U= scroll down and up by half a page.
+Press =:= to open the command bar.
+
 The global library lives in =~/.local/share/mep/references/library.mepml=
 on Linux. Mep also honors =$XDG_DATA_HOME= and uses its usual application
 data directory on other platforms. The active project's library is

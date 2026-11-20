@@ -406,6 +406,7 @@ end
 
 local manager_buffers = {}
 local group, name = 'all', nil
+local displayed_entries = {}
 
 local function manage_config(change)
   local dir = library_dir()
@@ -807,8 +808,9 @@ local function render(library)
   groups[#groups + 1] = {id = 'folders', title = 'Subscribed folders', widgets = folders}
   mep.sidebar_set_sections(sidebar, groups)
 
-  local entries, widgets = shown(library), {}
-  for _, entry in ipairs(entries) do
+  displayed_entries = shown(library)
+  local widgets = {}
+  for _, entry in ipairs(displayed_entries) do
     widgets[#widgets + 1] = {
       id = entry.key, text = label(entry), tooltip = preview(entry),
       trailing_icon = ' ✎ ', trailing_on_click = function() edit(entry) end,
@@ -861,6 +863,10 @@ function ref.open()
   if not project_root() and not library_dir() then warn('Reference libraries require a native filesystem') return end
   if not manager then
     manager = mep.sidebar_create('Reference Manager', 'left')
+    mep.sidebar_set_on_key(manager, function(key)
+      if key == '/' then pick_entry('Search references', displayed_entries, open_entry) end
+    end)
+    mep.sidebar_set_help(manager, {{'/', 'Search the current collection'}})
     sidebar = mep.sidebar_create('Reference Collections', 'left', mep.sidebar_default_cols(0.2))
   end
   refresh()

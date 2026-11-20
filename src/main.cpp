@@ -57576,6 +57576,7 @@ void DrawSidebarPaneContent(const Pane &pane, int sidebar_id, float x, float y, 
     }
     std::vector<SidebarLine> lines = g_editor.FlattenSidebar(sidebar_id);
     int visible_lines = std::max(1, static_cast<int>(content_h) / line_h);
+    g_editor.UpdateScrollForPane(pane_id, visible_lines);
     g_editor.UpdateScrollForSidebar(sidebar_id, visible_lines);
     int scroll = sb ? sb->scroll_offset : 0;
     int cursor = g_editor.SidebarPaneCursor();

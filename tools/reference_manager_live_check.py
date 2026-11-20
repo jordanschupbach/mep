@@ -118,6 +118,10 @@ def check(editor, project, library, folder):
 
     # Save a subscribed-file stub, then check that the collection, edit,
     # and actual pane-opening callbacks are available through the UI.
+    editor.cmd("lua local create = mep.sidebar_create; "
+               "mep.sidebar_create = function(title, ...) local id = create(title, ...); "
+               "if title == 'Reference Collections' then reference_collections = id end; "
+               "if title == 'Reference Manager' then reference_manager = id end; return id end")
     editor.cmd('MepRefManager')
     assert editor.lua_value("mep.filename():match('Reference Manager$')") == 'Reference Manager'
     manager_pane = int(editor.lua_value('mep.current_pane_id()'))
@@ -142,11 +146,26 @@ def check(editor, project, library, folder):
     choose(editor, 'research')
     assert '//? Reference collection: research' in config.read_text()
 
-    # The promoted file appears just above the final folder BibTeX entry.
-    editor.cmd('MepRefRefresh')
-    editor.shift_key('g')
-    editor.key('k')
+    # The Project view excludes a file stored in the global library.
+    editor.cmd('lua mep.sidebar_open(reference_collections); mep.sidebar_focus_row(reference_collections, 3)')
     editor.key('Return')
+    editor.cmd(f'lua mep.pane_focus({manager_pane})')
+    editor.key('slash')
+    type_keys(editor, 'loose notes')
+    assert editor.lua_value('reference_preview') == ''
+    editor.key('Escape')
+    editor.cmd('lua mep.sidebar_open(reference_collections); mep.sidebar_focus_row(reference_collections, 2)')
+    editor.key('Return')
+    editor.cmd(f'lua mep.pane_focus({manager_pane})')
+
+    # Search from the manager buffer and use the result to open its file.
+    editor.key('slash')
+    type_keys(editor, 'loose notes')
+    assert 'loose-notes' in editor.lua_value('reference_preview')
+    editor.key('Escape')
+    assert int(editor.lua_value('mep.current_pane_id()')) == manager_pane
+    editor.key('slash')
+    choose(editor, 'loose notes')
     assert editor.lua_value('mep.filename()') == str(folder / 'loose notes.txt'), editor.log_tail()
     state = editor.rpc.call('state.dump')
     root = state['tabs'][state['active_tab']]['root']
@@ -233,6 +252,57 @@ def check(editor, project, library, folder):
     assert r'\citation(folderonly,' in (second / 'citations.mepml').read_text()
     assert saved == (project / 'citations.mepml').read_text()
 
+    # Use a list longer than the viewport so the half-page steps are measurable.
+    with (second / 'citations.mepml').open('a') as citations:
+        for index in range(1, 161):
+            citations.write(f'\\citation(scroll-reference-{index:03}, title = {{Scroll reference {index}}})\n')
+    editor.cmd('MepRefManager')
+    scroll_pane = int(editor.lua_value('mep.current_pane_id()'))
+    editor.cmd('lua mep.sidebar_open(reference_collections); mep.sidebar_focus_row(reference_collections, 3)')
+    editor.key('Return')
+    editor.cmd(f'lua mep.pane_focus({scroll_pane})')
+    editor.key('g', 2)
+    editor.key('j', 6)  # Action rows, heading, then the first two citations.
+
+    def scroll(key):
+        editor.rpc.call('ui.key_down', {'key': 'Control_L'})
+        editor.rpc.call('ui.key_press', {'key': key})
+        editor.rpc.call('ui.key_up', {'key': 'Control_L'})
+        editor.pump(6)
+        return editor.lua_value("mep.sidebar_cursor_widget_id(reference_manager) or 'top'")
+
+    start = editor.lua_value('mep.sidebar_cursor_widget_id(reference_manager)')
+    assert start == 'scroll-reference-001', start
+    first = scroll('d')
+    second_row = scroll('d')
+    assert first.startswith('scroll-reference-') and second_row.startswith('scroll-reference-'), (first, second_row)
+    assert int(second_row.rsplit('-', 1)[1]) > int(first.rsplit('-', 1)[1]) > 1
+    assert scroll('u') == first
+    assert scroll('u') == start
+    editor.key('g', 2)
+    assert scroll('u') == 'top'
+    editor.shift_key('g')
+    assert scroll('d') == 'scroll-reference-160'
+
+    def selected():
+        return editor.lua_value('mep.sidebar_cursor_widget_id(reference_manager)')
+
+    type_keys(editor, ':')
+    editor.key('Escape')
+    assert selected() == 'scroll-reference-160'
+    type_keys(editor, ':')
+    editor.key('BackSpace')
+    assert selected() == 'scroll-reference-160'
+    type_keys(editor, ':lua ref_command_ran = true')
+    editor.key('Return')
+    assert editor.lua_value('ref_command_ran') == 'true'
+    assert selected() == 'scroll-reference-160'
+    type_keys(editor, ':MepRefEdit')
+    editor.key('Return')
+    assert editor.lua_value('mep.picker_is_open()') == 'true'
+    editor.key('Escape')
+    assert selected() == 'scroll-reference-160'
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -281,7 +351,7 @@ def main():
             if editor:
                 editor.kill()
             display.close()
-    print('Reference lookup order, preview, insertion, collections, promotion and right pane passed')
+    print('Reference lookup order, preview, insertion, collections, promotion, right pane, half-page scrolling and command bar passed')
 
 
 if __name__ == '__main__':

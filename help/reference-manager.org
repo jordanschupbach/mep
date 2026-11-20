@@ -10,6 +10,12 @@ Collections sidebar to browse the project library, the global library,
 your named collections, or subscribed folders. =Enter= on a reference
 with a stored file opens it in a pane to the right.
 
+Press =/= in the manager buffer to fuzzy-search the current collection
+by citation key, title, author, or year. The right column previews the
+selected reference. Press =Enter= to open it or =Esc= to return to the list.
+In the list, =Ctrl+D= and =Ctrl+U= scroll down and up by half a page.
+Press =:= to open the command bar.
+
 *Add file* (=:MepRefAddFile=) saves a reference to the global library.
 Use a row's pencil or *Edit or promote reference* (=:MepRefEdit=) to
 edit fields or save metadata for an automatically listed file. Use
